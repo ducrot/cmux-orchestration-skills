@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
     init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
-    init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
+    init.add_argument("--runs-root", default=f"{TRACKER_ROOT}/orchestrator/runs")
     init.add_argument("--max-questions", type=int, default=10)
     init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
     init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
@@ -102,11 +102,15 @@ def build_parser() -> argparse.ArgumentParser:
     decision.add_argument("--status", choices=["decided", "deferred"], required=True)
     decision.add_argument("--decision", required=True, help="What the human chose, or why it was deferred")
 
+    validate = subparsers.add_parser("validate-artifact", help="Check an artifact's open_decisions against the schema")
+    validate.add_argument("--artifact", required=True)
+
     pending = subparsers.add_parser(
         "pending-decisions",
-        help="Print unresolved decisions of the newest artifact in an output directory",
+        help="Print unresolved decisions of the newest artifact. Resolves its directory like init",
     )
-    pending.add_argument("--output-dir", required=True)
+    pending.add_argument("--tracker", help="Tracker directory. Autodetected when omitted")
+    pending.add_argument("--output-dir", help="Override the directory to look in")
 
     return parser
 
@@ -125,6 +129,8 @@ def main() -> int:
         return complete_run(args)
     if args.command == "decision":
         return record_decision(args)
+    if args.command == "validate-artifact":
+        return validate_artifact(args)
     if args.command == "pending-decisions":
         return print_pending_decisions(args)
     raise AssertionError(args.command)
@@ -175,10 +181,9 @@ def resolve_output(args: argparse.Namespace, root: Path = Path(".")) -> tuple[Pa
     Grilling a free-standing plan without any tracker must stay possible, hence the fallback.
     """
     tracker = Path(args.tracker) if args.tracker else None
-    if tracker is None and not args.output_dir:
-        tracker = detect_tracker(root)
     if args.output_dir:
         return tracker, Path(args.output_dir)
+    tracker = tracker or detect_tracker(root)
     if tracker is None:
         return None, Path(NO_TRACKER_OUTPUT_DIR)
     return tracker, tracker / GRILLING_DIRNAME
@@ -216,7 +221,6 @@ def init_run(args: argparse.Namespace) -> int:
     if args.max_questions < 1:
         raise SystemExit("--max-questions must be >= 1")
     workspace_id = resolve_workspace_id(args)
-    tracker, output_dir = resolve_output(args)
     task_text = read_text(Path(args.task_file)) if args.task_file else args.task
     task_text = task_text.strip()
     if not task_text:
@@ -234,6 +238,9 @@ def init_run(args: argparse.Namespace) -> int:
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
+    # After the idempotent exit: a re-init must not re-detect, let alone stop on an ambiguity
+    # that appeared after this run already recorded its output directory.
+    tracker, output_dir = resolve_output(args)
     run_dir.mkdir(parents=True, exist_ok=True)
     for name in ("prompts", "reports", "synthesis"):
         (run_dir / name).mkdir(exist_ok=True)
@@ -376,25 +383,61 @@ def record_decision(args: argparse.Namespace) -> int:
             "data": {"id": args.id, "status": args.status, "decision": args.decision, "artifact": str(artifact_path)},
         },
     )
-    print(f"{args.id} {args.status}")
+    # Printed ready to paste: the Markdown half of the pair is transcribed, not recomposed.
+    print(f"{args.id} {args.status}\nAusgang ({args.status}): {args.decision}")
     return 0
 
 
-def print_pending_decisions(args: argparse.Namespace) -> int:
-    """Report unresolved decisions of the newest artifact, for the resume offer at session start."""
-    output_dir = Path(args.output_dir)
-    artifacts = sorted(output_dir.glob("*.json"), key=lambda path: (path.stat().st_mtime, path.name))
-    if not artifacts:
-        print("artifact=none pending=none")
-        return 0
-    newest = artifacts[-1]
-    decisions = read_json(newest).get("open_decisions") or []
-    unresolved = [
-        item["id"]
-        for item in decisions
-        if isinstance(item, dict) and item.get("status") in ("open", "deferred")
+def validate_artifact(args: argparse.Namespace) -> int:
+    """Check every open_decisions entry where they are authored: at finalize.
+
+    Enforcing the schema only when an answer is recorded would surface a thin entry mid
+    walkthrough, when the rounds are gone and nobody can repair it.
+    """
+    artifact_path = Path(args.artifact)
+    decisions = read_json(artifact_path).get("open_decisions")
+    if not isinstance(decisions, list):
+        raise SystemExit(f"{artifact_path} has no open_decisions list")
+    problems = [
+        f"{entry.get('id') if isinstance(entry, dict) else f'entry {index}'}: {problem}"
+        for index, entry in enumerate(decisions)
+        for problem in validate_decision(entry)
     ]
-    print(f"artifact={newest} pending={','.join(unresolved) if unresolved else 'none'}")
+    if problems:
+        raise SystemExit("\n".join(problems))
+    print(f"open_decisions={len(decisions)} valid")
+    return 0
+
+
+def artifact_decisions(path: Path) -> list | None:
+    """The artifact's decisions, or None if this JSON file is not an artifact at all."""
+    try:
+        data = read_json(path)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("open_decisions"), list):
+        return None
+    return data["open_decisions"]
+
+
+def print_pending_decisions(args: argparse.Namespace) -> int:
+    """Report unresolved decisions of the newest artifact, for the resume offer at session start.
+
+    `open` and `deferred` stay apart: a deferred point was closed on purpose, so only the
+    open ones make the offer urgent.
+    """
+    _, output_dir = resolve_output(args)
+    artifacts = {path: decisions for path in output_dir.glob("*.json") if (decisions := artifact_decisions(path)) is not None}
+    if not artifacts:
+        print(f"dir={output_dir} artifact=none open=none deferred=none")
+        return 0
+    newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name))
+
+    def ids(status: str) -> str:
+        listed = [item["id"] for item in artifacts[newest] if isinstance(item, dict) and item.get("status") == status]
+        return ",".join(listed) if listed else "none"
+
+    print(f"dir={output_dir} artifact={newest} open={ids('open')} deferred={ids('deferred')}")
     return 0
 
 

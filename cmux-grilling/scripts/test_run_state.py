@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -21,12 +23,21 @@ from run_state import (  # noqa: E402
     print_pending_decisions,
     record_decision,
     resolve_output,
+    validate_artifact,
     validate_decision,
 )
 
 
 def output_args(tracker: str | None = None, output_dir: str | None = None) -> argparse.Namespace:
     return argparse.Namespace(tracker=tracker, output_dir=output_dir)
+
+
+def run_quietly(command, args: argparse.Namespace) -> str:
+    """Call a subcommand and return its stdout, so the suite's own output stays clean."""
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        command(args)
+    return buffer.getvalue().strip()
 
 
 def make_tracker(root: Path, name: str) -> Path:
@@ -154,7 +165,7 @@ class RecordDecision(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def record(self, **overrides) -> int:
+    def record(self, **overrides) -> str:
         args = argparse.Namespace(
             run_dir=str(self.run_dir),
             artifact=str(self.artifact),
@@ -164,7 +175,7 @@ class RecordDecision(unittest.TestCase):
         )
         for key, value in overrides.items():
             setattr(args, key, value)
-        return record_decision(args)
+        return run_quietly(record_decision, args)
 
     def test_records_outcome_and_event(self):
         self.record()
@@ -215,28 +226,62 @@ class PendingDecisions(unittest.TestCase):
         return path
 
     def run_command(self) -> str:
-        from io import StringIO
-
-        buffer, stdout = StringIO(), sys.stdout
-        sys.stdout = buffer
-        try:
-            print_pending_decisions(argparse.Namespace(output_dir=str(self.out)))
-        finally:
-            sys.stdout = stdout
-        return buffer.getvalue().strip()
+        return run_quietly(print_pending_decisions, output_args(output_dir=str(self.out)))
 
     def test_empty_directory(self):
-        self.assertEqual(self.run_command(), "artifact=none pending=none")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact=none open=none deferred=none")
 
-    def test_reports_open_and_deferred_of_the_newest_artifact(self):
+    def test_open_and_deferred_of_the_newest_artifact_stay_apart(self):
         self.write("old.json", ["open"], 1000)
         newest = self.write("new.json", ["decided", "open", "deferred"], 2000)
-        self.assertEqual(self.run_command(), f"artifact={newest} pending=D2,D3")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D2 deferred=D3")
 
     def test_fully_decided_newest_artifact_reports_nothing(self):
         self.write("old.json", ["open"], 1000)
         newest = self.write("new.json", ["decided"], 2000)
-        self.assertEqual(self.run_command(), f"artifact={newest} pending=none")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=none deferred=none")
+
+    def test_foreign_json_never_wins_the_newest_comparison(self):
+        newest = self.write("artifact.json", ["open"], 1000)
+        (self.out / "notes.json").write_text(json.dumps(["not an artifact"]), encoding="utf-8")
+        (self.out / "broken.json").write_text("{oops", encoding="utf-8")
+        os.utime(self.out / "notes.json", (3000, 3000))
+        os.utime(self.out / "broken.json", (4000, 4000))
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D1 deferred=none")
+
+    def test_directory_is_resolved_like_init(self):
+        """No output dir passed: the resume check derives the same path init would."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                run_quietly(print_pending_decisions, output_args(tracker=tmp + "/.scratch/t12")),
+                f"dir={tmp}/.scratch/t12/grilling artifact=none open=none deferred=none",
+            )
+
+
+class ValidateArtifact(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.artifact = Path(self.tmp.name) / "plan.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def validate(self, decisions) -> str:
+        self.artifact.write_text(json.dumps({"open_decisions": decisions}), encoding="utf-8")
+        return run_quietly(validate_artifact, argparse.Namespace(artifact=str(self.artifact)))
+
+    def test_clean_artifact_passes(self):
+        self.assertEqual(self.validate([valid_decision(), valid_decision(id="D2")]), "open_decisions=2 valid")
+
+    def test_thin_entry_is_caught_at_finalize_naming_its_id(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.validate([valid_decision(), valid_decision(id="D2", context="")])
+        self.assertIn("D2: missing or empty field: context", str(caught.exception))
+
+    def test_missing_list_stops(self):
+        self.artifact.write_text(json.dumps({"run_id": "grill-x"}), encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            run_quietly(validate_artifact, argparse.Namespace(artifact=str(self.artifact)))
 
 
 if __name__ == "__main__":

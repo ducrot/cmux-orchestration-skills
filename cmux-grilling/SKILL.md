@@ -267,7 +267,8 @@ one already finished, and the watcher correctly keeps waiting either way. Only
 
 The artifact pair lands next to the tracker it belongs to, not in a directory of its own at
 the repo root. `run_state.py init` resolves the location once and records it in `state.json`
-(`tracker`, `output_dir`); every later step reads it from there:
+as `output_dir` (with the `tracker` it came from); every later step of the run reads it from
+there. Autodetection is a convenience, never a guess:
 
 | Input                            | Output directory        |
 |----------------------------------|-------------------------|
@@ -277,9 +278,8 @@ the repo root. `run_state.py init` resolves the location once and records it in 
 | nothing, no tracker at all       | `.scratch/grilling/`    |
 | `--output-dir <path>`            | `<path>`, verbatim      |
 
-Autodetection is a convenience, never a guess: two trackers make the script stop rather than
-scatter artifacts. Grilling a free-standing plan with no tracker stays possible through the
-fallback, and `--output-dir` remains the explicit override that skips detection entirely.
+`run_state.py pending-decisions` resolves its directory by the same table, so the resume
+check at session start — which runs before `init` — never reconstructs the path by hand.
 
 ## Finalize and Artifact
 
@@ -288,8 +288,8 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
 1. Distill the **defined assumptions** from all round syntheses: concrete, decision-ready
    statements a plan can build on — each traceable to Q&A rounds, none invented beyond the
    research. Record `grill.assumptions` with the count.
-2. Distill the **open decisions** in the same step, while every round is still present (see
-   Open Decisions below). Record `grill.open_decisions` with the count.
+2. Distill the **open decisions** in the same step (see Open Decisions below). Record
+   `grill.open_decisions` with the count.
 3. Write the artifact pair to the output directory from `state.json`:
    - `<output-dir>/<slug>-<timestamp>.md` — human-readable protocol in the established
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
@@ -321,9 +321,12 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
 
    The JSON schema is deliberately stable: the same top-level fields and one findings entry
    per lane in every session, so downstream consumers can build on it.
-4. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
+4. Validate what was just written: `run_state.py validate-artifact --artifact <json>`. It
+   checks every `open_decisions` entry against the schema here, where the rounds are still in
+   context and a thin entry can still be repaired.
+5. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
    `run_state.py complete --data '{"stop_reason": ..., "markdown": ..., "json": ...}'`.
-5. Close the four lane panes after their last reports and the gates are documented; record
+6. Close the four lane panes after their last reports and the gates are documented; record
    `pane.closed` per lane.
 
 The artifact pair is written **before** the walkthrough with the human, while every decision
@@ -385,20 +388,23 @@ commit proposal.
 - Questions and options in **German**, like the artifacts; this skill's own text stays
   English.
 - Record every answer with `run_state.py decision`, which writes `status`, `decision` and
-  `decided_at` into the artifact JSON and emits `grill.decision_recorded`. Then update the
-  `## Entscheidungen` block in the Markdown with the same outcome.
+  `decided_at` into the artifact JSON and emits `grill.decision_recorded`. It prints the
+  `Ausgang` line back; transcribe that into the `## Entscheidungen` block of the Markdown, so
+  both halves of the pair carry the same outcome.
 
 ### Resuming an unfinished walkthrough
 
-When the skill is invoked in a workspace whose newest artifact still carries `open` or
-`deferred` decisions, offer to finish that walkthrough first, before starting a new session.
-Check it at session start:
+Check at session start whether the previous walkthrough is unfinished:
 
 ```bash
-python3 scripts/run_state.py pending-decisions --output-dir .scratch/<tracker>/grilling
+python3 scripts/run_state.py pending-decisions
 ```
 
-This is the only handling of "the human walked away" — at the next contact, not on a clock.
+It prints the newest artifact's `open` and `deferred` ids separately. Any `open` id means the
+walkthrough was cut short: offer to finish it before starting a new session. `deferred` is a
+decision the human already made, so it is reported for completeness, not as a reason to ask
+again. This is the only handling of "the human walked away" — at the next contact, not on a
+clock.
 
 ## Commit Proposal
 
@@ -565,15 +571,15 @@ python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-que
 python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
 ```
 
-`init` also resolves the artifact location (Artifact Location): `--tracker` names it,
-omitting it autodetects a single `.scratch/*/issues/`, `--output-dir` overrides both.
+`init` also resolves the artifact location; the precedence is in Artifact Location.
 
-Record a decision outcome during the walkthrough, and check for an unfinished one at session
-start:
+Validate the artifact's decisions at finalize, record one outcome during the walkthrough, and
+check for an unfinished walkthrough at session start (same directory resolution as `init`):
 
 ```bash
+python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
 python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
-python3 scripts/run_state.py pending-decisions --output-dir .scratch/<tracker>/grilling
+python3 scripts/run_state.py pending-decisions
 ```
 
 Render prompts. Session prompts once per lane at launch, round prompts per question:
@@ -631,6 +637,7 @@ python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_run_state.py
 python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-questions 2 --output-dir .scratch/grilling
+python3 scripts/run_state.py pending-decisions --output-dir .scratch/grilling
 python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/smoke-grill --lane codebase
 python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/smoke-grill --lane web --round 1 --question "Which HTTP client does the frontend use?"
 python3 scripts/parse_research_report.py references/sample-research-report.md --json
