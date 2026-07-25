@@ -1,0 +1,4 @@
+interface:
+  display_name: "CMUX Grilling"
+  short_description: "Autonomous research-grounded grilling via CMUX lanes"
+  default_prompt: "Use $cmux-grilling to run an autonomous grilling session for the given task."

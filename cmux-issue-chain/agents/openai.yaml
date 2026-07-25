@@ -1,0 +1,4 @@
+interface:
+  display_name: "CMUX Issue Chain"
+  short_description: "Coordinate gated CMUX worker runs"
+  default_prompt: "Use $cmux-issue-chain to run a gated worker chain for the selected local Markdown issue."
