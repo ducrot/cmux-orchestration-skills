@@ -29,6 +29,28 @@ RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 # Must stay in sync with parse_research_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
 
+# Artifacts live next to the tracker's issues/, so a workspace keeps one place for its
+# orchestration output. Without a tracker the run still needs a home.
+GRILLING_DIRNAME = "grilling"
+TRACKER_ROOT = ".scratch"
+NO_TRACKER_OUTPUT_DIR = f"{TRACKER_ROOT}/{GRILLING_DIRNAME}"
+
+# open_decisions schema (SKILL.md, Finalize and Artifact). A decision is a fork the research
+# deliberately cannot close; an assumption is settled. Statuses are exhaustive.
+DECISION_STATUSES = ["open", "decided", "deferred"]
+DECISION_WHY_OPEN = ["product", "spec-deviation", "tie"]
+DECISION_REQUIRED_FIELDS = (
+    "id",
+    "question",
+    "why_open",
+    "context",
+    "evidence",
+    "options",
+    "recommendation",
+    "rationale",
+    "status",
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -41,7 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument("--max-questions", type=int, default=10)
-    init.add_argument("--output-dir", default="grill-sessions", help="Where the final artifact pair lands")
+    init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
+    init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
     init.add_argument("--workspace-id", help="cmux workspace UUID to pin. Defaults to $CMUX_WORKSPACE_ID")
     init.add_argument(
         "--no-workspace",
@@ -72,6 +95,19 @@ def build_parser() -> argparse.ArgumentParser:
     complete.add_argument("--message", default="grilling session complete")
     complete.add_argument("--data", help="Optional JSON object, e.g. artifact paths and stop reason")
 
+    decision = subparsers.add_parser("decision", help="Record the outcome of one open decision in the artifact JSON")
+    decision.add_argument("--run-dir", required=True)
+    decision.add_argument("--artifact", required=True, help="Path to the artifact JSON holding open_decisions")
+    decision.add_argument("--id", required=True, help='Decision id, e.g. "D1"')
+    decision.add_argument("--status", choices=["decided", "deferred"], required=True)
+    decision.add_argument("--decision", required=True, help="What the human chose, or why it was deferred")
+
+    pending = subparsers.add_parser(
+        "pending-decisions",
+        help="Print unresolved decisions of the newest artifact in an output directory",
+    )
+    pending.add_argument("--output-dir", required=True)
+
     return parser
 
 
@@ -87,6 +123,10 @@ def main() -> int:
         return append_snapshot(args)
     if args.command == "complete":
         return complete_run(args)
+    if args.command == "decision":
+        return record_decision(args)
+    if args.command == "pending-decisions":
+        return print_pending_decisions(args)
     raise AssertionError(args.command)
 
 
@@ -116,10 +156,67 @@ def resolve_workspace_id(args: argparse.Namespace) -> str | None:
     return workspace_id
 
 
+def detect_tracker(root: Path) -> Path | None:
+    """Autodetect the tracker as a convenience, never as a guess.
+
+    Exactly one `.scratch/*/issues/` is unambiguous. Several are not, and picking one would
+    scatter artifacts across trackers, so that case is a hard stop asking for --tracker.
+    """
+    candidates = sorted(path.parent for path in root.glob(f"{TRACKER_ROOT}/*/issues") if path.is_dir())
+    if len(candidates) > 1:
+        listed = ", ".join(str(path) for path in candidates)
+        raise SystemExit(f"Several trackers found ({listed}); pass --tracker to pick one.")
+    return candidates[0] if candidates else None
+
+
+def resolve_output(args: argparse.Namespace, root: Path = Path(".")) -> tuple[Path | None, Path]:
+    """Return (tracker, output_dir). --output-dir > --tracker > autodetect > no-tracker fallback.
+
+    Grilling a free-standing plan without any tracker must stay possible, hence the fallback.
+    """
+    tracker = Path(args.tracker) if args.tracker else None
+    if tracker is None and not args.output_dir:
+        tracker = detect_tracker(root)
+    if args.output_dir:
+        return tracker, Path(args.output_dir)
+    if tracker is None:
+        return None, Path(NO_TRACKER_OUTPUT_DIR)
+    return tracker, tracker / GRILLING_DIRNAME
+
+
+def validate_decision(entry: object) -> list[str]:
+    """Check one open_decisions entry against the schema; returns the problems found."""
+    if not isinstance(entry, dict):
+        return ["entry is not an object"]
+    problems = []
+    for field in DECISION_REQUIRED_FIELDS:
+        if not entry.get(field):
+            problems.append(f"missing or empty field: {field}")
+    if entry.get("why_open") and entry["why_open"] not in DECISION_WHY_OPEN:
+        problems.append(f"why_open must be one of {'|'.join(DECISION_WHY_OPEN)}")
+    if entry.get("status") and entry["status"] not in DECISION_STATUSES:
+        problems.append(f"status must be one of {'|'.join(DECISION_STATUSES)}")
+    evidence = entry.get("evidence")
+    if evidence is not None and (not isinstance(evidence, list) or not all(isinstance(item, str) and item.strip() for item in evidence)):
+        problems.append("evidence must be a list of non-empty strings")
+    options = entry.get("options")
+    if options is not None:
+        if not isinstance(options, list) or len(options) < 2:
+            problems.append("options must be a list with at least two entries")
+        else:
+            for index, option in enumerate(options):
+                if not isinstance(option, dict) or not option.get("label") or not option.get("implication"):
+                    problems.append(f"option {index} needs a label and an implication")
+    if entry.get("status") in ("decided", "deferred") and not entry.get("decision"):
+        problems.append("a decided or deferred entry needs a decision")
+    return problems
+
+
 def init_run(args: argparse.Namespace) -> int:
     if args.max_questions < 1:
         raise SystemExit("--max-questions must be >= 1")
     workspace_id = resolve_workspace_id(args)
+    tracker, output_dir = resolve_output(args)
     task_text = read_text(Path(args.task_file)) if args.task_file else args.task
     task_text = task_text.strip()
     if not task_text:
@@ -148,7 +245,8 @@ def init_run(args: argparse.Namespace) -> int:
         "task_file": "task.md",
         "slug": slug,
         "max_questions": args.max_questions,
-        "output_dir": args.output_dir,
+        "tracker": str(tracker) if tracker else None,
+        "output_dir": str(output_dir),
         "lanes": {name: dict(config) for name, config in LANES.items()},
         "chain": ["research", "finalize"],
         "worker_wait_policy": {
@@ -243,6 +341,60 @@ def complete_run(args: argparse.Namespace) -> int:
         run_dir / "events.jsonl",
         {"time": now, "type": "run.completed", "message": args.message, "data": data},
     )
+    return 0
+
+
+def record_decision(args: argparse.Namespace) -> int:
+    """Write one decision outcome into the artifact JSON and log it.
+
+    The artifact pair is written before the walkthrough, so this edits a finished file:
+    id must exist, and the entry must still validate afterwards.
+    """
+    artifact_path = Path(args.artifact)
+    artifact = read_json(artifact_path)
+    decisions = artifact.get("open_decisions")
+    if not isinstance(decisions, list):
+        raise SystemExit(f"{artifact_path} has no open_decisions list")
+    entry = next((item for item in decisions if isinstance(item, dict) and item.get("id") == args.id), None)
+    if entry is None:
+        known = ", ".join(str(item.get("id")) for item in decisions if isinstance(item, dict)) or "none"
+        raise SystemExit(f"No decision {args.id} in {artifact_path} (known ids: {known})")
+    now = utc_now()
+    entry["status"] = args.status
+    entry["decision"] = args.decision
+    entry["decided_at"] = now
+    problems = validate_decision(entry)
+    if problems:
+        raise SystemExit(f"Decision {args.id} violates the schema: {'; '.join(problems)}")
+    write_json(artifact_path, artifact)
+    append_jsonl(
+        Path(args.run_dir) / "events.jsonl",
+        {
+            "time": now,
+            "type": "grill.decision_recorded",
+            "message": f"{args.id}: {args.status}",
+            "data": {"id": args.id, "status": args.status, "decision": args.decision, "artifact": str(artifact_path)},
+        },
+    )
+    print(f"{args.id} {args.status}")
+    return 0
+
+
+def print_pending_decisions(args: argparse.Namespace) -> int:
+    """Report unresolved decisions of the newest artifact, for the resume offer at session start."""
+    output_dir = Path(args.output_dir)
+    artifacts = sorted(output_dir.glob("*.json"), key=lambda path: (path.stat().st_mtime, path.name))
+    if not artifacts:
+        print("artifact=none pending=none")
+        return 0
+    newest = artifacts[-1]
+    decisions = read_json(newest).get("open_decisions") or []
+    unresolved = [
+        item["id"]
+        for item in decisions
+        if isinstance(item, dict) and item.get("status") in ("open", "deferred")
+    ]
+    print(f"artifact={newest} pending={','.join(unresolved) if unresolved else 'none'}")
     return 0
 
 

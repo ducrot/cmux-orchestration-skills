@@ -1,6 +1,6 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - one decision-level question per round, four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions written to grill-sessions Markdown+JSON, assumptions review, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - one decision-level question per round, four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
@@ -35,7 +35,7 @@ matters and attacks the open decisions behind them instead.
 - The orchestrator never edits product code and never performs the research itself. It may
   write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, run logs, prompts,
   gate decisions, snapshots, synthesis files, and the final artifact pair in the output
-  directory (`grill-sessions/` by default).
+  directory (`<tracker>/grilling/` by default, see Artifact Location).
 - Research lanes are strictly read-only towards the repository: no file edits, no
   state-changing commands. The single file a lane may write is its own report handoff path
   under the run directory — report capture is explicitly delegated to the lanes because four
@@ -263,6 +263,24 @@ one already finished, and the watcher correctly keeps waiting either way. Only
 - Never close a lane pane while its report is pending, and never send the next round while
   any report of the current round is outstanding.
 
+## Artifact Location
+
+The artifact pair lands next to the tracker it belongs to, not in a directory of its own at
+the repo root. `run_state.py init` resolves the location once and records it in `state.json`
+(`tracker`, `output_dir`); every later step reads it from there:
+
+| Input                            | Output directory        |
+|----------------------------------|-------------------------|
+| `--tracker .scratch/<tracker>`   | `.scratch/<tracker>/grilling/` |
+| nothing, exactly one `.scratch/*/issues/` | that tracker's `grilling/` |
+| nothing, several such trackers   | hard stop — ask the human which tracker, pass `--tracker` |
+| nothing, no tracker at all       | `.scratch/grilling/`    |
+| `--output-dir <path>`            | `<path>`, verbatim      |
+
+Autodetection is a convenience, never a guess: two trackers make the script stop rather than
+scatter artifacts. Grilling a free-standing plan with no tracker stays possible through the
+fallback, and `--output-dir` remains the explicit override that skips detection entirely.
+
 ## Finalize and Artifact
 
 When the loop ends cleanly (`max-questions` or `griller-done`):
@@ -270,16 +288,19 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
 1. Distill the **defined assumptions** from all round syntheses: concrete, decision-ready
    statements a plan can build on — each traceable to Q&A rounds, none invented beyond the
    research. Record `grill.assumptions` with the count.
-2. Write the artifact pair to the output directory (default `grill-sessions/`, configured at
-   init):
-   - `grill-sessions/<slug>-<timestamp>.md` — human-readable protocol in the established
+2. Distill the **open decisions** in the same step, while every round is still present (see
+   Open Decisions below). Record `grill.open_decisions` with the count.
+3. Write the artifact pair to the output directory from `state.json`:
+   - `<output-dir>/<slug>-<timestamp>.md` — human-readable protocol in the established
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
      `## Q&A` (per round: question, Antwort, Confidence, Quellen, Reasoning, plus the four
-     lane findings in a collapsible block), `## Definierte Annahmen`, and — when any drift
-     was self-resolved — `## Prämissen-Korrekturen` listing each small-factual drift and its
-     resolution. Keep this heading vocabulary stable so grill-session artifacts stay
-     comparable across sessions.
-   - `grill-sessions/<slug>-<timestamp>.json` — machine-readable result assembled from the
+     lane findings in a collapsible block), `## Definierte Annahmen`, `## Entscheidungen`
+     (one block per open decision: Frage, Kontext, Belege, Optionen mit Implikation,
+     Empfehlung, and its Ausgang once decided), and — when any drift was self-resolved —
+     `## Prämissen-Korrekturen` listing each small-factual drift and its resolution. Keep
+     this heading vocabulary stable so grill-session artifacts stay comparable across
+     sessions; `## Entscheidungen` is a top-level heading, never an improvised variant.
+   - `<output-dir>/<slug>-<timestamp>.json` — machine-readable result assembled from the
      `synthesis/round-*.json` files:
 
    ```json
@@ -292,17 +313,46 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
      "stopReason": "griller-done",
      "qa": ["... the synthesis objects, in round order ..."],
      "assumptions": ["..."],
-     "markdownPath": "grill-sessions/<slug>-<timestamp>.md",
-     "jsonPath": "grill-sessions/<slug>-<timestamp>.json"
+     "open_decisions": ["... see Open Decisions ..."],
+     "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
+     "jsonPath": "<output-dir>/<slug>-<timestamp>.json"
    }
    ```
 
    The JSON schema is deliberately stable: the same top-level fields and one findings entry
    per lane in every session, so downstream consumers can build on it.
-3. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
+4. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
    `run_state.py complete --data '{"stop_reason": ..., "markdown": ..., "json": ...}'`.
-4. Close the four lane panes after their last reports and the gates are documented; record
+5. Close the four lane panes after their last reports and the gates are documented; record
    `pane.closed` per lane.
+
+The artifact pair is written **before** the walkthrough with the human, while every decision
+still carries `"status": "open"`. The run is technically finished at that point, so nothing
+is lost if the human never returns.
+
+### Open Decisions
+
+An **assumption** is settled. An **open decision** is a fork the research deliberately cannot
+close: product taste (`product`), a deviation from a written specification
+(`spec-deviation`), or a genuine tie in the evidence (`tie`). Decided points never migrate
+into the assumptions — they stay their own list with a cross-reference, so it remains visible
+what was researched and what a human decided.
+
+Each entry in `open_decisions`:
+
+```json
+{ "id": "D1", "question": "…", "why_open": "product|spec-deviation|tie",
+  "context": "3-6 Sätze: was heute im Code/Issue steht, was die Recherche fand, was auf dem Spiel steht",
+  "evidence": ["Runde 2 — Wortlaut", "Project.php:411-414", "ISSUE-013 AC2"],
+  "options": [{"label": "…", "implication": "…", "preview": "optional, Monospace-Block"}],
+  "recommendation": "…", "rationale": "…",
+  "status": "open|decided|deferred", "decision": "…", "decided_at": "…" }
+```
+
+Write `context`, `evidence`, `options`, `recommendation` and `rationale` **during finalize**,
+not later when asking. At finalize all rounds are present; at asking time they are not, and
+questions distilled then come out thin and unusable. This is the whole point of modelling
+decisions as data instead of prose.
 
 ## Assumptions Review
 
@@ -314,9 +364,49 @@ items. The review never blocks: present it and stop; the decision may stay open 
 human responds. Do not draft tracker issues from assumptions — handing results to
 `cmux-issue-chain` is a human planning step, not part of this skill.
 
-Then propose a commit for the artifact pair as a `commit.proposed` event: the exact file
-list (the two artifact files; anything else is a ride-along and excluded) plus a draft
-commit message (English, what + why). The human reviews, commits, and pushes. Never run
+## Decision Walkthrough
+
+After the assumptions are presented, walk the human through the open decisions — one at a
+time, in id order. The order of the closing steps is fixed: `complete` → assumptions
+(unchanged, non-blocking, in one go) → decision walkthrough → update both artifacts →
+commit proposal.
+
+- **One decision per `AskUserQuestion` call.** Never bundle. The points depend on each other
+  (a wording decision changes what the test asserts), and a context paragraph per question is
+  only readable when questions come singly.
+- **A paragraph in the chat before each question**, carrying the entry's `context` and its
+  `evidence` references. That is the high-bandwidth channel, it costs nothing, and it keeps
+  the question card itself readable.
+- **Use `preview`** wherever there is something to see: the rendered sentence per variant,
+  the markup with and without a test hook. Only possible for single-select questions.
+- The **recommendation is the first option**, labelled `(Empfohlen)`.
+- **"Später entscheiden" is a regular option in every question** → `status: "deferred"`. That
+  is the implementable form of a non-answer; `AskUserQuestion` has no timeout.
+- Questions and options in **German**, like the artifacts; this skill's own text stays
+  English.
+- Record every answer with `run_state.py decision`, which writes `status`, `decision` and
+  `decided_at` into the artifact JSON and emits `grill.decision_recorded`. Then update the
+  `## Entscheidungen` block in the Markdown with the same outcome.
+
+### Resuming an unfinished walkthrough
+
+When the skill is invoked in a workspace whose newest artifact still carries `open` or
+`deferred` decisions, offer to finish that walkthrough first, before starting a new session.
+Check it at session start:
+
+```bash
+python3 scripts/run_state.py pending-decisions --output-dir .scratch/<tracker>/grilling
+```
+
+This is the only handling of "the human walked away" — at the next contact, not on a clock.
+
+## Commit Proposal
+
+Then — **always**, and **always after** the walkthrough — propose a commit for the artifact
+pair as a `commit.proposed` event: the exact file list (the two artifact files; anything else
+is a ride-along and excluded) plus a draft commit message (English, what + why). Name
+explicitly which decisions are being committed unresolved (`open` or `deferred`), so the
+human sees what is still outstanding. The human reviews, commits, and pushes. Never run
 `git push`.
 
 ## CMUX Control
@@ -403,8 +493,9 @@ inserts `--workspace <pinned>` into any cmux command. Avoid focus-changing comma
 
 Session start:
 
-1. `run_state.py init` with the task; render the four session prompts with
-   `render_prompt.py session`.
+1. Check the previous session first (`run_state.py pending-decisions`, see Resuming an
+   unfinished walkthrough); then `run_state.py init` with the task, and render the four
+   session prompts with `render_prompt.py session`.
 2. Launch the four lanes one after another with `pane_ctl.py launch`, each split anchored to
    the previously launched lane (`--anchor <previous-lane-surface-id>`); the first lane
    may split from the orchestrator pane. A 2×2 arrangement next to the orchestrator pane
@@ -455,6 +546,8 @@ consistently within a run.
 | `grill.done`                                           | Griller ends the loop before the cap; data `{round, reason}`                                                                       |
 | `grill.assumptions`                                    | Defined assumptions distilled; data `{count}`                                                                                      |
 | `grill.assumptions_triaged`                            | Per-assumption human review outcome                                                                                                |
+| `grill.open_decisions`                                 | Open decisions distilled at finalize; data `{count}`                                                                               |
+| `grill.decision_recorded`                              | One walkthrough answer; written by `run_state.py decision`                                                                         |
 | `commit.proposed`                                      | Artifact commit proposal handed to the human after `complete`                                                                      |
 | `orchestrator.halted`, `orchestrator.unverified_input` | Orchestrator-side anomalies                                                                                                        |
 
@@ -469,7 +562,18 @@ root, so run state never reaches git in any target repo:
 
 ```bash
 python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-questions 10
-python3 scripts/run_state.py init --task-file path/to/task.md --run-id grill-example
+python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
+```
+
+`init` also resolves the artifact location (Artifact Location): `--tracker` names it,
+omitting it autodetects a single `.scratch/*/issues/`, `--output-dir` overrides both.
+
+Record a decision outcome during the walkthrough, and check for an unfinished one at session
+start:
+
+```bash
+python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
+python3 scripts/run_state.py pending-decisions --output-dir .scratch/<tracker>/grilling
 ```
 
 Render prompts. Session prompts once per lane at launch, round prompts per question:
@@ -506,13 +610,14 @@ Control lane panes with `pane_ctl.py` (verbs and rules in CMUX Control): `worksp
 the pinned id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/`close` are
 the lifecycle verbs.
 
-Run the regression tests after touching `parse_research_report.py`, `await_reports.py`, or
-`pane_ctl.py`:
+Run the regression tests after touching `parse_research_report.py`, `await_reports.py`,
+`pane_ctl.py`, or `run_state.py`:
 
 ```bash
 python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_run_state.py
 ```
 
 ## Smoke Test
@@ -524,7 +629,8 @@ whole block must be safe to run twice in a row (`init` is idempotent):
 python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
-python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-questions 2
+python3 scripts/test_run_state.py
+python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-questions 2 --output-dir .scratch/grilling
 python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/smoke-grill --lane codebase
 python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/smoke-grill --lane web --round 1 --question "Which HTTP client does the frontend use?"
 python3 scripts/parse_research_report.py references/sample-research-report.md --json
