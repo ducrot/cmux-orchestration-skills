@@ -4,7 +4,7 @@
 Designed to run under the harness Monitor tool (persistent), so the orchestrator is
 re-invoked deterministically when the watch ends. The report file is ground truth;
 the pane state only matters when it is affirmatively dead. No screen-content
-heuristics: a static-looking pane (e.g. a worker at an approval prompt) is alive.
+heuristics: a static-looking pane (a worker mid-thought, or one already finished) is alive.
 """
 
 from __future__ import annotations

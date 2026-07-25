@@ -373,10 +373,10 @@ Two limits survive these flags, by design. `.git`, `.agents`, and `.codex` stay 
 writable workspace; the read-only git commands this skill uses (`status --short`, `diff`, `diff --stat`,
 `branch --show-current`) work fine, and workers draft commit messages rather than committing. Overriding the
 `.git` carve-out needs an absolute per-project path, so do not attempt it here. With `on-request` plus
-`auto_review`, escalation requests are normally decided by the automated reviewer, but a worker can still
-stop at a human prompt when the reviewer's circuit breaker trips after repeated denials — a worker sitting
-at that prompt looks idle but is not, so keep reading pane content for pending prompts. If the same denial
-recurs in practice, capture its exact wording and report it rather than widening permissions ad hoc.
+`auto_review`, escalation requests are decided by the automated reviewer, not handed to the human, so a
+quiet worker pane is one still working or already done — the report file settles which, never the screen.
+If the same denial recurs in practice, capture its exact wording and report it rather than widening
+permissions ad hoc.
 
 `pane_ctl.py launch` labels every worker pane at creation with the deterministic role labels — no
 separate `rename-tab` step:

@@ -7,7 +7,7 @@ a round synthesizes only when all four lanes delivered, so a per-lane wake-up wo
 mostly mean "keep waiting". The report files are ground truth; a pane's state only
 matters while its report is still missing — a lane whose pane exits right after writing
 its report has delivered, not died. No screen-content heuristics: a static-looking pane
-(e.g. a Codex lane at its write-confirmation prompt) is alive.
+(a lane mid-thought, or one already finished) is alive.
 """
 
 from __future__ import annotations
