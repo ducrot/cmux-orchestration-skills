@@ -29,7 +29,7 @@ An autonomous version of "grill me about this plan before I build it". You hand 
 3. A **synthesizer** consolidates the four gate-parsed reports into an answer with confidence and sources.
 4. After the question budget is spent, the session distills everything into **defined assumptions**, written as a Markdown + JSON artifact pair for human review.
 
-The result is a reviewed set of assumptions grounded in your actual repository and current documentation, produced while you were away, with every research step visible and auditable. For interactive grilling where a human answers the questions, use a separate interactive grilling skill; it is not bundled here.
+The result is a reviewed set of assumptions grounded in your actual repository and current documentation, produced while you were away, with every research step visible and auditable. The grilling prompt is based on [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me) by Matt Pocock. For interactive grilling where a human answers the questions, use a separate interactive grilling skill; it is not bundled here.
 
 ### cmux-issue-chain
 
