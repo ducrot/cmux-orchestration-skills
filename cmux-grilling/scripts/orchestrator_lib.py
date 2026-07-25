@@ -24,6 +24,31 @@ LANES = {
 # Minimum wait per lane and round, uniform across lanes (see SKILL.md, Lane Wait Policy).
 LANE_WAIT_MINUTES = 15
 
+# cmux only silences notifications from panes it considers managed subagents
+# (`automation.suppressSubagentNotifications`, on by default). It infers that from process
+# ancestry, and a lane started by `cmux new-split` counts as a top-level agent — so without
+# this marker every turn end, idle reminder and approval prompt of all four lanes raises a
+# desktop banner with sound while the human is elsewhere. Undocumented cmux internal; if it
+# ever stops working the only symptom is that the noise returns.
+SUBAGENT_MARKER_ENV = "CMUX_AGENT_MANAGED_SUBAGENT=1"
+
+# Fixed startup commands per worker binary; policy, not a per-run choice (SKILL.md, CMUX
+# Control, explains what each Codex flag buys). Plain binaries, never the teams wrappers.
+WORKER_COMMANDS = {
+    "claude": "claude",
+    "codex": (
+        "codex -s workspace-write"
+        " --ask-for-approval on-request"
+        " -c approvals_reviewer=auto_review"
+        " -c check_for_update_on_startup=false"
+    ),
+}
+
+
+def launch_command(lane: str) -> str:
+    """Shell line that starts a lane's agent, marked so its pane stays notification-quiet."""
+    return f"{SUBAGENT_MARKER_ENV} {WORKER_COMMANDS[LANES[lane]['worker']]}"
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()

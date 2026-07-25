@@ -151,6 +151,36 @@ class Launch(PaneCtlCase):
         self.assertEqual(proc.returncode, 2)
 
 
+class StartAgent(PaneCtlCase):
+    def test_sends_marked_launch_command(self):
+        proc = self.run_ctl(
+            "start-agent", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--role", "implement", "--pass", "1",
+            "--settle-seconds", "0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        verbs = [call[0] for call in self.cmux_calls()]
+        self.assertEqual(verbs, ["send", "send-key", "read-screen"])
+        command = self.cmux_calls()[0][-1]
+        # The marker is what keeps the worker pane out of the human's notification centre.
+        self.assertTrue(command.startswith("CMUX_AGENT_MANAGED_SUBAGENT=1 codex "), command)
+        self.assertIn("network_access=true", command)
+
+        events = self.events()
+        self.assertEqual([event["type"] for event in events], ["worker.launch_sent"])
+        self.assertEqual(events[0]["data"]["command"], command)
+
+    def test_claude_role_gets_the_marker_too(self):
+        proc = self.run_ctl(
+            "start-agent", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--role", "review", "--pass", "1",
+            "--settle-seconds", "0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.cmux_calls()[0][-1], "CMUX_AGENT_MANAGED_SUBAGENT=1 claude")
+
+
 class Deliver(PaneCtlCase):
     def test_send_enter_readscreen_in_order(self):
         proc = self.run_ctl(

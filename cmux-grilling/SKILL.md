@@ -250,10 +250,10 @@ the line alone.
 While a watcher is armed it is the sole emitter of `worker.waiting`; the orchestrator does not
 hand-write waiting events in parallel. Silence is never success — only the report files are
 ground truth, never status words on screen (the Claude TUI shows ever-changing gerunds, Codex
-shows `Working`). A static-looking pane may be a Codex lane at an approval prompt the
-auto-reviewer handed back to the human (circuit breaker); that pane is alive, and the watcher
-correctly keeps waiting. Only `surface-health`
-reporting the surface gone counts as dead.
+shows `Working`). A static-looking pane is not a dead one: Codex lanes route approvals to
+their reviewer agent rather than to the human, so a quiet pane is a lane still thinking or
+one already finished, and the watcher correctly keeps waiting either way. Only
+`surface-health` reporting the surface gone counts as dead.
 
 - Exactly one deadline extension per round; record its reason as a `worker.waiting` or
   `decision.human` event before re-arming.
@@ -322,15 +322,25 @@ commit message (English, what + why). The human reviews, commits, and pushes. Ne
 ## CMUX Control
 
 Prefer current CLI syntax discovered from `cmux --help` before launching lanes. Lanes must
-be visible in CMUX panes. Launch commands:
+be visible in CMUX panes. Never type a launch command into a lane pane by hand:
+`pane_ctl.py start-agent` owns it, so every lane starts with the same flags and the same
+notification marker. It sends, per lane worker:
 
 ```bash
-claude                        # codebase, docs, web
-codex -s workspace-write \
+CMUX_AGENT_MANAGED_SUBAGENT=1 claude                        # codebase, docs, web
+CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false   # codebase2
+  -c check_for_update_on_startup=false                      # codebase2
 ```
+
+`CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux
+keys its notification suppression on. Without it a session fires a desktop banner with sound
+for every turn end, idle reminder and approval prompt across four lanes, and the human ends
+up muting cmux entirely. The lane still appears in the Feed and in `surface-health`; only the
+banners are gone. Suppression follows `automation.suppressSubagentNotifications` (on by
+default), and the variable is a cmux internal, so the failure mode is noise, never a
+broken run.
 
 Use plain `claude` / `codex`, not `cmux claude-teams` / `cmux codex-teams`. The teams
 wrappers open lane-spawned subagents as extra cmux panes, and those splits anchor to the
@@ -339,8 +349,8 @@ workspace, subagent panes land there. Plain launches keep subagents internal to 
 own TUI; the lane pane stays the visible unit, and cmux pane integration (hooks,
 notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
 
-Launch the Codex lane with these flags every time; do not ask the human for startup options at
-session start. Each flag earns its place:
+The Codex flags are fixed policy; do not ask the human for startup options at session start.
+Each flag earns its place:
 
 - `-s workspace-write` lets the lane write its report handoff file without a per-write
   confirmation (in the first pilot, a lane stuck at that prompt cost most of a round).
@@ -355,11 +365,10 @@ session start. Each flag earns its place:
 
 Do not add `network_access` or `writable_roots` here — the codebase2 lane is read-only
 research with no web and no containers; those grants belong to `cmux-issue-chain` workers.
-The launch command reaches the pane via `pane_ctl.py deliver`, whose `worker.prompt_sent`
-event records it verbatim. A lane can still stop at a human
-prompt when the auto-reviewer's circuit breaker trips after repeated denials — a lane sitting
-at that prompt looks idle but is not, so during waits check the pane screen for a pending
-prompt before judging a Codex lane stalled.
+The launch command reaches the pane via `pane_ctl.py start-agent`, whose `worker.launch_sent`
+event records it verbatim. With `approvals_reviewer=auto_review` the Codex lane decides its
+own escalations, so it does not stop at a human approval prompt; a lane that looks idle is
+either working or done, and only its report file settles which.
 
 ### Pinned workspace, deterministic pane control
 
@@ -374,6 +383,7 @@ against the focused one.
 
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --lane codebase --anchor <surface-id>
+python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --lane codebase
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --text "Read <prompt-path> ..."
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --lane codebase
 python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <surface-id> --lines 40
@@ -381,7 +391,10 @@ python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <s
 
 `launch` splits from the anchor without stealing focus, labels the pane, records
 `pane.launched` + `pane.labeled`, and prints the new surface's stable UUID — use that UUID in
-every later command; positional refs like `surface:465` shift when panes close. `deliver`
+every later command; positional refs like `surface:465` shift when panes close. `start-agent`
+sends the lane's fixed launch command (worker binary, flags and notification marker all come
+from the skill, not from the prompt), records `worker.launch_sent`, and echoes the screen.
+`deliver`
 sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
 in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
 echoes the pane screen. `close` closes the surface and records `pane.closed`. Everything else
@@ -400,7 +413,9 @@ Session start:
    `Researcher Docs`, `Researcher Web`, each suffixed `- grill-<slug>`. Optional status
    pills via `set-status` through the injector (not pane colors): Codebase `#0a84ff`,
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
-4. Send each lane its session prompt path with `pane_ctl.py deliver` ("Read
+4. Start each lane's agent with `pane_ctl.py start-agent --lane <lane>`; judge the echoed
+   screen (TUI up? trust prompt pending?) before sending it any text.
+5. Send each lane its session prompt path with `pane_ctl.py deliver` ("Read
    `.scratch/orchestrator/runs/<run-id>/prompts/session-codebase.md` - it is your standing
    contract for this session. Confirm, then wait for round prompts."). Judge the echoed
    screen, then record `worker.started`.
@@ -423,6 +438,7 @@ consistently within a run.
 | `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |
+| `worker.launch_sent`                                   | Lane agent launch command sent verbatim; written by `pane_ctl.py start-agent`                                                       |
 | `worker.prompt_sent`                                   | Text sent and submitted; written by `pane_ctl.py deliver`                                                                          |
 | `worker.started`                                       | Session prompt delivered and confirmed via read-screen — the orchestrator's judgment, after `worker.prompt_sent`                   |
 | `worker.waiting`                                       | Written by the armed round watcher only: heartbeats plus its final outcome                                                         |

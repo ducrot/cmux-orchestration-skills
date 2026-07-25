@@ -282,17 +282,26 @@ The orchestrator may still assist the human:
 
 ## CMUX Control
 
-Prefer current CLI syntax discovered from `cmux --help` before launching workers. Workers must be visible in CMUX panes. For v1 worker starts, use:
+Prefer current CLI syntax discovered from `cmux --help` before launching workers. Workers must be visible in CMUX
+panes. Never type a launch command into a worker pane by hand: `pane_ctl.py start-agent` owns it, so every worker
+starts with the same flags and the same notification marker. It sends, per role:
 
 ```bash
-codex -s workspace-write \
+CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c sandbox_workspace_write.network_access=true \
-  -c sandbox_workspace_write.writable_roots=["~/.ddev"] \
+  -c 'sandbox_workspace_write.writable_roots=["~/.ddev"]' \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false
-claude
+  -c check_for_update_on_startup=false          # implement, test
+CMUX_AGENT_MANAGED_SUBAGENT=1 claude            # simplify, review
 ```
+
+`CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux keys its notification
+suppression on. Without it every turn end, idle reminder and approval prompt of a chain raises a desktop banner with
+sound while the human is elsewhere — the point of an AFK run is that only the orchestrator interrupts. The worker
+still appears in the Feed and in `surface-health`; only the banners are gone. Suppression follows
+`automation.suppressSubagentNotifications` (on by default), and the variable is a cmux internal, so the failure mode
+is noise, never a broken run.
 
 Use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review workers — not
 `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open worker-spawned subagents as extra cmux panes, and
@@ -314,6 +323,7 @@ Three lifecycle verbs cover the error-prone multi-step sequences and record thei
 
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --anchor <prev-worker-surface-id>
+python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --text "Read <prompt-path> and report back."
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
@@ -322,6 +332,8 @@ python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --r
   per the deterministic label scheme, records `pane.launched` + `pane.labeled`, and prints the new
   surface's stable UUID — use that UUID in every later command; positional refs like `surface:465` shift
   when panes close.
+- `start-agent` sends the role's fixed launch command (worker binary, sandbox flags and notification marker
+  all come from the skill, not from the prompt), records `worker.launch_sent`, and echoes the screen.
 - `deliver` sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
   and echoes the pane screen after a short settle. Judging that screen — worker started, or sitting at an
   approval prompt — stays the orchestrator's call; record `worker.started` only after that judgment.
@@ -337,9 +349,9 @@ python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <s
 Avoid focus-changing commands unless the user explicitly asks. Store rendered
 prompts under the run directory before sending them to worker sessions.
 
-Launch Codex workers with the sandbox flags above every time. Do not ask the human for startup options at run start;
-these are the fixed defaults for this skill. The launch command reaches the pane via `pane_ctl.py deliver`, whose
-`worker.prompt_sent` event records it verbatim.
+The sandbox flags above are fixed defaults for this skill; do not ask the human for startup options at run start.
+The launch command reaches the pane via `pane_ctl.py start-agent`, whose `worker.launch_sent` event records it
+verbatim.
 
 Each flag earns its place, so keep them together:
 
@@ -407,8 +419,9 @@ Close completed worker panes promptly:
    pane — with `pane_ctl.py close` (it records `pane.closed`). Its report is already captured
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
-6. Send the prompt to the new pane with `pane_ctl.py deliver` and confirm the worker started (see the
-   send/Enter rule below).
+6. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
+   screen (TUI up? trust prompt pending?), then send the prompt with `pane_ctl.py deliver` and confirm the
+   worker started (see the send/Enter rule below).
 7. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
    and gate decisions are documented.
 
@@ -462,6 +475,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
+| `worker.launch_sent`                                     | Worker launch command sent verbatim; written by `pane_ctl.py start-agent`                                                                         |
 | `worker.prompt_sent`                                     | Text sent and submitted; written by `pane_ctl.py deliver`                                                                                        |
 | `worker.started`                                         | Prompt delivered and confirmed via read-screen — the orchestrator's judgment, after `worker.prompt_sent`                                         |
 | `worker.waiting`                                         | Watcher heartbeat while the report is pending; written by `await_report.py` while armed                                                          |
@@ -542,7 +556,7 @@ python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001
 python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "prompt delivered and confirmed via read-screen" --data '{"role":"review","pass":1,"pane_id":"<pane-id>","surface_id":"<surface-id>"}'
 ```
 
-Pane lifecycle events (`pane.launched`, `pane.labeled`, `worker.prompt_sent`, `pane.closed`) are written
+Pane lifecycle events (`pane.launched`, `pane.labeled`, `worker.launch_sent`, `worker.prompt_sent`, `pane.closed`) are written
 by `pane_ctl.py` (see CMUX Control); do not hand-write them in parallel.
 
 Record a working-tree fingerprint (at every report capture, and before any `report.integrity` claim):

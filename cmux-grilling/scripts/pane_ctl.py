@@ -7,11 +7,12 @@ focused workspace or an environment fallback. Verbs:
 
   workspace  print the pinned workspace id
   cmux       generic passthrough that injects --workspace into any cmux command
-  launch     new-split + deterministic lane label + pane.launched/pane.labeled events
-  deliver    send + send-key enter + read-screen echo + worker.prompt_sent event
-  close      close-surface + pane.closed event
+  launch      new-split + deterministic lane label + pane.launched/pane.labeled events
+  start-agent send the lane's fixed launch command + worker.launch_sent event
+  deliver     send + send-key enter + read-screen echo + worker.prompt_sent event
+  close       close-surface + pane.closed event
 
-`launch`/`deliver`/`close` are mechanical lifecycle verbs only. Judging what a
+`launch`/`start-agent`/`deliver`/`close` are mechanical lifecycle verbs only. Judging what a
 lane's screen means (started? stuck at a prompt?) stays with the orchestrator.
 """
 
@@ -25,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import LANES, append_jsonl, read_json, utc_now
+from orchestrator_lib import LANES, append_jsonl, launch_command, read_json, utc_now
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--lane", required=True, choices=sorted(LANES))
     launch.add_argument("--anchor", required=True, help="Surface id to split from (previous lane pane)")
     launch.add_argument("--direction", default="right", choices=["left", "right", "up", "down"])
+
+    start = subparsers.add_parser(
+        "start-agent",
+        help="Start the lane's agent in its pane with the skill's fixed launch command",
+    )
+    start.add_argument("--run-dir", required=True)
+    start.add_argument("--surface", required=True)
+    start.add_argument("--lane", required=True, choices=sorted(LANES))
+    start.add_argument("--settle-seconds", type=float, default=8.0, help="Wait before read-screen")
+    start.add_argument("--read-lines", type=int, default=40)
 
     deliver = subparsers.add_parser("deliver", help="Send text to a pane, submit with Enter, echo the screen")
     deliver.add_argument("--run-dir", required=True)
@@ -175,15 +186,40 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_deliver(args: argparse.Namespace) -> int:
+def send_submit_echo(
+    args: argparse.Namespace, text: str, event_type: str, message: str, data: dict
+) -> None:
     run_dir = Path(args.run_dir)
-    workspace_id = pinned_workspace(run_dir)
-    target = ["--workspace", workspace_id, "--surface", args.surface]
-    run_cmux(args, ["send", *target, args.text])
+    target = ["--workspace", pinned_workspace(run_dir), "--surface", args.surface]
+    run_cmux(args, ["send", *target, text])
     # A trailing \n does not submit in the Codex/Claude TUIs; Enter must be its own key event.
     run_cmux(args, ["send-key", *target, "enter"])
-    record_event(
-        run_dir,
+    record_event(run_dir, event_type, message, data)
+    time.sleep(args.settle_seconds)
+    screen = run_cmux(args, ["read-screen", *target, "--lines", str(args.read_lines)])
+    print(screen.stdout, end="")
+
+
+def cmd_start_agent(args: argparse.Namespace) -> int:
+    command = launch_command(args.lane)
+    send_submit_echo(
+        args,
+        command,
+        "worker.launch_sent",
+        "launch command sent; started-confirmation is the orchestrator's call",
+        {
+            "lane": args.lane,
+            "surface_id": args.surface,
+            "command": command,
+        },
+    )
+    return 0
+
+
+def cmd_deliver(args: argparse.Namespace) -> int:
+    send_submit_echo(
+        args,
+        args.text,
         "worker.prompt_sent",
         "text sent and submitted; started-confirmation is the orchestrator's call",
         {
@@ -192,9 +228,6 @@ def cmd_deliver(args: argparse.Namespace) -> int:
             "text": args.text,
         },
     )
-    time.sleep(args.settle_seconds)
-    screen = run_cmux(args, ["read-screen", *target, "--lines", str(args.read_lines)])
-    print(screen.stdout, end="")
     return 0
 
 
@@ -215,6 +248,7 @@ COMMANDS = {
     "workspace": cmd_workspace,
     "cmux": cmd_cmux,
     "launch": cmd_launch,
+    "start-agent": cmd_start_agent,
     "deliver": cmd_deliver,
     "close": cmd_close,
 }
