@@ -1,12 +1,12 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a Vorhaben without user answers - one decision-level question per round, four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions written to grill-sessions Markdown+JSON, assumptions review, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - one decision-level question per round, four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions written to grill-sessions Markdown+JSON, assumptions review, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
 
 Use this skill to grill a task autonomously: the orchestrator asks decision-level questions
-about a Vorhaben, four persistent visible research lanes answer each question against the
+about a plan, four persistent visible research lanes answer each question against the
 current repository and the web, and the session ends with distilled defined assumptions the
 human reviews. The orchestrator is a coordinator plus judgment role: it formulates questions
 (griller), consolidates lane reports (synthesizer), and distills assumptions (finalize), but
@@ -26,7 +26,7 @@ distinction still applies, there is just no interactive counterpart to invoke.
 - `cmux-grilling` (this skill): research lanes answer; the **user is not asked during the
   run** and reviews the defined assumptions at the end.
 
-The task input is a Vorhaben (what should be built) plus its already-fixed constraints.
+The task input is a plan (what should be built) plus its already-fixed constraints.
 The constraints belong in the task so the griller does not waste questions on decided
 matters and attacks the open decisions behind them instead.
 
@@ -452,7 +452,7 @@ for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into
 root, so run state never reaches git in any target repo:
 
 ```bash
-python3 scripts/run_state.py init --task "Vorhaben plus fixed constraints" --max-questions 10
+python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-questions 10
 python3 scripts/run_state.py init --task-file path/to/task.md --run-id grill-example
 ```
 

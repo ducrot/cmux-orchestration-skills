@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = subparsers.add_parser("init", help="Create run directory and initial state")
     task_source = init.add_mutually_exclusive_group(required=True)
-    task_source.add_argument("--task", help="Task text: the Vorhaben plus its fixed constraints")
+    task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
     init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
