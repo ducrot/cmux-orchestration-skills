@@ -265,23 +265,24 @@ one already finished, and the watcher correctly keeps waiting either way. Only
 
 ## Artifact Location
 
-The artifact pair lands next to the tracker it belongs to, not in a directory of its own at
-the repo root. `run_state.py init` resolves the location once and records it in `state.json`
-as `output_dir` (with the `tracker` it came from); every later step of the run reads it from
-there. Autodetection is a convenience, never a guess:
+The artifact pair lands next to the tracker it belongs to. `run_state.py init` resolves the
+location once and records it in `state.json` as `output_dir` (with the `tracker` it came
+from); every later step of the run reads it from there. `pending-decisions` — which runs
+before `init` — resolves by the same table. First match wins:
 
 | Input                            | Output directory        |
 |----------------------------------|-------------------------|
+| `--output-dir <path>`            | `<path>`, verbatim      |
 | `--tracker .scratch/<tracker>`   | `.scratch/<tracker>/grilling/` |
 | nothing, exactly one `.scratch/*/issues/` | that tracker's `grilling/` |
 | nothing, several such trackers   | hard stop — ask the human which tracker, pass `--tracker` |
 | nothing, no tracker at all       | `.scratch/grilling/`    |
-| `--output-dir <path>`            | `<path>`, verbatim      |
-
-`run_state.py pending-decisions` resolves its directory by the same table, so the resume
-check at session start — which runs before `init` — never reconstructs the path by hand.
 
 ## Finalize and Artifact
+
+The order of the closing steps is fixed: finalize (below) → assumptions review → decision
+walkthrough → update both artifacts → commit proposal. The sections after this one expand
+the steps past finalize.
 
 When the loop ends cleanly (`max-questions` or `griller-done`):
 
@@ -295,11 +296,11 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
      `## Q&A` (per round: question, Antwort, Confidence, Quellen, Reasoning, plus the four
      lane findings in a collapsible block), `## Definierte Annahmen`, `## Entscheidungen`
-     (one block per open decision: Frage, Kontext, Belege, Optionen mit Implikation,
-     Empfehlung, and its Ausgang once decided), and — when any drift was self-resolved —
-     `## Prämissen-Korrekturen` listing each small-factual drift and its resolution. Keep
-     this heading vocabulary stable so grill-session artifacts stay comparable across
-     sessions; `## Entscheidungen` is a top-level heading, never an improvised variant.
+     (one top-level block per open decision, rendering the `open_decisions` fields in German —
+     Frage, Kontext, Belege, Optionen mit Implikation, Empfehlung — plus its Ausgang once
+     decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
+     each small-factual drift and its resolution. Keep this heading vocabulary stable so
+     grill-session artifacts stay comparable across sessions.
    - `<output-dir>/<slug>-<timestamp>.json` — machine-readable result assembled from the
      `synthesis/round-*.json` files:
 
@@ -322,8 +323,8 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
    The JSON schema is deliberately stable: the same top-level fields and one findings entry
    per lane in every session, so downstream consumers can build on it.
 4. Validate what was just written: `run_state.py validate-artifact --artifact <json>`. It
-   checks every `open_decisions` entry against the schema here, where the rounds are still in
-   context and a thin entry can still be repaired.
+   checks every `open_decisions` entry against the schema here, so a thin entry is repaired
+   while the rounds are still in context.
 5. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
    `run_state.py complete --data '{"stop_reason": ..., "markdown": ..., "json": ...}'`.
 6. Close the four lane panes after their last reports and the gates are documented; record
@@ -338,8 +339,7 @@ is lost if the human never returns.
 An **assumption** is settled. An **open decision** is a fork the research deliberately cannot
 close: product taste (`product`), a deviation from a written specification
 (`spec-deviation`), or a genuine tie in the evidence (`tie`). Decided points never migrate
-into the assumptions — they stay their own list with a cross-reference, so it remains visible
-what was researched and what a human decided.
+into the assumptions — they stay their own list with a cross-reference.
 
 Each entry in `open_decisions`:
 
@@ -353,9 +353,8 @@ Each entry in `open_decisions`:
 ```
 
 Write `context`, `evidence`, `options`, `recommendation` and `rationale` **during finalize**,
-not later when asking. At finalize all rounds are present; at asking time they are not, and
-questions distilled then come out thin and unusable. This is the whole point of modelling
-decisions as data instead of prose.
+while all rounds are still present — distilled later, at asking time, they come out thin and
+unusable.
 
 ## Assumptions Review
 
@@ -370,27 +369,24 @@ human responds. Do not draft tracker issues from assumptions — handing results
 ## Decision Walkthrough
 
 After the assumptions are presented, walk the human through the open decisions — one at a
-time, in id order. The order of the closing steps is fixed: `complete` → assumptions
-(unchanged, non-blocking, in one go) → decision walkthrough → update both artifacts →
-commit proposal.
+time, in id order.
 
-- **One decision per `AskUserQuestion` call.** Never bundle. The points depend on each other
-  (a wording decision changes what the test asserts), and a context paragraph per question is
-  only readable when questions come singly.
-- **A paragraph in the chat before each question**, carrying the entry's `context` and its
-  `evidence` references. That is the high-bandwidth channel, it costs nothing, and it keeps
-  the question card itself readable.
+- **One decision per `AskUserQuestion` call** — the points depend on each other (a wording
+  decision changes what the test asserts), and each needs its own context paragraph.
+- **Post the entry's `context` and `evidence` as a chat paragraph before each question**, so
+  the question card itself stays readable.
 - **Use `preview`** wherever there is something to see: the rendered sentence per variant,
   the markup with and without a test hook. Only possible for single-select questions.
 - The **recommendation is the first option**, labelled `(Empfohlen)`.
-- **"Später entscheiden" is a regular option in every question** → `status: "deferred"`. That
-  is the implementable form of a non-answer; `AskUserQuestion` has no timeout.
+- **"Später entscheiden" is a regular option in every question** → `status: "deferred"`;
+  `AskUserQuestion` has no timeout.
 - Questions and options in **German**, like the artifacts; this skill's own text stays
   English.
 - Record every answer with `run_state.py decision`, which writes `status`, `decision` and
   `decided_at` into the artifact JSON and emits `grill.decision_recorded`. It prints the
-  `Ausgang` line back; transcribe that into the `## Entscheidungen` block of the Markdown, so
-  both halves of the pair carry the same outcome.
+  `Ausgang` line back; collect those lines and transcribe them into the `## Entscheidungen`
+  blocks of the Markdown in one pass after the last question, so both halves of the pair
+  carry the same outcome.
 
 ### Resuming an unfinished walkthrough
 
@@ -401,15 +397,14 @@ python3 scripts/run_state.py pending-decisions
 ```
 
 It prints the newest artifact's `open` and `deferred` ids separately. Any `open` id means the
-walkthrough was cut short: offer to finish it before starting a new session. `deferred` is a
-decision the human already made, so it is reported for completeness, not as a reason to ask
-again. This is the only handling of "the human walked away" — at the next contact, not on a
-clock.
+walkthrough was cut short: offer to finish it before starting a new session. `deferred` ids
+are reported for completeness — do not re-ask them. This is the only handling of "the human
+walked away": at the next contact, not on a clock.
 
 ## Commit Proposal
 
-Then — **always**, and **always after** the walkthrough — propose a commit for the artifact
-pair as a `commit.proposed` event: the exact file list (the two artifact files; anything else
+Always propose a commit for the artifact pair as a `commit.proposed` event: the exact file
+list (the two artifact files; anything else
 is a ride-along and excluded) plus a draft commit message (English, what + why). Name
 explicitly which decisions are being committed unresolved (`open` or `deferred`), so the
 human sees what is still outstanding. The human reviews, commits, and pushes. Never run
@@ -574,7 +569,7 @@ python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch
 `init` also resolves the artifact location; the precedence is in Artifact Location.
 
 Validate the artifact's decisions at finalize, record one outcome during the walkthrough, and
-check for an unfinished walkthrough at session start (same directory resolution as `init`):
+check for an unfinished walkthrough at session start (see Resuming an unfinished walkthrough):
 
 ```bash
 python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
