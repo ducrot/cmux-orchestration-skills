@@ -81,8 +81,10 @@ For each round `N` (1-based), in order:
 1. Formulate the question and record it: `run_state.py event --type grill.question`
    with `{"round": N, "question": "..."}`.
 2. Render the four round prompts with `render_prompt.py round` (one per lane) and send each
-   lane its prompt file path via `pane_ctl.py deliver` (send + Enter + screen echo). Judge the
-   echoed screen per lane before treating the round as started.
+   lane its prompt with `pane_ctl.py deliver --lane <lane> --kind round --prompt <path>`
+   (send + Enter + screen echo). Judge the echoed screen per lane before treating the round as
+   started; a lane that answers with a summary of the prompt and goes idle has not started (see
+   CMUX Control).
 3. Arm the round watcher (`await_reports.py` under `Monitor`) per the Lane Wait Policy before
    ending the turn. Reports land at
    `.scratch/orchestrator/runs/<run-id>/reports/round-<N>-<lane>.md`.
@@ -256,7 +258,9 @@ one already finished, and the watcher correctly keeps waiting either way. Only
 `surface-health` reporting the surface gone counts as dead.
 
 - Exactly one deadline extension per round; record its reason as a `worker.waiting` or
-  `decision.human` event before re-arming.
+  `decision.human` event before re-arming. Before spending it on a silent lane, check the
+  screen for the not-started case in CMUX Control: re-delivering a round prompt to a lane that
+  never started restarts the wait clock and is not an extension.
 - After an exhausted extension with no report, or a dead pane: record a `hitl` gate for
   `round-<N>-<lane>` and stop the session. Use `blocked` only for blockers a lane itself
   reported.
@@ -475,7 +479,7 @@ against the focused one.
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --lane codebase --anchor <surface-id>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --lane codebase
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --text "Read <prompt-path> ..."
+python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --lane codebase --kind round --prompt <prompt-path>
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --lane codebase
 python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <surface-id> --lines 40
 ```
@@ -488,9 +492,22 @@ from the skill, not from the prompt), records `worker.launch_sent`, and echoes t
 `deliver`
 sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
 in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
-echoes the pane screen. `close` closes the surface and records `pane.closed`. Everything else
+echoes the pane screen. Hand over a rendered prompt with `--prompt <path>` plus `--kind
+session|round`, never with hand-written `--text`: the wording comes from
+`orchestrator_lib.delivery_text()` and is skill policy like the launch command. `--kind`
+matters because the two prompts want opposite behavior — a session contract is adopt-and-wait,
+a round prompt is answer-now. `--text` is for follow-ups into a working lane (re-emission
+requests, clarifications). `close` closes the surface and records `pane.closed`. Everything else
 (diagnosis, `read-screen`, `set-status`, …) runs through the generic `cmux` injector, which
 inserts `--workspace <pinned>` into any cmux command. Avoid focus-changing commands.
+
+After a *round* delivery, a lane that answers with a recap of the prompt ("the prompt is ready
+to execute; I only read it") and then goes idle has not started — no `worker.started`. That is
+the Claude failure mode: the delivery line was read as a documentation request, and three of
+the four lanes are Claude. Re-deliver the same prompt with `deliver --kind round --prompt`
+(which carries the task framing), judge the screen again, and arm the round watcher from the
+re-delivery. A lane that never started does not consume the round's one deadline extension.
+The same screen after a *session* delivery is the expected outcome, not a failure.
 
 Session start:
 
@@ -507,10 +524,10 @@ Session start:
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
 4. Start each lane's agent with `pane_ctl.py start-agent --lane <lane>`; judge the echoed
    screen (TUI up? trust prompt pending?) before sending it any text.
-5. Send each lane its session prompt path with `pane_ctl.py deliver` ("Read
-   `.scratch/orchestrator/runs/<run-id>/prompts/session-codebase.md` - it is your standing
-   contract for this session. Confirm, then wait for round prompts."). Judge the echoed
-   screen, then record `worker.started`.
+5. Send each lane its session prompt with `pane_ctl.py deliver --lane <lane> --kind session
+   --prompt .scratch/orchestrator/runs/<run-id>/prompts/session-<lane>.md`. Judge the echoed
+   screen, then record `worker.started`. A lane that confirms in one line and goes idle here is
+   correct — the session prompt is a contract, not work.
 
 Lane panes stay open across rounds; they are closed only at session end, HITL stop, blocker
 stop, or run abort — after their reports and gate decisions are documented (`pane_ctl.py

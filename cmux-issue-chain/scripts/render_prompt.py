@@ -138,6 +138,9 @@ def render(
     ) if decisions else ""
     return f"""# Worker Prompt: {role} {issue_id} (pass {pass_number})
 
+This file is your task assignment, not a document to summarize. Execute it now and write your
+final report to the handoff path below.
+
 Created: {utc_now()}
 Pass: {pass_number}
 

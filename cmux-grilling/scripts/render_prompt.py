@@ -119,6 +119,9 @@ def render_session(lane: str, state: dict, run_dir: Path) -> str:
     task = read_text(run_dir / str(state["task_file"])).rstrip()
     return f"""# Research Lane Prompt: {lane} ({LANES[lane]["label"]})
 
+This file is your standing contract for the session, not a document to summarize. Adopt it,
+confirm in one line, then wait for round prompts.
+
 Created: {utc_now()}
 Run: {state["run_id"]}
 Max questions: {state["max_questions"]}
@@ -161,6 +164,9 @@ Max questions: {state["max_questions"]}
 def render_round(lane: str, state: dict, run_dir: Path, round_number: int, question: str, report_path: Path) -> str:
     session_prompt = run_dir / "prompts" / f"session-{lane}.md"
     return f"""# Round {round_number} Question — lane {lane}
+
+This file is your round task, not a document to summarize. Answer the question now and write
+your report to the handoff path below.
 
 Run: {state["run_id"]}
 Created: {utc_now()}

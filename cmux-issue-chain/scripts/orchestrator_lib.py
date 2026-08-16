@@ -58,6 +58,21 @@ def launch_command(role: str) -> str:
     return f"{SUBAGENT_MARKER_ENV} {WORKER_COMMANDS[ROLE_WORKERS[role]]}"
 
 
+# Task framing is load-bearing, not style: a Claude worker reads "Read <path> and report back"
+# as a summarization request — it summarizes the prompt and waits — while Codex reads the same
+# line as a work order. One text for both binaries; explicit framing costs the Codex roles
+# nothing. Policy, not a per-run choice (SKILL.md, CMUX Control).
+PROMPT_DELIVERY_TEMPLATE = (
+    "Your task assignment is in {prompt_path}. It is not a document to read back or summarize. "
+    "Execute it now and write your final report to the handoff path it names."
+)
+
+
+def delivery_text(prompt_path: str) -> str:
+    """Text that hands a worker its rendered prompt."""
+    return PROMPT_DELIVERY_TEMPLATE.format(prompt_path=prompt_path)
+
+
 def normalize_issue_id(number: str | int) -> str:
     return f"ISSUE-{int(number):03d}"
 

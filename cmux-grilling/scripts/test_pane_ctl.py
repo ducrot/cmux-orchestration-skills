@@ -13,6 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from orchestrator_lib import delivery_text
+
 SCRIPT = str(Path(__file__).parent / "pane_ctl.py")
 
 FAKE_CMUX = '''#!/usr/bin/env python3
@@ -160,10 +162,12 @@ class StartAgent(PaneCtlCase):
 
 
 class Deliver(PaneCtlCase):
+    FOLLOW_UP = "re-emit the report per the Research Report Contract; fix the format, not the substance"
+
     def test_send_enter_readscreen_in_order(self):
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
-            "--surface", "SURF-UUID", "--text", "Read prompts/round-1-web.md and report back.",
+            "--surface", "SURF-UUID", "--text", self.FOLLOW_UP,
             "--lane", "web", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -172,12 +176,61 @@ class Deliver(PaneCtlCase):
         verbs = [call[0] for call in self.cmux_calls()]
         self.assertEqual(verbs, ["send", "send-key", "read-screen"])
         send, send_key, _ = self.cmux_calls()
-        self.assertEqual(send[-1], "Read prompts/round-1-web.md and report back.")
+        self.assertEqual(send[-1], self.FOLLOW_UP)
         self.assertEqual(send_key[-1], "enter")
 
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["worker.prompt_sent"])
         self.assertEqual(events[0]["data"]["lane"], "web")
+        self.assertIsNone(events[0]["data"]["prompt_path"])
+        self.assertIsNone(events[0]["data"]["kind"])
+
+    def test_round_prompt_sends_the_skills_own_task_framing(self):
+        prompt_path = "prompts/round-1-web.md"
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--prompt", prompt_path,
+            "--kind", "round", "--lane", "web", "--settle-seconds", "0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        expected = delivery_text("round", prompt_path)
+        self.assertEqual(self.cmux_calls()[0][-1], expected)
+        events = self.events()
+        self.assertEqual(events[0]["data"]["text"], expected)
+        self.assertEqual(events[0]["data"]["prompt_path"], prompt_path)
+        self.assertEqual(events[0]["data"]["kind"], "round")
+
+    def test_round_is_the_default_kind(self):
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--prompt", "prompts/round-1-docs.md",
+            "--lane", "docs", "--settle-seconds", "0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.events()[0]["data"]["kind"], "round")
+
+    def test_session_and_round_pull_in_opposite_directions(self):
+        session = delivery_text("session", "prompts/session-codebase.md")
+        round_text = delivery_text("round", "prompts/round-1-codebase.md")
+        self.assertIn("wait idle for round prompts", session)
+        self.assertIn("Answer it now", round_text)
+        for text in (session, round_text):
+            self.assertNotIn("report back", text)
+
+    def test_text_and_prompt_are_mutually_exclusive(self):
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID",
+            "--prompt", "prompts/round-1-web.md", "--text", "hi", "--settle-seconds", "0",
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_one_of_text_or_prompt_is_required(self):
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID",
+            "--settle-seconds", "0",
+        )
+        self.assertNotEqual(proc.returncode, 0)
 
 
 class Close(PaneCtlCase):

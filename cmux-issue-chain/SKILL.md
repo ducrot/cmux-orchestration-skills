@@ -197,7 +197,8 @@ static-looking pane may be a worker at an approval/confirmation prompt; that pan
 watcher correctly keeps waiting. Only `surface-health` reporting the pane gone counts as dead. Do not
 close the worker pane, and do not launch the next stage, until the report has been captured and parsed.
 Exactly one deadline extension per stage; record its reason in a `decision.human` or `worker.waiting`
-event.
+event. Before spending it on a silent pane, check the screen for the not-started cases in CMUX Control:
+re-delivering to a worker that never started restarts the wait clock and is not an extension.
 
 Use `blocked` only for explicit blockers reported by a worker. Use `hitl` for orchestration uncertainty such as a silent or possibly stuck worker after the wait policy is exhausted.
 
@@ -324,7 +325,7 @@ Three lifecycle verbs cover the error-prone multi-step sequences and record thei
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --anchor <prev-worker-surface-id>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --text "Read <prompt-path> and report back."
+python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --role review --pass 1 --prompt <prompt-path>
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
 
@@ -337,6 +338,10 @@ python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --r
 - `deliver` sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
   and echoes the pane screen after a short settle. Judging that screen — worker started, or sitting at an
   approval prompt — stays the orchestrator's call; record `worker.started` only after that judgment.
+  Hand over a rendered prompt with `--prompt <prompt-path>`, never with hand-written `--text`: the
+  wording is skill policy like the launch command, and getting it wrong stalls the worker (see the
+  send/Enter rule below). `--text` is for follow-ups into a working pane — re-emission requests,
+  clarifications, HITL messages.
 - `close` closes the surface and records `pane.closed`.
 
 Everything else (diagnosis, `read-screen`, `list-pane-surfaces`, `set-status`, …) runs through the
@@ -420,8 +425,8 @@ Close completed worker panes promptly:
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
 6. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
-   screen (TUI up? trust prompt pending?), then send the prompt with `pane_ctl.py deliver` and confirm the
-   worker started (see the send/Enter rule below).
+   screen (TUI up? trust prompt pending?), then send the prompt with `pane_ctl.py deliver --prompt` and
+   confirm the worker started (see the send/Enter rule below).
 7. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
    and gate decisions are documented.
 
@@ -455,12 +460,30 @@ commands, then echoes the pane screen:
 
 ```bash
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> \
-  --text "Read .scratch/orchestrator/runs/<run-id>/prompts/test-1.md and report back."
+  --role test --pass 1 --prompt .scratch/orchestrator/runs/<run-id>/prompts/test-1.md
 ```
+
+`--role`/`--pass` are what make the `worker.prompt_sent` event attributable; leaving them off records
+`role: null`. `--prompt` builds the delivery line from `orchestrator_lib.delivery_text()` — do not write
+that line by hand. A framing like "Read `<path>` and report back" is what a Claude worker answers with a
+summary of the prompt, which is why the wording lives in the skill and not in the turn.
 
 Do not send text and rely on noticing later that it is still waiting at the prompt. Judge the echoed
 screen (or a later injector `read-screen`) to confirm the worker actually started before treating the
 prompt as delivered, then record `worker.started`.
+
+Two distinct not-started screens exist, and they need different handling:
+
+- **Text unsent**: the prompt sits in the composer. `deliver` already sends the explicit Enter, so this
+  means the send itself failed — diagnose the pane before resending.
+- **Summarized and waiting**: the worker answered with a recap of the prompt ("the prompt is ready to
+  execute; I only read it") and went idle. This is the Claude failure mode — the delivery line was read
+  as a documentation request. The worker is not started: no `worker.started`. Re-deliver the same prompt
+  with `deliver --prompt` (which carries the task framing), judge the screen again, and arm the watcher
+  from the re-delivery. A worker that never started does not consume the stage's one deadline extension.
+
+An empty or working-looking pane after `--prompt` delivery is neither case; that pane is working and the
+armed watcher owns it.
 
 Do not use hidden subagents as worker substitutes during a live run. If CMUX cannot launch the visible worker, stop and report the CMUX failure. This rule covers the workers themselves; the internal subagents a worker spawns inside its own TUI (e.g. `/code-review` review agents) are part of that worker, not substitutes for it.
 

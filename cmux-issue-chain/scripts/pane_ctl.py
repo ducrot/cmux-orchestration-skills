@@ -10,6 +10,8 @@ focused workspace or an environment fallback. Verbs:
   launch      new-split + deterministic label + pane.launched/pane.labeled events
   start-agent send the role's fixed launch command + worker.launch_sent event
   deliver     send + send-key enter + read-screen echo + worker.prompt_sent event
+              (--prompt hands over a rendered prompt with the skill's own wording;
+               --text is for follow-ups)
   close       close-surface + pane.closed event
 
 `launch`/`start-agent`/`deliver`/`close` are mechanical lifecycle verbs only. Judging what a
@@ -26,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import ROLE_LABELS, append_jsonl, launch_command, read_json, utc_now
+from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, launch_command, read_json, utc_now
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,7 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     deliver = subparsers.add_parser("deliver", help="Send text to a pane, submit with Enter, echo the screen")
     deliver.add_argument("--run-dir", required=True)
     deliver.add_argument("--surface", required=True)
-    deliver.add_argument("--text", required=True)
+    payload = deliver.add_mutually_exclusive_group(required=True)
+    payload.add_argument("--prompt", help="Prompt path to hand over; the skill supplies the wording")
+    payload.add_argument("--text", help="Follow-up text (re-emission requests, clarifications)")
     deliver.add_argument("--role", choices=sorted(ROLE_LABELS))
     deliver.add_argument("--pass", dest="pass_num", type=int)
     deliver.add_argument("--settle-seconds", type=float, default=3.0, help="Wait before read-screen")
@@ -223,16 +227,18 @@ def cmd_start_agent(args: argparse.Namespace) -> int:
 
 
 def cmd_deliver(args: argparse.Namespace) -> int:
+    text = delivery_text(args.prompt) if args.prompt else args.text
     send_submit_echo(
         args,
-        args.text,
+        text,
         "worker.prompt_sent",
         "text sent and submitted; started-confirmation is the orchestrator's call",
         {
             "role": args.role,
             "pass": args.pass_num,
             "surface_id": args.surface,
-            "text": args.text,
+            "prompt_path": args.prompt,
+            "text": text,
         },
     )
     return 0

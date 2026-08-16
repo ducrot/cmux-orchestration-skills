@@ -50,6 +50,28 @@ def launch_command(lane: str) -> str:
     return f"{SUBAGENT_MARKER_ENV} {WORKER_COMMANDS[LANES[lane]['worker']]}"
 
 
+# Task framing is load-bearing, not style: a Claude lane reads "Read <path> and report back"
+# as a summarization request — it summarizes the prompt and waits — while Codex reads the same
+# line as a work order. Three of the four lanes are Claude. The two kinds differ on purpose:
+# a session prompt really is adopt-and-wait, a round prompt is work now. Policy, not a per-run
+# choice (SKILL.md, CMUX Control).
+DELIVERY_TEMPLATES = {
+    "session": (
+        "Your standing contract for this session is in {prompt_path}. It is not a document to "
+        "summarize. Adopt it, confirm in one line, then wait idle for round prompts."
+    ),
+    "round": (
+        "Your round task is in {prompt_path}. It is not a document to read back or summarize. "
+        "Answer it now and write your report to the handoff path it names."
+    ),
+}
+
+
+def delivery_text(kind: str, prompt_path: str) -> str:
+    """Text that hands a lane its rendered session contract or round prompt."""
+    return DELIVERY_TEMPLATES[kind].format(prompt_path=prompt_path)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 

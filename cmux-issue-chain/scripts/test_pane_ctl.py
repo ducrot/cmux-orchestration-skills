@@ -13,6 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from orchestrator_lib import delivery_text
+
 SCRIPT = str(Path(__file__).parent / "pane_ctl.py")
 
 FAKE_CMUX = '''#!/usr/bin/env python3
@@ -182,10 +184,12 @@ class StartAgent(PaneCtlCase):
 
 
 class Deliver(PaneCtlCase):
+    FOLLOW_UP = "re-emit the report per the Worker Report Contract; fix the format, not the substance"
+
     def test_send_enter_readscreen_in_order(self):
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
-            "--surface", "SURF-UUID", "--text", "Read prompts/review-1.md and report back.",
+            "--surface", "SURF-UUID", "--text", self.FOLLOW_UP,
             "--role", "review", "--pass", "1", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -194,7 +198,7 @@ class Deliver(PaneCtlCase):
         verbs = [call[0] for call in self.cmux_calls()]
         self.assertEqual(verbs, ["send", "send-key", "read-screen"])
         send, send_key, read_screen = self.cmux_calls()
-        self.assertEqual(send[-1], "Read prompts/review-1.md and report back.")
+        self.assertEqual(send[-1], self.FOLLOW_UP)
         self.assertEqual(send_key[-1], "enter")
         for call in (send, send_key, read_screen):
             self.assertIn("WS-UUID", call)
@@ -202,7 +206,43 @@ class Deliver(PaneCtlCase):
 
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["worker.prompt_sent"])
-        self.assertEqual(events[0]["data"]["text"], "Read prompts/review-1.md and report back.")
+        self.assertEqual(events[0]["data"]["text"], self.FOLLOW_UP)
+        self.assertIsNone(events[0]["data"]["prompt_path"])
+
+    def test_prompt_mode_sends_the_skills_own_task_framing(self):
+        prompt_path = "prompts/review-1.md"
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--prompt", prompt_path,
+            "--role", "review", "--pass", "1", "--settle-seconds", "0",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        expected = delivery_text(prompt_path)
+        self.assertEqual(self.cmux_calls()[0][-1], expected)
+        events = self.events()
+        self.assertEqual(events[0]["data"]["text"], expected)
+        self.assertEqual(events[0]["data"]["prompt_path"], prompt_path)
+
+    def test_delivery_text_frames_the_prompt_as_work_not_reading(self):
+        text = delivery_text("prompts/simplify-1.md")
+        self.assertIn("prompts/simplify-1.md", text)
+        self.assertIn("Execute it now", text)
+        self.assertNotIn("report back", text)
+
+    def test_text_and_prompt_are_mutually_exclusive(self):
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID",
+            "--prompt", "prompts/review-1.md", "--text", "hi", "--settle-seconds", "0",
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_one_of_text_or_prompt_is_required(self):
+        proc = self.run_ctl(
+            "deliver", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID",
+            "--settle-seconds", "0",
+        )
+        self.assertNotEqual(proc.returncode, 0)
 
 
 class Close(PaneCtlCase):
