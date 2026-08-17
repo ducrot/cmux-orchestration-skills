@@ -7,8 +7,8 @@ focused workspace or an environment fallback. Verbs:
 
   workspace  print the pinned workspace id
   cmux       generic passthrough that injects --workspace into any cmux command
-  launch      new-split + deterministic label + pane.launched/pane.labeled events
-  start-agent send the role's fixed launch command + worker.launch_sent event
+  launch      prepared-snapshot check + new-split + label + pane.launched/pane.labeled events
+  start-agent send the prepared stage snapshot's launch command + worker.launch_sent event
   deliver     send + send-key enter + read-screen echo + worker.prompt_sent event
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
@@ -28,7 +28,13 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, launch_command, read_json, utc_now
+from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, utc_now
+from worker_snapshot import (
+    SnapshotError,
+    load_launchable_snapshot,
+    snapshot_launch_record,
+    snapshot_shell_command,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     passthrough.add_argument("--run-dir", required=True)
     passthrough.add_argument("args", nargs=argparse.REMAINDER, help="cmux command and arguments (after --)")
 
-    launch = subparsers.add_parser("launch", help="Split a new worker pane, label it, record events")
+    launch = subparsers.add_parser(
+        "launch",
+        help="Split a new worker pane once its stage snapshot validates, label it, record events",
+    )
     launch.add_argument("--run-dir", required=True)
     launch.add_argument("--role", required=True, choices=sorted(ROLE_LABELS))
     launch.add_argument("--pass", dest="pass_num", type=int, required=True)
@@ -55,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     start = subparsers.add_parser(
         "start-agent",
-        help="Start the role's worker in its pane with the skill's fixed launch command",
+        help="Start the role's worker in its pane from the prepared stage snapshot",
     )
     start.add_argument("--run-dir", required=True)
     start.add_argument("--surface", required=True)
@@ -152,6 +161,9 @@ def cmd_cmux(args: argparse.Namespace) -> int:
 
 def cmd_launch(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
+    # Snapshot validation happens before even resolving cmux, so an invalid
+    # configuration/preflight state can never create an empty worker pane.
+    load_launchable_snapshot(run_dir, args.role, args.pass_num)
     workspace_id = pinned_workspace(run_dir)
     state = read_json(run_dir / "state.json")
     issue_id = (state.get("issue") or {}).get("id", "unknown-issue")
@@ -210,7 +222,8 @@ def send_submit_echo(
 
 
 def cmd_start_agent(args: argparse.Namespace) -> int:
-    command = launch_command(args.role)
+    snapshot = load_launchable_snapshot(Path(args.run_dir), args.role, args.pass_num)
+    command = snapshot_shell_command(snapshot)
     send_submit_echo(
         args,
         command,
@@ -221,6 +234,7 @@ def cmd_start_agent(args: argparse.Namespace) -> int:
             "pass": args.pass_num,
             "surface_id": args.surface,
             "command": command,
+            **snapshot_launch_record(snapshot),
         },
     )
     return 0
@@ -269,7 +283,11 @@ COMMANDS = {
 
 def main() -> int:
     args = build_parser().parse_args()
-    return COMMANDS[args.command](args)
+    try:
+        return COMMANDS[args.command](args)
+    except SnapshotError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

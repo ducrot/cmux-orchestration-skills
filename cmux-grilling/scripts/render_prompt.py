@@ -21,7 +21,7 @@ LANE_RULES = {
         "fetch. Cite real, resolvable file paths relative to the repo root under `## Sources`."
     ),
     "codebase2": (
-        "You are the independent second-opinion codebase researcher, running in Codex. Answer "
+        "You are the independent second-opinion codebase researcher. Answer "
         "every question exclusively from this repository: source code, configuration, local "
         "docs, and git history, using read-only inspection. Do not use web search. Form your "
         "own view of the code from scratch each round; you cannot see the other lanes' "

@@ -35,13 +35,50 @@ The result is a reviewed set of assumptions grounded in your actual repository a
 
 An orchestrator for working through a local Markdown issue tracker while you are AFK. You point it at an issue; it runs a gated chain of fresh worker panes:
 
-1. **Implement** (Codex): builds the change, anchored by regression tests that fail without it and an end-to-end run of the changed path.
+1. **Implement** (Codex by default): builds the change, anchored by regression tests that fail without it and an end-to-end run of the changed path.
 2. **Simplify** (Claude Code, `/simplify`): applies behavior-preserving refactorings to the diff.
 3. **Orchestrator check**: re-runs the tracker's canonical check commands itself; a red suite stops the chain regardless of what reports claim.
 4. **Review** (Claude Code, `/code-review max --fix`): reviews the full diff and fixes must-fix findings itself, within a strict intent boundary: findings that challenge documented issue decisions are relayed to the human instead of silently "fixed".
-5. **Final test** (Codex): the only check after the last code-changing stage; reviewers never accept their own fixes.
+5. **Final test** (Codex by default): the only check after the last code-changing stage; reviewers never accept their own fixes.
 
 Between stages, structured worker reports are parsed and gated: blockers, plan drift, and human-in-the-loop issues stop the chain instead of being papered over. All lifecycle state (run logs, gate decisions, snapshots, prompts, reports) is written to an auditable run directory. The orchestrator itself never touches product code.
+
+## Deterministic Worker Profiles
+
+Each skill independently ships the same dependency-free `scripts/agents_config.py` CLI and
+default profile contract; installing only one skill does not depend on the sibling directory or
+repository-only Python modules. From a target Git repository, `init` atomically creates
+`.scratch/orchestrator/agents.json` once, `validate` performs strict local validation, and
+`show-resolved` displays the effective profiles and assignments. An explicit `--config <path>`
+works outside Git, while `--repo <path>` anchors default discovery to that repository's Git root.
+The generated file is never overwritten, merged, or implicitly migrated.
+
+The defaults are Claude Opus/xhigh and Sonnet/medium plus Codex GPT-5.6 Sol/xhigh and
+Luna/medium. Issue-chain assigns Sol to implement/test and Opus to simplify/review. Grilling
+assigns Opus, Sol, Luna, and Sonnet to `codebase`, `codebase2`, `docs`, and `web`. Claude's `opus`
+and `sonnet` names are intentionally moving aliases; syntax-validating any local model string does
+not prove that the authenticated provider account is entitled to use it. Pi and Hermes are
+explicitly unsupported; their registry entries mark the code-owned adapter boundary for future
+support.
+
+Both workflows accept repeatable typed `--profile`, `--harness`, `--model`, `--effort`, and
+`--executable` overrides. Precedence is file assignment, then profile override, then direct field
+overrides. Issue-chain reloads and fully revalidates the pinned source for each fresh stage;
+grilling freezes all four persistent lanes in one immutable launch wave. Before any pane exists,
+mandatory local preflight checks executable discovery, version, CLI capabilities, and local auth.
+
+Live provider verification is opt-in: pass `--probe-profiles` to issue-chain `init`/`prepare` or
+grilling `init`, optionally with the CLI-only `--probe-timeout <seconds>` (default 120). Each unique
+assigned and resolved profile receives one minimal request; duplicate assignments are deduplicated
+and unused profiles are skipped. The probe disables Claude tools or gives Codex a read-only sandbox,
+requires an exact fixed sentinel, and fails before pane creation on provider errors, timeouts,
+malformed output, or a missing sentinel. Snapshots audit configuration source/hash, typed overrides,
+resolved profiles, executable/version/preflight data, final argv, entitlement, and probe outcome and
+timing; provider output, credentials, and ambient environment values are not stored. Without probes,
+entitlement remains `unverified`; successful probes record `verified`.
+
+Safety policy is code-owned. Configuration cannot add free-form arguments, environment values,
+capabilities, sandbox/approval/network/writable-root settings, or other runtime safety overrides.
 
 ## Installation
 

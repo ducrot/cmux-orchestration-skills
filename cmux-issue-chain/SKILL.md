@@ -11,6 +11,81 @@ All `scripts/…` and `references/…` paths in this skill are relative to the s
 base directory (the directory containing this SKILL.md); resolve them against that
 directory, not the working directory.
 
+## Worker Profile Configuration
+
+The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
+inside the target Git repository; the default path is the repository root's
+`.scratch/orchestrator/agents.json`:
+
+```bash
+python3 scripts/agents_config.py init
+python3 scripts/agents_config.py validate
+python3 scripts/agents_config.py show-resolved
+```
+
+Use `--config <path>` after any command to select an explicit file, including outside Git,
+or `--repo <path>` to resolve the default path from a specific target repository. `init`
+atomically creates the complete shared defaults and never changes an existing file or the
+repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
+not launch workers or contact Claude Code, Codex, or any provider.
+
+The four shipped profiles are `claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`),
+`claude-sonnet-medium` (`claude-code`, `sonnet`, `medium`), `codex-sol-xhigh` (`codex`,
+`gpt-5.6-sol`, `xhigh`), and `codex-luna-medium` (`codex`, `gpt-5.6-luna`, `medium`). The
+issue-chain defaults assign Sol to `implement` and `test` and Opus to `simplify` and `review`.
+The `opus` and `sonnet` model strings are intentionally moving provider aliases; deterministic
+selection of an alias does not pin the provider's underlying model version.
+
+Configuration is strict and user-owned after its write-once bootstrap. Unknown fields, versions,
+harnesses, efforts, assignments, or profile references fail rather than falling back. Model
+strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
+provider or model entitlement. `show-resolved` is the inspection command for the complete
+profiles, assignments, sources, models, and efforts. Pi and Hermes remain explicit unsupported
+entries in the code-owned adapter registry; that registry — rather than JSON — is the implementation
+boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
+preflight rules, the launch and probe adapters, and the override parsing and profile resolution
+both workflows share, so a harness is added in that one file; each workflow keeps its own
+sandbox, approval, and network policy.
+
+`run_state.py init` uses that default path, automatically creates the default configuration
+when it is missing, validates and preflights all four issue-chain roles, and prepares the
+`implement-1` stage snapshot before it publishes a launchable run. Pass `--config <path>` to
+run initialization to pin an explicit configuration source. After an advance gate, prepare
+the next stage from the latest bytes at that pinned source before creating its pane:
+
+```bash
+python3 scripts/run_state.py prepare --run-dir <run-dir> --stage simplify --pass 1
+```
+
+Preparation accepts repeatable typed overrides in `WORKER=VALUE` form: `--profile`,
+`--harness`, `--model`, `--effort`, and `--executable`. File assignment resolves first, then
+profile selection, then direct field overrides. The same field may be overridden only once
+per worker. Overrides live only in that stage snapshot; the next preparation reloads the file.
+Every preparation validates every role, resolves each executable, captures `--version`, checks
+required flags and authentication-status support through help output, and verifies local auth.
+That local preflight is mandatory and detects capabilities rather than enforcing minimum CLI
+versions. Provider entitlement stays `unverified` by default.
+
+Opt into live entitlement checks on initialization or any later stage preparation with
+`--probe-profiles`; use `--probe-timeout <seconds>` with it to change the CLI-only 120-second
+default. The option makes one real request per unique named and fully resolved assigned profile,
+after the whole workflow has passed validation and local preflight. Duplicate assignments share a
+request and unused profiles are not contacted. Claude runs in safe, non-persistent print mode with
+all tools disabled; Codex runs ephemerally in a read-only sandbox with approvals disabled. Each
+probe's own options are checked against the CLI's help before its request goes out, so an
+installation that cannot be probed reports a missing capability instead of a failed entitlement.
+Both must exit zero and print exactly `CMUX_PROFILE_PROBE_OK_V1`. A nonzero exit, timeout,
+malformed output, or missing sentinel fails preparation before pane creation. Success changes the matching
+entitlement to `verified`; no probe leaves it `unverified`. The immutable snapshot audits the
+configuration source and hash, overrides, resolved profiles, executable/version/preflight data,
+final worker argv, probe enablement and timeout, and each probe's status and timing without saving
+provider output, credentials, or ambient environment values. The launch command keeps the
+configured executable as its program name; the resolved absolute path is audit data only.
+
+Harness safety remains code-owned: JSON and typed overrides cannot supply free-form arguments,
+environment values, capabilities, sandbox or approval policy, network access, writable roots,
+prompt delivery, or other runtime safety overrides.
+
 ## Boundaries
 
 - Treat product code as worker-owned. Do not modify application, extension, frontend, deployment, or test implementation files from the orchestrator role.
@@ -285,7 +360,7 @@ The orchestrator may still assist the human:
 
 Prefer current CLI syntax discovered from `cmux --help` before launching workers. Workers must be visible in CMUX
 panes. Never type a launch command into a worker pane by hand: `pane_ctl.py start-agent` owns it, so every worker
-starts with the same flags and the same notification marker. It sends, per role:
+starts from the exact audited argument vector in its prepared stage snapshot. The default profiles produce:
 
 ```bash
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
@@ -293,8 +368,11 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c 'sandbox_workspace_write.writable_roots=["~/.ddev"]' \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false          # implement, test
-CMUX_AGENT_MANAGED_SUBAGENT=1 claude            # simplify, review
+  -c check_for_update_on_startup=false \
+  --model gpt-5.6-sol \
+  -c model_reasoning_effort=xhigh                # implement, test
+CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
+  --model opus --effort xhigh                   # simplify, review
 ```
 
 `CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux keys its notification
@@ -304,16 +382,17 @@ still appears in the Feed and in `surface-health`; only the banners are gone. Su
 `automation.suppressSubagentNotifications` (on by default), and the variable is a cmux internal, so the failure mode
 is noise, never a broken run.
 
-Use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review workers — not
-`cmux codex-teams` / `cmux claude-teams`. The teams wrappers open worker-spawned subagents as extra cmux panes, and
-those splits anchor to the focused workspace instead of the worker's workspace: while the human works in another
+The defaults use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review
+workers. Typed preparation overrides may select Claude Code or Codex for implement and test; simplify and review
+remain Claude Code-only. Never use `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open
+worker-spawned subagents as extra cmux panes, and those splits anchor to the focused workspace instead of the worker's workspace: while the human works in another
 workspace, subagent panes land there. Plain launches keep subagents internal to the worker's own TUI; `/simplify`
 and `/code-review max --fix` need no teams mode. The worker pane stays the visible unit of orchestration, and cmux
 pane integration (hooks, notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
 
 ### Pinned workspace, deterministic pane control
 
-`run_state.py init` pins the run's cmux workspace: flag > `CMUX_WORKSPACE_ID` env > hard error (the env
+`run_state.py init` pins the run's cmux workspace and prepares `implement-1`: flag > `CMUX_WORKSPACE_ID` env > hard error (the env
 var of the orchestrator pane is the only place that variable is ever read). Every cmux call after init
 goes through `pane_ctl.py`, which reads the pinned `workspace_id` from `state.json` — never through raw
 `cmux` with an env-var workspace, and never with a fallback to the focused workspace. An empty or missing
@@ -329,12 +408,14 @@ python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> -
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
 
-- `launch` splits from the anchor surface (`--direction right` default, `--focus false`), labels the pane
+- `launch` first validates that the requested role/pass matches the current, passed, untampered prepared
+  snapshot, re-deriving its argument vector from the code-owned adapter policy so a restamped snapshot
+  cannot widen the sandbox it launches under. Only then does it split from the anchor surface (`--direction right` default, `--focus false`), label the pane
   per the deterministic label scheme, records `pane.launched` + `pane.labeled`, and prints the new
   surface's stable UUID — use that UUID in every later command; positional refs like `surface:465` shift
   when panes close.
-- `start-agent` sends the role's fixed launch command (worker binary, sandbox flags and notification marker
-  all come from the skill, not from the prompt), records `worker.launch_sent`, and echoes the screen.
+- `start-agent` revalidates the same snapshot, safely shell-quotes its argument vector, sends that exact
+  launch command without reading live configuration, records `worker.launch_sent`, and echoes the screen.
 - `deliver` sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
   and echoes the pane screen after a short settle. Judging that screen — worker started, or sitting at an
   approval prompt — stays the orchestrator's call; record `worker.started` only after that judgment.
@@ -354,9 +435,9 @@ python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <s
 Avoid focus-changing commands unless the user explicitly asks. Store rendered
 prompts under the run directory before sending them to worker sessions.
 
-The sandbox flags above are fixed defaults for this skill; do not ask the human for startup options at run start.
-The launch command reaches the pane via `pane_ctl.py start-agent`, whose `worker.launch_sent` event records it
-verbatim.
+The sandbox flags above are fixed Codex adapter policy. Typed overrides select profile, harness, model, effort,
+or executable; they never replace the safety arguments. The launch command reaches the pane via
+`pane_ctl.py start-agent`, whose `worker.launch_sent` event records its snapshot id and final argument vector.
 
 Each flag earns its place, so keep them together:
 
@@ -417,17 +498,20 @@ Close completed worker panes promptly:
 1. Confirm the worker wrote its final report to the rendered report handoff path.
 2. Record a working-tree fingerprint for the capture: `run_state.py snapshot --label "report-captured <role>-<pass>"`.
 3. Parse the report and record the gate/event state.
-4. If the chain continues, split the next worker pane anchored to the just-completed worker pane while it
+4. If the chain continues, run `run_state.py prepare --stage <next-role> --pass <n>`. This reloads and
+   validates live configuration and publishes the only snapshot that `pane_ctl.py` may launch. A failed
+   preparation stops before CMUX creates a pane.
+5. Split the next worker pane anchored to the just-completed worker pane while it
    is still visible (`pane_ctl.py launch --anchor <completed-surface>`). Prefer `right` splits: every
    stacked down-split halves the remaining height, and a too-short pane cannot render its composer at all.
-5. Close the completed worker pane as soon as the new pane exists — before sending the prompt to the new
+6. Close the completed worker pane as soon as the new pane exists — before sending the prompt to the new
    pane — with `pane_ctl.py close` (it records `pane.closed`). Its report is already captured
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
-6. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
+7. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
    screen (TUI up? trust prompt pending?), then send the prompt with `pane_ctl.py deliver --prompt` and
    confirm the worker started (see the send/Enter rule below).
-7. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
+8. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
    and gate decisions are documented.
 
 While a worker pass is active, the working tree belongs to that worker: neither the orchestrator nor the
@@ -496,6 +580,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | Event                                                    | When                                                                                                                                             |
 |----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
+| `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
 | `worker.launch_sent`                                     | Worker launch command sent verbatim; written by `pane_ctl.py start-agent`                                                                         |
@@ -572,11 +657,26 @@ so runs group per issue, timestamped so re-runs never reuse a stale run director
 an earlier attempt would satisfy the watcher instantly). `init` pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out for
 offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs root, so run state
-never reaches git in any target repo:
+never reaches git in any target repo. For an AFK issue, initialization also bootstraps missing default
+configuration, preflights every role, and prepares `implement-1`; any failure happens before a launchable
+state or stage snapshot is written. HITL issues get no configuration source and no snapshot, so `prepare`
+stays unavailable on them, and re-running `init` on an existing run re-prepares nothing — it refuses
+`--config` and typed overrides instead of dropping them:
 
 ```bash
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001
+python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --probe-profiles
 python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "prompt delivered and confirmed via read-screen" --data '{"role":"review","pass":1,"pane_id":"<pane-id>","surface_id":"<surface-id>"}'
+```
+
+After every advance gate, prepare the next stage before `pane_ctl.py launch`. This reloads the run's pinned
+configuration source and stores all temporary overrides only in that snapshot:
+
+```bash
+python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --pass 1
+python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage test --pass 1 --probe-profiles --probe-timeout 180
+python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage test --pass 1 \
+  --profile test=codex-luna-medium --effort test=high
 ```
 
 Pane lifecycle events (`pane.launched`, `pane.labeled`, `worker.launch_sent`, `worker.prompt_sent`, `pane.closed`) are written
@@ -630,12 +730,15 @@ python3 scripts/await_report.py --run-dir .scratch/orchestrator/runs/<run-id> --
 Control worker panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints the pinned
 id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/`close` are the lifecycle verbs.
 
-Run the regression tests after touching `parse_report.py`, `await_report.py`, or `pane_ctl.py`:
+Run the regression tests after touching `parse_report.py`, `await_report.py`, `pane_ctl.py`, `run_state.py`,
+`worker_snapshot.py`, or `agents_config.py`:
 
 ```bash
 python3 scripts/test_parse_report.py
 python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_stage_preparation.py
+python3 scripts/test_agents_config.py
 ```
 
 ## Smoke Test
@@ -651,6 +754,8 @@ python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_issue_state.py
 python3 scripts/test_adopt_tracker.py
+python3 scripts/test_agents_config.py
+python3 scripts/test_stage_preparation.py
 python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
 python3 scripts/issue_state.py list --tracker .scratch/<tracker>
 python3 scripts/issue_state.py ready --tracker .scratch/<tracker>

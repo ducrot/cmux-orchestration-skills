@@ -16,6 +16,74 @@ All `scripts/…` and `references/…` paths in this skill are relative to the s
 base directory (the directory containing this SKILL.md); resolve them against that
 directory, not the working directory.
 
+## Worker Profile Configuration
+
+The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
+inside the target Git repository; the default path is the repository root's
+`.scratch/orchestrator/agents.json`:
+
+```bash
+python3 scripts/agents_config.py init
+python3 scripts/agents_config.py validate
+python3 scripts/agents_config.py show-resolved
+```
+
+Use `--config <path>` after any command to select an explicit file, including outside Git,
+or `--repo <path>` to resolve the default path from a specific target repository. `init`
+atomically creates the complete shared defaults and never changes an existing file or the
+repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
+not launch workers or contact Claude Code, Codex, or any provider.
+
+The four shipped profiles are `claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`),
+`claude-sonnet-medium` (`claude-code`, `sonnet`, `medium`), `codex-sol-xhigh` (`codex`,
+`gpt-5.6-sol`, `xhigh`), and `codex-luna-medium` (`codex`, `gpt-5.6-luna`, `medium`). Grilling
+assigns those profiles to `codebase`, `web`, `codebase2`, and `docs`, respectively. The `opus`
+and `sonnet` strings are intentionally moving provider aliases; deterministic selection of an
+alias does not pin the provider's underlying model version.
+
+Configuration is strict and user-owned after its write-once bootstrap. Unknown fields, versions,
+harnesses, efforts, assignments, or profile references fail rather than falling back. Model
+strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
+provider or model entitlement. `show-resolved` is the inspection command for the complete
+profiles, assignments, sources, models, and efforts. Pi and Hermes remain explicit unsupported
+entries in the code-owned adapter registry; that registry — rather than JSON — is the implementation
+boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
+preflight rules, the launch and probe adapters, and the override parsing and profile resolution
+both workflows share, so a harness is added in that one file; each workflow keeps its own
+sandbox, approval, and network policy.
+
+`run_state.py init` automatically creates the default configuration when it is missing, or
+accepts `--config <path>`, then resolves and preflights all four lanes as one cohort. It
+publishes run state only after every lane passes and records one immutable launch-wave
+snapshot. Preparation resolves each unique assigned executable, captures its version,
+checks required help capabilities and local authentication status, and records provider
+entitlement as `unverified` by default. This local preflight is mandatory.
+
+Initialization accepts repeatable typed overrides in `LANE=VALUE` form: `--profile`,
+`--harness`, `--model`, `--effort`, and `--executable`. File assignment resolves first,
+then profile selection, then direct field overrides. Overrides live only in the new run's
+launch wave. Existing runs refuse configuration inputs during idempotent re-initialization;
+configuration changes intentionally take effect only in a new grilling run.
+
+Opt into live entitlement checks during initialization with `--probe-profiles`; use
+`--probe-timeout <seconds>` with it to change the CLI-only 120-second default. The option makes
+one real request per unique named and fully resolved assigned profile after all four lanes pass
+validation and local preflight. Duplicate assignments share a request and unused profiles are
+not contacted. Claude runs in safe, non-persistent print mode with every tool disabled; Codex
+runs ephemerally in a read-only sandbox with approvals disabled. Each probe's own options are
+checked against the CLI's help before its request goes out, so an installation that cannot be
+probed reports a missing capability instead of a failed entitlement. Both must exit zero and print
+exactly `CMUX_PROFILE_PROBE_OK_V1`. A nonzero exit, timeout, malformed output, or missing sentinel
+fails initialization before pane creation. Success changes the matching entitlement to `verified`;
+no probe leaves it `unverified`.
+
+The frozen launch wave audits the configuration source and hash, overrides, resolved profiles,
+executable/version/preflight data, final lane argv, probe enablement and timeout, and each probe's
+status and timing without saving provider output, credentials, or ambient environment values.
+Harness safety remains code-owned: JSON and typed overrides cannot supply free-form arguments,
+environment values, capabilities, sandbox or approval policy, network access, writable roots,
+prompt delivery, or other runtime safety overrides.
+
 ## Relationship to the `grilling` Skill
 
 Two skills share the grilling concept; keep them apart. `grilling` is a separate,
@@ -61,10 +129,10 @@ Roles:
    already decide. Respect the remaining question budget (`max_questions`, default 10).
 2. **Research lanes** — four persistent visible panes, launched once and kept open for the
    whole session:
-   - `codebase` — plain `claude`, repo-only research, no web.
-   - `codebase2` — plain `codex`, independent second-opinion repo research, no web.
-   - `docs` — plain `claude`, official documentation for the versions the repo pins.
-   - `web` — plain `claude`, public-web research (standards, practices, known issues).
+   - `codebase` — repo-only research, no web (Claude Opus/xhigh by default).
+   - `codebase2` — independent second-opinion repo research, no web (Codex by default).
+   - `docs` — official documentation for the versions the repo pins (Codex Luna/medium by default).
+   - `web` — public-web research (Claude Sonnet/medium and Claude-only by policy).
 3. **Synthesizer** — orchestrator step. Consolidates the four lane reports of a round into
    one answer with confidence, sources, and reasoning.
 4. **Finalize** — orchestrator step. Distills the defined assumptions, writes the artifact
@@ -418,15 +486,28 @@ human sees what is still outstanding. The human reviews, commits, and pushes. Ne
 
 Prefer current CLI syntax discovered from `cmux --help` before launching lanes. Lanes must
 be visible in CMUX panes. Never type a launch command into a lane pane by hand:
-`pane_ctl.py start-agent` owns it, so every lane starts with the same flags and the same
-notification marker. It sends, per lane worker:
+`pane_ctl.py start-agent` owns it and reads only the lane's matching entry from the immutable
+prepared launch wave. Both `launch` and `start-agent` validate the entire wave first, so a
+missing, failed, mismatched, or tampered lane blocks every pane. The default wave sends:
 
 ```bash
-CMUX_AGENT_MANAGED_SUBAGENT=1 claude                        # codebase, docs, web
+CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
+  --model opus --effort xhigh                              # codebase
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false                      # codebase2
+  -c check_for_update_on_startup=false \
+  --model gpt-5.6-sol \
+  -c model_reasoning_effort=xhigh                          # codebase2
+CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
+  -c sandbox_workspace_write.network_access=true \
+  --ask-for-approval on-request \
+  -c approvals_reviewer=auto_review \
+  -c check_for_update_on_startup=false \
+  --model gpt-5.6-luna \
+  -c model_reasoning_effort=medium                         # docs
+CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
+  --model sonnet --effort medium                           # web
 ```
 
 `CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux
@@ -444,10 +525,12 @@ workspace, subagent panes land there. Plain launches keep subagents internal to 
 own TUI; the lane pane stays the visible unit, and cmux pane integration (hooks,
 notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
 
-The Codex flags are fixed policy; do not ask the human for startup options at session start.
-Each flag earns its place:
+The configured harness, executable, model, and effort come from the wave. Codebase,
+codebase2, and docs accept Claude Code or Codex; web remains Claude Code-only because that
+is the existing tested network policy. The Codex flags are fixed lane policy; do not ask the
+human for startup options at session start. Each flag earns its place:
 
-- `-s workspace-write` lets the lane write its report handoff file without a per-write
+- `-s workspace-write` lets a Codex lane write its report handoff file without a per-write
   confirmation (in the first pilot, a lane stuck at that prompt cost most of a round).
 - `--ask-for-approval on-request` pins the escalation policy explicitly: the lane runs
   sandboxed and requests approval only when the sandbox blocks something.
@@ -458,16 +541,22 @@ Each flag earns its place:
   blocks an unattended lane before it reads its task. Set it only here, so interactive Codex
   sessions still get update notices.
 
-Do not add `network_access` or `writable_roots` here — the codebase2 lane is read-only
-research with no web and no containers; those grants belong to `cmux-issue-chain` workers.
-The launch command reaches the pane via `pane_ctl.py start-agent`, whose `worker.launch_sent`
-event records it verbatim. With `approvals_reviewer=auto_review` the Codex lane decides its
+Which lanes may reach the network is declared by `launch_wave.CODEX_NETWORK_LANES`. Only a
+Codex docs lane receives `sandbox_workspace_write.network_access=true`, preserving its
+documentation access; the web lane is Claude Code-only and has no sandbox to grant. Codebase and
+codebase2 remain no-web lanes, and no grilling lane
+receives `writable_roots`; those container grants belong to `cmux-issue-chain` workers. The
+launch command is stored as an argument vector in the wave and converted to shell text with
+safe quoting by `pane_ctl.py start-agent`; its `worker.launch_sent` event records the wave id,
+argument vector, resolved executable, and detected version. With
+`approvals_reviewer=auto_review` a Codex lane decides its
 own escalations, so it does not stop at a human approval prompt; a lane that looks idle is
 either working or done, and only its report file settles which.
 
 ### Pinned workspace, deterministic pane control
 
-`run_state.py init` pins the run's cmux workspace: flag > `CMUX_WORKSPACE_ID` env > hard error
+`run_state.py init` prepares the full launch wave before it publishes a launchable run and
+pins the run's cmux workspace: flag > `CMUX_WORKSPACE_ID` env > hard error
 (the env var of the orchestrator pane is the only place that variable is ever read;
 `--no-workspace` is the explicit opt-out for offline runs outside cmux). Every cmux call after
 init goes through `pane_ctl.py`, which reads the pinned `workspace_id` from `state.json` —
@@ -484,11 +573,11 @@ python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --l
 python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <surface-id> --lines 40
 ```
 
-`launch` splits from the anchor without stealing focus, labels the pane, records
+`launch` first validates the prepared launch wave, then splits from the anchor without stealing focus, labels the pane, records
 `pane.launched` + `pane.labeled`, and prints the new surface's stable UUID — use that UUID in
 every later command; positional refs like `surface:465` shift when panes close. `start-agent`
-sends the lane's fixed launch command (worker binary, flags and notification marker all come
-from the skill, not from the prompt), records `worker.launch_sent`, and echoes the screen.
+revalidates that same wave and sends only the requested lane's prepared launch command
+(configuration is never re-read), records `worker.launch_sent`, and echoes the screen.
 `deliver`
 sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
 in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
@@ -503,8 +592,8 @@ inserts `--workspace <pinned>` into any cmux command. Avoid focus-changing comma
 
 After a *round* delivery, a lane that answers with a recap of the prompt ("the prompt is ready
 to execute; I only read it") and then goes idle has not started — no `worker.started`. That is
-the Claude failure mode: the delivery line was read as a documentation request, and three of
-the four lanes are Claude. Re-deliver the same prompt with `deliver --kind round --prompt`
+a Claude failure mode: the delivery line was read as a documentation request. Re-deliver the
+same prompt with `deliver --kind round --prompt`
 (which carries the task framing), judge the screen again, and arm the round watcher from the
 re-delivery. A lane that never started does not consume the round's one deadline extension.
 The same screen after a *session* delivery is the expected outcome, not a failure.
@@ -518,7 +607,7 @@ Session start:
    the previously launched lane (`--anchor <previous-lane-surface-id>`); the first lane
    may split from the orchestrator pane. A 2×2 arrangement next to the orchestrator pane
    works well (`--direction right|down`).
-3. Labels are applied by `launch`: `Researcher Codebase`, `Researcher Codebase2 (Codex)`,
+3. Labels are applied by `launch`: `Researcher Codebase`, `Researcher Codebase2`,
    `Researcher Docs`, `Researcher Web`, each suffixed `- grill-<slug>`. Optional status
    pills via `set-status` through the injector (not pane colors): Codebase `#0a84ff`,
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
@@ -545,6 +634,7 @@ consistently within a run.
 | Event                                                  | When                                                                                                                               |
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
+| `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |
 | `worker.launch_sent`                                   | Lane agent launch command sent verbatim; written by `pane_ctl.py start-agent`                                                       |
@@ -573,7 +663,9 @@ consistently within a run.
 
 The scripts are deterministic helpers. Run them from the repo root.
 
-Create a run (idempotent; prints the run directory). `init` pins the run's cmux workspace
+Create a run (idempotent; prints the run directory). `init` bootstraps or loads worker
+configuration, validates and preflights all four lanes together, writes one immutable launch
+wave, and pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out
 for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs
 root, so run state never reaches git in any target repo:
@@ -581,6 +673,8 @@ root, so run state never reaches git in any target repo:
 ```bash
 python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-questions 10
 python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
+python3 scripts/run_state.py init --task-file path/to/task.md --config path/to/agents.json
+python3 scripts/run_state.py init --task-file path/to/task.md --probe-profiles --probe-timeout 180
 ```
 
 `init` also resolves the artifact location; the precedence is in Artifact Location.
@@ -629,13 +723,15 @@ the pinned id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/
 the lifecycle verbs.
 
 Run the regression tests after touching `parse_research_report.py`, `await_reports.py`,
-`pane_ctl.py`, or `run_state.py`:
+`pane_ctl.py`, `run_state.py`, `launch_wave.py`, or `agents_config.py`:
 
 ```bash
 python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_run_state.py
+python3 scripts/test_agents_config.py
+python3 scripts/test_launch_wave.py
 ```
 
 ## Smoke Test
@@ -648,6 +744,8 @@ python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_run_state.py
+python3 scripts/test_agents_config.py
+python3 scripts/test_launch_wave.py
 python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-questions 2 --output-dir .scratch/grilling
 python3 scripts/run_state.py pending-decisions --output-dir .scratch/grilling
 python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/smoke-grill --lane codebase

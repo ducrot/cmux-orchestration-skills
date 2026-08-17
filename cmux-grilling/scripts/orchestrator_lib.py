@@ -15,44 +15,18 @@ SLUG_RE = re.compile(r"[^a-z0-9]+")
 # The four research lanes. Persistent panes for the whole session; the orchestrator
 # never substitutes hidden subagents for them.
 LANES = {
-    "codebase": {"worker": "claude", "web": False, "label": "Researcher Codebase"},
-    "codebase2": {"worker": "codex", "web": False, "label": "Researcher Codebase2 (Codex)"},
-    "docs": {"worker": "claude", "web": True, "label": "Researcher Docs"},
-    "web": {"worker": "claude", "web": True, "label": "Researcher Web"},
+    "codebase": {"label": "Researcher Codebase"},
+    "codebase2": {"label": "Researcher Codebase2"},
+    "docs": {"label": "Researcher Docs"},
+    "web": {"label": "Researcher Web"},
 }
 
 # Minimum wait per lane and round, uniform across lanes (see SKILL.md, Lane Wait Policy).
 LANE_WAIT_MINUTES = 15
 
-# cmux only silences notifications from panes it considers managed subagents
-# (`automation.suppressSubagentNotifications`, on by default). It infers that from process
-# ancestry, and a lane started by `cmux new-split` counts as a top-level agent — so without
-# this marker every turn end, idle reminder and approval prompt of all four lanes raises a
-# desktop banner with sound while the human is elsewhere. Undocumented cmux internal; if it
-# ever stops working the only symptom is that the noise returns.
-SUBAGENT_MARKER_ENV = "CMUX_AGENT_MANAGED_SUBAGENT=1"
-
-# Fixed startup commands per worker binary; policy, not a per-run choice (SKILL.md, CMUX
-# Control, explains what each Codex flag buys). Plain binaries, never the teams wrappers.
-WORKER_COMMANDS = {
-    "claude": "claude",
-    "codex": (
-        "codex -s workspace-write"
-        " --ask-for-approval on-request"
-        " -c approvals_reviewer=auto_review"
-        " -c check_for_update_on_startup=false"
-    ),
-}
-
-
-def launch_command(lane: str) -> str:
-    """Shell line that starts a lane's agent, marked so its pane stays notification-quiet."""
-    return f"{SUBAGENT_MARKER_ENV} {WORKER_COMMANDS[LANES[lane]['worker']]}"
-
-
 # Task framing is load-bearing, not style: a Claude lane reads "Read <path> and report back"
 # as a summarization request — it summarizes the prompt and waits — while Codex reads the same
-# line as a work order. Three of the four lanes are Claude. The two kinds differ on purpose:
+# line as a work order. The two kinds differ on purpose:
 # a session prompt really is adopt-and-wait, a round prompt is work now. Policy, not a per-run
 # choice (SKILL.md, CMUX Control).
 DELIVERY_TEMPLATES = {

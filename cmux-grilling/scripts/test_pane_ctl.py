@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,25 +15,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from orchestrator_lib import delivery_text
+from launch_wave import (
+    SUBAGENT_MARKER_ENV,
+    SUBAGENT_MARKER_VALUE,
+    lane_argv,
+    snapshot_identity,
+)
 
 SCRIPT = str(Path(__file__).parent / "pane_ctl.py")
 
-FAKE_CMUX = '''#!/usr/bin/env python3
-import json, os, sys
-with open(os.environ["FAKE_CMUX_LOG"], "a") as fh:
-    fh.write(json.dumps(sys.argv[1:]) + "\\n")
-args = sys.argv[1:]
-if "new-split" in args:
-    print(json.dumps({
-        "pane_id": "PANE-UUID", "pane_ref": "pane:9",
-        "surface_id": "SURF-UUID", "surface_ref": "surface:9",
-        "type": "terminal", "workspace_id": "WS-UUID", "workspace_ref": "workspace:1",
-    }))
-elif "read-screen" in args:
-    print("LANE SCREEN")
-else:
-    print("OK")
-'''
+from test_support import FAKE_CMUX
 
 
 class PaneCtlCase(unittest.TestCase):
@@ -40,8 +32,59 @@ class PaneCtlCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.run_dir = Path(self._tmp.name) / "run"
         self.run_dir.mkdir()
+        profiles = {
+            "codebase": {
+                "profile": "claude-opus-xhigh", "harness": "claude-code",
+                "executable": "claude", "model": "opus", "effort": "xhigh",
+            },
+            "codebase2": {
+                "profile": "codex-sol-xhigh", "harness": "codex",
+                "executable": "codex", "model": "gpt-5.6-sol", "effort": "xhigh",
+            },
+            "docs": {
+                "profile": "codex-luna-medium", "harness": "codex",
+                "executable": "codex", "model": "gpt-5.6-luna", "effort": "medium",
+            },
+            "web": {
+                "profile": "claude-sonnet-medium", "harness": "claude-code",
+                "executable": "claude", "model": "sonnet", "effort": "medium",
+            },
+        }
+        for lane, entry in profiles.items():
+            entry.update({
+                "lane": lane,
+                "requested_executable": entry["executable"],
+                "resolved_executable": f"/test/bin/{entry['executable']}",
+                "detected_version": f"{entry['executable']} test",
+                "preflight": {"status": "passed"},
+                "entitlement": {"status": "unverified"},
+                "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
+            })
+            entry["argv"] = lane_argv(lane, entry)
+        wave = {
+            "snapshot_version": 1,
+            "run_id": "test-run",
+            "status": "passed",
+            "resolved_at": "2026-08-17T00:00:00+00:00",
+            "config": {"source": "/test/agents.json", "sha256": "config-sha"},
+            "effective_overrides": {},
+            "resolved_profiles": profiles,
+        }
+        wave["snapshot_id"] = snapshot_identity(wave)
+        wave_path = self.run_dir / "launch-waves" / "wave.json"
+        wave_path.parent.mkdir()
+        wave_path.write_text(json.dumps(wave), encoding="utf-8")
+        pointer = {
+            "path": "launch-waves/wave.json",
+            "sha256": hashlib.sha256(wave_path.read_bytes()).hexdigest(),
+            "snapshot_id": wave["snapshot_id"],
+            "prepared_at": wave["resolved_at"],
+        }
         (self.run_dir / "state.json").write_text(
-            json.dumps({"workspace_id": "WS-UUID", "slug": "checkout-refactor"}),
+            json.dumps({
+                "run_id": "test-run", "workspace_id": "WS-UUID",
+                "slug": "checkout-refactor", "launch_wave": pointer,
+            }),
             encoding="utf-8",
         )
         self.log = Path(self._tmp.name) / "cmux-calls.jsonl"
@@ -109,7 +152,7 @@ class Launch(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         self.assertEqual(out["surface_id"], "SURF-UUID")
-        self.assertEqual(out["label"], "Researcher Codebase2 (Codex) - grill-checkout-refactor")
+        self.assertEqual(out["label"], "Researcher Codebase2 - grill-checkout-refactor")
 
         calls = self.cmux_calls()
         self.assertEqual(len(calls), 2)
@@ -124,6 +167,45 @@ class Launch(PaneCtlCase):
         types = [event["type"] for event in self.events()]
         self.assertEqual(types, ["pane.launched", "pane.labeled"])
         self.assertEqual(self.events()[0]["data"]["lane"], "codebase2")
+
+    def test_wave_edited_without_restamping_its_identity_is_refused(self):
+        wave_path = self.run_dir / "launch-waves" / "wave.json"
+        wave = json.loads(wave_path.read_text(encoding="utf-8"))
+        wave["resolved_profiles"]["codebase2"]["detected_version"] = "0.0-tampered"
+        wave_path.write_text(json.dumps(wave), encoding="utf-8")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["launch_wave"]["sha256"] = hashlib.sha256(wave_path.read_bytes()).hexdigest()
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        proc = self.run_ctl(
+            "launch", "--run-dir", str(self.run_dir),
+            "--lane", "codebase2", "--anchor", "surface:5",
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("snapshot identity", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
+
+    def test_wave_rewritten_to_widen_the_codex_sandbox_is_refused(self):
+        wave_path = self.run_dir / "launch-waves" / "wave.json"
+        wave = json.loads(wave_path.read_text(encoding="utf-8"))
+        wave["resolved_profiles"]["codebase2"]["argv"][1:3] = ["-s", "danger-full-access"]
+        # Restamped as the most thorough tamper would, so only the argv rule can refuse it.
+        wave["snapshot_id"] = snapshot_identity(wave)
+        wave_path.write_text(json.dumps(wave), encoding="utf-8")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["launch_wave"]["sha256"] = hashlib.sha256(wave_path.read_bytes()).hexdigest()
+        state["launch_wave"]["snapshot_id"] = wave["snapshot_id"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        proc = self.run_ctl(
+            "launch", "--run-dir", str(self.run_dir),
+            "--lane", "codebase2", "--anchor", "surface:5",
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("violates adapter policy", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
 
     def test_unknown_lane_is_usage_error(self):
         proc = self.run_ctl(
@@ -147,6 +229,7 @@ class StartAgent(PaneCtlCase):
         # The marker is what keeps the lane pane out of the human's notification centre.
         self.assertTrue(command.startswith("CMUX_AGENT_MANAGED_SUBAGENT=1 codex "), command)
         self.assertIn("approvals_reviewer=auto_review", command)
+        self.assertIn("--model gpt-5.6-sol", command)
 
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["worker.launch_sent"])
@@ -158,7 +241,10 @@ class StartAgent(PaneCtlCase):
             "--surface", "SURF-UUID", "--lane", "web", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.cmux_calls()[0][-1], "CMUX_AGENT_MANAGED_SUBAGENT=1 claude")
+        self.assertEqual(
+            self.cmux_calls()[0][-1],
+            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model sonnet --effort medium",
+        )
 
 
 class Deliver(PaneCtlCase):
@@ -171,7 +257,7 @@ class Deliver(PaneCtlCase):
             "--lane", "web", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("LANE SCREEN", proc.stdout)
+        self.assertIn("PANE SCREEN", proc.stdout)
 
         verbs = [call[0] for call in self.cmux_calls()]
         self.assertEqual(verbs, ["send", "send-key", "read-screen"])

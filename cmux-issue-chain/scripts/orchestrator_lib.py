@@ -27,37 +27,6 @@ MINIMUM_WAIT_MINUTES = {"implement": 45, "simplify": 30, "test": 30, "review": 9
 # Deterministic pane labels per role (SKILL.md, CMUX Control).
 ROLE_LABELS = {"implement": "Implementer", "simplify": "Simplifier", "test": "Tester", "review": "Reviewer"}
 
-# Which binary runs which role (SKILL.md, CMUX Control).
-ROLE_WORKERS = {"implement": "codex", "simplify": "claude", "test": "codex", "review": "claude"}
-
-# cmux only silences notifications from panes it considers managed subagents
-# (`automation.suppressSubagentNotifications`, on by default). It infers that from process
-# ancestry, and a worker started by `cmux new-split` counts as a top-level agent — so without
-# this marker every turn end, idle reminder and approval prompt raises a desktop banner with
-# sound while the human is elsewhere. Undocumented cmux internal; if it ever stops working
-# the only symptom is that the noise returns.
-SUBAGENT_MARKER_ENV = "CMUX_AGENT_MANAGED_SUBAGENT=1"
-
-# Fixed startup commands per worker binary; policy, not a per-run choice (SKILL.md, CMUX
-# Control, explains what each Codex flag buys). Plain binaries, never the teams wrappers.
-WORKER_COMMANDS = {
-    "claude": "claude",
-    "codex": (
-        "codex -s workspace-write"
-        " -c sandbox_workspace_write.network_access=true"
-        " -c 'sandbox_workspace_write.writable_roots=[\"~/.ddev\"]'"
-        " --ask-for-approval on-request"
-        " -c approvals_reviewer=auto_review"
-        " -c check_for_update_on_startup=false"
-    ),
-}
-
-
-def launch_command(role: str) -> str:
-    """Shell line that starts a role's worker, marked so its pane stays notification-quiet."""
-    return f"{SUBAGENT_MARKER_ENV} {WORKER_COMMANDS[ROLE_WORKERS[role]]}"
-
-
 # Task framing is load-bearing, not style: a Claude worker reads "Read <path> and report back"
 # as a summarization request — it summarizes the prompt and waits — while Codex reads the same
 # line as a work order. One text for both binaries; explicit framing costs the Codex roles

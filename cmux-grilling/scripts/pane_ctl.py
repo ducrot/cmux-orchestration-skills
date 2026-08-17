@@ -7,8 +7,8 @@ focused workspace or an environment fallback. Verbs:
 
   workspace  print the pinned workspace id
   cmux       generic passthrough that injects --workspace into any cmux command
-  launch      new-split + deterministic lane label + pane.launched/pane.labeled events
-  start-agent send the lane's fixed launch command + worker.launch_sent event
+  launch      launch-wave check + new-split + deterministic label + pane lifecycle events
+  start-agent send the lane's prepared launch-wave command + worker.launch_sent event
   deliver     send + send-key enter + read-screen echo + worker.prompt_sent event
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
@@ -28,12 +28,17 @@ import sys
 import time
 from pathlib import Path
 
+from launch_wave import (
+    LaunchWaveError,
+    lane_launch_record,
+    lane_shell_command,
+    load_launchable_lane,
+)
 from orchestrator_lib import (
     DELIVERY_TEMPLATES,
     LANES,
     append_jsonl,
     delivery_text,
-    launch_command,
     read_json,
     utc_now,
 )
@@ -162,6 +167,9 @@ def cmd_cmux(args: argparse.Namespace) -> int:
 
 def cmd_launch(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
+    # Validate the entire immutable cohort before even resolving cmux. One missing, failed,
+    # mismatched, or tampered lane blocks every pane, so no partial layout can be created.
+    load_launchable_lane(run_dir, args.lane)
     workspace_id = pinned_workspace(run_dir)
     state = read_json(run_dir / "state.json")
     slug = state.get("slug", "unknown")
@@ -219,7 +227,8 @@ def send_submit_echo(
 
 
 def cmd_start_agent(args: argparse.Namespace) -> int:
-    command = launch_command(args.lane)
+    snapshot, lane_entry = load_launchable_lane(Path(args.run_dir), args.lane)
+    command = lane_shell_command(lane_entry)
     send_submit_echo(
         args,
         command,
@@ -229,6 +238,7 @@ def cmd_start_agent(args: argparse.Namespace) -> int:
             "lane": args.lane,
             "surface_id": args.surface,
             "command": command,
+            **lane_launch_record(snapshot, lane_entry),
         },
     )
     return 0
@@ -277,7 +287,11 @@ COMMANDS = {
 
 def main() -> int:
     args = build_parser().parse_args()
-    return COMMANDS[args.command](args)
+    try:
+        return COMMANDS[args.command](args)
+    except LaunchWaveError as error:
+        print(error, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -9,8 +9,15 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+from agents_config import (
+    ConfigError,
+    add_override_options,
+    add_probe_options,
+    supplied_configuration_inputs,
+)
 from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     append_jsonl,
@@ -20,6 +27,13 @@ from orchestrator_lib import (
     read_json,
     utc_now,
     write_json,
+)
+from worker_snapshot import (
+    ISSUE_WORKERS,
+    SnapshotError,
+    WORKFLOW,
+    persist_snapshot,
+    snapshot_from_args,
 )
 
 
@@ -38,12 +52,28 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--issue", required=True)
     init.add_argument("--run-id", help="Stable run id. Defaults to <issue-id>-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
+    init.add_argument(
+        "--config",
+        help="Explicit agents.json path (default: <git-root>/.scratch/orchestrator/agents.json)",
+    )
     init.add_argument("--workspace-id", help="cmux workspace UUID to pin. Defaults to $CMUX_WORKSPACE_ID")
     init.add_argument(
         "--no-workspace",
         action="store_true",
         help="Pin no workspace (offline runs outside cmux; cmux-scoped scripts will refuse to run)",
     )
+    add_override_options(init, workflow=WORKFLOW)
+    add_probe_options(init)
+
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="Reload configuration, preflight every role, and prepare one immutable stage snapshot",
+    )
+    prepare.add_argument("--run-dir", required=True)
+    prepare.add_argument("--stage", required=True, choices=ISSUE_WORKERS)
+    prepare.add_argument("--pass", dest="pass_num", required=True, type=int)
+    add_override_options(prepare, workflow=WORKFLOW)
+    add_probe_options(prepare)
 
     event = subparsers.add_parser("event", help="Append an event to run log")
     event.add_argument("--run-dir", required=True)
@@ -70,10 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def run_command(args: argparse.Namespace) -> int:
     if args.command == "init":
         return init_run(args)
+    if args.command == "prepare":
+        return prepare_stage(args)
     if args.command == "event":
         return append_event(args)
     if args.command == "gate":
@@ -83,6 +114,18 @@ def main() -> int:
     if args.command == "complete":
         return complete_run(args)
     raise AssertionError(args.command)
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        return run_command(args)
+    except ConfigError as error:
+        print(error, file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"run state operation failed: {error}", file=sys.stderr)
+        return 1
 
 
 def ensure_runs_root_ignored(runs_root: Path) -> None:
@@ -123,20 +166,41 @@ def init_run(args: argparse.Namespace) -> int:
     # keeps ids unique across re-runs without the mangled-timezone noise.
     run_id = args.run_id or RUN_ID_RE.sub("-", f"{issue.id}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
     runs_root = Path(args.runs_root)
-    ensure_runs_root_ignored(runs_root)
     run_dir = runs_root / run_id
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
+        # It also re-prepares nothing, so configuration inputs would be silently dropped.
+        if supplied_configuration_inputs(args, workflow=WORKFLOW):
+            raise SnapshotError(
+                f"run {run_id} already exists; configuration, typed-override, and live-probe "
+                "inputs belong to run_state.py prepare, not to re-initialization"
+            )
+        ensure_runs_root_ignored(runs_root)
         (run_dir / "prompts").mkdir(parents=True, exist_ok=True)
         (run_dir / "reports").mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "prompts").mkdir(exist_ok=True)
-    (run_dir / "reports").mkdir(exist_ok=True)
     # HITL issues get no worker chain: the orchestrator may assist (checklists,
     # verification, events), but every acting step belongs to the human.
     is_hitl = issue.type.upper() == "HITL"
+    prepared_snapshot = None
+    configuration_source = None
+    if not is_hitl:
+        source, prepared_snapshot = snapshot_from_args(
+            args,
+            run_id=run_id,
+            stage="implement",
+            pass_num=1,
+            config_source=args.config,
+            bootstrap=True,
+        )
+        configuration_source = str(source)
+
+    ensure_runs_root_ignored(runs_root)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompts").mkdir(exist_ok=True)
+    (run_dir / "reports").mkdir(exist_ok=True)
+    prepared_pointer = persist_snapshot(run_dir, prepared_snapshot) if prepared_snapshot else None
     state = {
         "run_id": run_id,
         "created_at": now,
@@ -146,6 +210,8 @@ def init_run(args: argparse.Namespace) -> int:
         "blocker_status": blocker_status(issue, issues),
         "ready": issue_ready(issue, issues),
         "chain": [] if is_hitl else ["implement", "simplify", "review", "test"],
+        "configuration_source": configuration_source,
+        "prepared_stage": prepared_pointer,
         "review_strategy": {
             "mode": "self_fix",
             "command": "/code-review max --fix",
@@ -166,7 +232,80 @@ def init_run(args: argparse.Namespace) -> int:
     }
     write_json(run_dir / "state.json", state)
     append_jsonl(run_dir / "events.jsonl", {"time": now, "type": "run.init", "state": state})
+    if prepared_pointer:
+        append_prepared_event(run_dir, prepared_pointer, prepared_snapshot)
     print(run_dir)
+    return 0
+
+
+def append_prepared_event(run_dir: Path, pointer: dict, snapshot: dict) -> None:
+    """Audit trail for a stage that became launchable."""
+    stage = pointer["stage"]
+    pass_num = pointer["pass"]
+    append_jsonl(
+        run_dir / "events.jsonl",
+        {
+            "time": pointer["prepared_at"],
+            "type": "stage.prepared",
+            "message": f"prepared {stage}-{pass_num} from validated live configuration",
+            "data": {
+                "stage": stage,
+                "pass": pass_num,
+                "snapshot_id": pointer["snapshot_id"],
+                "snapshot_sha256": pointer["sha256"],
+                "config_sha256": snapshot["config"]["sha256"],
+            },
+        },
+    )
+
+
+def prepare_stage(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    state_path = run_dir / "state.json"
+    if not state_path.is_file():
+        raise SnapshotError(f"No state.json under {run_dir} — run run_state.py init first")
+    state = read_json(state_path)
+    if state.get("current_stage") != args.stage:
+        raise SnapshotError(
+            f"cannot prepare {args.stage}: run current_stage is {state.get('current_stage')!r}"
+        )
+    if args.pass_num < 1:
+        raise SnapshotError("stage pass must be a positive integer")
+    run_id = state.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise SnapshotError("run has no run id and cannot prepare a worker stage")
+    source_text = state.get("configuration_source")
+    if not isinstance(source_text, str) or not source_text:
+        raise SnapshotError("run has no configuration source and cannot prepare a worker stage")
+
+    # Invalidate first. A failed refresh must never leave a previous snapshot launchable.
+    state["prepared_stage"] = None
+    state["updated_at"] = utc_now()
+    write_json(state_path, state)
+
+    _, snapshot = snapshot_from_args(
+        args,
+        run_id=run_id,
+        stage=args.stage,
+        pass_num=args.pass_num,
+        config_source=source_text,
+        bootstrap=False,
+    )
+    pointer = persist_snapshot(run_dir, snapshot)
+    # Preflight spans minutes of external probes, so re-read instead of writing the dict this
+    # command started from: a gate recorded meanwhile must not be erased, and a stage the run has
+    # already left must not become launchable.
+    state = read_json(state_path)
+    if state.get("current_stage") != args.stage:
+        raise SnapshotError(
+            f"run moved to {state.get('current_stage')!r} while {args.stage} was being prepared; "
+            "prepare the current stage instead"
+        )
+    state["prepared_stage"] = pointer
+    state["updated_at"] = pointer["prepared_at"]
+    write_json(state_path, state)
+    append_prepared_event(run_dir, pointer, snapshot)
+    print(json.dumps(pointer, sort_keys=True))
     return 0
 
 

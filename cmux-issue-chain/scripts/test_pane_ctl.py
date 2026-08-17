@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,26 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from agents_config import SUBAGENT_MARKER_ENV, SUBAGENT_MARKER_VALUE
 from orchestrator_lib import delivery_text
+from worker_snapshot import snapshot_identity, stage_argv
 
 SCRIPT = str(Path(__file__).parent / "pane_ctl.py")
 
-FAKE_CMUX = '''#!/usr/bin/env python3
-import json, os, sys
-with open(os.environ["FAKE_CMUX_LOG"], "a") as fh:
-    fh.write(json.dumps(sys.argv[1:]) + "\\n")
-args = sys.argv[1:]
-if "new-split" in args:
-    print(json.dumps({
-        "pane_id": "PANE-UUID", "pane_ref": "pane:9",
-        "surface_id": "SURF-UUID", "surface_ref": "surface:9",
-        "type": "terminal", "workspace_id": "WS-UUID", "workspace_ref": "workspace:1",
-    }))
-elif "read-screen" in args:
-    print("WORKER SCREEN")
-else:
-    print("OK")
-'''
+from test_support import FAKE_CMUX
 
 
 class PaneCtlCase(unittest.TestCase):
@@ -41,7 +30,13 @@ class PaneCtlCase(unittest.TestCase):
         self.run_dir = Path(self._tmp.name) / "run"
         self.run_dir.mkdir()
         (self.run_dir / "state.json").write_text(
-            json.dumps({"workspace_id": "WS-UUID", "issue": {"id": "ISSUE-001"}}),
+            json.dumps({
+                "run_id": "RUN-1",
+                "workspace_id": "WS-UUID",
+                "issue": {"id": "ISSUE-001"},
+                "current_stage": "implement",
+                "prepared_stage": None,
+            }),
             encoding="utf-8",
         )
         self.log = Path(self._tmp.name) / "cmux-calls.jsonl"
@@ -69,6 +64,75 @@ class PaneCtlCase(unittest.TestCase):
         if not path.is_file():
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def prepare_snapshot(self, role: str, pass_num: int = 1, *, status: str = "passed") -> Path:
+        profile = (
+            {"profile": "claude-opus-xhigh", "harness": "claude-code",
+             "requested_executable": "claude", "model": "opus", "effort": "xhigh"}
+            if role in {"review", "simplify"}
+            else {"profile": "codex-sol-xhigh", "harness": "codex",
+                  "requested_executable": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
+        )
+        selected = {
+            **profile,
+            # Deliberately different from argv[0]: the realpath is audit data, not the launch identity.
+            "resolved_executable": f"/audit/realpath/{profile['requested_executable']}",
+            "detected_version": "99.1-test",
+            "preflight": {"status": "passed"},
+            "entitlement": {"status": "unverified"},
+            "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
+        }
+        # Derived, so the fixture cannot drift from the safety policy the loader re-derives.
+        selected["argv"] = stage_argv(role, selected)
+        snapshot = {
+            "snapshot_version": 1,
+            "run_id": "RUN-1",
+            "stage": role,
+            "pass": pass_num,
+            "status": status,
+            "resolved_profiles": {
+                worker: {"entitlement": {"status": "unverified"}}
+                for worker in ("implement", "simplify", "review", "test")
+            },
+            "selected_worker": selected,
+        }
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        relative = Path("stage-snapshots") / f"{role}-{pass_num}.json"
+        path = self.run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        state["current_stage"] = role
+        state["prepared_stage"] = {
+            "stage": role,
+            "pass": pass_num,
+            "path": str(relative),
+            "sha256": digest,
+            "snapshot_id": snapshot["snapshot_id"],
+        }
+        (self.run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        return path
+
+    def restamp(self, path: Path, snapshot: dict) -> None:
+        """Rewrite a snapshot, its self-hash, and its pointer, as the most thorough tamper would.
+        Leaves only the content rule under test to refuse the launch."""
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["prepared_stage"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        state["prepared_stage"]["snapshot_id"] = snapshot["snapshot_id"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def assert_launch_refused(self, fragment: str, pass_num: int = 1) -> None:
+        proc = self.run_ctl(
+            "launch", "--run-dir", str(self.run_dir),
+            "--role", "implement", "--pass", str(pass_num), "--anchor", "surface:5",
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(fragment, proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
 
 
 class Workspace(PaneCtlCase):
@@ -118,6 +182,7 @@ class Injector(PaneCtlCase):
 
 class Launch(PaneCtlCase):
     def test_splits_labels_and_records_events(self):
+        self.prepare_snapshot("review")
         proc = self.run_ctl(
             "launch", "--run-dir", str(self.run_dir),
             "--role", "review", "--pass", "1", "--anchor", "surface:5",
@@ -152,9 +217,78 @@ class Launch(PaneCtlCase):
         )
         self.assertEqual(proc.returncode, 2)
 
+    def test_missing_snapshot_fails_before_cmux_creates_a_pane(self):
+        self.assert_launch_refused("no prepared stage snapshot")
+
+    def test_tampered_snapshot_fails_before_cmux_creates_a_pane(self):
+        path = self.prepare_snapshot("implement")
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+        self.assert_launch_refused("hash mismatch")
+
+    def test_stale_stage_mismatch_fails_before_cmux_creates_a_pane(self):
+        self.prepare_snapshot("implement")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["current_stage"] = "simplify"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        self.assert_launch_refused("stale")
+
+    def test_pass_mismatch_fails_before_cmux_creates_a_pane(self):
+        self.prepare_snapshot("implement", pass_num=1)
+
+        self.assert_launch_refused("mismatch", pass_num=2)
+
+    def test_snapshot_rewritten_to_launch_the_audited_realpath_is_refused(self):
+        path = self.prepare_snapshot("implement")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        snapshot["selected_worker"]["argv"][0] = snapshot["selected_worker"]["resolved_executable"]
+        self.restamp(path, snapshot)
+
+        self.assert_launch_refused("does not match its argument vector")
+
+    def test_snapshot_with_an_unusable_program_name_is_refused(self):
+        path = self.prepare_snapshot("implement")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        snapshot["selected_worker"]["argv"][0] = "-c"
+        snapshot["selected_worker"]["requested_executable"] = "-c"
+        self.restamp(path, snapshot)
+
+        self.assert_launch_refused("invalid program name")
+
+    def test_snapshot_edited_without_restamping_its_identity_is_refused(self):
+        path = self.prepare_snapshot("implement")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        snapshot["selected_worker"]["detected_version"] = "0.0-tampered"
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["prepared_stage"]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        self.assert_launch_refused("snapshot identity")
+
+    def test_snapshot_rewritten_to_widen_the_codex_sandbox_is_refused(self):
+        path = self.prepare_snapshot("implement")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        snapshot["selected_worker"]["argv"][1:3] = ["-s", "danger-full-access"]
+        self.restamp(path, snapshot)
+
+        self.assert_launch_refused("violates adapter policy")
+
+    def test_snapshot_without_an_executable_audit_record_is_refused(self):
+        path = self.prepare_snapshot("implement")
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+        del snapshot["selected_worker"]["detected_version"]
+        self.restamp(path, snapshot)
+
+        self.assert_launch_refused("audit record")
+
 
 class StartAgent(PaneCtlCase):
     def test_sends_marked_launch_command(self):
+        self.prepare_snapshot("implement")
         proc = self.run_ctl(
             "start-agent", "--run-dir", str(self.run_dir),
             "--surface", "SURF-UUID", "--role", "implement", "--pass", "1",
@@ -174,13 +308,46 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(events[0]["data"]["command"], command)
 
     def test_claude_role_gets_the_marker_too(self):
+        self.prepare_snapshot("review")
         proc = self.run_ctl(
             "start-agent", "--run-dir", str(self.run_dir),
             "--surface", "SURF-UUID", "--role", "review", "--pass", "1",
             "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.cmux_calls()[0][-1], "CMUX_AGENT_MANAGED_SUBAGENT=1 claude")
+        self.assertEqual(
+            self.cmux_calls()[0][-1],
+            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model opus --effort xhigh",
+        )
+
+    def test_argument_vector_is_shell_quoted_without_losing_boundaries(self):
+        # The policy argv carries JSON quoting the shell would otherwise eat.
+        path = self.prepare_snapshot("implement")
+        argv = json.loads(path.read_text(encoding="utf-8"))["selected_worker"]["argv"]
+
+        proc = self.run_ctl(
+            "start-agent", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--role", "implement", "--pass", "1",
+            "--settle-seconds", "0",
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        command = self.cmux_calls()[0][-1]
+        self.assertIn('sandbox_workspace_write.writable_roots=["~/.ddev"]', argv)
+        self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *argv])
+
+    def test_failed_snapshot_refuses_start_without_any_cmux_call(self):
+        self.prepare_snapshot("implement", status="failed")
+
+        proc = self.run_ctl(
+            "start-agent", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--role", "implement", "--pass", "1",
+            "--settle-seconds", "0",
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("snapshot status", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
 
 
 class Deliver(PaneCtlCase):
@@ -193,7 +360,7 @@ class Deliver(PaneCtlCase):
             "--role", "review", "--pass", "1", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("WORKER SCREEN", proc.stdout)
+        self.assertIn("PANE SCREEN", proc.stdout)
 
         verbs = [call[0] for call in self.cmux_calls()]
         self.assertEqual(verbs, ["send", "send-key", "read-screen"])

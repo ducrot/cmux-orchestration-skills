@@ -9,8 +9,24 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
+from agents_config import (
+    ConfigError,
+    add_override_options,
+    add_probe_options,
+    parse_overrides,
+    probe_options,
+    resolve_config_source,
+    supplied_configuration_inputs,
+)
+from launch_wave import (
+    LaunchWaveError,
+    WORKFLOW,
+    build_launch_wave,
+    persist_launch_wave,
+)
 from orchestrator_lib import (
     LANE_WAIT_MINUTES,
     LANES,
@@ -65,12 +81,18 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--max-questions", type=int, default=10)
     init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
     init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
+    init.add_argument(
+        "--config",
+        help="Explicit agents.json path (default: <git-root>/.scratch/orchestrator/agents.json)",
+    )
     init.add_argument("--workspace-id", help="cmux workspace UUID to pin. Defaults to $CMUX_WORKSPACE_ID")
     init.add_argument(
         "--no-workspace",
         action="store_true",
         help="Pin no workspace (offline runs outside cmux; cmux-scoped scripts will refuse to run)",
     )
+    add_override_options(init, workflow=WORKFLOW)
+    add_probe_options(init)
 
     event = subparsers.add_parser("event", help="Append an event to run log")
     event.add_argument("--run-dir", required=True)
@@ -115,8 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def run_command(args: argparse.Namespace) -> int:
     if args.command == "init":
         return init_run(args)
     if args.command == "event":
@@ -134,6 +155,17 @@ def main() -> int:
     if args.command == "pending-decisions":
         return print_pending_decisions(args)
     raise AssertionError(args.command)
+
+
+def main() -> int:
+    try:
+        return run_command(build_parser().parse_args())
+    except ConfigError as error:
+        print(error, file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"run state operation failed: {error}", file=sys.stderr)
+        return 1
 
 
 def ensure_runs_root_ignored(runs_root: Path) -> None:
@@ -230,10 +262,18 @@ def init_run(args: argparse.Namespace) -> int:
     # grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC): readable, sortable, never reused across runs.
     run_id = args.run_id or RUN_ID_RE.sub("-", f"grill-{slug}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
     runs_root = Path(args.runs_root)
-    ensure_runs_root_ignored(runs_root)
     run_dir = runs_root / run_id
+    overrides = parse_overrides(args, workflow=WORKFLOW)
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
+        # A grilling run has one immutable wave. Accepting these inputs here would pretend
+        # to apply them while retaining the old cohort, so require a new run instead.
+        if supplied_configuration_inputs(args, workflow=WORKFLOW):
+            raise LaunchWaveError(
+                f"run {run_id} already exists; configuration, typed-override, and live-probe "
+                "inputs require a new grilling run"
+            )
+        ensure_runs_root_ignored(runs_root)
         for name in ("prompts", "reports", "synthesis"):
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
@@ -241,10 +281,26 @@ def init_run(args: argparse.Namespace) -> int:
     # After the idempotent exit: a re-init must not re-detect, let alone stop on an ambiguity
     # that appeared after this run already recorded its output directory.
     tracker, output_dir = resolve_output(args)
+    probe_profiles, probe_timeout = probe_options(args)
+    source, agents, config_sha256 = resolve_config_source(args.config, bootstrap=True)
+    launch_wave = build_launch_wave(
+        run_id=run_id,
+        source=source,
+        config_sha256=config_sha256,
+        data=agents,
+        overrides=overrides,
+        probe_profiles=probe_profiles,
+        probe_timeout_seconds=probe_timeout,
+    )
+
+    # Publish only after every lane has resolved and every unique assigned executable has
+    # passed local preflight. A failure above leaves no launchable state for pane_ctl.py.
+    ensure_runs_root_ignored(runs_root)
     run_dir.mkdir(parents=True, exist_ok=True)
     for name in ("prompts", "reports", "synthesis"):
         (run_dir / name).mkdir(exist_ok=True)
     (run_dir / "task.md").write_text(task_text + "\n", encoding="utf-8")
+    launch_wave_pointer = persist_launch_wave(run_dir, launch_wave)
     state = {
         "run_id": run_id,
         "created_at": now,
@@ -255,6 +311,8 @@ def init_run(args: argparse.Namespace) -> int:
         "tracker": str(tracker) if tracker else None,
         "output_dir": str(output_dir),
         "lanes": {name: dict(config) for name, config in LANES.items()},
+        "configuration_source": str(source),
+        "launch_wave": launch_wave_pointer,
         "chain": ["research", "finalize"],
         "worker_wait_policy": {
             "missing_report_gate": "pending",
@@ -270,6 +328,20 @@ def init_run(args: argparse.Namespace) -> int:
     }
     write_json(run_dir / "state.json", state)
     append_jsonl(run_dir / "events.jsonl", {"time": now, "type": "run.init", "state": state})
+    append_jsonl(
+        run_dir / "events.jsonl",
+        {
+            "time": launch_wave_pointer["prepared_at"],
+            "type": "launch_wave.prepared",
+            "message": "prepared all four persistent research lanes from validated configuration",
+            "data": {
+                "snapshot_id": launch_wave_pointer["snapshot_id"],
+                "snapshot_sha256": launch_wave_pointer["sha256"],
+                "config_sha256": launch_wave["config"]["sha256"],
+                "lanes": list(LANES),
+            },
+        },
+    )
     print(run_dir)
     return 0
 
