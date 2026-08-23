@@ -327,6 +327,21 @@ as a `commit.proposed` event:
 The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
 active; the tree belongs to the worker until its report is captured and snapshotted.
 
+## Reporting to the Human
+
+Gate decisions, stage summaries, and the end-of-run report are technical status, not narration. The
+orchestrator writes them neutrally and precisely, in whichever language the human uses:
+
+- State what changed, what was checked, and what came out. Prefer counts, paths, file names, gate values,
+  and command outcomes to adjectives.
+- Do not evaluate the work — yours or a worker's. "clean", "solid", "exactly right", "the tricky half"
+  add no information the gate value and the test counts do not already carry.
+- No build-up and no closing flourish. The human is scanning for state and for the next decision.
+- An assessment is allowed when it prepares a decision the human has to make. Mark it as an assessment
+  and put the decision it serves at the end.
+- Relay worker findings unparaphrased, as the Review Self-Fix Policy already requires. Rewording a
+  finding is a form of evaluation, and a softened finding is how a real one gets dropped.
+
 ## Recommendations Triage
 
 Non-blocking `## Recommendations` from review and simplify reports must not silently evaporate. After
