@@ -78,6 +78,12 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(
             data["profiles"],
             {
+                "claude-opus-medium": {
+                    "harness": "claude-code",
+                    "executable": "claude",
+                    "model": "opus",
+                    "effort": "medium",
+                },
                 "claude-opus-xhigh": {
                     "harness": "claude-code",
                     "executable": "claude",
@@ -88,6 +94,12 @@ class AgentsConfigCli(unittest.TestCase):
                     "harness": "claude-code",
                     "executable": "claude",
                     "model": "sonnet",
+                    "effort": "medium",
+                },
+                "codex-sol-medium": {
+                    "harness": "codex",
+                    "executable": "codex",
+                    "model": "gpt-5.6-sol",
                     "effort": "medium",
                 },
                 "codex-sol-xhigh": {
@@ -418,7 +430,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(persisted["schema_version"], 1)
-        self.assertEqual(len(persisted["profiles"]), 4)
+        self.assertEqual(len(persisted["profiles"]), 6)
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))

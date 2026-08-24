@@ -71,6 +71,12 @@ def valid_executable_syntax(value: str) -> bool:
 DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "profiles": {
+        "claude-opus-medium": {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "opus",
+            "effort": "medium",
+        },
         "claude-opus-xhigh": {
             "harness": "claude-code",
             "executable": "claude",
@@ -81,6 +87,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "harness": "claude-code",
             "executable": "claude",
             "model": "sonnet",
+            "effort": "medium",
+        },
+        "codex-sol-medium": {
+            "harness": "codex",
+            "executable": "codex",
+            "model": "gpt-5.6-sol",
             "effort": "medium",
         },
         "codex-sol-xhigh": {

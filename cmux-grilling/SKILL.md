@@ -34,10 +34,12 @@ atomically creates the complete shared defaults and never changes an existing fi
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
 not launch workers or contact Claude Code, Codex, or any provider.
 
-The four shipped profiles are `claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`),
-`claude-sonnet-medium` (`claude-code`, `sonnet`, `medium`), `codex-sol-xhigh` (`codex`,
-`gpt-5.6-sol`, `xhigh`), and `codex-luna-medium` (`codex`, `gpt-5.6-luna`, `medium`). Grilling
-assigns those profiles to `codebase`, `web`, `codebase2`, and `docs`, respectively. The `opus`
+The six shipped profiles are `claude-opus-medium` (`claude-code`, `opus`, `medium`),
+`claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`), `claude-sonnet-medium` (`claude-code`,
+`sonnet`, `medium`), `codex-sol-medium` (`codex`, `gpt-5.6-sol`, `medium`),
+`codex-sol-xhigh` (`codex`, `gpt-5.6-sol`, `xhigh`), and `codex-luna-medium` (`codex`,
+`gpt-5.6-luna`, `medium`). Grilling assigns Opus/xhigh, Sol/xhigh, Luna/medium, and
+Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`, respectively. The `opus`
 and `sonnet` strings are intentionally moving provider aliases; deterministic selection of an
 alias does not pin the provider's underlying model version.
 

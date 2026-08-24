@@ -53,13 +53,13 @@ repository-only Python modules. From a target Git repository, `init` atomically 
 works outside Git, while `--repo <path>` anchors default discovery to that repository's Git root.
 The generated file is never overwritten, merged, or implicitly migrated.
 
-The defaults are Claude Opus/xhigh and Sonnet/medium plus Codex GPT-5.6 Sol/xhigh and
-Luna/medium. Issue-chain assigns Sol to implement/test and Opus to simplify/review. Grilling
-assigns Opus, Sol, Luna, and Sonnet to `codebase`, `codebase2`, `docs`, and `web`. Claude's `opus`
-and `sonnet` names are intentionally moving aliases; syntax-validating any local model string does
-not prove that the authenticated provider account is entitled to use it. Pi and Hermes are
-explicitly unsupported; their registry entries mark the code-owned adapter boundary for future
-support.
+The defaults provide Claude Opus at medium and xhigh effort, Sonnet/medium, Codex GPT-5.6 Sol at
+medium and xhigh effort, and Luna/medium. Issue-chain assigns Sol/xhigh to implement/test and
+Opus/xhigh to simplify/review. Grilling assigns Opus/xhigh, Sol/xhigh, Luna/medium, and
+Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`. Claude's `opus` and `sonnet` names are
+intentionally moving aliases; syntax-validating any local model string does not prove that the
+authenticated provider account is entitled to use it. Pi and Hermes are explicitly unsupported;
+their registry entries mark the code-owned adapter boundary for future support.
 
 Both workflows accept repeatable typed `--profile`, `--harness`, `--model`, `--effort`, and
 `--executable` overrides. Precedence is file assignment, then profile override, then direct field
