@@ -594,10 +594,12 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.assertEqual(self.gate("implement", "simplify").returncode, 0)
 
-        prepared = self.prepare("simplify", 1, "--harness", "simplify=codex")
+        # Every issue-chain worker accepts both supported harnesses, so the refusal that must
+        # precede pane creation is an unsupported adapter rather than a worker mismatch.
+        prepared = self.prepare("simplify", 1, "--harness", "simplify=pi")
 
         self.assertNotEqual(prepared.returncode, 0)
-        self.assertIn("not compatible", prepared.stderr)
+        self.assertIn("unsupported harness", prepared.stderr)
         self.assertIsNone(self.read_state()["prepared_stage"])
         self.assert_pane_launch_refused(self.run_dir, "simplify")
 

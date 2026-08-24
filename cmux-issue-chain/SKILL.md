@@ -1,6 +1,6 @@
 ---
 name: cmux-issue-chain
-description: Coordinate gated visible CMUX worker chains for local Markdown issue trackers. Use when an orchestrating agent needs to run AFK issues through implement, simplify/refactor, test, Claude Code review with /code-review --fix, reviewer self-fix handling, blocker handling, plan-drift handling, run-state logging, prompt rendering, worker report parsing, or cmux worker-pane workflows without directly editing product code.
+description: Coordinate gated visible CMUX worker chains for local Markdown issue trackers. Use when an orchestrating agent needs to run AFK issues through implement, simplify/refactor, test, harness-aware code review (Claude Code /code-review --fix or an inline review pass on other harnesses), reviewer self-fix handling, blocker handling, plan-drift handling, run-state logging, prompt rendering, worker report parsing, or cmux worker-pane workflows without directly editing product code.
 ---
 
 # CMUX Orchestrator
@@ -93,9 +93,9 @@ prompt delivery, or other runtime safety overrides.
 - Require workers to write structured reports to their exact rendered report handoff paths and return the
   same report body in the console. That exact report file is the only orchestration lifecycle state a worker
   may write; all other run state remains orchestrator-owned.
-- Allow code-writing worker roles only for implementation, simplify/refactor, and code review when invoked with `/code-review --fix`. Test workers must inspect, run checks, and report findings without product-code edits.
-- Allow simplify/refactor workers to apply behavior-preserving `/simplify` refactorings themselves. They must not implement missing feature scope, change acceptance behavior, or perform broad hardening outside the issue.
-- Allow review workers to apply `/code-review --fix` changes themselves. They must not broaden scope, implement unrelated features, or hand unresolved findings back to the implementer for another automatic loop.
+- Allow code-writing worker roles only for implementation, simplify/refactor, and code review in its self-fix pass. Test workers must inspect, run checks, and report findings without product-code edits.
+- Allow simplify/refactor workers to apply behavior-preserving refactorings from their simplify pass themselves. They must not implement missing feature scope, change acceptance behavior, or perform broad hardening outside the issue.
+- Allow review workers to apply the safe fixes from their review pass themselves. They must not broaden scope, implement unrelated features, or hand unresolved findings back to the implementer for another automatic loop.
 - Stop the affected chain when an issue is `HITL`, blocked by unfinished prerequisites, or has an unresolved blocker.
 - Start workers visibly in CMUX panes. Do not substitute hidden subagents, background shells, or non-CMUX subprocess workers for live orchestration.
 
@@ -105,29 +105,32 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 
 1. Implement with Codex. Testing is anchored here: the implementer proves the change with regression tests
    that fail without it and an end-to-end execution of the changed path.
-2. Simplify/refactor with Claude Code using `/simplify`, applying behavior-preserving refactorings when appropriate.
+2. Simplify/refactor, applying behavior-preserving refactorings when appropriate. On Claude Code the
+   worker runs `/simplify`; on any other harness the rendered prompt spells out the same pass inline.
 3. Orchestrator quick-check — an orchestrator step, not a worker pane: before recording the simplify gate,
    re-run the tracker's canonical check commands yourself (see Canonical Check Commands) and record an
    `orchestrator.verified` event with commands and outcomes. A red suite makes the simplify gate `stop`
    regardless of what the report claims.
-4. Code review with Claude Code using `/code-review max --fix`, applying review fixes when appropriate.
+4. Code review, applying review fixes when appropriate. On Claude Code the worker runs
+   `/code-review max --fix`; on any other harness the rendered prompt spells out a three-axis review pass
+   (standards with a smell baseline, spec, correctness) inline.
 5. Final test with Codex.
 
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
 There is deliberately no test worker between simplify and review: it would re-run the suite the simplifier
-already ran before and after its changes, and `/code-review max` reviews the full working diff, simplify
+already ran before and after its changes, and the review pass covers the full working diff, simplify
 changes included — in the pilot runs a post-simplify tester found nothing three times while the one real
 gap sailed past it and was caught by review. The final test after review is the one that stays: it is the
 only check after the last code-changing stage, and reviewers must not accept their own fixes.
 
-Simplify is an editing role, not a passive reviewer. If Claude Code's `/simplify` proposes behavior-preserving cleanup within the current issue scope, the simplify worker may apply it and must report changed files plus the checks used to confirm behavior preservation.
+Simplify is an editing role, not a passive reviewer. If the simplify pass proposes behavior-preserving cleanup within the current issue scope, the simplify worker may apply it and must report changed files plus the checks used to confirm behavior preservation.
 
-Review is an editing role, not a passive reviewer. If Claude Code's `/code-review max --fix` finds fixable review findings within the current issue scope, the review worker may apply those fixes and must report changed files plus the checks used to validate them.
+Review is an editing role, not a passive reviewer. If the review pass finds fixable review findings within the current issue scope, the review worker may apply those fixes and must report changed files plus the checks used to validate them.
 
 ## Review Self-Fix Policy
 
-Run review with `/code-review max --fix`. The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
+Run review as a self-fix pass (`/code-review max --fix` on Claude Code, the inline three-axis pass elsewhere). The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
 
 Self-fix has an intent boundary. A finding that challenges a documented issue decision — the issue's
 "What to build", its acceptance criteria, or a recorded plan change — is `Recommendation: ask-user`, not
@@ -174,7 +177,7 @@ malformed and yields `hitl`. An omitted section never reads as `None`.
 
 Review reports must separate blocking findings from non-blocking recommendations. Only `Recommendation: must-fix` and `Recommendation: ask-user` items belong in `## Findings`. Low-risk cleanup, broader hardening, speculative edge cases, and nice-to-have improvements belong in `## Recommendations` and must not block the gate by themselves.
 
-Unresolved must-fix or ask-user findings after the review worker's own `/code-review --fix` pass become HITL. Do not launch another implementer or second reviewer automatically. Any blocker stops the issue chain and must be recorded in the issue and run log. Any major plan drift becomes a HITL blocker.
+Unresolved must-fix or ask-user findings after the review worker's own self-fix pass become HITL. Do not launch another implementer or second reviewer automatically. Any blocker stops the issue chain and must be recorded in the issue and run log. Any major plan drift becomes a HITL blocker.
 
 ### Formatting failures: request re-emission, never override
 
@@ -235,7 +238,7 @@ Default minimum waits before intervention:
 - Tester: 30 minutes
 - Reviewer: 90 minutes
 
-Claude Code review with `/code-review max --fix` can legitimately take 15 minutes or longer. Do not interrupt or fail a review worker just because no report appears during that window.
+A review pass (`/code-review max --fix` on Claude Code in particular) can legitimately take 15 minutes or longer. Do not interrupt or fail a review worker just because no report appears during that window.
 
 ### Armed watcher, not polling
 
@@ -315,8 +318,8 @@ every rendered prompt carries it. Before launching the first worker of a run, ve
 starting the chain. Workers never switch branches. Dependent issues (later issues consuming earlier ones'
 changes) are the normal case and are why the branch is shared across the tracker.
 
-The orchestrator never commits product code, and the chain runs on a dirty working tree — `/simplify` and
-`/code-review --fix` operate on the working diff, so nothing is committed until the chain completes. After
+The orchestrator never commits product code, and the chain runs on a dirty working tree — the simplify and
+review passes operate on the working diff, so nothing is committed until the chain completes. After
 the final `advance` gate and `run_state.py complete`, prepare a commit proposal for the human and record it
 as a `commit.proposed` event:
 
@@ -398,11 +401,14 @@ still appears in the Feed and in `surface-health`; only the banners are gone. Su
 is noise, never a broken run.
 
 The defaults use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review
-workers. Typed preparation overrides may select Claude Code or Codex for implement and test; simplify and review
-remain Claude Code-only. Never use `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open
+workers. Typed preparation overrides may select Claude Code or Codex for every role. Simplify and review default
+to Claude Code because its bundled `/simplify` and `/code-review max --fix` fan out internal review agents; on
+Codex the same duties are rendered inline as a single-agent pass, which is a deliberate, weaker substitute the
+operator opts into per run or per tracker config. `render_prompt.py` reads the harness from the prepared stage
+snapshot, so the prompt variant and the launch command cannot disagree. Never use `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open
 worker-spawned subagents as extra cmux panes, and those splits anchor to the focused workspace instead of the worker's workspace: while the human works in another
-workspace, subagent panes land there. Plain launches keep subagents internal to the worker's own TUI; `/simplify`
-and `/code-review max --fix` need no teams mode. The worker pane stays the visible unit of orchestration, and cmux
+workspace, subagent panes land there. Plain launches keep subagents internal to the worker's own TUI; neither the
+simplify nor the review pass needs teams mode. The worker pane stays the visible unit of orchestration, and cmux
 pane integration (hooks, notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
 
 ### Pinned workspace, deterministic pane control
@@ -502,9 +508,9 @@ surface UUID in the `pane.launched` event.
 Use this pane layout for the default chain:
 
 - Implement: first worker pane may be opened from the orchestrator pane.
-- Simplify: keep the implementer pane open and place the Claude pane to the right (preferred) or down of that implementer pane.
-- Review after simplify: keep the simplify pane open and place the Claude review pane to the right (preferred) or down of that simplify pane. The orchestrator quick-check between them opens no pane.
-- Final test after review: keep the review pane open and place the Codex test pane to the right (preferred) or down of that review pane.
+- Simplify: keep the implementer pane open and place the simplify pane to the right (preferred) or down of that implementer pane.
+- Review after simplify: keep the simplify pane open and place the review pane to the right (preferred) or down of that simplify pane. The orchestrator quick-check between them opens no pane.
+- Final test after review: keep the review pane open and place the test pane to the right (preferred) or down of that review pane.
 
 Do not open simplify, review, or test as down splits from the orchestrator pane just because the orchestrator pane is active after gate processing.
 
@@ -515,7 +521,9 @@ Close completed worker panes promptly:
 3. Parse the report and record the gate/event state.
 4. If the chain continues, run `run_state.py prepare --stage <next-role> --pass <n>`. This reloads and
    validates live configuration and publishes the only snapshot that `pane_ctl.py` may launch. A failed
-   preparation stops before CMUX creates a pane.
+   preparation stops before CMUX creates a pane. Render the next prompt only after this step:
+   `render_prompt.py` refuses to run without the prepared snapshot, because the harness it targets comes
+   from there.
 5. Split the next worker pane anchored to the just-completed worker pane while it
    is still visible (`pane_ctl.py launch --anchor <completed-surface>`). Prefer `right` splits: every
    stacked down-split halves the remaining height, and a too-short pane cannot render its composer at all.
@@ -717,7 +725,11 @@ Close a run after the final `advance` gate (or after a HITL issue is fully verif
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/<run-id> --message "chain complete, issue done 10/10"
 ```
 
-Render role prompts. `--pass` is required and determines both handoff paths. The tracker README's
+Render role prompts. `--pass` is required and determines both handoff paths. The prompt's harness variant
+comes from the prepared stage snapshot for that role and pass (`init` prepares `implement-1`, `prepare` every
+later stage), so rendering before preparation fails; the prompt header records `Harness:` and `Stage snapshot:`.
+Implement and test prompts are identical across harnesses; simplify and review switch between Claude Code's
+bundled skills and the inline passes. The tracker README's
 ground-rules section (any `##` heading containing "ground rules") and the tracker's `decisions.md` triage
 ledger (when present) are embedded into every prompt automatically. Pass every earlier report of the
 current pass with `--context-file` (repeatable), per the context-files rule in CMUX Control:
@@ -771,6 +783,7 @@ python3 scripts/test_issue_state.py
 python3 scripts/test_adopt_tracker.py
 python3 scripts/test_agents_config.py
 python3 scripts/test_stage_preparation.py
+python3 scripts/test_render_prompt.py
 python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
 python3 scripts/issue_state.py list --tracker .scratch/<tracker>
 python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
@@ -830,7 +843,8 @@ in `## Plan Drift` — the parser gates `hitl` from that section alone. `FINDING
 `## Findings` section is a contradiction, not a convention. The allowed `## Result` values stay
 `NO FINDINGS`, `FINDINGS`, `BLOCKER`.
 
-For review workers, require severity and recommendation triage:
+For review workers, require severity and recommendation triage. The first check line names the pass the
+harness ran: `/code-review max --fix` on Claude Code, `review pass (standards, spec, correctness)` elsewhere:
 
 ```markdown
 ## Result
@@ -841,7 +855,7 @@ NO FINDINGS
 - `command`: outcome
 
 ## Change Summary
-- None, or concise list of review fixes applied by `--fix`.
+- None, or concise list of review fixes applied by the review pass.
 
 ## Findings
 - None
@@ -856,14 +870,15 @@ NO FINDINGS
 - None
 ```
 
-`## Findings` follows the bare-`None` rule; remaining must-fix and ask-user findings after `--fix` replace
+`## Findings` follows the bare-`None` rule; remaining must-fix and ask-user findings after the self-fix pass replace
 the `- None` line entirely, each with Severity (critical|high|medium|low), `Recommendation: must-fix` or
 `Recommendation: ask-user` (ask-user when the finding challenges a documented issue decision — the
 reviewer must not fix those), Scope (acceptance|regression|security|data-safety|other), file/line
 Evidence, and a concrete suggested fix.
 `## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose.
 
-For simplify/refactor workers, require Claude Code's built-in simplify workflow:
+For simplify/refactor workers, require the simplify pass to be reported as a check (`/simplify` on Claude
+Code, `simplify pass` elsewhere):
 
 ```markdown
 ## Tests / Checks

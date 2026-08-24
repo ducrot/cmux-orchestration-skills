@@ -9,8 +9,15 @@ import re
 from pathlib import Path
 
 from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
+from worker_snapshot import SnapshotError, load_launchable_snapshot
 
 
+ROLES = ("implement", "simplify", "review", "test")
+CLAUDE_CODE = "claude-code"
+
+# Role rules keyed by harness. Implement and test are harness-neutral. Simplify and review
+# drive Claude Code's bundled skills when the worker runs there; any other harness gets the
+# same duties spelled out inline, because no other harness ships /simplify or /code-review.
 ROLE_RULES = {
     "implement": (
         "You are the implementation worker. You may edit product code and tests needed "
@@ -41,6 +48,57 @@ ROLE_RULES = {
         "in Recommendations."
     ),
 }
+PORTABLE_ROLE_RULES = {
+    "simplify": (
+        "You are the simplify/refactor worker. You may edit product code to reduce complexity "
+        "without changing behavior. Run the simplify pass described in the contract below, apply "
+        "behavior-preserving refactorings when they are within the issue scope, and report changed files "
+        "plus verification. Do not broaden scope. This role runs after every implementation pass."
+    ),
+    "review": (
+        "You are the code review worker. You may edit product code to apply safe review fixes before "
+        "writing the final report. Run the three-axis review pass described in the contract below, apply "
+        "safe review fixes inside the issue scope, classify any remaining issues by severity and "
+        "recommendation, and put only unresolved must-fix and ask-user items in Findings. Never fix a "
+        "finding that contradicts a documented issue decision — report it as ask-user instead. Put "
+        "nice-to-have or broader hardening in Recommendations."
+    ),
+}
+
+# Review check line and fix label differ by harness; the triage rules below them do not.
+REVIEW_CHECK_LINE = {CLAUDE_CODE: "`/code-review max --fix`"}
+REVIEW_FIX_LABEL = {CLAUDE_CODE: "`--fix`"}
+PORTABLE_REVIEW_CHECK_LINE = "`review pass (standards, spec, correctness)`"
+PORTABLE_REVIEW_FIX_LABEL = "the review pass"
+
+# Fowler smells (Refactoring, ch. 3) as a fixed judgement-call baseline for the portable review
+# pass. Documented repo standards override it; skip anything tooling already enforces.
+SMELL_BASELINE = """- Mysterious Name: a name that does not reveal what it does or holds -> rename.
+- Duplicated Code: the same logic shape in more than one hunk or file -> extract and share.
+- Feature Envy: a method reaching into another object's data more than its own -> move it.
+- Data Clumps: the same few fields or params always travelling together -> bundle into one type.
+- Primitive Obsession: a primitive standing in for a domain concept -> give it a small type.
+- Repeated Switches: the same switch/if-cascade recurring across the change -> polymorphism or one shared map.
+- Shotgun Surgery: one logical change forcing scattered edits across many files -> gather into one module.
+- Divergent Change: one module edited for several unrelated reasons -> split by reason.
+- Speculative Generality: abstraction or hooks for needs the spec does not have -> delete, inline back.
+- Message Chains: long a.b().c().d() navigation -> hide behind one method on the first object.
+- Middle Man: a unit that mostly delegates onward -> cut it, call the target directly.
+- Refused Bequest: an implementer ignoring most of what it inherits -> composition instead."""
+
+
+def role_rules(role: str, harness: str) -> str:
+    if harness != CLAUDE_CODE and role in PORTABLE_ROLE_RULES:
+        return PORTABLE_ROLE_RULES[role]
+    return ROLE_RULES[role]
+
+
+def review_check_line(harness: str) -> str:
+    return REVIEW_CHECK_LINE.get(harness, PORTABLE_REVIEW_CHECK_LINE)
+
+
+def review_fix_label(harness: str) -> str:
+    return REVIEW_FIX_LABEL.get(harness, PORTABLE_REVIEW_FIX_LABEL)
 
 
 def parser_path() -> str:
@@ -60,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tracker", required=True, help="Tracker directory, e.g. .scratch/<tracker>")
     parser.add_argument("--issue", required=True)
-    parser.add_argument("--role", choices=sorted(ROLE_RULES), required=True)
+    parser.add_argument("--role", choices=ROLES, required=True)
     parser.add_argument("--pass", dest="pass_number", type=positive_int, required=True, help="Pass number, 1-based")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--out", help="Prompt path. Defaults to run-dir/prompts/<role>-<pass>.md")
@@ -91,6 +149,13 @@ def main() -> int:
         raise SystemExit(f"{issue.id} is not ready: {blockers}")
 
     run_dir = Path(args.run_dir)
+    # The prepared stage snapshot is the only source for the worker's harness, so the prompt
+    # text and the launch command cannot drift apart. Render after run_state.py prepare.
+    try:
+        snapshot = load_launchable_snapshot(run_dir, args.role, args.pass_number)
+    except SnapshotError as error:
+        raise SystemExit(f"cannot render {args.role}-{args.pass_number}: {error}")
+    harness = snapshot["selected_worker"]["harness"]
     stem = f"{args.role}-{args.pass_number}"
     out = Path(args.out) if args.out else run_dir / "prompts" / f"{stem}.md"
     report_path = Path(args.report_path) if args.report_path else run_dir / "reports" / f"{stem}.md"
@@ -107,6 +172,8 @@ def main() -> int:
         args.pass_number,
         tracker_ground_rules(tracker),
         tracker_decisions(tracker),
+        harness=harness,
+        snapshot_id=snapshot["snapshot_id"],
     )
     out.write_text(prompt, encoding="utf-8")
     print(out)
@@ -124,10 +191,12 @@ def render(
     pass_number: int = 1,
     ground_rules: str = "",
     decisions: str = "",
+    harness: str = CLAUDE_CODE,
+    snapshot_id: str | None = None,
 ) -> str:
     context_files = context_files or []
     context = render_context(context_files)
-    review_contract = render_review_contract() if role == "review" else ""
+    review_contract = render_review_contract(harness) if role == "review" else ""
     prompt_path_text = str(prompt_path) if prompt_path else "(not provided)"
     report_path_text = str(report_path) if report_path else "(not provided)"
     ground_rules_block = f"\n## Tracker Ground Rules\n\nThese rules bind every worker on this tracker:\n\n{ground_rules}\n" if ground_rules else ""
@@ -143,8 +212,10 @@ final report to the handoff path below.
 
 Created: {utc_now()}
 Pass: {pass_number}
+Harness: {harness}
+Stage snapshot: {snapshot_id or "(not provided)"}
 
-{ROLE_RULES[role]}
+{role_rules(role, harness)}
 
 ## Handoff Paths
 
@@ -165,7 +236,7 @@ Pass: {pass_number}
 - The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes and belong to the human.
 - Use the canonical check commands declared in the tracker ground rules as the baseline suite. Narrower targeted checks may be added, but never substitute a different suite.
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
-{role_specific_contract(role)}
+{role_specific_contract(role, harness)}
 {ground_rules_block}{decisions_block}
 ## Blocker Status
 
@@ -231,29 +302,11 @@ Do not delete or replace the handoff report with a summary.
 """
 
 
-def role_specific_contract(role: str) -> str:
+def role_specific_contract(role: str, harness: str = CLAUDE_CODE) -> str:
     if role == "review":
-        return (
-            "- Run `/code-review max --fix` in Claude Code against the current working diff.\n"
-            "- Apply safe fixes produced by `/code-review --fix` when they stay inside the current issue scope.\n"
-            "- Include a `## Change Summary` section listing changed files and fixes applied by `--fix`.\n"
-            "- Classify every remaining issue with `Severity` and `Recommendation`.\n"
-            "- `Recommendation: must-fix` is for objective correctness, regression, security, or data-safety issues. "
-            "`Recommendation: ask-user` is for findings that challenge a documented issue decision (What to build, "
-            "acceptance criteria, recorded plan changes): never apply a fix that undoes such a decision, even a safe "
-            "one — report it verbatim for the human.\n"
-            "- Put only unresolved `Recommendation: must-fix` and `Recommendation: ask-user` items in `## Findings`.\n"
-            "- Put low-risk cleanup, speculative edge cases, broader hardening, and nice-to-have items in `## Recommendations`.\n"
-            "- Do not hand findings back to the implementer for an automatic fix loop.\n"
-            "- Do not create an unbounded hardening review; focus on acceptance criteria, regressions, security/data-safety, and prior must-fix closure."
-        )
+        return review_contract_lines(harness)
     if role == "simplify":
-        return (
-            "- Run `/simplify` in Claude Code and report the outcome under `## Tests / Checks`.\n"
-            "- Apply behavior-preserving `/simplify` refactorings yourself when they stay inside the current issue scope.\n"
-            "- Include a `## Change Summary` section listing changed files and the behavior-preserving refactorings applied.\n"
-            "- Preserve behavior. If simplification would require design, acceptance, or scope changes, report it instead of editing."
-        )
+        return simplify_contract_lines(harness)
     if role == "test":
         return "- Do not edit product code. If a check requires setup, report the exact setup gap instead of patching."
     return (
@@ -261,6 +314,72 @@ def role_specific_contract(role: str) -> str:
         "- Prove your change: add or extend regression tests and verify at least one fails without the change; state that verification in the report.\n"
         "- Run the full relevant suite and execute the changed path end-to-end; list both under `## Tests / Checks`."
     )
+
+
+def review_contract_lines(harness: str) -> str:
+    if harness == CLAUDE_CODE:
+        head = (
+            "- Run `/code-review max --fix` in Claude Code against the current working diff.\n"
+            "- Apply safe fixes produced by `/code-review --fix` when they stay inside the current issue scope.\n"
+        )
+    else:
+        head = (
+            "- Review the current working diff yourself: `git diff HEAD` plus untracked files, with `HEAD` as the "
+            "fixed point. The spec is the issue embedded in this prompt (What to build, acceptance criteria, "
+            "recorded plan changes). Never ask for a fixed point or a spec location.\n"
+            "- Run three review axes and keep their findings separate; do not rerank one axis against another:\n"
+            "  - Standards: does the diff follow the repo's documented standards (AGENTS.md, CLAUDE.md, "
+            "CONTRIBUTING.md, coding-standard docs, tracker ground rules) plus the smell baseline below? A "
+            "documented repo standard overrides the baseline; baseline smells are judgement calls; skip anything "
+            "tooling already enforces.\n"
+            "  - Spec: requirements that are missing or partial, behavior nobody asked for (scope creep), and "
+            "requirements that look implemented but wrong. Quote the spec line for each finding.\n"
+            "  - Correctness: regressions, security, data-safety, and closure of prior must-fix findings from the "
+            "context reports.\n"
+            "- Smell baseline for the Standards axis:\n"
+            f"{indent_block(SMELL_BASELINE)}\n"
+            "- Apply safe fixes from all three axes yourself when they stay inside the current issue scope, then "
+            "re-run the baseline suite.\n"
+        )
+    fix = review_fix_label(harness)
+    return head + (
+        f"- Include a `## Change Summary` section listing changed files and fixes applied by {fix}.\n"
+        "- Classify every remaining issue with `Severity` and `Recommendation`.\n"
+        "- `Recommendation: must-fix` is for objective correctness, regression, security, or data-safety issues. "
+        "`Recommendation: ask-user` is for findings that challenge a documented issue decision (What to build, "
+        "acceptance criteria, recorded plan changes): never apply a fix that undoes such a decision, even a safe "
+        "one — report it verbatim for the human.\n"
+        "- Put only unresolved `Recommendation: must-fix` and `Recommendation: ask-user` items in `## Findings`.\n"
+        "- Put low-risk cleanup, speculative edge cases, broader hardening, and nice-to-have items in `## Recommendations`.\n"
+        "- Do not hand findings back to the implementer for an automatic fix loop.\n"
+        "- Do not create an unbounded hardening review; focus on acceptance criteria, regressions, security/data-safety, and prior must-fix closure."
+    )
+
+
+def simplify_contract_lines(harness: str) -> str:
+    if harness == CLAUDE_CODE:
+        head = (
+            "- Run `/simplify` in Claude Code and report the outcome under `## Tests / Checks`.\n"
+            "- Apply behavior-preserving `/simplify` refactorings yourself when they stay inside the current issue scope.\n"
+        )
+    else:
+        head = (
+            "- Run a simplify pass yourself over the current working diff (`git diff HEAD` plus untracked files) "
+            "and report its outcome under `## Tests / Checks` as `simplify pass`. Look for: logic an existing "
+            "helper already covers (reuse), needless indirection or over-general abstractions (simplification), "
+            "obvious inefficiencies on the changed path (efficiency), and code sitting at the wrong abstraction "
+            "level (altitude). This is a quality pass, not a bug hunt; leave correctness to the review stage.\n"
+            "- Apply behavior-preserving refactorings yourself when they stay inside the current issue scope, and "
+            "run the baseline suite before and after.\n"
+        )
+    return head + (
+        "- Include a `## Change Summary` section listing changed files and the behavior-preserving refactorings applied.\n"
+        "- Preserve behavior. If simplification would require design, acceptance, or scope changes, report it instead of editing."
+    )
+
+
+def indent_block(text: str, prefix: str = "  ") -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
 
 
 def tracker_decisions(tracker: Path) -> str:
@@ -295,8 +414,10 @@ def render_context(context_files: list[Path]) -> str:
     return "".join(chunks)
 
 
-def render_review_contract() -> str:
-    return """
+def render_review_contract(harness: str = CLAUDE_CODE) -> str:
+    check = review_check_line(harness)
+    fix = review_fix_label(harness)
+    return f"""
 
 Review workers **extend** the contract above; they do not replace it. Keep every section listed there,
 including `## Blockers` and `## Plan Drift`. A report missing a required section is treated as malformed
@@ -304,11 +425,11 @@ and stops the chain as HITL. Add these sections and this stricter findings triag
 
 ```markdown
 ## Tests / Checks
-- `/code-review max --fix`: outcome
+- {check}: outcome
 - `command`: outcome
 
 ## Change Summary
-- None, or concise list of review fixes applied by `--fix`.
+- None, or concise list of review fixes applied by {fix}.
 
 ## Findings
 - None
@@ -317,7 +438,7 @@ and stops the chain as HITL. Add these sections and this stricter findings triag
 - None, or non-blocking nice-to-have/follow-up items.
 ```
 
-`## Findings` follows the bare-`None` rule above. Remaining must-fix findings after `--fix` replace the
+`## Findings` follows the bare-`None` rule above. Remaining must-fix findings after {fix} replace the
 `- None` line entirely, each with:
 
 - Severity: critical|high|medium|low

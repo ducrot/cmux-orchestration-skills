@@ -283,16 +283,6 @@ class AgentsConfigCli(unittest.TestCase):
         )
 
         changed = copy.deepcopy(default)
-        changed["workflows"]["issue-chain"]["review"] = "codex-sol-xhigh"
-        cases.append(
-            (
-                "incompatible-review",
-                changed,
-                ("workflow=issue-chain", "worker=review", "profile=codex-sol-xhigh", "not compatible"),
-            )
-        )
-
-        changed = copy.deepcopy(default)
         changed["workflows"]["grilling"]["web"] = "codex-luna-medium"
         cases.append(
             (
@@ -345,7 +335,9 @@ class AgentsConfigCli(unittest.TestCase):
             ("issue-chain", "implement", "claude-code"),
             ("issue-chain", "implement", "codex"),
             ("issue-chain", "simplify", "claude-code"),
+            ("issue-chain", "simplify", "codex"),
             ("issue-chain", "review", "claude-code"),
+            ("issue-chain", "review", "codex"),
             ("issue-chain", "test", "claude-code"),
             ("issue-chain", "test", "codex"),
             ("grilling", "codebase", "claude-code"),

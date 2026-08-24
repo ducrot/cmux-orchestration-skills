@@ -30,8 +30,8 @@ PROFILE_FIELDS = {"harness", "executable", "model", "effort"}
 COMPATIBLE_HARNESSES = {
     "issue-chain": {
         "implement": {"claude-code", "codex"},
-        "simplify": {"claude-code"},
-        "review": {"claude-code"},
+        "simplify": {"claude-code", "codex"},
+        "review": {"claude-code", "codex"},
         "test": {"claude-code", "codex"},
     },
     "grilling": {

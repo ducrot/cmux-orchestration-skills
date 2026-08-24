@@ -17,7 +17,7 @@ LANE_RULES = {
     "codebase": (
         "You are the codebase researcher. Answer every question exclusively from this "
         "repository: source code, configuration, local docs, and git history. Use read-only "
-        "repo tools (Read, Grep, Glob, read-only git commands). Do not use web search or web "
+        "repo tools (file reading, content search, file globbing, read-only git commands). Do not use web search or web "
         "fetch. Cite real, resolvable file paths relative to the repo root under `## Sources`."
     ),
     "codebase2": (
