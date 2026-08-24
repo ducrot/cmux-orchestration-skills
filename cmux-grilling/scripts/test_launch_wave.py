@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+AGENTS_CONFIG = SCRIPT_DIR / "agents_config.py"
 RUN_STATE = SCRIPT_DIR / "run_state.py"
 PANE_CTL = SCRIPT_DIR / "pane_ctl.py"
 
@@ -97,6 +98,9 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.cmux_log = self.root / "cmux.jsonl"
         self.write_marker = self.root / "probe-write"
         self.runs_root = self.repo / ".scratch" / "orchestrator" / "runs"
+        self.config_path = self.repo / ".scratch" / "orchestrator" / "agents.json"
+        initialized = self.initialize_config(self.config_path)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -118,6 +122,15 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             [sys.executable, str(RUN_STATE), *args],
             cwd=self.repo,
             env=env or self.env(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def initialize_config(self, path: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(AGENTS_CONFIG), "init", "--config", str(path)],
+            cwd=self.repo,
             capture_output=True,
             text=True,
             timeout=30,
@@ -166,11 +179,11 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
 
-    def test_init_bootstraps_and_audits_all_four_lanes_in_one_wave(self):
+    def test_init_uses_config_and_audits_all_four_lanes_in_one_wave(self):
         proc = self.init_for("wave")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        config_path = self.repo / ".scratch" / "orchestrator" / "agents.json"
+        config_path = self.config_path
         self.assertTrue(config_path.is_file())
         state = self.read_state("wave")
         wave = self.read_wave("wave")
@@ -292,11 +305,16 @@ class PreparedLaunchWaveCli(unittest.TestCase):
 
     def test_live_probe_deduplicates_duplicate_lane_assignments(self):
         config = self.root / "duplicate-profiles.json"
-        self.assertEqual(self.init_for("bootstrap", "--config", str(config)).returncode, 0)
+        initialized = self.initialize_config(config)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
         data = json.loads(config.read_text(encoding="utf-8"))
         data["workflows"]["grilling"]["codebase2"] = "codex-luna-medium"
         config.write_text(json.dumps(data), encoding="utf-8")
-        before = len(self.harness_log.read_text(encoding="utf-8").splitlines())
+        before = (
+            len(self.harness_log.read_text(encoding="utf-8").splitlines())
+            if self.harness_log.is_file()
+            else 0
+        )
 
         proc = self.init_for("deduplicated", "--config", str(config), "--probe-profiles")
 
@@ -384,11 +402,12 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertNotEqual(launched.returncode, 0)
         self.assertEqual(self.cmux_calls(), [])
 
-    def test_explicit_config_bootstrap_and_web_compatibility_failure(self):
+    def test_explicit_config_and_web_compatibility_failure(self):
         explicit = self.root / "configuration" / "agents-custom.json"
+        initialized = self.initialize_config(explicit)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
         created = self.init_for("explicit", "--config", str(explicit))
         self.assertEqual(created.returncode, 0, created.stderr)
-        self.assertTrue(explicit.is_file())
         self.assertEqual(self.read_state("explicit")["configuration_source"], str(explicit.resolve()))
 
         config = json.loads(explicit.read_text(encoding="utf-8"))
@@ -399,6 +418,34 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertIn("not compatible", rejected.stderr)
         self.assertFalse((self.run_dir("incompatible") / "state.json").exists())
         self.assertEqual(self.cmux_calls(), [])
+
+    def test_init_refuses_missing_default_configuration_without_bootstrapping(self):
+        self.config_path.unlink()
+
+        proc = self.init_for("missing-default")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("configuration does not exist", proc.stderr)
+        self.assertIn("agents_config.py init", proc.stderr)
+        self.assertIn("review the workflow assignments", proc.stderr)
+        self.assertFalse(self.config_path.exists())
+        self.assertFalse((self.run_dir("missing-default") / "state.json").exists())
+        self.assertFalse((self.run_dir("missing-default") / "launch-waves").exists())
+        self.assertFalse(self.harness_log.exists())
+
+    def test_init_refuses_missing_explicit_configuration_without_bootstrapping(self):
+        explicit = self.root / "configuration" / "missing.json"
+
+        proc = self.init_for("missing-explicit", "--config", str(explicit))
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(str(explicit.resolve()), proc.stderr)
+        self.assertIn("configuration does not exist", proc.stderr)
+        self.assertIn("agents_config.py init", proc.stderr)
+        self.assertFalse(explicit.exists())
+        self.assertFalse((self.run_dir("missing-explicit") / "state.json").exists())
+        self.assertFalse((self.run_dir("missing-explicit") / "launch-waves").exists())
+        self.assertFalse(self.harness_log.exists())
 
     def test_allowed_harness_overrides_use_the_lane_specific_adapters(self):
         proc = self.init_for(

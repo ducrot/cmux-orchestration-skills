@@ -528,7 +528,14 @@ def read_config_bytes(source: Path, error: type[ConfigError]) -> bytes:
     try:
         return source.read_bytes()
     except FileNotFoundError as cause:
-        raise error(context_error(source, "configuration does not exist", field="config")) from cause
+        raise error(
+            context_error(
+                source,
+                "configuration does not exist; initialize it with agents_config.py init, "
+                "review the workflow assignments, then retry",
+                field="config",
+            )
+        ) from cause
     except OSError as cause:
         raise error(
             context_error(source, f"could not read configuration: {cause}", field="config")
@@ -977,12 +984,8 @@ def parse_overrides(args: argparse.Namespace, *, workflow: str) -> dict[str, dic
     return overrides
 
 
-def resolve_config_source(
-    explicit: str | None, *, bootstrap: bool
-) -> tuple[Path, dict[str, Any], str]:
+def resolve_config_source(explicit: str | None) -> tuple[Path, dict[str, Any], str]:
     source = config_path(explicit, None)
-    if bootstrap and not source.exists():
-        atomic_initialize(source)
     payload = read_config_bytes(source, HarnessError)
     data = parse_validated(payload, source, HarnessError)
     return source, data, hashlib.sha256(payload).hexdigest()

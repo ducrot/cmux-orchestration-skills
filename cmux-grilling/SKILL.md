@@ -34,6 +34,28 @@ atomically creates the complete shared defaults and never changes an existing fi
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
 not launch workers or contact Claude Code, Codex, or any provider.
 
+Treat configuration creation as a first-use human checkpoint, separate from run initialization.
+Before starting any worker-bearing run, resolve the selected configuration path and follow this
+protocol:
+
+1. If the file already exists, validate it and continue without a bootstrap question; its owner
+   already had an opportunity to edit it.
+2. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
+   `show-resolved`. Do not call `run_state.py init` yet.
+3. Present the created path and both workflows' resolved assignments, because the file is shared.
+   Ask one single-select question in the human's language: whether to start the current run with
+   these assignments. The choices mean **Yes, start now** and **No, I will edit the file**.
+4. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
+   Code or `request_user_input` in Codex. Do not assume Codex exposes it in the current mode; when
+   no native tool is available, ask the same question in chat and end the turn for the answer.
+5. On yes, reload and validate the current bytes before starting the run. On no, perform no more
+   tool calls, tell the human to edit the file and reply when it is ready, and end the turn. When
+   they return, validate and show the resolved assignments again; start only after validation
+   succeeds. Report validation errors and remain stopped when it fails.
+
+This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
+not emulate it with shell input, a sleeping process, or polling while the human edits the file.
+
 The six shipped profiles are `claude-opus-medium` (`claude-code`, `opus`, `medium`),
 `claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`), `claude-sonnet-medium` (`claude-code`,
 `sonnet`, `medium`), `codex-sol-medium` (`codex`, `gpt-5.6-sol`, `medium`),
@@ -54,12 +76,12 @@ preflight rules, the launch and probe adapters, and the override parsing and pro
 both workflows share, so a harness is added in that one file; each workflow keeps its own
 sandbox, approval, and network policy.
 
-`run_state.py init` automatically creates the default configuration when it is missing, or
-accepts `--config <path>`, then resolves and preflights all four lanes as one cohort. It
-publishes run state only after every lane passes and records one immutable launch-wave
-snapshot. Preparation resolves each unique assigned executable, captures its version,
-checks required help capabilities and local authentication status, and records provider
-entitlement as `unverified` by default. This local preflight is mandatory.
+`run_state.py init` requires an existing configuration at the default or explicit path; it never
+creates one. After the first-use checkpoint, it resolves and preflights all four lanes as one
+cohort. It publishes run state only after every lane passes and records one immutable launch-wave
+snapshot. Preparation resolves each unique assigned executable, captures its version, checks
+required help capabilities and local authentication status, and records provider entitlement as
+`unverified` by default. This local preflight is mandatory.
 
 Initialization accepts repeatable typed overrides in `LANE=VALUE` form: `--profile`,
 `--harness`, `--model`, `--effort`, and `--executable`. File assignment resolves first,
@@ -665,9 +687,9 @@ consistently within a run.
 
 The scripts are deterministic helpers. Run them from the repo root.
 
-Create a run (idempotent; prints the run directory). `init` bootstraps or loads worker
-configuration, validates and preflights all four lanes together, writes one immutable launch
-wave, and pins the run's cmux workspace
+Create a run (idempotent; prints the run directory). After the configuration checkpoint above,
+`init` loads the existing worker configuration, validates and preflights all four lanes together,
+writes one immutable launch wave, and pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out
 for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs
 root, so run state never reaches git in any target repo:

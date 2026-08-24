@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+AGENTS_CONFIG = SCRIPT_DIR / "agents_config.py"
 RUN_STATE = SCRIPT_DIR / "run_state.py"
 PANE_CTL = SCRIPT_DIR / "pane_ctl.py"
 
@@ -135,6 +136,9 @@ class PreparedStageCli(unittest.TestCase):
         self.write_marker = self.root / "probe-write"
         self.runs_root = self.repo / ".scratch" / "orchestrator" / "runs"
         self.run_dir = self.runs_root / "prepared-run"
+        self.config_path = self.repo / ".scratch" / "orchestrator" / "agents.json"
+        initialized = self.initialize_config(self.config_path)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -154,6 +158,15 @@ class PreparedStageCli(unittest.TestCase):
             [sys.executable, str(RUN_STATE), *args],
             cwd=self.repo,
             env=env or self.env(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def initialize_config(self, path: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(AGENTS_CONFIG), "init", "--config", str(path)],
+            cwd=self.repo,
             capture_output=True,
             text=True,
             timeout=30,
@@ -231,11 +244,11 @@ class PreparedStageCli(unittest.TestCase):
         state = self.read_state()
         return json.loads((self.run_dir / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
 
-    def test_init_bootstraps_config_preflights_all_roles_and_prepares_implement(self):
+    def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):
         proc = self.init()
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        config = self.repo / ".scratch" / "orchestrator" / "agents.json"
+        config = self.config_path
         self.assertTrue(config.is_file())
         snapshot = self.read_snapshot()
         self.assertEqual(snapshot["status"], "passed")
@@ -276,15 +289,44 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(sum(call["argv"] == ["--version"] for call in calls), 2)
         self.assertEqual(sum(call["argv"] in (["login", "status"], ["auth", "status"]) for call in calls), 2)
 
-    def test_init_accepts_and_bootstraps_an_explicit_configuration_path(self):
+    def test_init_accepts_a_preinitialized_explicit_configuration_path(self):
         explicit = self.root / "configuration" / "agents-custom.json"
+        initialized = self.initialize_config(explicit)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
 
         proc = self.init("--config", str(explicit))
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue(explicit.is_file())
         self.assertEqual(self.read_state()["configuration_source"], str(explicit.resolve()))
         self.assertEqual(self.read_snapshot()["config"]["source"], str(explicit.resolve()))
+
+    def test_init_refuses_missing_default_configuration_without_bootstrapping(self):
+        self.config_path.unlink()
+
+        proc = self.init()
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("configuration does not exist", proc.stderr)
+        self.assertIn("agents_config.py init", proc.stderr)
+        self.assertIn("review the workflow assignments", proc.stderr)
+        self.assertFalse(self.config_path.exists())
+        self.assertFalse((self.run_dir / "state.json").exists())
+        self.assertFalse((self.run_dir / "stage-snapshots").exists())
+        self.assertFalse(self.harness_log.exists())
+
+    def test_init_refuses_missing_explicit_configuration_without_bootstrapping(self):
+        explicit = self.root / "configuration" / "missing.json"
+
+        proc = self.init("--config", str(explicit))
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(str(explicit.resolve()), proc.stderr)
+        self.assertIn("configuration does not exist", proc.stderr)
+        self.assertIn("agents_config.py init", proc.stderr)
+        self.assertFalse(explicit.exists())
+        self.assertFalse((self.run_dir / "state.json").exists())
+        self.assertFalse((self.run_dir / "stage-snapshots").exists())
+        self.assertFalse(self.harness_log.exists())
 
     def test_live_probe_verifies_unique_resolved_profiles_once_with_safe_fixed_requests(self):
         proc = self.init("--probe-profiles")

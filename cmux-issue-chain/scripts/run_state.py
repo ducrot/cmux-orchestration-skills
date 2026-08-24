@@ -54,7 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument(
         "--config",
-        help="Explicit agents.json path (default: <git-root>/.scratch/orchestrator/agents.json)",
+        help=(
+            "Existing agents.json path "
+            "(default: <git-root>/.scratch/orchestrator/agents.json)"
+        ),
     )
     init.add_argument("--workspace-id", help="cmux workspace UUID to pin. Defaults to $CMUX_WORKSPACE_ID")
     init.add_argument(
@@ -192,7 +195,6 @@ def init_run(args: argparse.Namespace) -> int:
             stage="implement",
             pass_num=1,
             config_source=args.config,
-            bootstrap=True,
         )
         configuration_source = str(source)
 
@@ -289,7 +291,6 @@ def prepare_stage(args: argparse.Namespace) -> int:
         stage=args.stage,
         pass_num=args.pass_num,
         config_source=source_text,
-        bootstrap=False,
     )
     pointer = persist_snapshot(run_dir, snapshot)
     # Preflight spans minutes of external probes, so re-read instead of writing the dict this

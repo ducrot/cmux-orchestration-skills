@@ -83,7 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
     init.add_argument(
         "--config",
-        help="Explicit agents.json path (default: <git-root>/.scratch/orchestrator/agents.json)",
+        help=(
+            "Existing agents.json path "
+            "(default: <git-root>/.scratch/orchestrator/agents.json)"
+        ),
     )
     init.add_argument("--workspace-id", help="cmux workspace UUID to pin. Defaults to $CMUX_WORKSPACE_ID")
     init.add_argument(
@@ -282,7 +285,7 @@ def init_run(args: argparse.Namespace) -> int:
     # that appeared after this run already recorded its output directory.
     tracker, output_dir = resolve_output(args)
     probe_profiles, probe_timeout = probe_options(args)
-    source, agents, config_sha256 = resolve_config_source(args.config, bootstrap=True)
+    source, agents, config_sha256 = resolve_config_source(args.config)
     launch_wave = build_launch_wave(
         run_id=run_id,
         source=source,

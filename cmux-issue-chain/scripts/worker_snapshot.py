@@ -119,12 +119,11 @@ def snapshot_from_args(
     stage: str,
     pass_num: int,
     config_source: str | None,
-    bootstrap: bool,
 ) -> tuple[Path, dict[str, Any]]:
     """The one path from CLI inputs to a validated, preflighted, launchable stage snapshot."""
     overrides = parse_overrides(args, workflow=WORKFLOW)
     probe_profiles, probe_timeout = probe_options(args)
-    source, data, config_sha256 = resolve_config_source(config_source, bootstrap=bootstrap)
+    source, data, config_sha256 = resolve_config_source(config_source)
     snapshot = build_stage_snapshot(
         run_id=run_id,
         stage=stage,

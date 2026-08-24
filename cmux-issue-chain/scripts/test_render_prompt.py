@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 import render_prompt
-from test_stage_preparation import FAKE_HARNESS, ISSUE, RUN_STATE
+from test_stage_preparation import AGENTS_CONFIG, FAKE_HARNESS, ISSUE, RUN_STATE
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -86,6 +86,9 @@ class RenderCli(unittest.TestCase):
         self.env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
         self.runs_root = self.repo / ".scratch" / "orchestrator" / "runs"
         self.run_dir = self.runs_root / "render-run"
+        config_path = self.repo / ".scratch" / "orchestrator" / "agents.json"
+        initialized = self.run_script(AGENTS_CONFIG, "init", "--config", str(config_path))
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
 
     def tearDown(self):
         self._tmp.cleanup()

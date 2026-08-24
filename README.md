@@ -53,6 +53,14 @@ repository-only Python modules. From a target Git repository, `init` atomically 
 works outside Git, while `--repo <path>` anchors default discovery to that repository's Git root.
 The generated file is never overwritten, merged, or implicitly migrated.
 
+Configuration creation is a first-use human checkpoint, not part of run initialization. When the
+selected file is missing, the interactive orchestrator creates it with `agents_config.py init`,
+shows both workflows' resolved assignments, and asks whether to start with them or pause for edits.
+Claude Code and Codex use their native structured-input tool when available and fall back to a
+normal chat question otherwise. A negative answer ends the turn without a run or worker snapshot;
+after the human returns, the current file is validated before work starts. Direct calls to
+`run_state.py init` require an existing configuration and never silently bootstrap one.
+
 The defaults provide Claude Opus at medium and xhigh effort, Sonnet/medium, Codex GPT-5.6 Sol at
 medium and xhigh effort, and Luna/medium. Issue-chain assigns Sol/xhigh to implement/test and
 Opus/xhigh to simplify/review. Grilling assigns Opus/xhigh, Sol/xhigh, Luna/medium, and
