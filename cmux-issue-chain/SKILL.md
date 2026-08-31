@@ -147,7 +147,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
    `orchestrator.verified` event with commands and outcomes. A red suite makes the simplify gate `stop`
    regardless of what the report claims.
 4. Code review, applying review fixes when appropriate. On Claude Code the worker runs
-   `/code-review max --fix`; on any other harness the rendered prompt spells out a three-axis review pass
+   `/code-review medium --fix`; on any other harness the rendered prompt spells out a three-axis review pass
    (standards with a smell baseline, spec, correctness) inline.
 5. Final test with Codex.
 
@@ -165,7 +165,7 @@ Review is an editing role, not a passive reviewer. If the review pass finds fixa
 
 ## Review Self-Fix Policy
 
-Run review as a self-fix pass (`/code-review max --fix` on Claude Code, the inline three-axis pass elsewhere). The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
+Run review as a self-fix pass (`/code-review medium --fix` on Claude Code, the inline three-axis pass elsewhere). The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
 
 Self-fix has an intent boundary. A finding that challenges a documented issue decision — the issue's
 "What to build", its acceptance criteria, or a recorded plan change — is `Recommendation: ask-user`, not
@@ -273,7 +273,7 @@ Default minimum waits before intervention:
 - Tester: 30 minutes
 - Reviewer: 90 minutes
 
-A review pass (`/code-review max --fix` on Claude Code in particular) can legitimately take 15 minutes or longer. Do not interrupt or fail a review worker just because no report appears during that window.
+A review pass (`/code-review medium --fix` on Claude Code in particular) can legitimately take 15 minutes or longer. Do not interrupt or fail a review worker just because no report appears during that window.
 
 ### Armed watcher, not polling
 
@@ -437,7 +437,7 @@ is noise, never a broken run.
 
 The defaults use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review
 workers. Typed preparation overrides may select Claude Code or Codex for every role. Simplify and review default
-to Claude Code because its bundled `/simplify` and `/code-review max --fix` fan out internal review agents; on
+to Claude Code because its bundled `/simplify` and `/code-review medium --fix` fan out internal review agents; on
 Codex the same duties are rendered inline as a single-agent pass, which is a deliberate, weaker substitute the
 operator opts into per run or per tracker config. `render_prompt.py` reads the harness from the prepared stage
 snapshot, so the prompt variant and the launch command cannot disagree. Never use `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open
@@ -880,14 +880,14 @@ in `## Plan Drift` — the parser gates `hitl` from that section alone. `FINDING
 `NO FINDINGS`, `FINDINGS`, `BLOCKER`.
 
 For review workers, require severity and recommendation triage. The first check line names the pass the
-harness ran: `/code-review max --fix` on Claude Code, `review pass (standards, spec, correctness)` elsewhere:
+harness ran: `/code-review medium --fix` on Claude Code, `review pass (standards, spec, correctness)` elsewhere:
 
 ```markdown
 ## Result
 NO FINDINGS
 
 ## Tests / Checks
-- `/code-review max --fix`: outcome
+- `/code-review medium --fix`: outcome
 - `command`: outcome
 
 ## Change Summary

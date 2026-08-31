@@ -16,7 +16,7 @@ from test_stage_preparation import AGENTS_CONFIG, FAKE_HARNESS, ISSUE, RUN_STATE
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RENDER_PROMPT = SCRIPT_DIR / "render_prompt.py"
-CLAUDE_MARKERS = ("/code-review max --fix", "/simplify", "in Claude Code")
+CLAUDE_MARKERS = ("/code-review medium --fix", "/simplify", "in Claude Code")
 
 
 class RenderFunction(unittest.TestCase):
@@ -30,8 +30,8 @@ class RenderFunction(unittest.TestCase):
 
     def test_claude_code_review_and_simplify_keep_bundled_skill_commands(self):
         review = self.render("review", "claude-code")
-        self.assertIn("Run `/code-review max --fix` in Claude Code", review)
-        self.assertIn("- `/code-review max --fix`: outcome", review)
+        self.assertIn("Run `/code-review medium --fix` in Claude Code", review)
+        self.assertIn("- `/code-review medium --fix`: outcome", review)
         self.assertNotIn("Smell baseline", review)
         simplify = self.render("simplify", "claude-code")
         self.assertIn("Run `/simplify` in Claude Code", simplify)

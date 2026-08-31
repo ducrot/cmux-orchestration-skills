@@ -39,7 +39,7 @@ An orchestrator for working through a local Markdown issue tracker while you are
 1. **Implement** (Codex by default): builds the change, anchored by regression tests that fail without it and an end-to-end run of the changed path.
 2. **Simplify** (Claude Code, `/simplify`): applies behavior-preserving refactorings to the diff.
 3. **Orchestrator check**: re-runs the tracker's canonical check commands itself; a red suite stops the chain regardless of what reports claim.
-4. **Review** (Claude Code, `/code-review max --fix`): reviews the full diff and fixes must-fix findings itself, within a strict intent boundary: findings that challenge documented issue decisions are relayed to the human instead of silently "fixed".
+4. **Review** (Claude Code, `/code-review medium --fix`): reviews the full diff and fixes must-fix findings itself, within a strict intent boundary: findings that challenge documented issue decisions are relayed to the human instead of silently "fixed".
 5. **Final test** (Codex by default): the only check after the last code-changing stage; reviewers never accept their own fixes.
 
 Between stages, structured worker reports are parsed and gated: blockers, plan drift, and human-in-the-loop issues stop the chain instead of being papered over. All lifecycle state (run logs, gate decisions, snapshots, prompts, reports) is written to an auditable run directory. The orchestrator itself never touches product code.

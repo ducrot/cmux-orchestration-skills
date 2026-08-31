@@ -94,7 +94,7 @@ class MalformedReports(unittest.TestCase):
         """The review template omitted Blockers/Plan Drift; that shape must not sail through."""
         text = (
             "## Result\nNO FINDINGS\n\n"
-            "## Tests / Checks\n- `/code-review max --fix`: done\n\n"
+            "## Tests / Checks\n- `/code-review medium --fix`: done\n\n"
             "## Change Summary\n- Fixed null deref\n\n"
             "## Findings\n- None\n\n"
             "## Recommendations\n- Consider extracting a helper\n"

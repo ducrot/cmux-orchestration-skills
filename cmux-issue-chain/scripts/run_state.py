@@ -216,7 +216,7 @@ def init_run(args: argparse.Namespace) -> int:
         "prepared_stage": prepared_pointer,
         "review_strategy": {
             "mode": "self_fix",
-            "command": "/code-review max --fix",
+            "command": "/code-review medium --fix",
             "delegate_findings_to_implementer": False,
             "unresolved_must_fix_decision": "hitl",
         },
@@ -226,7 +226,7 @@ def init_run(args: argparse.Namespace) -> int:
             "file_poll_seconds": 15,
             "health_check_seconds": 60,
             "minimum_wait_minutes": MINIMUM_WAIT_MINUTES,
-            "review_note": "Claude Code /code-review max --fix can legitimately run 15+ minutes.",
+            "review_note": "Claude Code /code-review medium --fix can legitimately run 15+ minutes.",
             "exhausted_wait_decision": "hitl",
         },
         "current_stage": "hitl" if is_hitl else "implement",

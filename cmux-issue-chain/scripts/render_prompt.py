@@ -41,7 +41,7 @@ ROLE_RULES = {
     ),
     "review": (
         "You are the code review worker in Claude Code. You may edit product code by running "
-        "`/code-review max --fix` before writing the final report. Apply safe review fixes "
+        "`/code-review medium --fix` before writing the final report. Apply safe review fixes "
         "inside the issue scope, classify any remaining issues by severity and recommendation, and put only "
         "unresolved must-fix and ask-user items in Findings. Never fix a finding that contradicts a "
         "documented issue decision — report it as ask-user instead. Put nice-to-have or broader hardening "
@@ -66,7 +66,7 @@ PORTABLE_ROLE_RULES = {
 }
 
 # Review check line and fix label differ by harness; the triage rules below them do not.
-REVIEW_CHECK_LINE = {CLAUDE_CODE: "`/code-review max --fix`"}
+REVIEW_CHECK_LINE = {CLAUDE_CODE: "`/code-review medium --fix`"}
 REVIEW_FIX_LABEL = {CLAUDE_CODE: "`--fix`"}
 PORTABLE_REVIEW_CHECK_LINE = "`review pass (standards, spec, correctness)`"
 PORTABLE_REVIEW_FIX_LABEL = "the review pass"
@@ -319,7 +319,7 @@ def role_specific_contract(role: str, harness: str = CLAUDE_CODE) -> str:
 def review_contract_lines(harness: str) -> str:
     if harness == CLAUDE_CODE:
         head = (
-            "- Run `/code-review max --fix` in Claude Code against the current working diff.\n"
+            "- Run `/code-review medium --fix` in Claude Code against the current working diff.\n"
             "- Apply safe fixes produced by `/code-review --fix` when they stay inside the current issue scope.\n"
         )
     else:
