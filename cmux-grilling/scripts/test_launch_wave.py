@@ -179,6 +179,23 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
 
+    def test_version_one_config_migrates_before_grilling_launch_preparation(self):
+        legacy = json.loads(self.config_path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        legacy["workflows"]["grilling"]["docs"] = "codex-sol-medium"
+        self.config_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        proc = self.init_for("migrated-v1")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        migrated = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["workflows"]["grilling"]["docs"], "codex-sol-medium")
+        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-sol-xhigh")
+        wave = self.read_wave("migrated-v1")
+        self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-sol-medium")
+
     def test_init_uses_config_and_audits_all_four_lanes_in_one_wave(self):
         proc = self.init_for("wave")
 

@@ -13,6 +13,8 @@ directory, not the working directory.
 
 ## Worker Profile Configuration
 
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+
 The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
 inside the target Git repository; the default path is the repository root's
 `.scratch/orchestrator/agents.json`:
@@ -27,17 +29,22 @@ Use `--config <path>` after any command to select an explicit file, including ou
 or `--repo <path>` to resolve the default path from a specific target repository. `init`
 atomically creates the complete shared defaults and never changes an existing file or the
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
-not launch workers or contact Claude Code, Codex, or any provider.
+not launch workers or contact Claude Code, Codex, or any provider. They are not read-only,
+though: either one migrates a schema-v1 file in place, reporting the migration on stderr.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
 protocol:
 
-1. If the file already exists, validate it and continue without a bootstrap question; its owner
-   already had an opportunity to edit it.
+1. If the file already exists, inspect its `schema_version` before invoking the schema-v2 CLI. For
+   schema v1, present the coordinated-upgrade warning above and ask the human to confirm that every
+   installed sibling was upgraded. On refusal or interruption, stop without running `validate` or
+   `show-resolved`, because either command would migrate the shared file. On confirmation, validate
+   it and continue; a schema-v2 file needs no bootstrap question because its owner already had an
+   opportunity to edit it.
 2. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
    `show-resolved`. Do not call `run_state.py init` yet.
-3. Present the created path and both workflows' resolved assignments, because the file is shared.
+3. Present the created path and all three workflows' resolved assignments, because the file is shared.
    Ask one single-select question in the human's language: whether to start the current run with
    these assignments. The choices mean **Yes, start now** and **No, I will edit the file**.
 4. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
@@ -60,7 +67,11 @@ and Opus/xhigh to `simplify` and `review`.
 The `opus` and `sonnet` model strings are intentionally moving provider aliases; deterministic
 selection of an alias does not pin the provider's underlying model version.
 
-Configuration is strict and user-owned after its write-once bootstrap. Unknown fields, versions,
+Configuration is strict and user-owned after its create-only bootstrap. An otherwise valid schema-v1
+file is atomically migrated to schema v2 before current validation: existing profiles and assignments
+are preserved, planning roles are selected deterministically, a collision-safe Codex reviewer is added
+only when needed, and the original bytes remain untouched if the complete candidate cannot validate.
+Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model
 strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
 provider or model entitlement. `show-resolved` is the inspection command for the complete
@@ -68,7 +79,7 @@ profiles, assignments, sources, models, and efforts. Pi and Hermes remain explic
 entries in the code-owned adapter registry; that registry — rather than JSON — is the implementation
 boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
 preflight rules, the launch and probe adapters, and the override parsing and profile resolution
-both workflows share, so a harness is added in that one file; each workflow keeps its own
+all workflows share, so a harness is added in that one file; each workflow keeps its own
 sandbox, approval, and network policy.
 
 `run_state.py init` requires an existing configuration at that default or explicit path; it never

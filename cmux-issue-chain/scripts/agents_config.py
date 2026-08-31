@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 DEFAULT_RELATIVE_PATH = Path(".scratch/orchestrator/agents.json")
 
 TOP_LEVEL_FIELDS = {"schema_version", "profiles", "workflows"}
@@ -40,6 +41,18 @@ COMPATIBLE_HARNESSES = {
         "docs": {"claude-code", "codex"},
         "web": {"claude-code"},
     },
+    "planning": {
+        "spec": {"claude-code", "codex"},
+        "tickets": {"claude-code", "codex"},
+        "reviewer": {"codex"},
+    },
+}
+# The schema version each workflow became required in, so the version-one view stays derived.
+WORKFLOW_SCHEMA_VERSION = {"issue-chain": 1, "grilling": 1, "planning": 2}
+LEGACY_COMPATIBLE_HARNESSES = {
+    workflow: workers
+    for workflow, workers in COMPATIBLE_HARNESSES.items()
+    if WORKFLOW_SCHEMA_VERSION.get(workflow, SCHEMA_VERSION) <= LEGACY_SCHEMA_VERSION
 }
 # Derived so the worker vocabulary cannot drift from the compatibility rules. Ordered, because
 # CLI help, error text, and worker iteration all present workers in this order.
@@ -47,7 +60,7 @@ WORKFLOW_WORKERS = {
     workflow: tuple(workers) for workflow, workers in COMPATIBLE_HARNESSES.items()
 }
 # Each workflow calls its workers something else in operator-facing text.
-WORKFLOW_NOUN = {"issue-chain": "worker", "grilling": "lane"}
+WORKFLOW_NOUN = {"issue-chain": "worker", "grilling": "lane", "planning": "role"}
 
 # The registry is the extension seam. Configuration cannot add entries or capabilities.
 ADAPTERS = {
@@ -121,6 +134,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "docs": "codex-luna-medium",
             "web": "claude-sonnet-medium",
         },
+        "planning": {
+            "spec": "claude-opus-xhigh",
+            "tickets": "claude-opus-xhigh",
+            "reviewer": "codex-sol-xhigh",
+        },
     },
 }
 
@@ -188,18 +206,23 @@ def config_path(explicit: str | None, repository: str | None) -> Path:
     return git_root(Path(repository) if repository else Path.cwd()) / DEFAULT_RELATIVE_PATH
 
 
-def atomic_initialize(path: Path) -> None:
-    """Publish a complete default file atomically, without replacing an existing path."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(DEFAULT_CONFIG, indent=2, sort_keys=True) + "\n").encode("utf-8")
+def durable_publish(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int,
+    suffix: str,
+    publish: Callable[[Path, Path], None],
+) -> None:
+    """Write and fsync a sibling temporary file, then publish it into place durably."""
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
-        suffix=".tmp",
+        suffix=suffix,
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o644)
+        os.fchmod(descriptor, mode)
         handle = os.fdopen(descriptor, "wb")
         # fdopen owns the descriptor from here, including when the write below fails.
         descriptor = -1
@@ -207,15 +230,17 @@ def atomic_initialize(path: Path) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        publish(temporary, path)
+        # Best effort once the publish succeeded, so a failure here is never reported as
+        # "nothing was written".
         try:
-            os.link(temporary, path)
-        except FileExistsError as error:
-            raise ConfigError(f"configuration already exists and was not changed: {path}") from error
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -223,6 +248,27 @@ def atomic_initialize(path: Path) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def atomic_initialize(path: Path) -> None:
+    """Publish a complete default file atomically, without replacing an existing path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def link_only(temporary: Path, destination: Path) -> None:
+        try:
+            os.link(temporary, destination)
+        except FileExistsError as error:
+            raise ConfigError(
+                f"configuration already exists and was not changed: {destination}"
+            ) from error
+
+    durable_publish(
+        path,
+        (json.dumps(DEFAULT_CONFIG, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o644,
+        suffix=".tmp",
+        publish=link_only,
+    )
 
 
 def duplicate_keys(value: Any) -> list[str]:
@@ -358,6 +404,9 @@ def validate_workflows(
     profiles: dict[str, Any],
     source: Path,
     errors: list[str],
+    *,
+    compatibility: dict[str, dict[str, set[str]]] = COMPATIBLE_HARNESSES,
+    optional: frozenset[str] = frozenset(),
 ) -> None:
     if not require_object(workflows, errors, source, field="workflows"):
         return
@@ -371,7 +420,7 @@ def validate_workflows(
             )
         )
 
-    for workflow in sorted(set(workflows) - set(WORKFLOW_WORKERS)):
+    for workflow in sorted(set(workflows) - set(compatibility)):
         errors.append(
             context_error(
                 source,
@@ -380,7 +429,7 @@ def validate_workflows(
                 field="workflow",
             )
         )
-    for workflow in sorted(set(WORKFLOW_WORKERS) - set(workflows)):
+    for workflow in sorted(set(compatibility) - set(workflows) - optional):
         errors.append(
             context_error(
                 source,
@@ -390,7 +439,7 @@ def validate_workflows(
             )
         )
 
-    for workflow in sorted(set(workflows) & set(WORKFLOW_WORKERS)):
+    for workflow in sorted(set(workflows) & set(compatibility)):
         assignments = workflows[workflow]
         if not require_object(
             assignments,
@@ -412,7 +461,7 @@ def validate_workflows(
                     field="profile",
                 )
             )
-        expected_workers = set(WORKFLOW_WORKERS[workflow])
+        expected_workers = set(compatibility[workflow])
         for worker in sorted(set(assignments) - expected_workers):
             errors.append(
                 context_error(
@@ -463,7 +512,7 @@ def validate_workflows(
             if not isinstance(profile_value, dict):
                 continue
             harness = profile_value.get("harness")
-            if harness in SUPPORTED_ADAPTERS and harness not in COMPATIBLE_HARNESSES[workflow][worker]:
+            if harness in SUPPORTED_ADAPTERS and harness not in compatibility[workflow][worker]:
                 errors.append(
                     context_error(
                         source,
@@ -476,7 +525,14 @@ def validate_workflows(
                 )
 
 
-def validation_errors(data: Any, source: Path) -> list[str]:
+def validation_errors(
+    data: Any,
+    source: Path,
+    *,
+    expected_schema_version: int = SCHEMA_VERSION,
+    compatibility: dict[str, dict[str, set[str]]] = COMPATIBLE_HARNESSES,
+    optional: frozenset[str] = frozenset(),
+) -> list[str]:
     errors: list[str] = []
     if not isinstance(data, dict):
         return [context_error(source, "configuration root must be a JSON object", field="config")]
@@ -492,11 +548,11 @@ def validation_errors(data: Any, source: Path) -> list[str]:
         isinstance(schema_version, bool) or not isinstance(schema_version, int)
     ):
         errors.append(context_error(source, "schema version must be an integer", field="schema_version"))
-    elif isinstance(schema_version, int) and schema_version != SCHEMA_VERSION:
+    elif isinstance(schema_version, int) and schema_version != expected_schema_version:
         errors.append(
             context_error(
                 source,
-                f"unsupported schema version {schema_version}; only {SCHEMA_VERSION} is supported",
+                f"unsupported schema version {schema_version}; only {expected_schema_version} is supported",
                 field="schema_version",
             )
         )
@@ -520,7 +576,14 @@ def validation_errors(data: Any, source: Path) -> list[str]:
                 validate_profile(name, value, source, errors)
 
     if "workflows" in data:
-        validate_workflows(data.get("workflows"), profiles, source, errors)
+        validate_workflows(
+            data.get("workflows"),
+            profiles,
+            source,
+            errors,
+            compatibility=compatibility,
+            optional=optional,
+        )
     return errors
 
 
@@ -542,9 +605,8 @@ def read_config_bytes(source: Path, error: type[ConfigError]) -> bytes:
         ) from cause
 
 
-def parse_validated(payload: bytes, source: Path, error: type[ConfigError]) -> dict[str, Any]:
-    """Decode, parse, and strictly validate one buffer. Callers that also need a digest hash
-    those same bytes, so no config is read twice or accepted by a second set of rules."""
+def parse_json(payload: bytes, source: Path, error: type[ConfigError]) -> Any:
+    """Decode one configuration buffer while preserving duplicate-key evidence."""
     try:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as cause:
@@ -561,14 +623,138 @@ def parse_validated(payload: bytes, source: Path, error: type[ConfigError]) -> d
                 field="json",
             )
         ) from cause
+    return data
+
+
+def require_valid(data: Any, source: Path, error: type[ConfigError]) -> dict[str, Any]:
+    """The one gate every configuration passes, so no config is accepted by a second set of
+    rules. Callers that also need a digest hash the same bytes this payload was parsed from."""
     errors = validation_errors(data, source)
     if errors:
         raise error("\n".join(errors))
     return data
 
 
+def preferred_profile(
+    profiles: dict[str, Any], allowed_harnesses: set[str], default: str
+) -> str | None:
+    """The default when it is compatible, else the first compatible name, else nothing."""
+    names = sorted(
+        name
+        for name, profile in profiles.items()
+        if isinstance(profile, dict) and profile.get("harness") in allowed_harnesses
+    )
+    if default in names:
+        return default
+    return names[0] if names else None
+
+
+def migrated_planning_assignments(candidate: dict[str, Any]) -> dict[str, str]:
+    profiles = candidate["profiles"]
+    defaults = DEFAULT_CONFIG["workflows"]["planning"]
+    author = preferred_profile(
+        profiles, COMPATIBLE_HARNESSES["planning"]["spec"], defaults["spec"]
+    )
+    if author is None:
+        raise ConfigError("version-one migration found no compatible profile for planning authors")
+
+    reviewer = preferred_profile(
+        profiles, COMPATIBLE_HARNESSES["planning"]["reviewer"], defaults["reviewer"]
+    )
+    if reviewer is None:
+        reviewer = defaults["reviewer"]
+        suffix = 2
+        while reviewer in profiles:
+            reviewer = f"{defaults['reviewer']}-{suffix}"
+            suffix += 1
+        profiles[reviewer] = copy.deepcopy(DEFAULT_CONFIG["profiles"][defaults["reviewer"]])
+    return {"spec": author, "tickets": author, "reviewer": reviewer}
+
+
+def migrate_version_one(data: dict[str, Any], source: Path) -> tuple[dict[str, Any], bytes]:
+    """Build and validate the complete v2 candidate before any file replacement."""
+    # Workflows introduced after v1 are rebuilt below, so a v1 file that already carries one --
+    # the shape a user reaches by editing schema_version back to unblock an older sibling -- must
+    # not be rejected as declaring an unknown workflow it can never remove.
+    legacy_errors = validation_errors(
+        data,
+        source,
+        expected_schema_version=LEGACY_SCHEMA_VERSION,
+        optional=frozenset(set(COMPATIBLE_HARNESSES) - set(LEGACY_COMPATIBLE_HARNESSES)),
+    )
+    if legacy_errors:
+        raise ConfigError("cannot migrate invalid version-one configuration:\n" + "\n".join(legacy_errors))
+    candidate = copy.deepcopy(data)
+    candidate["schema_version"] = SCHEMA_VERSION
+    candidate["workflows"]["planning"] = migrated_planning_assignments(candidate)
+    payload = (json.dumps(candidate, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    # Candidate validation deliberately goes through the same strict parser as every v2 read.
+    validated = require_valid(parse_json(payload, source, ConfigError), source, ConfigError)
+    return validated, payload
+
+
+def atomic_replace(path: Path, payload: bytes) -> None:
+    """Replace an existing configuration atomically after its candidate is fully validated.
+
+    Resolved first: replacing a symlink would drop the link and leave the shared file it
+    points at unmigrated."""
+    target = path.resolve()
+    durable_publish(
+        target,
+        payload,
+        mode=target.stat().st_mode & 0o777,
+        suffix=".migration.tmp",
+        publish=os.replace,
+    )
+
+
+def is_legacy(data: Any) -> bool:
+    """Whether a parsed payload declares the previous schema version.
+
+    Shared so a caller that only wants to detect a migration cannot disagree with the loader
+    that performs it. `True == 1`, so a bool must not be mistaken for a version-one file."""
+    version = data.get("schema_version") if isinstance(data, dict) else None
+    return (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version == LEGACY_SCHEMA_VERSION
+    )
+
+
+def load_validated_with_payload(
+    path: Path, error: type[ConfigError]
+) -> tuple[dict[str, Any], bytes]:
+    original = read_config_bytes(path, error)
+    data = parse_json(original, path, error)
+    if is_legacy(data):
+        try:
+            migrated, payload = migrate_version_one(data, path)
+            atomic_replace(path, payload)
+        except (ConfigError, OSError) as cause:
+            raise error(
+                context_error(
+                    path,
+                    f"version-one migration failed; original file was not replaced: {cause}",
+                    field="migration",
+                )
+            ) from cause
+        # Loading rewrote a shared file, including from commands named for inspection. Saying so
+        # is the difference between a recoverable surprise and a silently broken sibling skill.
+        print(
+            context_error(
+                path,
+                f"migrated schema {LEGACY_SCHEMA_VERSION} to {SCHEMA_VERSION}; separately "
+                "installed sibling skills must be upgraded before they can read this file",
+                field="migration",
+            ),
+            file=sys.stderr,
+        )
+        return migrated, payload
+    return require_valid(data, path, error), original
+
+
 def load_validated(path: Path) -> dict[str, Any]:
-    return parse_validated(read_config_bytes(path, ConfigError), path, ConfigError)
+    return load_validated_with_payload(path, ConfigError)[0]
 
 
 def resolved_display(data: dict[str, Any], source: Path) -> dict[str, Any]:
@@ -986,8 +1172,7 @@ def parse_overrides(args: argparse.Namespace, *, workflow: str) -> dict[str, dic
 
 def resolve_config_source(explicit: str | None) -> tuple[Path, dict[str, Any], str]:
     source = config_path(explicit, None)
-    payload = read_config_bytes(source, HarnessError)
-    data = parse_validated(payload, source, HarnessError)
+    data, payload = load_validated_with_payload(source, HarnessError)
     return source, data, hashlib.sha256(payload).hexdigest()
 
 

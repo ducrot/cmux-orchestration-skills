@@ -1,0 +1,4 @@
+interface:
+  display_name: "CMUX Planning"
+  short_description: "Review and approve repository-grounded plans"
+  default_prompt: "Use $cmux-planning to turn the task into an independently reviewed and explicitly approved repository-grounded specification."

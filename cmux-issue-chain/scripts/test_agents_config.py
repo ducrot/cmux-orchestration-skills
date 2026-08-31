@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Standalone worker configuration regression tests. Run: python3 scripts/test_agents_config.py
 
-Vendored byte-identically into both skills, like the CLI it covers. Edit one copy and the parity
-test below fails until the other matches."""
+Vendored byte-identically into every skill, like the CLI it covers. Edit one copy and the parity
+test below fails until all copies match."""
 
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 SCRIPT = SCRIPT_DIR / "agents_config.py"
 SKILL_DIR = SCRIPT_DIR.parent
-SIBLING_SKILL = "cmux-issue-chain" if SKILL_DIR.name == "cmux-grilling" else "cmux-grilling"
-SIBLING_SCRIPT_DIR = SKILL_DIR.parent / SIBLING_SKILL / "scripts"
-SIBLING_SCRIPT = SIBLING_SCRIPT_DIR / "agents_config.py"
+SIBLING_SCRIPT_DIRS = [
+    path / "scripts"
+    for path in sorted(SKILL_DIR.parent.glob("cmux-*"))
+    if path.is_dir() and path != SKILL_DIR and (path / "scripts" / "agents_config.py").is_file()
+]
 
 
 class AgentsConfigCli(unittest.TestCase):
@@ -74,7 +76,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         path = self.repo / ".scratch" / "orchestrator" / "agents.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(data["schema_version"], 2)
         self.assertEqual(
             data["profiles"],
             {
@@ -130,6 +132,11 @@ class AgentsConfigCli(unittest.TestCase):
                     "codebase2": "codex-sol-xhigh",
                     "docs": "codex-luna-medium",
                     "web": "claude-sonnet-medium",
+                },
+                "planning": {
+                    "spec": "claude-opus-xhigh",
+                    "tickets": "claude-opus-xhigh",
+                    "reviewer": "codex-sol-xhigh",
                 },
             },
         )
@@ -359,6 +366,11 @@ class AgentsConfigCli(unittest.TestCase):
             ("grilling", "docs", "claude-code"),
             ("grilling", "docs", "codex"),
             ("grilling", "web", "claude-code"),
+            ("planning", "spec", "claude-code"),
+            ("planning", "spec", "codex"),
+            ("planning", "tickets", "claude-code"),
+            ("planning", "tickets", "codex"),
+            ("planning", "reviewer", "codex"),
         }
         for workflow, assignments in default["workflows"].items():
             for worker in assignments:
@@ -429,8 +441,115 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("initialized:", first_stdout + second_stdout)
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
-        self.assertEqual(persisted["schema_version"], 1)
+        self.assertEqual(persisted["schema_version"], 2)
         self.assertEqual(len(persisted["profiles"]), 6)
+
+    def test_version_one_is_migrated_atomically_with_deterministic_planning_roles(self):
+        _, current = self.init_default()
+        legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        legacy["profiles"]["aaa-author"] = {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "custom-author",
+            "effort": "medium",
+        }
+        legacy["workflows"]["issue-chain"]["implement"] = "aaa-author"
+        path = self.write_config(legacy, "legacy.json")
+
+        proc = self.run_cli("show-resolved", "--config", str(path), cwd=self.tmp)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["workflows"]["issue-chain"]["implement"], "aaa-author")
+        self.assertEqual(
+            migrated["workflows"]["planning"],
+            {
+                "spec": "claude-opus-xhigh",
+                "tickets": "claude-opus-xhigh",
+                "reviewer": "codex-sol-xhigh",
+            },
+        )
+        once = path.read_bytes()
+        again = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(path.read_bytes(), once, "version-two reads must be idempotent")
+
+    def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
+        _, current = self.init_default()
+        legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        legacy["profiles"].pop("claude-opus-xhigh")
+        for name in list(legacy["profiles"]):
+            if legacy["profiles"][name]["harness"] == "codex":
+                legacy["profiles"].pop(name)
+        legacy["profiles"]["codex-sol-xhigh"] = {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "collision-must-survive",
+            "effort": "medium",
+        }
+        legacy["workflows"]["issue-chain"] = {
+            worker: "claude-opus-medium" for worker in legacy["workflows"]["issue-chain"]
+        }
+        legacy["workflows"]["grilling"] = {
+            worker: "claude-opus-medium" for worker in legacy["workflows"]["grilling"]
+        }
+        path = self.write_config(legacy, "legacy-collision.json")
+
+        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["profiles"]["codex-sol-xhigh"]["model"], "collision-must-survive")
+        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-sol-xhigh-2")
+        self.assertEqual(migrated["profiles"]["codex-sol-xhigh-2"]["harness"], "codex")
+        self.assertEqual(migrated["workflows"]["planning"]["spec"], "claude-opus-medium")
+
+    def test_invalid_version_one_migration_preserves_original_bytes(self):
+        _, current = self.init_default()
+        legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        legacy["workflows"]["grilling"]["web"] = "codex-sol-xhigh"
+        path = self.write_config(legacy, "legacy-invalid.json")
+        original = path.read_bytes()
+
+        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("migration failed", proc.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_version_one_migration_writes_through_a_symlinked_default_path(self):
+        default_path, current = self.init_default()
+        legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        shared = self.tmp / "shared-agents.json"
+        shared.write_text(json.dumps(legacy), encoding="utf-8")
+        default_path.unlink()
+        default_path.symlink_to(shared)
+
+        proc = self.run_cli("validate")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(default_path.is_symlink(), "a shared configuration link must survive")
+        self.assertEqual(json.loads(shared.read_text(encoding="utf-8"))["schema_version"], 2)
+
+    def test_planning_reviewer_must_use_codex(self):
+        _, current = self.init_default()
+        current["workflows"]["planning"]["reviewer"] = "claude-opus-xhigh"
+        path = self.write_config(current, "non-codex-reviewer.json")
+
+        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("workflow=planning worker=reviewer", proc.stderr)
+        self.assertIn("not compatible", proc.stderr)
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))
@@ -444,6 +563,11 @@ class AgentsConfigCli(unittest.TestCase):
             set(agents_config.COMPATIBLE_HARNESSES),
             "a workflow without a noun breaks its CLI help and override errors",
         )
+        self.assertEqual(
+            set(agents_config.WORKFLOW_SCHEMA_VERSION),
+            set(agents_config.COMPATIBLE_HARNESSES),
+            "a workflow without a schema version silently lands in the legacy migration view",
+        )
         for workflow, workers in agents_config.COMPATIBLE_HARNESSES.items():
             self.assertEqual(
                 agents_config.WORKFLOW_WORKERS[workflow],
@@ -452,50 +576,26 @@ class AgentsConfigCli(unittest.TestCase):
             )
         self.assertEqual(agents_config.DEFAULT_CONFIG["workflows"].keys(), agents_config.COMPATIBLE_HARNESSES.keys())
 
-    def test_two_independently_shipped_clis_remain_equivalent(self):
-        if not SIBLING_SCRIPT.is_file():
+    def test_independently_shipped_clis_remain_equivalent(self):
+        if not SIBLING_SCRIPT_DIRS:
             self.skipTest("sibling skill is not present in this independent installation")
-
-        self.assertEqual(
-            SCRIPT.read_bytes(),
-            SIBLING_SCRIPT.read_bytes(),
-            "vendored configuration CLIs drifted",
-        )
         own_test = Path(__file__).resolve()
-        self.assertEqual(
-            own_test.read_bytes(),
-            (SIBLING_SCRIPT_DIR / own_test.name).read_bytes(),
-            "vendored configuration tests drifted",
-        )
-
+        own_script_bytes = SCRIPT.read_bytes()
+        own_test_bytes = own_test.read_bytes()
         first_path = self.tmp / "from-first.json"
-        second_path = self.tmp / "from-second.json"
         first = self.run_cli("init", "--config", str(first_path), cwd=self.tmp)
-        second = self.run_cli(
-            "init", "--config", str(second_path), cwd=self.tmp, script=SIBLING_SCRIPT
-        )
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual(json.loads(first_path.read_text()), json.loads(second_path.read_text()))
-
         shown_first = self.run_cli("show-resolved", "--config", str(first_path), cwd=self.tmp)
-        shown_second = self.run_cli(
-            "show-resolved", "--config", str(first_path), cwd=self.tmp, script=SIBLING_SCRIPT
-        )
         self.assertEqual(shown_first.returncode, 0, shown_first.stderr)
-        self.assertEqual(shown_second.returncode, 0, shown_second.stderr)
-        self.assertEqual(shown_first.stdout, shown_second.stdout)
-
-        invalid = json.loads(first_path.read_text())
-        invalid["profiles"]["codex-sol-xhigh"]["effort"] = "impossible"
-        invalid_path = self.write_config(invalid, "invalid-parity.json")
-        invalid_first = self.run_cli("validate", "--config", str(invalid_path), cwd=self.tmp)
-        invalid_second = self.run_cli(
-            "validate", "--config", str(invalid_path), cwd=self.tmp, script=SIBLING_SCRIPT
-        )
-        self.assertEqual(invalid_first.returncode, invalid_second.returncode)
-        self.assertEqual(invalid_first.stdout, invalid_second.stdout)
-        self.assertEqual(invalid_first.stderr, invalid_second.stderr)
+        for sibling_dir in SIBLING_SCRIPT_DIRS:
+            sibling = sibling_dir / "agents_config.py"
+            with self.subTest(sibling=sibling_dir.parent.name):
+                self.assertEqual(own_script_bytes, sibling.read_bytes(), "vendored configuration CLIs drifted")
+                self.assertEqual(own_test_bytes, (sibling_dir / own_test.name).read_bytes(), "vendored configuration tests drifted")
+                shown_sibling = self.run_cli("show-resolved", "--config", str(first_path), cwd=self.tmp, script=sibling)
+                self.assertEqual(shown_first.returncode, shown_sibling.returncode)
+                self.assertEqual(shown_first.stdout, shown_sibling.stdout)
+                self.assertEqual(shown_first.stderr, shown_sibling.stderr)
 
 
 if __name__ == "__main__":
