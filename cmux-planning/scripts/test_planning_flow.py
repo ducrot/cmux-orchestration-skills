@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from spec_contract import validate_spec  # noqa: E402
 from test_spec_contract import review_report, spec  # noqa: E402
+from test_tracker_contract import proposal as tracker_proposal  # noqa: E402
+from tracker_contract import render_summary, validate_proposal  # noqa: E402
 from tree_integrity import capture_tree, compare_tree  # noqa: E402
 
 
@@ -160,6 +162,176 @@ PASS
         )
         return draft
 
+    def approve_spec_to_tickets(self) -> Path:
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("spec-review")
+        digest = validate_spec(draft)["sha256"]
+        (self.run_dir / "reports" / "spec-review-1.md").write_text(
+            review_report("pass", digest, digest), encoding="utf-8"
+        )
+        self.assertEqual(
+            self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        approved = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Approved after independent review",
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "tickets")
+        self.assertEqual(state["prepared_stage"]["stage"], "tickets")
+        return draft
+
+    def write_tickets_handoff(self, pass_num: int = 1, *, data: dict | None = None) -> dict:
+        state = json.loads((self.run_dir / "state.json").read_text())
+        spec_path = Path(state["approved_spec"]["path"])
+        proposal_path = self.run_dir / "artifacts" / f"tickets-{pass_num}.json"
+        proposal_path.write_text(
+            json.dumps(data or tracker_proposal(spec_path), indent=2) + "\n", encoding="utf-8"
+        )
+        result = validate_proposal(proposal_path)
+        summary = self.run_dir / "artifacts" / f"tickets-{pass_num}.md"
+        summary.write_text(render_summary(result), encoding="utf-8")
+        report = self.run_dir / "reports" / f"tickets-{pass_num}.md"
+        frontier = "\n".join(f"- {issue_id}" for issue_id in result["ready_frontier"])
+        report.write_text(
+            f"""## Result
+PASS
+
+## Repository Sources / Methods
+- `product.txt`: implementation context inspected
+
+## Source Spec Identity
+sha256 {state['approved_spec']['sha256']}
+
+## Ticket Count
+{result['ticket_count']}
+
+## Ready Frontier
+{frontier}
+
+## Blockers
+- None
+
+## Plan Drift
+- None
+
+## Proposal Paths
+- `{proposal_path.resolve()}`
+- `{summary.resolve()}`
+""",
+            encoding="utf-8",
+        )
+        return result
+
+    def write_tickets_review(
+        self,
+        verdict: str = "pass",
+        *,
+        resulting_digest: str | None = None,
+        corrections: str = "- None",
+        blockers: str = "- None",
+    ) -> None:
+        state = json.loads((self.run_dir / "state.json").read_text())
+        digest = state["author_tickets"]["proposal_sha256"]
+        (self.run_dir / "reports" / f"tickets-review-{state['tickets_pass']}.md").write_text(
+            f"""## Verdict
+{verdict}
+
+## Findings
+- None
+
+## Methods
+- `product.txt`: independently inspected implementation and tests
+
+## Input Identity
+sha256 {digest}
+
+## Resulting Candidate Identity
+sha256 {resulting_digest or digest}
+
+## Corrections
+{corrections}
+
+## Blockers
+{blockers}
+
+## Plan Drift
+- None
+""",
+            encoding="utf-8",
+        )
+
+    def launch_prepared_stage(self, stage: str, pass_num: int = 1) -> None:
+        def pane(verb: str, *tail: str) -> subprocess.CompletedProcess[str]:
+            result = self.cli(
+                PANE, "--cmux-cmd", str(self.cmux), verb,
+                "--run-dir", str(self.run_dir),
+                "--stage", stage, "--pass", str(pass_num), *tail,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result
+
+        surface = json.loads(pane("launch", "--anchor", "CALLER").stdout)["surface_id"]
+        pane("start-agent", "--surface", surface, "--settle-seconds", "0")
+        pane(
+            "deliver",
+            "--surface", surface,
+            "--prompt", str(self.run_dir / "prompts" / f"{stage}-{pass_num}.md"),
+            "--settle-seconds", "0",
+        )
+
+    def ticket_approval(
+        self, decision: str, reason: str, *, target: Path | None = None, scope: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        args = ["ticket-approval", "--run-dir", str(self.run_dir), "--decision", decision]
+        if scope:
+            args += ["--scope", scope]
+        args += ["--reason", reason]
+        if target is not None:
+            args += ["--target", str(target)]
+        return self.cli(STATE, *args)
+
+    def reach_ticket_approval(self, *, launch_panes: bool = False) -> dict:
+        self.approve_spec_to_tickets()
+        self.render_and_baseline("tickets")
+        author_prompt = (self.run_dir / "prompts" / "tickets-1.md").read_text()
+        self.assertIn("small number of cohesive tracer-bullet vertical slices", author_prompt)
+        self.assertIn("Never decompose by frontend, backend, database", author_prompt)
+        self.assertIn("expand, bounded migrate, and contract", author_prompt)
+        self.assertIn("Approved Specification", author_prompt)
+        if launch_panes:
+            self.launch_prepared_stage("tickets")
+        proposal_result = self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "tickets-review")
+        self.assertEqual(state["prepared_stage"]["stage"], "tickets-review")
+        self.render_and_baseline("tickets-review")
+        reviewer_prompt = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
+        self.assertIn("Harness: codex (Codex is mandatory)", reviewer_prompt)
+        self.assertIn(state["author_tickets"]["proposal_sha256"], reviewer_prompt)
+        self.assertIn(state["author_tickets"]["summary_sha256"], reviewer_prompt)
+        self.assertIn("Do not invent scope", reviewer_prompt)
+        if launch_panes:
+            self.launch_prepared_stage("tickets-review")
+        self.write_tickets_review()
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        return proposal_result
+
     def test_direct_task_runs_end_to_end_through_review_and_explicit_approval(self):
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -206,6 +378,151 @@ PASS
         final = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(final["current_stage"], "tickets")
         self.assertEqual(final["approved_spec"]["sha256"], digest)
+        self.assertEqual(final["prepared_stage"]["stage"], "tickets")
+
+    def test_tickets_cannot_prepare_without_same_run_approved_spec(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["current_stage"] = "tickets"
+        state["prepared_stage"] = None
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        prepared = self.cli(
+            STATE,
+            "prepare",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "tickets",
+            "--pass",
+            "1",
+        )
+
+        self.assertNotEqual(prepared.returncode, 0)
+        self.assertIn("explicitly approved specification", prepared.stderr)
+
+    def test_complete_ticket_flow_publishes_native_tracker_once(self):
+        proposal_result = self.reach_ticket_approval(launch_panes=True)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
+        self.assertIsNone(state["prepared_stage"], "a clean review goes to the human, not another model")
+        view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
+        self.assertEqual(view.returncode, 0, view.stderr)
+        walkthrough = json.loads(view.stdout)
+        self.assertEqual(walkthrough["ticket_count"], 2)
+        self.assertEqual(walkthrough["ready_frontier"], ["ISSUE-001"])
+        self.assertEqual(walkthrough["blocking_edges"], [{"blocked": "ISSUE-002", "prerequisite": "ISSUE-001"}])
+
+        target = self.repo / ".scratch" / proposal_result["tracker"]["slug"]
+        approved = self.ticket_approval("approve", "Granularity and dependencies approved", target=target)
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        self.assertFalse(target.exists(), "approval stages but does not partially publish")
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "ready-to-publish")
+        self.assertEqual(len(state["staged_tracker"]["artifacts"]), 6)
+
+        published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertTrue((target / "issues").is_dir())
+        final = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(final["current_stage"], "complete")
+        self.assertEqual(final["published_tracker"]["ready_frontier"], ["ISSUE-001"])
+
+        duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("already published", duplicate.stderr)
+
+    def test_safe_ticket_review_fixes_reach_human_without_automatic_re_review(self):
+        self.approve_spec_to_tickets()
+        self.render_and_baseline("tickets")
+        original = self.write_tickets_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("tickets-review")
+        state = json.loads((self.run_dir / "state.json").read_text())
+        corrected = tracker_proposal(Path(state["approved_spec"]["path"]))
+        corrected["tickets"][0]["delivered_behavior"] = "The clarified first behavior works"
+        candidate = self.run_dir / "artifacts" / "tickets-reviewed-1.json"
+        candidate.write_text(json.dumps(corrected, indent=2) + "\n", encoding="utf-8")
+        candidate_digest = validate_proposal(candidate)["sha256"]
+        self.write_tickets_review(
+            "pass_with_fixes",
+            resulting_digest=candidate_digest,
+            corrections="- Clarified wording already established by the approved specification.",
+        )
+        accepted = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
+        self.assertIsNone(state["prepared_stage"])
+        view = json.loads(
+            self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertIn("clarified", view["diff"])
+        self.assertNotEqual(original["sha256"], view["candidate_sha256"])
+
+    def test_ticket_revision_preserves_artifacts_and_requires_fresh_review(self):
+        self.reach_ticket_approval()
+        original = self.run_dir / "artifacts" / "tickets-1.json"
+        revised = self.ticket_approval("revise", "Merge the two slices because their verification story is shared")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "tickets")
+        self.assertEqual(state["tickets_pass"], 2)
+        self.assertTrue(original.is_file())
+        self.assertEqual(state["prepared_stage"]["pass"], 2)
+        premature = self.ticket_approval("approve", "too soon", target=self.repo / ".scratch" / "planned-feature")
+        self.assertNotEqual(premature.returncode, 0)
+
+    def test_blocked_ticket_review_can_roll_back_approved_spec_and_invalidates_proposal(self):
+        self.approve_spec_to_tickets()
+        self.render_and_baseline("tickets")
+        self.write_tickets_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("tickets-review")
+        self.write_tickets_review(
+            "blocked",
+            blockers="- The approved specification leaves the rollout behavior undecided.",
+        )
+        blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        rolled_back = self.ticket_approval("revise", "Resolve rollout behavior in the specification", scope="spec")
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertEqual(state["spec_pass"], 2)
+        self.assertEqual(state["tickets_pass"], 2)
+        self.assertIsNone(state["approved_spec"])
+        self.assertIsNone(state["author_tickets"])
+        self.assertEqual(state["prepared_stage"]["stage"], "spec")
+
+    def test_publication_refuses_collision_escape_and_changed_staging_without_touching_target(self):
+        proposal_result = self.reach_ticket_approval()
+        slug = proposal_result["tracker"]["slug"]
+        collision = self.repo / slug
+        collision.mkdir()
+        refused = self.ticket_approval("approve", "approve", target=collision)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(list(collision.iterdir()), [])
+        escaped = self.ticket_approval("approve", "approve", target=self.repo / ".." / slug)
+        self.assertNotEqual(escaped.returncode, 0)
+
+        target = self.repo / ".scratch" / slug
+        approved = self.ticket_approval("approve", "approve", target=target)
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        staged_spec = self.run_dir / "publication-stage" / "spec.md"
+        staged_spec.write_text("tampered\n", encoding="utf-8")
+        failed = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertFalse(target.exists(), "failed validation must leave the target unchanged")
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "ready-to-publish")
+        events = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(events[-1]["type"], "publication.failed")
 
     def test_reviewer_cannot_self_certify_a_rewritten_author_draft(self):
         self.assertEqual(self.init_direct().returncode, 0)

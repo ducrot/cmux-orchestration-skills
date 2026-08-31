@@ -8,6 +8,7 @@ import difflib
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -56,10 +57,18 @@ from spec_contract import (
 from stage_snapshot import (
     WORKFLOW,
     SnapshotError,
+    approved_spec_from_state,
     persist_snapshot,
     snapshot_from_args,
 )
 from tree_integrity import IntegrityError, verify
+from tracker_contract import (
+    stage_native_tracker,
+    validate_native_tracker,
+    validate_proposal,
+    validate_ticket_author_report,
+    validate_ticket_review_report,
+)
 
 
 RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -119,6 +128,26 @@ def build_parser() -> argparse.ArgumentParser:
     approval.add_argument("--reason", required=True)
     add_override_options(approval, workflow=WORKFLOW)
     add_probe_options(approval)
+
+    ticket_view = subparsers.add_parser("ticket-approval-view")
+    ticket_view.add_argument("--run-dir", required=True)
+
+    ticket_approval = subparsers.add_parser("ticket-approval")
+    ticket_approval.add_argument("--run-dir", required=True)
+    ticket_approval.add_argument("--decision", choices=("approve", "revise"), required=True)
+    ticket_approval.add_argument("--reason", required=True)
+    ticket_approval.add_argument("--target")
+    ticket_approval.add_argument(
+        "--scope",
+        choices=("tickets", "spec"),
+        default="tickets",
+        help="revision scope; use spec only when ticket review exposed an approved-spec defect",
+    )
+    add_override_options(ticket_approval, workflow=WORKFLOW)
+    add_probe_options(ticket_approval)
+
+    publish = subparsers.add_parser("publish")
+    publish.add_argument("--run-dir", required=True)
     return parser
 
 
@@ -219,10 +248,14 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
         raise SnapshotError(f"cannot prepare {stage}: current stage is {state.get('current_stage')!r}")
     # Bound to the run's own pass, or a stale number would repoint the handoff paths at the
     # artifacts a previous pass preserved.
-    if pass_num != state["spec_pass"]:
+    is_tickets = stage.startswith("tickets")
+    pass_key = "tickets_pass" if is_tickets else "spec_pass"
+    if pass_num != state[pass_key]:
         raise SnapshotError(
-            f"cannot prepare {stage} pass {pass_num}: the run is on pass {state['spec_pass']}"
+            f"cannot prepare {stage} pass {pass_num}: the run is on pass {state[pass_key]}"
         )
+    if is_tickets:
+        approved_spec_from_state(state, run_dir=run_dir)
     state["prepared_stage"] = None
     state["tree_baseline"] = None
     write_json(state_path, state)
@@ -345,10 +378,17 @@ def init_run(args: argparse.Namespace) -> int:
         "normalized_grilling_input": None,
         "current_stage": "awaiting-grilling-revalidation" if grilling else "spec",
         "spec_pass": 1,
+        "tickets_pass": 1,
         "prepared_stage": None,
         "tree_baseline": None,
         "reviewed_spec": None,
         "approved_spec": None,
+        "author_tickets": None,
+        "reviewed_tickets": None,
+        "approved_tickets": None,
+        "ticket_revision_feedback": None,
+        "staged_tracker": None,
+        "published_tracker": None,
         "gate_decisions": [],
         "worker_wait_policy": {
             "watcher": "await_report.py",
@@ -493,12 +533,8 @@ def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
     return False
 
 
-def accept_author(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
-    state = read_json(run_dir / "state.json")
+def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
     pass_num = state["spec_pass"]
-    if state.get("current_stage") != "spec":
-        raise ContractError(f"cannot accept author report from stage {state.get('current_stage')!r}")
     if not integrity_gate(run_dir, "spec", pass_num):
         print("gate=hitl reason=integrity-violation")
         return 2
@@ -533,12 +569,57 @@ def accept_author(args: argparse.Namespace) -> int:
     return 0
 
 
-def accept_review(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir)
+def accept_tickets_author(
+    args: argparse.Namespace, run_dir: Path, state: dict[str, Any]
+) -> int:
+    pass_num = state["tickets_pass"]
+    if not integrity_gate(run_dir, "tickets", pass_num):
+        print("gate=hitl reason=integrity-violation")
+        return 2
+    approved = state.get("approved_spec")
+    if not isinstance(approved, dict):
+        raise ContractError("tickets author gate has no approved specification")
+    proposal = run_dir / "artifacts" / f"tickets-{pass_num}.json"
+    summary = run_dir / "artifacts" / f"tickets-{pass_num}.md"
+    report = run_dir / "reports" / f"tickets-{pass_num}.md"
+    result = validate_ticket_author_report(
+        report,
+        proposal,
+        summary,
+        expected_spec=Path(approved["path"]),
+        expected_spec_sha256=approved["sha256"],
+    )
     state = read_json(run_dir / "state.json")
+    state["prepared_stage"] = None
+    state["tree_baseline"] = None
+    if result["result"] == "BLOCKED":
+        state["current_stage"] = "tickets-blocked"
+        gate = add_gate(state, "tickets", "blocked", "tickets author reported a blocker")
+        write_json(run_dir / "state.json", state)
+        append_event(run_dir, "gate", "tickets author reported a blocker", gate)
+        print("gate=blocked")
+        return 2
+    state["author_tickets"] = result
+    state["current_stage"] = "tickets-review"
+    gate = add_gate(
+        state,
+        "tickets",
+        "advance",
+        "ticket proposal validated; independent review required",
+        proposal_sha256=result["proposal_sha256"],
+        summary_sha256=result["summary_sha256"],
+        ticket_count=result["ticket_count"],
+        ready_frontier=result["ready_frontier"],
+    )
+    write_json(run_dir / "state.json", state)
+    append_event(run_dir, "gate", "ticket proposal validated; independent review required", gate)
+    pointer = prepare_stage(args, run_dir, "tickets-review", pass_num)
+    print(json.dumps(pointer, sort_keys=True))
+    return 0
+
+
+def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
     pass_num = state["spec_pass"]
-    if state.get("current_stage") != "spec-review":
-        raise ContractError(f"cannot accept review from stage {state.get('current_stage')!r}")
     if not integrity_gate(run_dir, "spec-review", pass_num):
         print("gate=hitl reason=integrity-violation")
         return 2
@@ -587,6 +668,93 @@ def accept_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
+    pass_num = state["tickets_pass"]
+    if not integrity_gate(run_dir, "tickets-review", pass_num):
+        print("gate=hitl reason=integrity-violation")
+        return 2
+    approved = state.get("approved_spec")
+    author = state.get("author_tickets")
+    if not isinstance(approved, dict) or not isinstance(author, dict):
+        raise ContractError("tickets review gate requires approved spec and author identities")
+    proposal = Path(author["proposal"])
+    summary = Path(author["summary"])
+    if not summary.is_file() or sha256_file(summary) != author["summary_sha256"]:
+        raise ContractError("human-readable ticket summary changed after the author gate")
+    candidate = run_dir / "artifacts" / f"tickets-reviewed-{pass_num}.json"
+    report = run_dir / "reports" / f"tickets-review-{pass_num}.md"
+    result = validate_ticket_review_report(
+        report,
+        proposal,
+        candidate,
+        expected_input_sha256=author["proposal_sha256"],
+        expected_spec=Path(approved["path"]),
+        expected_spec_sha256=approved["sha256"],
+    )
+    state = read_json(run_dir / "state.json")
+    state["prepared_stage"] = None
+    state["tree_baseline"] = None
+    if result["verdict"] == "blocked":
+        state["current_stage"] = "tickets-review-blocked"
+        gate = add_gate(
+            state,
+            "tickets-review",
+            "blocked",
+            "ticket review requires a human-owned decision or approved-spec correction",
+        )
+        write_json(run_dir / "state.json", state)
+        append_event(
+            run_dir,
+            "gate",
+            "ticket review requires a human-owned decision or approved-spec correction",
+            {**gate, **result},
+        )
+        print("gate=blocked")
+        return 2
+    state["reviewed_tickets"] = result
+    state["current_stage"] = "awaiting-ticket-approval"
+    gate = add_gate(
+        state,
+        "tickets-review",
+        "advance",
+        "reviewed tracker candidate validated; explicit human approval required",
+        verdict=result["verdict"],
+        candidate_sha256=result["candidate_sha256"],
+        ticket_count=result["ticket_count"],
+        ready_frontier=result["ready_frontier"],
+    )
+    write_json(run_dir / "state.json", state)
+    append_event(
+        run_dir,
+        "gate",
+        "reviewed tracker candidate validated; explicit human approval required",
+        gate,
+    )
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+AUTHOR_GATES = {"spec": accept_spec_author, "tickets": accept_tickets_author}
+REVIEW_GATES = {"spec-review": accept_spec_review, "tickets-review": accept_tickets_review}
+
+
+def _accept(args: argparse.Namespace, gates: dict[str, Any], label: str) -> int:
+    run_dir = Path(args.run_dir)
+    state = read_json(run_dir / "state.json")
+    stage = state.get("current_stage")
+    if stage not in gates:
+        raise ContractError(f"cannot accept {label} from stage {stage!r}")
+    return gates[stage](args, run_dir, state)
+
+
+def accept_author(args: argparse.Namespace) -> int:
+    return _accept(args, AUTHOR_GATES, "author report")
+
+
+def accept_review(args: argparse.Namespace) -> int:
+    return _accept(args, REVIEW_GATES, "review")
+
+
 def approval_view(run_dir: Path) -> int:
     state = read_json(run_dir / "state.json")
     if state.get("current_stage") != "awaiting-spec-approval":
@@ -626,6 +794,20 @@ def approval_view(run_dir: Path) -> int:
     return 0
 
 
+def discard_staging(run_dir: Path) -> None:
+    """A partially staged tracker would otherwise block every later approval forever."""
+    shutil.rmtree(run_dir / "publication-stage", ignore_errors=True)
+
+
+def reset_ticket_state(state: dict[str, Any]) -> None:
+    state["approved_spec"] = None
+    state["author_tickets"] = None
+    state["reviewed_tickets"] = None
+    state["approved_tickets"] = None
+    state["ticket_revision_feedback"] = None
+    state["staged_tracker"] = None
+
+
 def approval(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
@@ -654,10 +836,13 @@ def approval(args: argparse.Namespace) -> int:
             "approved_at": event["time"],
         }
         state["current_stage"] = "tickets"
+        state["prepared_stage"] = None
+        state["tree_baseline"] = None
         state["updated_at"] = event["time"]
         write_json(state_path, state)
         append_jsonl(run_dir / "events.jsonl", event)
-        print(json.dumps(state["approved_spec"], sort_keys=True))
+        pointer = prepare_stage(args, run_dir, "tickets", state["tickets_pass"])
+        print(json.dumps({"approved_spec": state["approved_spec"], "prepared": pointer}, sort_keys=True))
         return 0
 
     if state.get("current_stage") not in {
@@ -674,16 +859,314 @@ def approval(args: argparse.Namespace) -> int:
     state["tree_baseline"] = None
     state["author_spec"] = None
     state["reviewed_spec"] = None
+    # A revision from an integrity violation can arrive after the spec boundary, and a new spec pass
+    # invalidates every ticket artifact derived from the old approved spec.
+    old_tickets = state["tickets_pass"] if state.get("approved_spec") else None
+    if old_tickets is not None:
+        state["tickets_pass"] = old_tickets + 1
+        reset_ticket_state(state)
     state["updated_at"] = utc_now()
     write_json(state_path, state)
+    discard_staging(run_dir)
     append_event(
         run_dir,
         "spec.revision_requested",
         "preserved rejected artifacts and required a fresh author plus fresh review",
-        {"from_pass": old_pass, "to_pass": state["spec_pass"], "reason": args.reason},
+        {
+            "from_pass": old_pass,
+            "to_pass": state["spec_pass"],
+            "invalidated_tickets_pass": old_tickets,
+            "reason": args.reason,
+        },
     )
     pointer = prepare_stage(args, run_dir, "spec", state["spec_pass"])
     print(json.dumps(pointer, sort_keys=True))
+    return 0
+
+
+def bound_proposal(approved_spec: dict, path: Path, digest: str, mismatch: str) -> dict:
+    proposal = validate_proposal(
+        path,
+        expected_spec=Path(approved_spec["path"]),
+        expected_spec_sha256=approved_spec["sha256"],
+    )
+    if proposal["sha256"] != digest:
+        raise ContractError(mismatch)
+    return proposal
+
+
+def ticket_approval_view(run_dir: Path) -> int:
+    state = read_json(run_dir / "state.json")
+    if state.get("current_stage") != "awaiting-ticket-approval":
+        raise ContractError("ticket approval walkthrough is available only after a valid review")
+    reviewed = state.get("reviewed_tickets")
+    approved = state.get("approved_spec")
+    author = state.get("author_tickets")
+    if not all(isinstance(value, dict) for value in (reviewed, approved, author)):
+        raise ContractError("ticket approval state is incomplete")
+    candidate = Path(reviewed["candidate"])
+    proposal = bound_proposal(
+        approved, candidate, reviewed["candidate_sha256"], "reviewed ticket candidate changed after review"
+    )
+    author_proposal = Path(author["proposal"])
+    if not author_proposal.is_file() or sha256_file(author_proposal) != author["proposal_sha256"]:
+        raise ContractError("ticket author proposal changed after its own gate")
+    author_text = json.dumps(read_json(author_proposal), indent=2, sort_keys=True) + "\n"
+    candidate_text = json.dumps(read_json(candidate), indent=2, sort_keys=True) + "\n"
+    review_report = sections(
+        (run_dir / "reports" / f"tickets-review-{state['tickets_pass']}.md").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload = {
+        "verdict": reviewed["verdict"],
+        "candidate_path": str(candidate.resolve()),
+        "candidate_sha256": proposal["sha256"],
+        "source_spec_sha256": proposal["source_spec_sha256"],
+        "tracker_slug": proposal["tracker"]["slug"],
+        "ticket_count": proposal["ticket_count"],
+        "ready_frontier": proposal["ready_frontier"],
+        "tickets": [
+            {
+                "id": ticket["id"],
+                "title": ticket["title"],
+                "delivered_behavior": ticket["delivered_behavior"],
+                "acceptance_criteria": ticket["acceptance_criteria"],
+                "blocked_by": ticket["blocked_by"],
+                "merge_split_rationale": ticket["merge_split_rationale"],
+                "wide_refactor": ticket["wide_refactor"],
+            }
+            for ticket in proposal["tickets"]
+        ],
+        "blocking_edges": [
+            {"blocked": ticket["id"], "prerequisite": blocker}
+            for ticket in proposal["tickets"]
+            for blocker in ticket["blocked_by"]
+        ],
+        "wide_refactor_exceptions": proposal["wide_refactor"],
+        "corrections": review_report["Corrections"],
+        "diff": "".join(
+            difflib.unified_diff(
+                author_text.splitlines(keepends=True),
+                candidate_text.splitlines(keepends=True),
+                fromfile=str(author_proposal),
+                tofile=str(candidate),
+            )
+        ),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def checked_publication_target(repository: Path, value: str, slug: str) -> Path:
+    raw = Path(value)
+    if ".." in raw.parts:
+        raise ContractError("publication target contains path traversal")
+    target = (raw if raw.is_absolute() else repository / raw).resolve()
+    repository = repository.resolve()
+    try:
+        relative = target.relative_to(repository)
+    except ValueError as error:
+        raise ContractError("publication target escapes the target repository") from error
+    if not relative.parts:
+        raise ContractError("publication target must be one tracker directory below the repository")
+    if target.name != slug:
+        raise ContractError(
+            f"publication target basename must match approved tracker slug {slug!r}"
+        )
+    if target.exists():
+        raise ContractError(f"publication target already exists: {target}")
+    return target
+
+
+def ticket_approval(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir)
+    state_path = run_dir / "state.json"
+    state = read_json(state_path)
+    if args.decision == "revise":
+        if state.get("current_stage") not in {
+            "awaiting-ticket-approval",
+            "tickets-blocked",
+            "tickets-review-blocked",
+        }:
+            raise ContractError(f"ticket revision is not available from {state.get('current_stage')!r}")
+        if args.scope == "spec":
+            old_spec = state["spec_pass"]
+            old_tickets = state["tickets_pass"]
+            state["spec_pass"] = old_spec + 1
+            state["tickets_pass"] = old_tickets + 1
+            state["current_stage"] = "spec"
+            state["author_spec"] = None
+            state["reviewed_spec"] = None
+            reset_ticket_state(state)
+            event_type = "tickets.spec_revision_requested"
+            event_data = {
+                "from_spec_pass": old_spec,
+                "to_spec_pass": state["spec_pass"],
+                "invalidated_tickets_pass": old_tickets,
+                "next_tickets_pass": state["tickets_pass"],
+                "reason": args.reason,
+            }
+            next_stage = "spec"
+            next_pass = state["spec_pass"]
+        else:
+            old_tickets = state["tickets_pass"]
+            state["tickets_pass"] = old_tickets + 1
+            state["current_stage"] = "tickets"
+            state["author_tickets"] = None
+            state["reviewed_tickets"] = None
+            state["approved_tickets"] = None
+            state["ticket_revision_feedback"] = args.reason
+            event_type = "tickets.revision_requested"
+            event_data = {
+                "from_pass": old_tickets,
+                "to_pass": state["tickets_pass"],
+                "reason": args.reason,
+            }
+            next_stage = "tickets"
+            next_pass = state["tickets_pass"]
+        state["prepared_stage"] = None
+        state["tree_baseline"] = None
+        state["staged_tracker"] = None
+        state["updated_at"] = utc_now()
+        write_json(state_path, state)
+        discard_staging(run_dir)
+        append_event(
+            run_dir,
+            event_type,
+            "preserved rejected artifacts and required fresh author plus fresh review",
+            event_data,
+        )
+        pointer = prepare_stage(args, run_dir, next_stage, next_pass)
+        print(json.dumps(pointer, sort_keys=True))
+        return 0
+
+    if state.get("current_stage") != "awaiting-ticket-approval":
+        raise ContractError("ticket approval is available only after a valid independent review")
+    if args.scope != "tickets":
+        raise ContractError("--scope spec is valid only with --decision revise")
+    if not args.target:
+        raise ContractError("ticket approval requires the explicit --target tracker path")
+    reviewed = state.get("reviewed_tickets")
+    approved_spec = state.get("approved_spec")
+    if not isinstance(reviewed, dict) or not isinstance(approved_spec, dict):
+        raise ContractError("ticket approval state is incomplete")
+    candidate = Path(reviewed["candidate"])
+    proposal = bound_proposal(
+        approved_spec,
+        candidate,
+        reviewed["candidate_sha256"],
+        "reviewed ticket candidate changed after review",
+    )
+    target = checked_publication_target(
+        Path(state["repository"]), args.target, proposal["tracker"]["slug"]
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = run_dir / "publication-stage"
+    try:
+        native = stage_native_tracker(
+            staged, proposal, approved_spec=Path(approved_spec["path"])
+        )
+    except Exception as error:
+        discard_staging(run_dir)
+        append_event(
+            run_dir,
+            "publication.staging_failed",
+            "tracker staging or native validation failed; publication target is unchanged",
+            {"target": str(target), "staged": str(staged), "error": str(error)},
+        )
+        raise
+    now = utc_now()
+    state = read_json(state_path)
+    state["approved_tickets"] = {
+        "path": str(candidate.resolve()),
+        "sha256": proposal["sha256"],
+        "source_spec_sha256": proposal["source_spec_sha256"],
+        "approved_at": now,
+        "target": str(target),
+    }
+    state["staged_tracker"] = {
+        "path": str(staged.resolve()),
+        "validated_at": now,
+        "ticket_ids": native["ticket_ids"],
+        "ready_frontier": native["ready_frontier"],
+        "artifacts": native["artifacts"],
+    }
+    state["current_stage"] = "ready-to-publish"
+    state["updated_at"] = now
+    write_json(state_path, state)
+    append_event(
+        run_dir,
+        "tickets.approved",
+        "froze the reviewed proposal and validated a complete staged native tracker",
+        {
+            "reason": args.reason,
+            "approved_tickets": state["approved_tickets"],
+            "staged_tracker": state["staged_tracker"],
+        },
+    )
+    print(json.dumps({"approved": state["approved_tickets"], "staged": state["staged_tracker"]}, sort_keys=True))
+    return 0
+
+
+def publish_tracker(run_dir: Path) -> int:
+    state_path = run_dir / "state.json"
+    state = read_json(state_path)
+    if state.get("current_stage") == "complete":
+        raise ContractError("this planning run already published its approved tracker")
+    if state.get("current_stage") != "ready-to-publish":
+        raise ContractError("publication requires an approved and validated staged tracker")
+    approved_spec = state.get("approved_spec")
+    approved_tickets = state.get("approved_tickets")
+    staged_state = state.get("staged_tracker")
+    if not all(isinstance(value, dict) for value in (approved_spec, approved_tickets, staged_state)):
+        raise ContractError("publication state is incomplete")
+    spec_path = Path(approved_spec["path"])
+    if not spec_path.is_file() or sha256_file(spec_path) != approved_spec["sha256"]:
+        raise ContractError("approved specification identity changed before publication")
+    proposal = bound_proposal(
+        approved_spec,
+        Path(approved_tickets["path"]),
+        approved_tickets["sha256"],
+        "approved ticket proposal identity changed before publication",
+    )
+    staged = Path(staged_state["path"])
+    validated = validate_native_tracker(
+        staged,
+        expected_spec_sha256=approved_spec["sha256"],
+        expected_ticket_ids=proposal["ticket_ids"],
+    )
+    if validated["artifacts"] != staged_state["artifacts"]:
+        raise ContractError("staged tracker changed after ticket approval")
+    target = checked_publication_target(
+        Path(state["repository"]), approved_tickets["target"], proposal["tracker"]["slug"]
+    )
+    if staged.stat().st_dev != target.parent.stat().st_dev:
+        raise ContractError("staged tracker and publication target are on different filesystems")
+    os.rename(staged, target)
+    published = validate_native_tracker(
+        target,
+        expected_spec_sha256=approved_spec["sha256"],
+        expected_ticket_ids=proposal["ticket_ids"],
+    )
+    now = utc_now()
+    state["published_tracker"] = {
+        "path": str(target),
+        "published_at": now,
+        "ticket_ids": published["ticket_ids"],
+        "ready_frontier": published["ready_frontier"],
+        "artifacts": published["artifacts"],
+    }
+    state["current_stage"] = "complete"
+    state["updated_at"] = now
+    write_json(state_path, state)
+    append_event(
+        run_dir,
+        "tracker.published",
+        "atomically published the complete native tracker",
+        state["published_tracker"],
+    )
+    print(json.dumps(state["published_tracker"], sort_keys=True))
     return 0
 
 
@@ -706,6 +1189,23 @@ def run(args: argparse.Namespace) -> int:
         return approval_view(Path(args.run_dir))
     if args.command == "approval":
         return approval(args)
+    if args.command == "ticket-approval-view":
+        return ticket_approval_view(Path(args.run_dir))
+    if args.command == "ticket-approval":
+        return ticket_approval(args)
+    if args.command == "publish":
+        run_dir = Path(args.run_dir)
+        try:
+            return publish_tracker(run_dir)
+        except (ContractError, OSError, ValueError, KeyError) as error:
+            if (run_dir / "state.json").is_file():
+                append_event(
+                    run_dir,
+                    "publication.failed",
+                    "publication precondition or validation failed",
+                    {"error": str(error)},
+                )
+            raise
     raise AssertionError(args.command)
 
 

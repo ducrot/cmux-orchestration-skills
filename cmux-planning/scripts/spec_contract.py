@@ -144,7 +144,7 @@ def validate_author_report(report_path: Path, expected_draft: Path) -> dict[str,
     return {"result": result, "draft": str(expected_draft), "draft_sha256": spec["sha256"]}
 
 
-def _one_digest(body: str, label: str) -> str:
+def one_digest(body: str, label: str) -> str:
     digests = DIGEST_RE.findall(body)
     if len(digests) != 1:
         raise ContractError(f"{label} must contain exactly one SHA-256 digest")
@@ -170,7 +170,7 @@ def validate_review_report(
     # the run directory, where the Git-visible detector cannot see a reviewer rewriting it.
     if expected_input_sha256 is not None and input_digest != expected_input_sha256:
         raise ContractError("the author draft changed after its own gate; review is not bound to it")
-    if _one_digest(parsed["Input Identity"], "Input Identity") != input_digest:
+    if one_digest(parsed["Input Identity"], "Input Identity") != input_digest:
         raise ContractError("review Input Identity is not bound to the author draft")
     if bullet_count(parsed["Methods"]) < 1:
         raise ContractError("review report is ungrounded: Methods has no concrete entry")
@@ -200,7 +200,7 @@ def validate_review_report(
         candidate = reviewed_candidate
     # `pass` keeps the input spec as its candidate, so its digest is already in hand.
     candidate_digest = input_digest if candidate == input_spec else sha256_file(candidate)
-    if _one_digest(parsed["Resulting Candidate Identity"], "Resulting Candidate Identity") != candidate_digest:
+    if one_digest(parsed["Resulting Candidate Identity"], "Resulting Candidate Identity") != candidate_digest:
         raise ContractError("review Resulting Candidate Identity does not match the candidate")
     if verdict == "pass" and candidate_digest != input_digest:
         raise ContractError("pass must preserve the unchanged draft digest")

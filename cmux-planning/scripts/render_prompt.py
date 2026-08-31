@@ -7,9 +7,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from orchestrator_lib import STAGES, atomic_write, read_json, sha256_bytes
+from orchestrator_lib import STAGES, atomic_write, read_json, sha256_bytes, sha256_file
 from spec_contract import SPEC_SECTIONS
-from stage_snapshot import SnapshotError, load_prepared_snapshot
+from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
+from tracker_contract import validate_proposal
 
 
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
@@ -21,11 +22,19 @@ domain terms in their actual language. Under Testing Decisions include bullet en
 supports one, and why it remains open. Use exactly `- None` when there are no open decisions."""
 
 
-def contract_path() -> str:
+def script_path(name: str) -> str:
     """Absolute: the worker's cwd is the target repository, not the orchestrator's, and a
     cwd-relative path would also make the deterministic prompt bytes depend on where the
     orchestrator happened to stand."""
-    return str(Path(__file__).resolve().parent / "spec_contract.py")
+    return str(Path(__file__).resolve().parent / name)
+
+
+def contract_path() -> str:
+    return script_path("spec_contract.py")
+
+
+def tracker_contract_path() -> str:
+    return script_path("tracker_contract.py")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,14 +243,270 @@ python3 {contract_path()} review-report {paths['report']} \\
 """
 
 
+VERTICAL_SLICE_POLICY = """Prefer a small number of cohesive tracer-bullet vertical slices. Each
+ticket must state one complete user-observable delivered behavior, include stable acceptance criteria,
+and be independently demonstrable or verifiable. A slice may cross every technical layer needed for
+that behavior. Never decompose by frontend, backend, database, tests, directories, file types, or worker
+specialties by default. Use suitability for one fresh worker context only as a qualitative boundary;
+never write token counts or estimates into the proposal. Evaluate merge opportunities as explicitly as
+split points: merge work sharing one outcome, verification story, and substantially the same context;
+split independent outcomes, decision boundaries, rollout requirements, or excessive context. Add only
+blocking edges whose prerequisite genuinely prevents the blocked ticket from starting, leaving every
+initially ready ticket visible in the frontier. A wide mechanical refactor that cannot remain green as
+ordinary slices must use explicit expand, bounded migrate, and contract tickets; add a final integration
+exception only when intermediate migration batches cannot remain green independently."""
+
+
+NATIVE_TRACKER_POLICY = """The machine proposal uses schema version 1 with exactly four top-level keys:
+`schema_version`, `source_spec`, `tracker`, and `tickets`. `source_spec` contains exact `path` and
+`sha256`. `tracker` contains lowercase kebab-case `slug`, non-empty `title`, `working_branch`, and a
+non-empty list of exact runnable `canonical_check_commands`. Every ticket contains exactly `id` in
+ISSUE-NNN form, `title`, `delivered_behavior`, non-empty `acceptance_criteria`, `blocked_by`,
+`merge_split_rationale`, `slice_type`, non-empty `technical_layers`, and `wide_refactor`. A normal ticket
+uses `slice_type: vertical` and `wide_refactor: null`. A wide-refactor ticket uses
+`slice_type: wide-refactor` and an object with `phase`, `sequence: expand-migrate-contract`, and
+`integration_reason` (null except for a justified integration exception). IDs are unique, blockers must
+exist, and dependencies must be acyclic. All approved work is fully specified AFK work with the
+ready-for-agent label when published; no adoption conversion is used."""
+
+
+def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
+    approved_spec, spec_digest = approved_spec_from_state(state)
+    task_path = (run_dir / state["task"]["path"]).resolve()
+    paths = snapshot["allowed_worker_writes"]
+    feedback = state.get("ticket_revision_feedback") or "None recorded for this tickets pass."
+    return f"""# Planning Worker Prompt: tickets author (pass {pass_num})
+
+Prepared: {snapshot['resolved_at']}
+Stage snapshot: {snapshot['snapshot_id']}
+Harness: {snapshot['selected_worker']['harness']}
+
+Turn the immutable approved specification into a native executable tracker proposal. Work in this fresh
+pane without recovering or inheriting either specification worker session. Inspect the target repository
+read-only for current branch, exact runnable checks, implementation context, terminology, and prior-art
+tests. Do not make product or scope decisions that the approved specification did not make.
+
+## Inputs and Identity
+
+- Persisted task: `{task_path}` (sha256 `{state['task']['sha256']}`)
+- Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
+- Repository: `{state['repository']}`
+
+### Approved Specification
+
+```markdown
+{approved_spec.read_text(encoding='utf-8').rstrip()}
+```
+
+### Human Ticket Revision Feedback
+
+{feedback}
+
+## Tracker Ground Rules
+
+- Canonical artifacts, headings, frontmatter values, reports, and proposal text are English; preserve
+  literal product copy in its real language.
+- Record the target repository's current working branch and exact runnable baseline check commands.
+- Only fully specified approved work may be AFK and ready-for-agent.
+- The published tracker must contain README.md, spec.md, map.md, decisions.md, and one native issue file
+  per complete proposed ticket under issues/.
+
+## Vertical-Slice Policy
+
+{VERTICAL_SLICE_POLICY}
+
+## Native Proposal Contract
+
+{NATIVE_TRACKER_POLICY}
+
+Write the complete machine proposal first, then generate the exact numbered human summary with the
+vendored contract command. The summary contains every ticket's title, delivered behavior, acceptance
+criteria, blockers, and merge/split rationale.
+
+## Write Boundary
+
+You may physically write only these exact files:
+
+- Machine-readable proposal: `{paths['proposal']}`
+- Human-readable numbered summary: `{paths['summary']}`
+- Structured report: `{paths['report']}`
+
+Do not edit the approved spec, product code, configuration, lifecycle state, or any other path. Mandatory
+before/after Git-visible inspection gates every other tracked delta or newly listed untracked path within
+the documented detector boundary.
+
+## Report Contract
+
+```markdown
+## Result
+PASS
+
+## Repository Sources / Methods
+- `path or git method`: concrete relevance
+
+## Source Spec Identity
+sha256 {spec_digest}
+
+## Ticket Count
+1
+
+## Ready Frontier
+- ISSUE-001
+
+## Blockers
+- None
+
+## Plan Drift
+- None
+
+## Proposal Paths
+- `{paths['proposal']}`
+- `{paths['summary']}`
+```
+
+Use `BLOCKED` only for a real blocker, and then state it under Blockers. Self-validate a passing handoff:
+
+```bash
+python3 {tracker_contract_path()} proposal {paths['proposal']} \\
+  --spec {approved_spec} --spec-sha256 {spec_digest}
+python3 {tracker_contract_path()} render-summary \\
+  --proposal {paths['proposal']} --out {paths['summary']}
+python3 {tracker_contract_path()} author-report {paths['report']} \\
+  --proposal {paths['proposal']} --summary {paths['summary']} \\
+  --spec {approved_spec} --spec-sha256 {spec_digest}
+```
+"""
+
+
+def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
+    approved_spec, spec_digest = approved_spec_from_state(state)
+    author = state.get("author_tickets")
+    if not isinstance(author, dict) or not author.get("proposal_sha256"):
+        raise SnapshotError("tickets review prompt requires the validated tickets author handoff")
+    task_path = (run_dir / state["task"]["path"]).resolve()
+    proposal = Path(author["proposal"]).resolve()
+    summary = Path(author["summary"]).resolve()
+    report = (run_dir / "reports" / f"tickets-{pass_num}.md").resolve()
+    paths = snapshot["allowed_worker_writes"]
+    validate_proposal(
+        proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest
+    )
+    return f"""# Planning Worker Prompt: independent ticket review (pass {pass_num})
+
+Prepared: {snapshot['resolved_at']}
+Stage snapshot: {snapshot['snapshot_id']}
+Harness: {snapshot['selected_worker']['harness']} (Codex is mandatory)
+
+Review independently in this fresh pane without either author session. Inspect the repository read-only
+where useful. Check the task, immutable approved specification and its decisions, exact author proposal
+and report identities, tracker ground rules, vertical-slice policy, and native tracker contract.
+
+## Inputs and Identity
+
+- Task: `{task_path}` (sha256 `{state['task']['sha256']}`)
+- Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
+- Machine proposal: `{proposal}` (sha256 `{author['proposal_sha256']}`)
+- Human summary: `{summary}` (sha256 `{author['summary_sha256']}`)
+- Author report: `{report}` (sha256 `{sha256_file(report)}`)
+
+### Persisted Task
+
+```text
+{task_path.read_text(encoding='utf-8').rstrip()}
+```
+
+### Approved Specification and Decisions
+
+```markdown
+{approved_spec.read_text(encoding='utf-8').rstrip()}
+```
+
+### Author Report
+
+```markdown
+{report.read_text(encoding='utf-8').rstrip()}
+```
+
+## Vertical-Slice Policy
+
+{VERTICAL_SLICE_POLICY}
+
+## Native Tracker Contract
+
+{NATIVE_TRACKER_POLICY}
+
+Return exactly one verdict:
+
+- `pass`: no change; bind the unchanged proposal digest and do not write the candidate.
+- `pass_with_fixes`: write one complete corrected machine proposal and a structured diff summary. You
+  may repair contradictions, stale references, native structure, clearly implied acceptance-criterion
+  traceability, wording clarity, or an unambiguous blocker representation only. Do not invent scope,
+  behavior, priority, architecture, ticket boundaries, or dependencies.
+- `blocked`: state the substantive ambiguity, dependency/ticket-boundary decision, or approved-spec
+  defect. Do not write a candidate. Correcting an approved-spec defect requires the full spec author,
+  spec review, spec approval, ticket author, and ticket review sequence again.
+
+## Write Boundary
+
+You may physically write only:
+
+- Review report: `{paths['report']}`
+- Complete corrected machine proposal only for `pass_with_fixes`: `{paths['candidate']}`
+
+Mandatory before/after Git-visible inspection gates every other delta. Never edit the author proposal,
+approved spec, product code, lifecycle state, or human summary.
+
+## Review Report Contract
+
+```markdown
+## Verdict
+pass
+
+## Findings
+- None
+
+## Methods
+- repository source/test/history checked independently
+
+## Input Identity
+sha256 {author['proposal_sha256']}
+
+## Resulting Candidate Identity
+sha256 {author['proposal_sha256']}
+
+## Corrections
+- None
+
+## Blockers
+- None
+
+## Plan Drift
+- None
+```
+
+Self-validate before handoff (the candidate may be absent for `pass` or `blocked`):
+
+```bash
+python3 {tracker_contract_path()} review-report {paths['report']} \\
+  --input {proposal} --candidate {paths['candidate']} \\
+  --input-sha256 {author['proposal_sha256']} \\
+  --spec {approved_spec} --spec-sha256 {spec_digest}
+```
+"""
+
+
 def render(run_dir: Path, stage: str, pass_num: int) -> str:
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=False)
     state = read_json(run_dir / "state.json")
-    return (
-        author_prompt(run_dir, pass_num, snapshot, state)
-        if stage == "spec"
-        else review_prompt(run_dir, pass_num, snapshot, state)
-    )
+    renderers = {
+        "spec": author_prompt,
+        "spec-review": review_prompt,
+        "tickets": tickets_prompt,
+        "tickets-review": tickets_review_prompt,
+    }
+    if stage not in renderers:
+        raise SnapshotError(f"unknown planning stage: {stage}")
+    return renderers[stage](run_dir, pass_num, snapshot, state)
 
 
 def main() -> int:

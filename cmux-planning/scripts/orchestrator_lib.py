@@ -15,9 +15,19 @@ from typing import Any
 from agents_config import durable_publish
 
 
-STAGES = ("spec", "spec-review")
-ROLE_LABELS = {"spec": "Spec Author", "spec-review": "Spec Reviewer"}
-MINIMUM_WAIT_MINUTES = {"spec": 45, "spec-review": 45}
+STAGES = ("spec", "spec-review", "tickets", "tickets-review")
+ROLE_LABELS = {
+    "spec": "Spec Author",
+    "spec-review": "Spec Reviewer",
+    "tickets": "Tickets Author",
+    "tickets-review": "Tickets Reviewer",
+}
+MINIMUM_WAIT_MINUTES = {
+    "spec": 45,
+    "spec-review": 45,
+    "tickets": 45,
+    "tickets-review": 45,
+}
 # One statement of what the Git-visible detector sees, so the snapshot, the tree baseline and
 # the run state cannot describe different boundaries.
 INTEGRITY_BOUNDARY = {

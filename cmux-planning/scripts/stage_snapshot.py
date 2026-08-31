@@ -30,7 +30,12 @@ from orchestrator_lib import integrity_boundary, read_json, sha256_file, utc_now
 
 
 WORKFLOW = "planning"
-STAGE_ROLE = {"spec": "spec", "spec-review": "reviewer"}
+STAGE_ROLE = {
+    "spec": "spec",
+    "spec-review": "reviewer",
+    "tickets": "tickets",
+    "tickets-review": "reviewer",
+}
 SNAPSHOT_VERSION = 1
 CODEX_SAFETY_ARGUMENTS = [
     "-s",
@@ -47,6 +52,27 @@ CODEX_SAFETY_ARGUMENTS = [
 
 
 SnapshotError = HarnessError
+
+
+def approved_spec_from_state(
+    state: dict[str, Any], *, run_dir: Path | None = None
+) -> tuple[Path, str]:
+    """The trust boundary for every tickets-stage input: one home so the gate and the rendered
+    prompt can never disagree about which specification counts as approved."""
+    approved = state.get("approved_spec")
+    if not isinstance(approved, dict) or not approved.get("path") or not approved.get("sha256"):
+        raise SnapshotError("tickets work requires an explicitly approved specification")
+    path = Path(approved["path"]).resolve()
+    if run_dir is not None:
+        try:
+            path.relative_to(run_dir.resolve())
+        except ValueError as error:
+            raise SnapshotError(
+                "approved specification does not belong to this planning run"
+            ) from error
+    if not path.is_file() or sha256_file(path) != approved["sha256"]:
+        raise SnapshotError("approved specification is missing or changed")
+    return path, approved["sha256"]
 
 
 def stage_argv(role: str, profile: dict[str, Any]) -> list[str]:
@@ -66,6 +92,19 @@ def handoff_paths(run_dir: Path, stage: str, pass_num: int) -> dict[str, str]:
         return {
             "candidate": str((run_dir / "artifacts" / f"spec-reviewed-{pass_num}.md").resolve()),
             "report": str((run_dir / "reports" / f"spec-review-{pass_num}.md").resolve()),
+        }
+    if stage == "tickets":
+        return {
+            "proposal": str((run_dir / "artifacts" / f"tickets-{pass_num}.json").resolve()),
+            "summary": str((run_dir / "artifacts" / f"tickets-{pass_num}.md").resolve()),
+            "report": str((run_dir / "reports" / f"tickets-{pass_num}.md").resolve()),
+        }
+    if stage == "tickets-review":
+        return {
+            "candidate": str(
+                (run_dir / "artifacts" / f"tickets-reviewed-{pass_num}.json").resolve()
+            ),
+            "report": str((run_dir / "reports" / f"tickets-review-{pass_num}.md").resolve()),
         }
     raise SnapshotError(f"unknown planning stage: {stage}")
 

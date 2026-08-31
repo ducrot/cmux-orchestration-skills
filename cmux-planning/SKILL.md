@@ -1,23 +1,20 @@
 ---
 name: cmux-planning
-description: Coordinate sequential visible CMUX planning workers that turn a task or explicitly human-revalidated cmux-grilling JSON/Markdown pair into a repository-grounded English specification, obtain a fresh independent Codex review, enforce exact run-scoped handoffs with Git-visible integrity gates, and pause for explicit human specification approval. Use for cmux planning, task-to-spec workflows, reviewed local specifications, optional grilling handoffs, planning run initialization, spec revision, and the planning stage before local issue decomposition. Do not use this skill to implement product code or to skip specification approval and jump directly from grilling to tickets.
+description: Coordinate sequential visible CMUX planning workers that turn a task or explicitly human-revalidated cmux-grilling JSON/Markdown pair into an approved repository-grounded specification and a reviewed native executable issue tracker. Use for cmux planning, task-to-spec workflows, vertical ticket decomposition, reviewed local specifications and trackers, optional grilling handoffs, planning run initialization, approval, revision, and collision-safe tracker publication. Do not use this skill to implement product code or to skip either approval boundary.
 ---
 
 # CMUX Planning
 
-Turn one persisted task into an independently reviewed, explicitly approved specification. The
-orchestrator coordinates; it does not author the specification or edit product code. Every author
-and reviewer runs as a fresh, visibly labeled CMUX pane.
-
-This release implements the specification slice through the `tickets` boundary:
+Turn one persisted task into an independently reviewed, explicitly approved specification and then
+an independently reviewed native issue tracker. The orchestrator coordinates; it does not author the
+planning artifacts or edit product code. Every author and reviewer runs as a fresh, visibly labeled
+CMUX pane.
 
 ```text
 input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
-      -> awaiting-spec-approval -> tickets
+      -> awaiting-spec-approval -> tickets -> tickets-review
+      -> awaiting-ticket-approval -> ready-to-publish -> complete
 ```
-
-Ticket decomposition and tracker publication belong to the next planning slice. Never improvise
-them from this stage.
 
 ## Ground rules
 
@@ -28,8 +25,9 @@ them from this stage.
   human before preparing a worker. Structural validation proves integrity, not freshness.
 - Workers synthesize supplied context and inspect the repository. They do not interview the user;
   they put missing information under `Open Decisions`.
-- The author may write only its draft and report. The reviewer may write only its report and, for
-  `pass_with_fixes`, its complete corrected candidate.
+- The spec author may write only its draft and report. The tickets author may write only its JSON
+  proposal, deterministic numbered summary, and report. A reviewer may write only its report and,
+  for `pass_with_fixes`, its complete corrected candidate.
 - Before each launch, capture the complete Git status, tracked diff, and staged diff. After the
   report, compare path and diff content. Any unauthorized Git-visible delta gates HITL regardless
   of report content; never silently revert it.
@@ -39,6 +37,12 @@ them from this stage.
   never recaptured, so a relaunch cannot adopt an unauthorized delta as its new "before".
 - Ask human revalidation and approval questions in the user's language. Persist task inputs,
   specifications, reports, state, and events in English; preserve literal product copy.
+- Ticket decomposition prefers a small number of cohesive tracer-bullet vertical slices. Never
+  default to frontend/backend/database/test tickets, never persist token counts or estimates, and
+  evaluate merge opportunities as explicitly as split points. Blocking edges must be genuine.
+- Only a passing reviewed ticket candidate may be staged. Publication is a collision-checked atomic
+  directory move into the target repository and never invokes `cmux-issue-chain` or
+  `adopt_tracker.py` at runtime.
 
 Read [references/spec-contract.md](references/spec-contract.md) when judging author or review
 handoffs.
@@ -117,7 +121,8 @@ Workers consume only the resulting complete `grilling-input.json`, never the inc
 
 ## Run one stage
 
-For `spec` or `spec-review`, use its current pass number from `state.json`:
+For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the corresponding current pass number
+from `state.json`:
 
 ```bash
 python3 scripts/render_prompt.py --run-dir <run-dir> --stage <stage> --pass <n>
@@ -187,9 +192,79 @@ python3 scripts/planning_state.py approval --run-dir <run-dir> \
   --decision revise --reason <requested-change>
 ```
 
-Approval freezes the exact candidate digest and advances to `tickets` without preparing a tickets
-worker. Revision preserves rejected artifacts, increments the spec pass, prepares a fresh author, and
-requires a new independent review. A decision is deferrable only after moving it outside current scope.
+Approval freezes the exact candidate digest, advances to `tickets`, and prepares a new immutable stage
+snapshot without reusing either spec worker session. Revision preserves rejected artifacts, increments
+the spec pass, prepares a fresh author, and requires a new independent review. A decision is deferrable
+only after moving it outside current scope.
+
+## Ticket author and independent review
+
+Run the prepared `tickets` stage with the same render, baseline, pane, delivery, and watcher commands.
+The author receives only the immutable approved spec, task, repository identity, tracker ground rules,
+vertical-slice policy, native proposal schema, revision feedback, and exact handoff paths. Its JSON
+proposal is the source of truth; `tracker_contract.py render-summary` creates the exact human-readable
+numbered representation.
+
+Gate a clean author report:
+
+```bash
+python3 scripts/planning_state.py accept-author --run-dir <run-dir>
+```
+
+This validates approved-spec identity, proposal structure, summary equality, ticket count, ready
+frontier, genuine blockers, cycles, qualitative sizing, merge/split rationale, and wide-refactor
+sequences, then prepares a fresh immutable `tickets-review` snapshot. Run that stage in a new visible
+pane; its selected harness must be Codex. Gate its report with:
+
+```bash
+python3 scripts/planning_state.py accept-review --run-dir <run-dir>
+```
+
+The tickets reviewer returns `pass`, `pass_with_fixes`, or `blocked`. Safe fixes may correct only
+established intent and lead directly to human approval after deterministic validation. A substantive
+ticket boundary, dependency, product, scope, behavior, priority, architecture, or approved-spec defect
+blocks. An approved-spec correction invalidates the proposal and restarts spec author, spec review, spec
+approval, ticket author, and ticket review.
+
+## Ticket approval, staging, and publication
+
+Load the deterministic walkthrough before asking the human. It includes verdict and corrections, every
+ticket's delivered behavior and criteria, the ready frontier, blocking edges, wide-refactor exceptions,
+merge/split rationale, and author/candidate diff:
+
+```bash
+python3 scripts/planning_state.py ticket-approval-view --run-dir <run-dir>
+```
+
+Record revision feedback with a fresh tickets pass, or route an approved-spec defect back through the
+complete spec sequence:
+
+```bash
+python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
+  --decision revise --reason <granularity-change>
+python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
+  --decision revise --scope spec --reason <approved-spec-defect>
+```
+
+Approval requires the explicit target path. It freezes the exact reviewed proposal digest, stages
+`README.md`, `spec.md`, `map.md`, `decisions.md`, and every native issue file under the run directory,
+and validates the complete staged tracker with this skill's standalone native contract. The target must
+remain absent and its basename must equal the approved lowercase kebab-case tracker slug:
+
+```bash
+python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
+  --decision approve --reason <human-reason> --target <repo-relative-or-absolute-target>
+```
+
+Only after approval and successful staging, publish the complete directory in one same-filesystem move:
+
+```bash
+python3 scripts/planning_state.py publish --run-dir <run-dir>
+```
+
+Publication refuses path escape, collisions, changed approved identities, malformed or partial issue
+sets, duplicate IDs, unknown blockers, cycles, changed staging, and second publication. Staging or
+validation failure leaves the target unchanged and records diagnostics for human resolution.
 
 ## Verification
 
