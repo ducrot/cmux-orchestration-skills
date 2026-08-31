@@ -60,10 +60,43 @@ def normalized_context(run_dir: Path, state: dict) -> str:
     )
 
 
+def resumed_context(run_dir: Path, state: dict) -> str:
+    recovery = state.get("resume_context")
+    if not isinstance(recovery, dict):
+        return "No interrupted prior pass is attached to this assignment."
+    blocks = [
+        f"Human resume reason: {recovery.get('reason', '')}",
+        (
+            f"Recovery route: {recovery.get('from_stage')}-{recovery.get('from_pass')} -> "
+            f"{recovery.get('to_stage')}-{recovery.get('to_pass')}"
+        ),
+    ]
+    for item in recovery.get("prior_handoffs", []):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise SnapshotError("resume context contains a malformed prior handoff")
+        path = Path(item["path"]).resolve()
+        try:
+            path.relative_to(run_dir.resolve())
+        except ValueError as error:
+            raise SnapshotError("resume context points outside this planning run") from error
+        if not path.is_file() or sha256_file(path) != item.get("sha256"):
+            raise SnapshotError(f"resume context handoff is missing or changed: {path}")
+        try:
+            content = path.read_text(encoding="utf-8").rstrip()
+        except UnicodeError as error:
+            raise SnapshotError(f"resume context handoff is not UTF-8: {path}") from error
+        blocks.append(
+            f"### {item.get('label', 'Prior handoff')}\n\n"
+            f"`{path}` (sha256 `{item['sha256']}`)\n\n```text\n{content}\n```"
+        )
+    return "\n\n".join(blocks)
+
+
 def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
     task_path = (run_dir / state["task"]["path"]).resolve()
     task = task_path.read_text(encoding="utf-8")
     paths = snapshot["allowed_worker_writes"]
+    feedback = state.get("spec_revision_feedback") or "None recorded for this specification pass."
     return f"""# Planning Worker Prompt: specification author (pass {pass_num})
 
 Prepared: {snapshot['resolved_at']}
@@ -85,6 +118,14 @@ Source: `{task_path}` (sha256 `{state['task']['sha256']}`)
 ## Optional Revalidated Grilling Context
 
 {normalized_context(run_dir, state)}
+
+## Human Specification Revision Feedback
+
+{feedback}
+
+## Interrupted-Pass Recovery Context
+
+{resumed_context(run_dir, state)}
 
 ## Specification Contract
 
@@ -145,7 +186,7 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
         raise SnapshotError("review prompt requires the validated author handoff")
     task_path = (run_dir / state["task"]["path"]).resolve()
     draft = Path(author["draft"]).resolve()
-    author_report = (run_dir / "reports" / f"spec-{pass_num}.md").resolve()
+    author_report = (run_dir / "reports" / f"spec-{state['spec_pass']}.md").resolve()
     paths = snapshot["allowed_worker_writes"]
     return f"""# Planning Worker Prompt: independent specification review (pass {pass_num})
 
@@ -178,6 +219,10 @@ the complete draft, and the contract below.
 ```markdown
 {author_report.read_text(encoding='utf-8').rstrip()}
 ```
+
+## Interrupted-Pass Recovery Context
+
+{resumed_context(run_dir, state)}
 
 ## Specification Contract
 
@@ -302,6 +347,10 @@ tests. Do not make product or scope decisions that the approved specification di
 
 {feedback}
 
+## Interrupted-Pass Recovery Context
+
+{resumed_context(run_dir, state)}
+
 ## Tracker Ground Rules
 
 - Canonical artifacts, headings, frontmatter values, reports, and proposal text are English; preserve
@@ -386,7 +435,7 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
     task_path = (run_dir / state["task"]["path"]).resolve()
     proposal = Path(author["proposal"]).resolve()
     summary = Path(author["summary"]).resolve()
-    report = (run_dir / "reports" / f"tickets-{pass_num}.md").resolve()
+    report = (run_dir / "reports" / f"tickets-{state['tickets_pass']}.md").resolve()
     paths = snapshot["allowed_worker_writes"]
     validate_proposal(
         proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest
@@ -426,6 +475,10 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 ```markdown
 {report.read_text(encoding='utf-8').rstrip()}
 ```
+
+## Interrupted-Pass Recovery Context
+
+{resumed_context(run_dir, state)}
 
 ## Vertical-Slice Policy
 

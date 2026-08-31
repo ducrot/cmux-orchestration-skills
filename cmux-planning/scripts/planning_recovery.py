@@ -1,0 +1,951 @@
+#!/usr/bin/env python3
+"""Read-only status, discovery, and recovery helpers for cmux-planning."""
+
+from __future__ import annotations
+
+import json
+import shlex
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from orchestrator_lib import STAGES, read_json, sha256_file
+from stage_snapshot import SnapshotError, load_prepared_snapshot
+from tracker_contract import ContractError, validate_native_tracker, validate_proposal
+from tree_integrity import snapshot_digest
+
+
+PASS_KEYS = {
+    "spec": "spec_pass",
+    "spec-review": "spec_review_pass",
+    "tickets": "tickets_pass",
+    "tickets-review": "tickets_review_pass",
+}
+MODES = {
+    "spec": "author",
+    "spec-review": "reviewer",
+    "tickets": "author",
+    "tickets-review": "reviewer",
+}
+CLASSIFICATIONS = {
+    "input": "input-validation",
+    "spec": "spec-authoring",
+    "spec-review": "spec-review",
+    "tickets": "ticket-authoring",
+    "tickets-review": "ticket-review",
+    "awaiting-spec-approval": "awaiting-spec-approval",
+    "awaiting-ticket-approval": "awaiting-ticket-approval",
+    "ready-to-publish": "ready-to-publish",
+    "complete": "completed",
+}
+BLOCKED_STAGES = {
+    "spec-blocked",
+    "spec-review-blocked",
+    "tickets-blocked",
+    "tickets-review-blocked",
+}
+HITL_STAGES = {"integrity-violation"}
+
+
+def shell_join(argv: list[str | Path]) -> str:
+    return shlex.join([str(value) for value in argv])
+
+
+def script(name: str) -> Path:
+    return Path(__file__).resolve().parent / name
+
+
+def stage_pass(state: dict[str, Any], stage: str) -> int:
+    key = PASS_KEYS[stage]
+    fallback = "tickets_pass" if stage.startswith("tickets") else "spec_pass"
+    value = state.get(key, state.get(fallback))
+    if not isinstance(value, int) or value < 1:
+        raise ValueError(f"state has no valid pass for {stage}")
+    return value
+
+
+def report_for(run_dir: Path, stage: str, pass_num: int) -> Path:
+    return run_dir / "reports" / f"{stage}-{pass_num}.md"
+
+
+def read_events(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    path = run_dir / "events.jsonl"
+    errors: list[str] = []
+    events: list[dict[str, Any]] = []
+    if not path.is_file():
+        return events, ["events.jsonl is missing"]
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            errors.append(f"events.jsonl line {number} is malformed")
+            continue
+        if not isinstance(event, dict):
+            errors.append(f"events.jsonl line {number} is not an object")
+            continue
+        events.append(event)
+    return events, errors
+
+
+def matching_event(event: dict[str, Any], stage: str, pass_num: int) -> bool:
+    data = event.get("data")
+    return (
+        isinstance(data, dict)
+        and data.get("stage") == stage
+        and data.get("pass") == pass_num
+    )
+
+
+def surface_health(cmux_cmd: str, workspace: str | None, surface: str) -> str:
+    if not isinstance(workspace, str) or not workspace:
+        return "last-known"
+    command = shlex.split(cmux_cmd) + [
+        "--json",
+        "--id-format",
+        "both",
+        "surface-health",
+        "--workspace",
+        workspace,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "last-known"
+    if result.returncode != 0:
+        return "last-known"
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "last-known"
+    surfaces = payload.get("surfaces") if isinstance(payload, dict) else None
+    if not isinstance(surfaces, list) or not all(isinstance(item, dict) for item in surfaces):
+        return "last-known"
+    return (
+        "live"
+        if any(surface in (item.get("id"), item.get("ref")) for item in surfaces)
+        else "dead"
+    )
+
+
+def pane_status(
+    state: dict[str, Any], events: list[dict[str, Any]], stage: str, pass_num: int, cmux_cmd: str
+) -> dict[str, Any]:
+    pointer = state.get("prepared_stage")
+    snapshot_id = pointer.get("snapshot_id") if isinstance(pointer, dict) else None
+    launches = [
+        event
+        for event in events
+        if event.get("type") == "pane.launched" and matching_event(event, stage, pass_num)
+    ]
+    current = [
+        event
+        for event in launches
+        if isinstance(event.get("data"), dict)
+        and event["data"].get("stage_snapshot_id") == snapshot_id
+    ]
+    launch = current[-1] if current else None
+    last_known = launches[-1] if launches else None
+    if launch is None:
+        payload: dict[str, Any] = {
+            "status": "not-launched",
+            "surface_id": None,
+            "surface_ref": None,
+            "pane_id": None,
+            "agent_launch_sent": False,
+            "assignment_start_confirmed": False,
+            "prompt_sent": False,
+            "last_event": last_known,
+        }
+        if last_known is not None:
+            payload["previous_attempt"] = last_known.get("data")
+        return payload
+
+    data = launch["data"]
+    surface = data.get("surface_id") or data.get("surface_ref")
+    later = events[events.index(launch) + 1 :]
+    relevant = [event for event in later if matching_event(event, stage, pass_num)]
+    agent_launch_sent = any(
+        event.get("type") == "worker.launch_sent"
+        and event.get("data", {}).get("surface_id") == surface
+        for event in relevant
+    )
+    prompt_sent = any(
+        event.get("type") == "worker.prompt_sent"
+        and event.get("data", {}).get("surface_id") == surface
+        for event in relevant
+    )
+    assignment_start_confirmed = any(
+        event.get("type") == "worker.started"
+        and event.get("data", {}).get("surface_id") == surface
+        for event in relevant
+    )
+    waits = [
+        event
+        for event in relevant
+        if event.get("type") == "worker.waiting"
+        and event.get("data", {}).get("surface_id") == surface
+    ]
+    wait_outcome = waits[-1].get("data", {}).get("outcome") if waits else None
+    extension = waits[-1].get("data", {}).get("extension", 0) if waits else 0
+    if wait_outcome == "pane_dead":
+        health = "dead"
+    elif wait_outcome == "deadline":
+        health = "watcher-expired" if extension else "deadline"
+    else:
+        health = surface_health(cmux_cmd, state.get("workspace_id"), str(surface))
+    return {
+        "status": health,
+        "surface_id": surface,
+        "surface_ref": data.get("surface_ref"),
+        "pane_id": data.get("pane_id"),
+        "agent_launch_sent": agent_launch_sent,
+        "assignment_start_confirmed": assignment_start_confirmed,
+        "prompt_sent": prompt_sent,
+        "last_wait_outcome": wait_outcome,
+        "extension": extension,
+        "last_event": relevant[-1] if relevant else launch,
+    }
+
+
+def pointer_identity(
+    run_dir: Path, pointer: Any, label: str, errors: list[str]
+) -> dict[str, Any] | None:
+    if pointer is None:
+        return None
+    if not isinstance(pointer, dict):
+        errors.append(f"{label} pointer is malformed")
+        return {"valid": False}
+    result = dict(pointer)
+    path_value = pointer.get("path")
+    digest = pointer.get("sha256")
+    if not isinstance(path_value, str) or not isinstance(digest, str):
+        result["valid"] = False
+        errors.append(f"{label} identity is incomplete")
+        return result
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = run_dir / path
+    path = path.resolve()
+    try:
+        path.relative_to(run_dir.resolve())
+    except ValueError:
+        result["path"] = str(path)
+        result["valid"] = False
+        errors.append(f"{label} path escapes the planning run")
+        return result
+    valid = path.is_file() and sha256_file(path) == digest
+    result["path"] = str(path)
+    result["valid"] = valid
+    if not valid:
+        errors.append(f"{label} is missing or changed")
+    return result
+
+
+def approval_status(run_dir: Path, state: dict[str, Any], errors: list[str]) -> dict[str, Any]:
+    spec = pointer_identity(run_dir, state.get("approved_spec"), "approved specification", errors)
+    tickets = pointer_identity(run_dir, state.get("approved_tickets"), "approved ticket proposal", errors)
+    return {
+        "spec": {
+            "recorded": spec is not None,
+            "valid": bool(spec and spec.get("valid")),
+            "identity": spec,
+        },
+        "tickets": {
+            "recorded": tickets is not None,
+            "valid": bool(tickets and tickets.get("valid")),
+            "identity": tickets,
+        },
+    }
+
+
+def grilling_import_status(
+    run_dir: Path, imported: Any, errors: list[str]
+) -> dict[str, Any] | None:
+    if imported is None:
+        return None
+    if not isinstance(imported, dict):
+        errors.append("grilling import state is malformed")
+        return {"valid": False}
+    result = dict(imported)
+    valid = True
+    for path_key, digest_key, label in (
+        ("copied_json", "source_json_sha256", "copied grilling JSON"),
+        ("copied_markdown", "source_markdown_sha256", "copied grilling Markdown"),
+    ):
+        relative = imported.get(path_key)
+        digest = imported.get(digest_key)
+        if not isinstance(relative, str) or not isinstance(digest, str):
+            errors.append(f"{label} identity is incomplete")
+            valid = False
+            continue
+        path = (run_dir / relative).resolve()
+        try:
+            path.relative_to(run_dir)
+        except ValueError:
+            errors.append(f"{label} path escapes the planning run")
+            valid = False
+            continue
+        item_valid = path.is_file() and sha256_file(path) == digest
+        result[f"{path_key}_valid"] = item_valid
+        valid = valid and item_valid
+        if not item_valid:
+            errors.append(f"{label} is missing or changed")
+    result["valid"] = valid
+    return result
+
+
+def publication_proposal(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    approved_spec = state.get("approved_spec")
+    if not isinstance(approved_spec, dict):
+        raise ContractError("publication has no approved specification identity")
+    source = state.get("approved_tickets")
+    path_key = "path"
+    digest_key = "sha256"
+    if not isinstance(source, dict):
+        source = state.get("reviewed_tickets")
+        path_key = "candidate"
+        digest_key = "candidate_sha256"
+    if not isinstance(source, dict):
+        raise ContractError("publication has no reviewed ticket proposal identity")
+    path = Path(source.get(path_key, ""))
+    digest = source.get(digest_key)
+    if not path.is_file() or not isinstance(digest, str):
+        raise ContractError("publication ticket proposal identity is incomplete")
+    proposal = validate_proposal(
+        path,
+        expected_spec=Path(approved_spec["path"]),
+        expected_spec_sha256=approved_spec["sha256"],
+    )
+    if proposal["sha256"] != digest:
+        raise ContractError("publication ticket proposal changed after review or approval")
+    return approved_spec, proposal
+
+
+def validate_publication_tracker(
+    path: Path,
+    state: dict[str, Any],
+    *,
+    expected_artifacts: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    approved_spec, proposal = publication_proposal(state)
+    validated = validate_native_tracker(
+        path,
+        expected_spec_sha256=approved_spec["sha256"],
+        expected_ticket_ids=proposal["ticket_ids"],
+    )
+    if expected_artifacts is not None and validated["artifacts"] != expected_artifacts:
+        raise ContractError("publication artifact identities changed")
+    return validated
+
+
+def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) -> dict[str, Any]:
+    staged = state.get("staged_tracker")
+    approved = state.get("approved_tickets")
+    published = state.get("published_tracker")
+    target_value = approved.get("target") if isinstance(approved, dict) else None
+    staged_value = staged.get("path") if isinstance(staged, dict) else None
+    target = Path(target_value) if isinstance(target_value, str) else None
+    canonical_staging = run_dir.resolve() / "publication-stage"
+    staged_path = Path(staged_value).resolve() if isinstance(staged_value, str) else canonical_staging
+    if isinstance(staged, dict) and staged_path != canonical_staging:
+        errors.append("recorded staged tracker path is outside the canonical planning staging directory")
+    if (
+        not isinstance(staged, dict)
+        and canonical_staging.exists()
+        and canonical_staging.resolve() != canonical_staging
+    ):
+        errors.append("unrecorded staging resolves outside the canonical planning staging directory")
+    target_exists = bool(target and target.exists())
+    staged_exists = staged_path.exists()
+    phase = "not-started"
+    if published is not None or state.get("current_stage") == "complete":
+        phase = "completed"
+        if not isinstance(published, dict) or not isinstance(published.get("path"), str):
+            phase = "inconsistent"
+            errors.append("completed run has no published tracker identity")
+        else:
+            published_path = Path(published["path"])
+            try:
+                if target is not None and published_path.resolve() != target.resolve():
+                    raise ContractError("published tracker path differs from the approved target")
+                validate_publication_tracker(
+                    published_path,
+                    state,
+                    expected_artifacts=published.get("artifacts"),
+                )
+            except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
+                phase = "inconsistent"
+                errors.append(f"published tracker is missing or changed: {error}")
+    elif target_exists and not staged_exists:
+        try:
+            validate_publication_tracker(
+                target,
+                state,
+                expected_artifacts=(staged.get("artifacts") if isinstance(staged, dict) else None),
+            )
+            phase = "published"
+        except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
+            phase = "inconsistent"
+            errors.append(f"moved publication target is missing or changed: {error}")
+    elif target_exists and staged_exists:
+        phase = "inconsistent"
+        errors.append("both staged and target tracker directories exist")
+    elif staged_exists:
+        try:
+            validate_publication_tracker(
+                staged_path,
+                state,
+                expected_artifacts=(staged.get("artifacts") if isinstance(staged, dict) else None),
+            )
+            if isinstance(staged, dict):
+                phase = "validated"
+            else:
+                phase = "fully-staged"
+        except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
+            phase = "inconsistent"
+            errors.append(f"staged tracker is incomplete or changed: {error}")
+    elif staged is not None:
+        phase = "staging-missing"
+        errors.append("recorded staged tracker is missing")
+    return {
+        "phase": phase,
+        "staged": staged,
+        "staged_exists": staged_exists,
+        "target": str(target) if target else None,
+        "target_exists": target_exists,
+        "published": published,
+    }
+
+
+def recovery_context(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+    task_pointer = state.get("task")
+    task_relative = task_pointer.get("path", "task.md") if isinstance(task_pointer, dict) else "task.md"
+    paths = {
+        "task": str(run_dir / task_relative),
+        "state": str(run_dir / "state.json"),
+        "events": str(run_dir / "events.jsonl"),
+        "copied_grilling_json": None,
+        "copied_grilling_markdown": None,
+        "normalized_grilling_input": None,
+        "approved_spec": state.get("approved_spec", {}).get("path")
+        if isinstance(state.get("approved_spec"), dict)
+        else None,
+        "latest_spec": state.get("author_spec", {}).get("draft")
+        if isinstance(state.get("author_spec"), dict)
+        else None,
+        "latest_spec_review": state.get("reviewed_spec", {}).get("candidate")
+        if isinstance(state.get("reviewed_spec"), dict)
+        else None,
+        "latest_ticket_proposal": state.get("author_tickets", {}).get("proposal")
+        if isinstance(state.get("author_tickets"), dict)
+        else None,
+        "latest_ticket_review": state.get("reviewed_tickets", {}).get("candidate")
+        if isinstance(state.get("reviewed_tickets"), dict)
+        else None,
+        "stage_snapshots": str(run_dir / "stage-snapshots"),
+        "tree_snapshots": str(run_dir / "tree-snapshots"),
+        "reports": str(run_dir / "reports"),
+        "artifacts": str(run_dir / "artifacts"),
+        "spec_approval_diff_command": shell_join(
+            ["python3", script("planning_state.py"), "approval-view", "--run-dir", run_dir]
+        ),
+        "ticket_approval_diff_command": shell_join(
+            ["python3", script("planning_state.py"), "ticket-approval-view", "--run-dir", run_dir]
+        ),
+    }
+    imported = state.get("grilling_import")
+    if (
+        isinstance(imported, dict)
+        and isinstance(imported.get("copied_json"), str)
+        and isinstance(imported.get("copied_markdown"), str)
+    ):
+        paths["copied_grilling_json"] = str(run_dir / imported["copied_json"])
+        paths["copied_grilling_markdown"] = str(run_dir / imported["copied_markdown"])
+    normalized = state.get("normalized_grilling_input")
+    if isinstance(normalized, dict) and isinstance(normalized.get("path"), str):
+        paths["normalized_grilling_input"] = str(run_dir / normalized["path"])
+    files: list[dict[str, Any]] = []
+    for directory in ("artifacts", "reports", "stage-snapshots", "tree-snapshots"):
+        root = run_dir / directory
+        if root.is_dir():
+            files.extend(
+                {"path": str(path), "sha256": sha256_file(path)}
+                for path in sorted(root.iterdir())
+                if path.is_file()
+            )
+    return {"paths": paths, "history": files, "resume_context": state.get("resume_context")}
+
+
+def recommended_next(
+    run_dir: Path,
+    state: dict[str, Any],
+    classification: str,
+    pane: dict[str, Any],
+    report: dict[str, Any],
+    errors: list[str],
+    cmux_cmd: str,
+) -> dict[str, str | None]:
+    base = ["python3", script("planning_state.py")]
+    pane_base = ["python3", script("pane_ctl.py"), "--cmux-cmd", cmux_cmd]
+    if errors or classification == "inconsistent" or state.get("current_stage") in HITL_STAGES:
+        return {
+            "action": "stop for human inspection",
+            "command": shell_join(base + ["context", "--run-dir", run_dir]),
+        }
+    stage = state.get("current_stage")
+    if stage == "input":
+        return {
+            "action": "finish the interrupted validated-input checkpoint",
+            "command": shell_join(
+                base + ["resume", "--run-dir", run_dir, "--decision", "rejoin"]
+            ),
+        }
+    if stage == "awaiting-grilling-revalidation":
+        return {
+            "action": "resume the same human revalidation walkthrough",
+            "command": shell_join(base + ["show-revalidation", "--run-dir", run_dir]),
+        }
+    if stage in STAGES:
+        pass_num = stage_pass(state, stage)
+        pointer = state.get("prepared_stage")
+        if not isinstance(pointer, dict):
+            return {
+                "action": "prepare the current stage",
+                "command": shell_join(
+                    base
+                    + ["prepare", "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
+                ),
+            }
+        prompt = run_dir / "prompts" / f"{stage}-{pass_num}.md"
+        if not prompt.is_file():
+            return {
+                "action": "render the deterministic worker prompt",
+                "command": shell_join(
+                    ["python3", script("render_prompt.py"), "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
+                ),
+            }
+        if not isinstance(state.get("tree_baseline"), dict):
+            return {
+                "action": "capture the immutable launch baseline",
+                "command": shell_join(
+                    ["python3", script("tree_integrity.py"), "baseline", "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
+                ),
+            }
+        if report.get("ready"):
+            gate = "accept-review" if stage.endswith("review") else "accept-author"
+            return {
+                "action": "validate and gate the pending handoff",
+                "command": shell_join(base + [gate, "--run-dir", run_dir]),
+            }
+        if report.get("uncertain") and pane["status"] not in {"live", "last-known"}:
+            return {
+                "action": "HITL: inspect the non-empty handoff that was never stably captured",
+                "command": shell_join(base + ["context", "--run-dir", run_dir]),
+            }
+        if pane["status"] == "deadline":
+            return {
+                "action": "HITL: approve the run's one watcher deadline extension",
+                "command": shell_join(
+                    base
+                    + [
+                        "resume",
+                        "--run-dir",
+                        run_dir,
+                        "--cmux-cmd",
+                        cmux_cmd,
+                        "--decision",
+                        "extend",
+                        "--reason",
+                        "<human-reason>",
+                    ]
+                ),
+            }
+        if pane["status"] in {"dead", "watcher-expired"}:
+            return {
+                "action": "HITL: explicitly approve a fresh recovery pass",
+                "command": shell_join(
+                    base
+                    + [
+                        "resume",
+                        "--run-dir",
+                        run_dir,
+                        "--cmux-cmd",
+                        cmux_cmd,
+                        "--decision",
+                        "relaunch",
+                        "--reason",
+                        "<human-reason>",
+                    ]
+                ),
+            }
+        surface = pane.get("surface_id")
+        common = ["--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
+        if pane["status"] == "not-launched":
+            return {
+                "action": "launch one fresh visible pane",
+                "command": shell_join(
+                    [*pane_base, "launch", *common, "--anchor", "<caller-surface>"]
+                ),
+            }
+        if not pane.get("agent_launch_sent"):
+            return {
+                "action": "start the configured worker in the existing pane",
+                "command": shell_join(
+                    [*pane_base, "start-agent", *common, "--surface", str(surface)]
+                ),
+            }
+        if not pane.get("prompt_sent"):
+            return {
+                "action": "deliver the same deterministic prompt to the existing not-started assignment",
+                "command": shell_join(
+                    [
+                        *pane_base,
+                        "deliver",
+                        *common,
+                        "--surface",
+                        str(surface),
+                        "--prompt",
+                        prompt,
+                    ]
+                ),
+            }
+        if not pane.get("assignment_start_confirmed"):
+            return {
+                "action": (
+                    "inspect the visible pane; redeliver the same prompt only for a confirmed "
+                    "not-started recap, otherwise record that work started"
+                ),
+                "command": shell_join(
+                    [
+                        *pane_base,
+                        "mark-started",
+                        *common,
+                        "--surface",
+                        str(surface),
+                    ]
+                ),
+            }
+        return {
+            "action": "rejoin the live worker through the armed watcher",
+            "command": shell_join(
+                [
+                    "python3",
+                    script("await_report.py"),
+                    *common,
+                    "--surface",
+                    str(surface),
+                    "--cmux-cmd",
+                    cmux_cmd,
+                    "--extension",
+                    str(pane.get("extension", 0)),
+                ]
+            ),
+        }
+    if stage == "awaiting-spec-approval":
+        return {
+            "action": "resume the digest-bound specification approval walkthrough",
+            "command": shell_join(base + ["approval-view", "--run-dir", run_dir]),
+        }
+    if stage == "awaiting-ticket-approval":
+        return {
+            "action": "resume the digest-bound ticket approval walkthrough",
+            "command": shell_join(base + ["ticket-approval-view", "--run-dir", run_dir]),
+        }
+    if stage in BLOCKED_STAGES:
+        return {
+            "action": "HITL: record the decision and explicitly prepare a fresh author pass",
+            "command": shell_join(
+                base
+                + [
+                    "resume",
+                    "--run-dir",
+                    run_dir,
+                    "--decision",
+                    "relaunch",
+                    "--reason",
+                    "<human-decision>",
+                ]
+            ),
+        }
+    if stage == "ready-to-publish":
+        return {
+            "action": "publish or recover the already approved tracker",
+            "command": shell_join(base + ["publish", "--run-dir", run_dir]),
+        }
+    if stage == "complete":
+        return {"action": "run complete; a deliberate new session may be started", "command": None}
+    return {
+        "action": "stop: state is not a recognized planning stage",
+        "command": shell_join(base + ["context", "--run-dir", run_dir]),
+    }
+
+
+def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
+    run_dir = run_dir.resolve()
+    state_path = run_dir / "state.json"
+    if not state_path.is_file():
+        raise ValueError(f"No state.json under {run_dir}")
+    state = read_json(state_path)
+    if not isinstance(state, dict):
+        raise ValueError("planning state root is not an object")
+    events, errors = read_events(run_dir)
+    stage = state.get("current_stage")
+    pass_num = None
+    if stage in STAGES:
+        try:
+            pass_num = stage_pass(state, stage)
+        except (KeyError, TypeError, ValueError) as error:
+            errors.append(str(error))
+
+    task = pointer_identity(run_dir, state.get("task"), "persisted task", errors)
+    normalized = pointer_identity(
+        run_dir, state.get("normalized_grilling_input"), "normalized grilling input", errors
+    )
+    revalidation = pointer_identity(
+        run_dir, state.get("grilling_revalidation"), "grilling revalidation progress", errors
+    )
+    grilling_import = grilling_import_status(run_dir, state.get("grilling_import"), errors)
+    prepared = state.get("prepared_stage")
+    if stage in STAGES and pass_num is not None and isinstance(prepared, dict):
+        try:
+            baseline = state.get("tree_baseline")
+            load_prepared_snapshot(
+                run_dir,
+                stage,
+                pass_num,
+                require_baseline=isinstance(baseline, dict),
+            )
+            if isinstance(baseline, dict):
+                before_relative = Path(baseline.get("path", ""))
+                if before_relative.is_absolute() or ".." in before_relative.parts:
+                    raise SnapshotError("tree baseline path is unsafe")
+                before = read_json(run_dir / before_relative)
+                if snapshot_digest(before) != baseline.get("sha256"):
+                    raise SnapshotError("tree baseline is missing or changed")
+            prepared = {**prepared, "valid": True}
+        except (SnapshotError, OSError, TypeError, ValueError, KeyError) as error:
+            prepared = {**prepared, "valid": False, "error": str(error)}
+            errors.append(f"prepared snapshot is unsafe: {error}")
+    elif stage in STAGES:
+        prepared = None
+    elif stage == "input":
+        initialization = state.get("initialization")
+        if not isinstance(initialization, dict):
+            errors.append("validated input checkpoint metadata is missing")
+            prepared = None
+        elif initialization.get("target_stage") == "spec":
+            prepared = pointer_identity(
+                run_dir,
+                initialization.get("prepared_stage"),
+                "validated input snapshot",
+                errors,
+            )
+        elif initialization.get("target_stage") == "awaiting-grilling-revalidation":
+            prepared = None
+            if initialization.get("prepared_stage") is not None:
+                errors.append("grilling input checkpoint prepared a worker before revalidation")
+        else:
+            prepared = None
+            errors.append("validated input checkpoint has an unknown target stage")
+
+    if stage == "integrity-violation":
+        gates = state.get("gate_decisions")
+        gate = gates[-1] if isinstance(gates, list) and gates and isinstance(gates[-1], dict) else None
+        source_stage = gate.get("stage") if gate else None
+        if source_stage not in STAGES:
+            errors.append("integrity violation has no preserved source stage")
+        else:
+            try:
+                source_pass = stage_pass(state, source_stage)
+                before_path = run_dir / "tree-snapshots" / f"{source_stage}-{source_pass}-before.json"
+                before = read_json(before_path)
+                seals = state.get("tree_baseline_seals")
+                expected = (
+                    seals.get(f"{source_stage}-{source_pass}")
+                    if isinstance(seals, dict)
+                    else None
+                )
+                if not isinstance(expected, str) or snapshot_digest(before) != expected:
+                    raise SnapshotError("launch baseline digest changed")
+            except (SnapshotError, OSError, TypeError, ValueError, KeyError) as error:
+                errors.append(f"integrity violation baseline is unsafe: {error}")
+
+    pane = (
+        pane_status(state, events, stage, pass_num, cmux_cmd)
+        if stage in STAGES and pass_num is not None
+        else {
+            "status": "not-applicable",
+            "surface_id": None,
+            "agent_launch_sent": False,
+            "assignment_start_confirmed": False,
+            "prompt_sent": False,
+            "last_event": None,
+        }
+    )
+    report_path = (
+        report_for(run_dir, stage, pass_num)
+        if stage in STAGES and pass_num is not None
+        else None
+    )
+    report_exists = bool(report_path and report_path.is_file() and report_path.stat().st_size)
+    report_digest = sha256_file(report_path) if report_exists and report_path else None
+    captured_reports = [
+        event.get("data")
+        for event in events
+        if event.get("type") == "worker.waiting"
+        and matching_event(event, stage, pass_num)
+        and isinstance(event.get("data"), dict)
+        and event["data"].get("outcome") == "report"
+    ] if stage in STAGES and pass_num is not None else []
+    captured_digest = captured_reports[-1].get("report_sha256") if captured_reports else None
+    report_ready = bool(report_digest and report_digest == captured_digest)
+    if isinstance(captured_digest, str) and report_digest != captured_digest:
+        errors.append("stably captured report is missing or changed")
+    report = {
+        "path": str(report_path) if report_path else None,
+        "exists": report_exists,
+        "sha256": report_digest,
+        "captured_sha256": captured_digest,
+        "ready": report_ready,
+        "uncertain": bool(report_exists and not report_ready),
+        "pending": bool(stage in STAGES and not report_ready),
+    }
+    latest_review = state.get("reviewed_tickets") or state.get("reviewed_spec")
+    review_events = [
+        event.get("data")
+        for event in events
+        if event.get("type") == "gate"
+        and isinstance(event.get("data"), dict)
+        and event["data"].get("stage") in {"spec-review", "tickets-review"}
+        and event["data"].get("verdict")
+    ]
+    if stage == "awaiting-spec-approval" and isinstance(state.get("reviewed_spec"), dict):
+        latest_review = state["reviewed_spec"]
+    elif stage in {"awaiting-ticket-approval", "ready-to-publish", "complete"} and isinstance(
+        state.get("reviewed_tickets"), dict
+    ):
+        latest_review = state["reviewed_tickets"]
+    elif review_events:
+        latest_review = review_events[-1]
+    if (
+        isinstance(latest_review, dict)
+        and isinstance(latest_review.get("candidate"), str)
+        and isinstance(latest_review.get("candidate_sha256"), str)
+    ):
+        candidate = Path(latest_review["candidate"]).resolve()
+        try:
+            candidate.relative_to(run_dir)
+        except ValueError:
+            errors.append("latest reviewed candidate path escapes the planning run")
+        else:
+            if not candidate.is_file() or sha256_file(candidate) != latest_review["candidate_sha256"]:
+                errors.append("latest reviewed candidate is missing or changed")
+    approval = approval_status(run_dir, state, errors)
+    publication = publication_status(run_dir, state, errors)
+
+    if errors:
+        classification = "inconsistent"
+    elif stage == "awaiting-grilling-revalidation":
+        classification = (
+            "grilling-revalidation-interrupted"
+            if state.get("grilling_revalidation")
+            else "awaiting-grilling-revalidation"
+        )
+    elif stage in BLOCKED_STAGES:
+        classification = "review-blocked" if "review" in stage else "hitl"
+    elif stage in HITL_STAGES:
+        classification = "hitl"
+    elif stage in STAGES and report["uncertain"] and pane["status"] not in {"live", "last-known"}:
+        classification = "hitl"
+    elif stage in STAGES and pane["status"] in {"dead", "deadline", "watcher-expired"}:
+        classification = "hitl"
+    elif stage in STAGES and pane.get("assignment_start_confirmed") and not report_ready:
+        classification = "pending-report"
+    elif (
+        stage == "spec"
+        and state.get("spec_pass", 1) > 1
+        and state.get("spec_revision_feedback")
+    ) or (
+        stage == "tickets"
+        and state.get("tickets_pass", 1) > 1
+        and state.get("ticket_revision_feedback")
+    ) or (
+        stage in STAGES
+        and any(event.get("type", "").endswith("revision_requested") for event in events[-5:])
+    ):
+        classification = "requested-revision"
+    else:
+        classification = CLASSIFICATIONS.get(stage, "inconsistent")
+        if classification == "inconsistent":
+            errors.append(f"unknown current_stage {stage!r}")
+
+    payload = {
+        "run_id": state.get("run_id"),
+        "run_dir": str(run_dir),
+        "repository": state.get("repository"),
+        "input": {
+            "task": task,
+            "grilling_import": grilling_import,
+            "normalized_grilling_input": normalized,
+            "grilling_revalidation": revalidation,
+        },
+        "classification": classification,
+        "stage": {
+            "current": stage,
+            "mode": MODES.get(stage),
+            "pass": pass_num,
+        },
+        "prepared_snapshot": prepared,
+        "pane": pane,
+        "report": report,
+        "latest_review": {
+            "verdict": latest_review.get("verdict") if isinstance(latest_review, dict) else None,
+            "candidate_sha256": latest_review.get("candidate_sha256")
+            if isinstance(latest_review, dict)
+            else None,
+        },
+        "approval": approval,
+        "publication": publication,
+        "staged_artifacts": state.get("staged_tracker", {}).get("artifacts")
+        if isinstance(state.get("staged_tracker"), dict)
+        else None,
+        "published_target": state.get("published_tracker", {}).get("path")
+        if isinstance(state.get("published_tracker"), dict)
+        else publication.get("target"),
+        "consistency_errors": errors,
+        "context_recovery": recovery_context(run_dir, state),
+    }
+    payload["recommended_next"] = recommended_next(
+        run_dir, state, classification, pane, report, errors, cmux_cmd
+    )
+    return payload
+
+
+def unfinished_runs(runs_root: Path, repository: Path) -> list[dict[str, Any]]:
+    if not runs_root.is_dir():
+        return []
+    repository = repository.resolve()
+    found: list[dict[str, Any]] = []
+    for state_path in runs_root.glob("*/state.json"):
+        try:
+            state = read_json(state_path)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(state, dict) or not isinstance(state.get("repository"), str):
+            continue
+        try:
+            same = Path(state["repository"]).resolve() == repository
+        except (OSError, TypeError):
+            same = False
+        if same and state.get("current_stage") != "complete":
+            run_id = state.get("run_id")
+            updated = state.get("updated_at", state.get("created_at", ""))
+            found.append(
+                {
+                    "run_id": run_id if isinstance(run_id, str) else state_path.parent.name,
+                    "run_dir": str(state_path.parent.resolve()),
+                    "current_stage": state.get("current_stage"),
+                    "updated_at": updated if isinstance(updated, str) else "",
+                }
+            )
+    return sorted(found, key=lambda item: (item["updated_at"], item["run_id"]), reverse=True)

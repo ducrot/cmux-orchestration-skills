@@ -47,6 +47,14 @@ from orchestrator_lib import (
     utc_now,
     write_json,
 )
+from planning_recovery import (
+    PASS_KEYS,
+    recovery_context,
+    shell_join,
+    stage_pass,
+    status_payload,
+    unfinished_runs,
+)
 from spec_contract import (
     ContractError,
     sections,
@@ -61,7 +69,7 @@ from stage_snapshot import (
     persist_snapshot,
     snapshot_from_args,
 )
-from tree_integrity import IntegrityError, verify
+from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_digest, verify
 from tracker_contract import (
     stage_native_tracker,
     validate_native_tracker,
@@ -92,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--accept-config", action="store_true")
     init.add_argument("--workspace-id")
     init.add_argument("--no-workspace", action="store_true")
+    init.add_argument(
+        "--new-run",
+        action="store_true",
+        help="deliberately start a new session even when this repository has an unfinished run",
+    )
     add_override_options(init, workflow=WORKFLOW)
     add_probe_options(init)
 
@@ -148,6 +161,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     publish = subparsers.add_parser("publish")
     publish.add_argument("--run-dir", required=True)
+
+    status = subparsers.add_parser("status", help="Report exact persisted stage and next action")
+    status.add_argument("--run-dir", required=True)
+    status.add_argument("--cmux-cmd", default="cmux")
+
+    context = subparsers.add_parser("context", help="List persisted recovery inputs and history")
+    context.add_argument("--run-dir", required=True)
+
+    resume = subparsers.add_parser("resume", help="Inspect or explicitly resume an interrupted run")
+    resume.add_argument("--run-dir", required=True)
+    resume.add_argument("--decision", choices=("rejoin", "extend", "relaunch"))
+    resume.add_argument("--reason")
+    resume.add_argument("--cmux-cmd", default="cmux")
+    add_override_options(resume, workflow=WORKFLOW)
+    add_probe_options(resume)
     return parser
 
 
@@ -248,11 +276,15 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
         raise SnapshotError(f"cannot prepare {stage}: current stage is {state.get('current_stage')!r}")
     # Bound to the run's own pass, or a stale number would repoint the handoff paths at the
     # artifacts a previous pass preserved.
+    pass_key = PASS_KEYS[stage]
     is_tickets = stage.startswith("tickets")
-    pass_key = "tickets_pass" if is_tickets else "spec_pass"
-    if pass_num != state[pass_key]:
+    # Runs created before recovery support used the author pass for its paired reviewer.
+    if pass_key not in state:
+        state[pass_key] = state["tickets_pass" if is_tickets else "spec_pass"]
+    current_pass = stage_pass(state, stage)
+    if pass_num != current_pass:
         raise SnapshotError(
-            f"cannot prepare {stage} pass {pass_num}: the run is on pass {state[pass_key]}"
+            f"cannot prepare {stage} pass {pass_num}: the run is on pass {current_pass}"
         )
     if is_tickets:
         approved_spec_from_state(state, run_dir=run_dir)
@@ -297,9 +329,83 @@ def checked_run_id(value: str) -> str:
     return value
 
 
+def finish_input_validation(run_dir: Path) -> dict[str, Any]:
+    """Complete the durable input checkpoint without repeating input or profile validation."""
+    state_path = run_dir / "state.json"
+    state = read_json(state_path)
+    if state.get("current_stage") != "input":
+        raise ConfigError(
+            f"input recovery is available only from the input stage, not {state.get('current_stage')!r}"
+        )
+    initialization = state.get("initialization")
+    if not isinstance(initialization, dict):
+        raise ConfigError("input recovery metadata is missing")
+    target = initialization.get("target_stage")
+    pointer = initialization.get("prepared_stage")
+    if target == "spec":
+        if not isinstance(pointer, dict):
+            raise ConfigError("validated direct input has no prepared specification snapshot")
+        relative = Path(pointer.get("path", ""))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ConfigError("validated input snapshot path is unsafe")
+        snapshot_path = run_dir / relative
+        if not snapshot_path.is_file() or sha256_file(snapshot_path) != pointer.get("sha256"):
+            raise ConfigError("validated input snapshot is missing or changed")
+    elif target == "awaiting-grilling-revalidation":
+        if pointer is not None:
+            raise ConfigError("grilling input must not prepare a worker before revalidation")
+    else:
+        raise ConfigError(f"validated input has unknown target stage {target!r}")
+
+    now = utc_now()
+    state["current_stage"] = target
+    state["prepared_stage"] = pointer
+    state["initialization"] = {**initialization, "status": "complete", "completed_at": now}
+    state["updated_at"] = pointer.get("prepared_at", now) if isinstance(pointer, dict) else now
+    write_json(state_path, state)
+    if isinstance(pointer, dict):
+        append_event(run_dir, "stage.prepared", "prepared immutable spec-1 snapshot", pointer)
+    else:
+        append_event(
+            run_dir,
+            "input.validated",
+            "validated and persisted grilling input; explicit human revalidation is required",
+            {"next_stage": target},
+            time=now,
+        )
+    return state
+
+
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     task_bytes, task_source = task_input(args)
+    runs_root = Path(args.runs_root)
+    if not args.new_run:
+        unfinished = unfinished_runs(runs_root, repository)
+        if unfinished:
+            latest = unfinished[0]
+            print(
+                json.dumps(
+                    {
+                        "unfinished_run": latest,
+                        "recommended_next": {
+                            "action": "inspect and resume the newest unfinished planning run",
+                            "command": shell_join(
+                                [
+                                    "python3",
+                                    Path(__file__).resolve(),
+                                    "resume",
+                                    "--run-dir",
+                                    latest["run_dir"],
+                                ]
+                            ),
+                        },
+                        "new_run_override": "rerun init with --new-run",
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 3
     grilling = None
     if args.grilling_markdown and not args.grilling_json:
         raise ConfigError("--grilling-markdown requires --grilling-json")
@@ -318,7 +424,6 @@ def init_run(args: argparse.Namespace) -> int:
         if args.run_id
         else RUN_ID_RE.sub("-", f"plan-{seed}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
     )
-    runs_root = Path(args.runs_root)
     run_dir = runs_root / run_id
     if run_dir.exists():
         raise ConfigError(f"planning run already exists: {run_dir}")
@@ -360,6 +465,8 @@ def init_run(args: argparse.Namespace) -> int:
             "copied_markdown": "inputs/grilling-source.md",
             "premise_corrections": grilling["premise_corrections"],
         }
+    initial_pointer = persist_snapshot(run_dir, prepared_snapshot) if prepared_snapshot is not None else None
+    target_stage = "awaiting-grilling-revalidation" if grilling else "spec"
     state = {
         "schema_version": 1,
         "run_id": run_id,
@@ -375,14 +482,18 @@ def init_run(args: argparse.Namespace) -> int:
             "sha256": sha256_bytes(task_bytes),
         },
         "grilling_import": grilling_state,
+        "grilling_revalidation": None,
         "normalized_grilling_input": None,
-        "current_stage": "awaiting-grilling-revalidation" if grilling else "spec",
+        "current_stage": "input",
         "spec_pass": 1,
+        "spec_review_pass": 1,
         "tickets_pass": 1,
+        "tickets_review_pass": 1,
         "prepared_stage": None,
         "tree_baseline": None,
         "reviewed_spec": None,
         "approved_spec": None,
+        "spec_revision_feedback": None,
         "author_tickets": None,
         "reviewed_tickets": None,
         "approved_tickets": None,
@@ -394,22 +505,24 @@ def init_run(args: argparse.Namespace) -> int:
             "watcher": "await_report.py",
             "missing_report_gate": "pending",
             "minimum_wait_minutes": MINIMUM_WAIT_MINUTES,
+            "maximum_extensions": 1,
             "stable_pane_identity_required": True,
         },
         "integrity_boundary": integrity_boundary(),
+        "initialization": {
+            "status": "validated",
+            "target_stage": target_stage,
+            "prepared_stage": initial_pointer,
+        },
     }
     write_json(run_dir / "state.json", state)
     append_event(
         run_dir,
         "run.init",
-        "persisted one task input; worker state is gated by optional grilling revalidation",
+        "persisted validated input at a recoverable initialization checkpoint",
         {"state": state},
     )
-    if prepared_snapshot is not None:
-        pointer = persist_snapshot(run_dir, prepared_snapshot)
-        state["prepared_stage"] = pointer
-        write_json(run_dir / "state.json", state)
-        append_event(run_dir, "stage.prepared", "prepared immutable spec-1 snapshot", pointer)
+    finish_input_validation(run_dir)
     print(run_dir)
     return 0
 
@@ -442,6 +555,16 @@ def show_revalidation(run_dir: Path) -> int:
     state = read_json(run_dir / "state.json")
     imported = imported_from_state(run_dir, state)
     data = imported["data"]
+    progress = state.get("grilling_revalidation")
+    recorded_outcomes = None
+    if isinstance(progress, dict):
+        relative = Path(progress.get("path", ""))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise GrillingInputError("recorded revalidation progress path is unsafe")
+        progress_path = run_dir / relative
+        if not progress_path.is_file() or sha256_file(progress_path) != progress.get("sha256"):
+            raise GrillingInputError("recorded revalidation progress is missing or changed")
+        recorded_outcomes = read_json(progress_path)
     print(
         json.dumps(
             {
@@ -455,6 +578,7 @@ def show_revalidation(run_dir: Path) -> int:
                 "premise_corrections": imported["premise_corrections"],
                 "assumptions": data["assumptions"],
                 "decisions": data["open_decisions"],
+                "recorded_outcomes": recorded_outcomes,
             },
             indent=2,
             sort_keys=True,
@@ -473,6 +597,25 @@ def revalidate(args: argparse.Namespace) -> int:
     outcomes = read_json(Path(args.outcomes))
     if not isinstance(outcomes, dict):
         raise GrillingInputError("revalidation outcomes root must be an object")
+    # Save every human walkthrough checkpoint before complete normalization. A compacted or
+    # interrupted conversation can therefore resume the same copied pair without replaying
+    # already recorded outcomes, while only the complete validator can advance the run.
+    progress_path = run_dir / "inputs" / "grilling-revalidation-progress.json"
+    write_json(progress_path, outcomes)
+    state["grilling_revalidation"] = {
+        "path": "inputs/grilling-revalidation-progress.json",
+        "sha256": sha256_file(progress_path),
+        "status": "in-progress",
+        "updated_at": utc_now(),
+    }
+    state["updated_at"] = state["grilling_revalidation"]["updated_at"]
+    write_json(state_path, state)
+    append_event(
+        run_dir,
+        "grilling.revalidation_progress",
+        "preserved the latest partial human revalidation walkthrough",
+        state["grilling_revalidation"],
+    )
     normalized = normalize_revalidation(
         imported,
         outcomes,
@@ -480,6 +623,9 @@ def revalidate(args: argparse.Namespace) -> int:
         repository=Path(state["repository"]),
     )
     if normalized is None:
+        state = read_json(state_path)
+        state["grilling_revalidation"]["status"] = "refused"
+        write_json(state_path, state)
         append_event(
             run_dir,
             "grilling.revalidation_refused",
@@ -495,6 +641,7 @@ def revalidate(args: argparse.Namespace) -> int:
         "sha256": sha256_file(normalized_path),
         "event_id": normalized["revalidation_event_id"],
     }
+    state["grilling_revalidation"]["status"] = "complete"
     state["current_stage"] = "spec"
     state["updated_at"] = normalized["revalidated_at"]
     write_json(state_path, state)
@@ -533,6 +680,64 @@ def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
     return False
 
 
+def ensure_integrity_resolved(run_dir: Path, state: dict[str, Any]) -> None:
+    """Do not let a new pass adopt the unauthorized delta that caused HITL."""
+    gates = state.get("gate_decisions", [])
+    gate = gates[-1] if gates and isinstance(gates[-1], dict) else None
+    stage = gate.get("stage") if gate else None
+    if stage not in STAGES:
+        raise IntegrityError("integrity violation has no recoverable stage identity")
+    pass_num = stage_pass(state, stage)
+    before_path = run_dir / "tree-snapshots" / f"{stage}-{pass_num}-before.json"
+    if not before_path.is_file():
+        raise IntegrityError("integrity violation has no preserved launch baseline")
+    before = read_json(before_path)
+    seals = state.get("tree_baseline_seals")
+    expected_digest = seals.get(f"{stage}-{pass_num}") if isinstance(seals, dict) else None
+    if not isinstance(expected_digest, str) or snapshot_digest(before) != expected_digest:
+        raise IntegrityError("integrity violation launch baseline is missing or changed")
+    result = compare_tree(
+        before,
+        capture_tree(Path(state["repository"])),
+        allowed_paths=[],
+    )
+    if not result["ok"]:
+        raise IntegrityError(
+            "resolve the unauthorized working-tree delta and restore the armed baseline before preparing a recovery pass"
+        )
+
+
+def ensure_relaunch_tree_safe(
+    run_dir: Path, state: dict[str, Any], stage: str, pass_num: int
+) -> None:
+    """A dead worker must not make its product edits the next pass's trusted baseline."""
+    pointer = state.get("tree_baseline")
+    if (
+        not isinstance(pointer, dict)
+        or pointer.get("stage") != stage
+        or pointer.get("pass") != pass_num
+    ):
+        raise IntegrityError("dead worker recovery has no matching preserved launch baseline")
+    before_relative = Path(pointer.get("path", ""))
+    if before_relative.is_absolute() or ".." in before_relative.parts:
+        raise IntegrityError("dead worker recovery has an unsafe launch baseline path")
+    before_path = run_dir / before_relative
+    if not before_path.is_file():
+        raise IntegrityError("dead worker recovery launch baseline is missing")
+    before = read_json(before_path)
+    if snapshot_digest(before) != pointer.get("sha256"):
+        raise IntegrityError("dead worker recovery launch baseline changed")
+    result = compare_tree(
+        before,
+        capture_tree(Path(state["repository"])),
+        allowed_paths=[],
+    )
+    if not result["ok"]:
+        raise IntegrityError(
+            "resolve the dead worker's Git-visible product delta before preparing a recovery pass"
+        )
+
+
 def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
     pass_num = state["spec_pass"]
     if not integrity_gate(run_dir, "spec", pass_num):
@@ -564,7 +769,8 @@ def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str,
     )
     write_json(run_dir / "state.json", state)
     append_event(run_dir, "gate", "author report validated; independent review required", gate)
-    pointer = prepare_stage(args, run_dir, "spec-review", pass_num)
+    review_pass = stage_pass(state, "spec-review")
+    pointer = prepare_stage(args, run_dir, "spec-review", review_pass)
     print(json.dumps(pointer, sort_keys=True))
     return 0
 
@@ -613,23 +819,24 @@ def accept_tickets_author(
     )
     write_json(run_dir / "state.json", state)
     append_event(run_dir, "gate", "ticket proposal validated; independent review required", gate)
-    pointer = prepare_stage(args, run_dir, "tickets-review", pass_num)
+    review_pass = stage_pass(state, "tickets-review")
+    pointer = prepare_stage(args, run_dir, "tickets-review", review_pass)
     print(json.dumps(pointer, sort_keys=True))
     return 0
 
 
 def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
-    pass_num = state["spec_pass"]
+    pass_num = stage_pass(state, "spec-review")
     if not integrity_gate(run_dir, "spec-review", pass_num):
         print("gate=hitl reason=integrity-violation")
         return 2
-    draft = run_dir / "artifacts" / f"spec-{pass_num}.md"
+    author = state.get("author_spec")
+    draft = Path(author["draft"]) if isinstance(author, dict) and author.get("draft") else None
     candidate = run_dir / "artifacts" / f"spec-reviewed-{pass_num}.md"
     report = run_dir / "reports" / f"spec-review-{pass_num}.md"
     # Fail closed: `expected_input_sha256=None` means "skip the binding check", so a missing
     # author gate would silently let a reviewer certify a draft it rewrote itself.
-    author = state.get("author_spec")
-    if not isinstance(author, dict) or not author.get("draft_sha256"):
+    if not isinstance(author, dict) or not author.get("draft_sha256") or draft is None:
         raise ContractError("review cannot be accepted without the author gate's draft digest")
     result = validate_review_report(
         report,
@@ -669,7 +876,7 @@ def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str,
 
 
 def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
-    pass_num = state["tickets_pass"]
+    pass_num = stage_pass(state, "tickets-review")
     if not integrity_gate(run_dir, "tickets-review", pass_num):
         print("gate=hitl reason=integrity-violation")
         return 2
@@ -761,13 +968,18 @@ def approval_view(run_dir: Path) -> int:
         raise ContractError("approval walkthrough is available only after a valid review")
     reviewed = state["reviewed_spec"]
     pass_num = state["spec_pass"]
-    draft = run_dir / "artifacts" / f"spec-{pass_num}.md"
+    review_pass = stage_pass(state, "spec-review")
+    draft = Path(state["author_spec"]["draft"])
     candidate = Path(reviewed["candidate"])
     draft_text = draft.read_text(encoding="utf-8")
     candidate_text = candidate.read_text(encoding="utf-8")
     candidate_contract = validate_spec(candidate, require_closed_decisions=True)
+    if candidate_contract["sha256"] != reviewed.get("candidate_sha256"):
+        raise ContractError("reviewed specification candidate changed before approval walkthrough")
+    if sha256_file(draft) != state["author_spec"].get("draft_sha256"):
+        raise ContractError("author specification changed before approval walkthrough")
     author_report = sections((run_dir / "reports" / f"spec-{pass_num}.md").read_text(encoding="utf-8"))
-    review_report = sections((run_dir / "reports" / f"spec-review-{pass_num}.md").read_text(encoding="utf-8"))
+    review_report = sections((run_dir / "reports" / f"spec-review-{review_pass}.md").read_text(encoding="utf-8"))
     normalized_pointer = state.get("normalized_grilling_input")
     normalized = read_json(run_dir / normalized_pointer["path"]) if normalized_pointer else None
     payload = {
@@ -799,6 +1011,16 @@ def discard_staging(run_dir: Path) -> None:
     shutil.rmtree(run_dir / "publication-stage", ignore_errors=True)
 
 
+def checked_staging_path(run_dir: Path, value: Any) -> Path:
+    if not isinstance(value, str):
+        raise ContractError("recorded staged tracker path is missing")
+    staged = Path(value).resolve()
+    canonical = run_dir.resolve() / "publication-stage"
+    if staged != canonical:
+        raise ContractError("recorded staged tracker path is outside the planning run's staging area")
+    return staged
+
+
 def reset_ticket_state(state: dict[str, Any]) -> None:
     state["approved_spec"] = None
     state["author_tickets"] = None
@@ -813,6 +1035,23 @@ def approval(args: argparse.Namespace) -> int:
     state_path = run_dir / "state.json"
     state = read_json(state_path)
     if args.decision == "approve":
+        if state.get("current_stage") != "awaiting-spec-approval" and isinstance(
+            state.get("approved_spec"), dict
+        ):
+            approved = state["approved_spec"]
+            reviewed = state.get("reviewed_spec")
+            candidate = Path(approved["path"])
+            validated = validate_spec(candidate, require_closed_decisions=True)
+            if (
+                validated["sha256"] != approved.get("sha256")
+                or not isinstance(reviewed, dict)
+                or reviewed.get("candidate_sha256") != approved.get("sha256")
+            ):
+                raise ContractError(
+                    "recorded specification approval is stale because its digest-bound candidate changed"
+                )
+            print(json.dumps({"approved_spec": approved, "idempotent": True}, sort_keys=True))
+            return 0
         if state.get("current_stage") != "awaiting-spec-approval":
             raise ContractError("spec approval is available only after a valid independent review")
         reviewed = state.get("reviewed_spec")
@@ -852,18 +1091,23 @@ def approval(args: argparse.Namespace) -> int:
         "integrity-violation",
     }:
         raise ContractError(f"revision is not available from stage {state.get('current_stage')!r}")
+    if state.get("current_stage") == "integrity-violation":
+        ensure_integrity_resolved(run_dir, state)
     old_pass = state["spec_pass"]
     state["spec_pass"] = old_pass + 1
+    state["spec_review_pass"] = state.get("spec_review_pass", old_pass) + 1
     state["current_stage"] = "spec"
     state["prepared_stage"] = None
     state["tree_baseline"] = None
     state["author_spec"] = None
     state["reviewed_spec"] = None
+    state["spec_revision_feedback"] = args.reason
     # A revision from an integrity violation can arrive after the spec boundary, and a new spec pass
     # invalidates every ticket artifact derived from the old approved spec.
     old_tickets = state["tickets_pass"] if state.get("approved_spec") else None
     if old_tickets is not None:
         state["tickets_pass"] = old_tickets + 1
+        state["tickets_review_pass"] = state.get("tickets_review_pass", old_tickets) + 1
         reset_ticket_state(state)
     state["updated_at"] = utc_now()
     write_json(state_path, state)
@@ -913,10 +1157,9 @@ def ticket_approval_view(run_dir: Path) -> int:
         raise ContractError("ticket author proposal changed after its own gate")
     author_text = json.dumps(read_json(author_proposal), indent=2, sort_keys=True) + "\n"
     candidate_text = json.dumps(read_json(candidate), indent=2, sort_keys=True) + "\n"
+    review_pass = stage_pass(state, "tickets-review")
     review_report = sections(
-        (run_dir / "reports" / f"tickets-review-{state['tickets_pass']}.md").read_text(
-            encoding="utf-8"
-        )
+        (run_dir / "reports" / f"tickets-review-{review_pass}.md").read_text(encoding="utf-8")
     )
     payload = {
         "verdict": reviewed["verdict"],
@@ -958,7 +1201,9 @@ def ticket_approval_view(run_dir: Path) -> int:
     return 0
 
 
-def checked_publication_target(repository: Path, value: str, slug: str) -> Path:
+def checked_publication_target(
+    repository: Path, value: str, slug: str, *, allow_existing: bool = False
+) -> Path:
     raw = Path(value)
     if ".." in raw.parts:
         raise ContractError("publication target contains path traversal")
@@ -974,7 +1219,7 @@ def checked_publication_target(repository: Path, value: str, slug: str) -> Path:
         raise ContractError(
             f"publication target basename must match approved tracker slug {slug!r}"
         )
-    if target.exists():
+    if target.exists() and not allow_existing:
         raise ContractError(f"publication target already exists: {target}")
     return target
 
@@ -994,10 +1239,13 @@ def ticket_approval(args: argparse.Namespace) -> int:
             old_spec = state["spec_pass"]
             old_tickets = state["tickets_pass"]
             state["spec_pass"] = old_spec + 1
+            state["spec_review_pass"] = state.get("spec_review_pass", old_spec) + 1
             state["tickets_pass"] = old_tickets + 1
+            state["tickets_review_pass"] = state.get("tickets_review_pass", old_tickets) + 1
             state["current_stage"] = "spec"
             state["author_spec"] = None
             state["reviewed_spec"] = None
+            state["spec_revision_feedback"] = args.reason
             reset_ticket_state(state)
             event_type = "tickets.spec_revision_requested"
             event_data = {
@@ -1012,6 +1260,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         else:
             old_tickets = state["tickets_pass"]
             state["tickets_pass"] = old_tickets + 1
+            state["tickets_review_pass"] = state.get("tickets_review_pass", old_tickets) + 1
             state["current_stage"] = "tickets"
             state["author_tickets"] = None
             state["reviewed_tickets"] = None
@@ -1041,6 +1290,47 @@ def ticket_approval(args: argparse.Namespace) -> int:
         print(json.dumps(pointer, sort_keys=True))
         return 0
 
+    if args.decision == "approve" and state.get("current_stage") in {"ready-to-publish", "complete"}:
+        approved_spec = state.get("approved_spec")
+        approved_tickets = state.get("approved_tickets")
+        if not isinstance(approved_spec, dict) or not isinstance(approved_tickets, dict):
+            raise ContractError("recorded ticket approval is incomplete")
+        spec_path = Path(approved_spec["path"])
+        if not spec_path.is_file() or sha256_file(spec_path) != approved_spec.get("sha256"):
+            raise ContractError("recorded ticket approval is stale because the approved spec changed")
+        proposal = bound_proposal(
+            approved_spec,
+            Path(approved_tickets["path"]),
+            approved_tickets["sha256"],
+            "recorded ticket approval is stale because its digest-bound proposal changed",
+        )
+        if args.target:
+            repeated_target = (Path(args.target) if Path(args.target).is_absolute() else Path(state["repository"]) / args.target).resolve()
+            if repeated_target != Path(approved_tickets["target"]).resolve():
+                raise ContractError("idempotent ticket approval cannot change the publication target")
+        if state.get("current_stage") == "ready-to-publish":
+            staged_state = state.get("staged_tracker")
+            if not isinstance(staged_state, dict):
+                raise ContractError("recorded ticket approval has no staged tracker")
+            validated = validate_native_tracker(
+                checked_staging_path(run_dir, staged_state.get("path")),
+                expected_spec_sha256=approved_spec["sha256"],
+                expected_ticket_ids=proposal["ticket_ids"],
+            )
+            if validated["artifacts"] != staged_state.get("artifacts"):
+                raise ContractError("recorded staged tracker changed after ticket approval")
+        print(
+            json.dumps(
+                {
+                    "approved": approved_tickets,
+                    "staged": state.get("staged_tracker"),
+                    "idempotent": True,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
     if state.get("current_stage") != "awaiting-ticket-approval":
         raise ContractError("ticket approval is available only after a valid independent review")
     if args.scope != "tickets":
@@ -1062,20 +1352,38 @@ def ticket_approval(args: argparse.Namespace) -> int:
         Path(state["repository"]), args.target, proposal["tracker"]["slug"]
     )
     target.parent.mkdir(parents=True, exist_ok=True)
-    staged = run_dir / "publication-stage"
-    try:
-        native = stage_native_tracker(
-            staged, proposal, approved_spec=Path(approved_spec["path"])
-        )
-    except Exception as error:
-        discard_staging(run_dir)
-        append_event(
-            run_dir,
-            "publication.staging_failed",
-            "tracker staging or native validation failed; publication target is unchanged",
-            {"target": str(target), "staged": str(staged), "error": str(error)},
-        )
-        raise
+    staged = run_dir.resolve() / "publication-stage"
+    if staged.exists() and staged.resolve() != staged:
+        raise ContractError("publication staging path resolves outside the planning run")
+    if staged.exists():
+        try:
+            native = validate_native_tracker(
+                staged,
+                expected_spec_sha256=approved_spec["sha256"],
+                expected_ticket_ids=proposal["ticket_ids"],
+            )
+        except Exception as error:
+            append_event(
+                run_dir,
+                "publication.staging_recovery_failed",
+                "unrecorded staging is incomplete or changed; preserved it for human inspection",
+                {"target": str(target), "staged": str(staged), "error": str(error)},
+            )
+            raise
+    else:
+        try:
+            native = stage_native_tracker(
+                staged, proposal, approved_spec=Path(approved_spec["path"])
+            )
+        except Exception as error:
+            discard_staging(run_dir)
+            append_event(
+                run_dir,
+                "publication.staging_failed",
+                "tracker staging or native validation failed; publication target is unchanged",
+                {"target": str(target), "staged": str(staged), "error": str(error)},
+            )
+            raise
     now = utc_now()
     state = read_json(state_path)
     state["approved_tickets"] = {
@@ -1130,7 +1438,46 @@ def publish_tracker(run_dir: Path) -> int:
         approved_tickets["sha256"],
         "approved ticket proposal identity changed before publication",
     )
-    staged = Path(staged_state["path"])
+    target = checked_publication_target(
+        Path(state["repository"]),
+        approved_tickets["target"],
+        proposal["tracker"]["slug"],
+        allow_existing=True,
+    )
+    staged = checked_staging_path(run_dir, staged_state.get("path"))
+    if target.exists():
+        if staged.exists():
+            raise ContractError(
+                "publication is inconsistent: both the staged tracker and target exist; refusing a duplicate or partial overwrite"
+            )
+        published = validate_native_tracker(
+            target,
+            expected_spec_sha256=approved_spec["sha256"],
+            expected_ticket_ids=proposal["ticket_ids"],
+        )
+        if published["artifacts"] != staged_state["artifacts"]:
+            raise ContractError("existing publication target does not match the approved staged tracker")
+        now = utc_now()
+        state["published_tracker"] = {
+            "path": str(target),
+            "published_at": now,
+            "ticket_ids": published["ticket_ids"],
+            "ready_frontier": published["ready_frontier"],
+            "artifacts": published["artifacts"],
+            "recovered": True,
+        }
+        state["current_stage"] = "complete"
+        state["updated_at"] = now
+        write_json(state_path, state)
+        append_event(
+            run_dir,
+            "tracker.publication_recovered",
+            "verified an already moved tracker and completed interrupted publication state",
+            state["published_tracker"],
+        )
+        print(json.dumps(state["published_tracker"], sort_keys=True))
+        return 0
+
     validated = validate_native_tracker(
         staged,
         expected_spec_sha256=approved_spec["sha256"],
@@ -1138,9 +1485,6 @@ def publish_tracker(run_dir: Path) -> int:
     )
     if validated["artifacts"] != staged_state["artifacts"]:
         raise ContractError("staged tracker changed after ticket approval")
-    target = checked_publication_target(
-        Path(state["repository"]), approved_tickets["target"], proposal["tracker"]["slug"]
-    )
     if staged.stat().st_dev != target.parent.stat().st_dev:
         raise ContractError("staged tracker and publication target are on different filesystems")
     os.rename(staged, target)
@@ -1167,6 +1511,172 @@ def publish_tracker(run_dir: Path) -> int:
         state["published_tracker"],
     )
     print(json.dumps(state["published_tracker"], sort_keys=True))
+    return 0
+
+
+def resume_inputs(run_dir: Path, state: dict[str, Any]) -> list[dict[str, str]]:
+    """Freeze the useful prior handoffs into the new prompt without copying or rewriting them."""
+    candidates: list[tuple[str, str]] = []
+    for key, label, path_key in (
+        ("author_spec", "prior specification author handoff", "draft"),
+        ("reviewed_spec", "prior reviewed specification candidate", "candidate"),
+        ("approved_spec", "approved specification", "path"),
+        ("author_tickets", "prior ticket author proposal", "proposal"),
+        ("reviewed_tickets", "prior reviewed ticket candidate", "candidate"),
+    ):
+        pointer = state.get(key)
+        if isinstance(pointer, dict) and isinstance(pointer.get(path_key), str):
+            candidates.append((label, pointer[path_key]))
+    for directory in (run_dir / "reports", run_dir / "artifacts"):
+        if directory.is_dir():
+            candidates.extend(("preserved run handoff", str(path)) for path in sorted(directory.iterdir()) if path.is_file())
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    root = run_dir.resolve()
+    for label, value in candidates:
+        path = Path(value).resolve()
+        if str(path) in seen or not path.is_file():
+            continue
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        seen.add(str(path))
+        result.append({"label": label, "path": str(path), "sha256": sha256_file(path)})
+    return result
+
+
+def resume_run(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).resolve()
+    payload = status_payload(run_dir, cmux_cmd=args.cmux_cmd)
+    if args.decision == "rejoin" and payload["classification"] == "input-validation":
+        finish_input_validation(run_dir)
+        print(json.dumps(status_payload(run_dir, cmux_cmd=args.cmux_cmd), indent=2, sort_keys=True))
+        return 0
+    if args.decision is None or args.decision == "rejoin":
+        if args.decision == "rejoin" and payload["classification"] in {"hitl", "inconsistent"}:
+            raise ContractError(
+                "this run cannot be rejoined safely; inspect the persisted context and make an explicit relaunch or revision decision"
+            )
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if args.decision == "extend":
+        if not args.reason:
+            raise ContractError("--decision extend requires a human-authored --reason")
+        stage = payload["stage"]["current"]
+        if stage not in STAGES or payload["pane"]["status"] != "deadline":
+            raise ContractError("a watcher extension is available only after the first live-pane deadline")
+        append_event(
+            run_dir,
+            "worker.waiting",
+            "human approved the run's one watcher deadline extension",
+            {
+                "stage": stage,
+                "pass": payload["stage"]["pass"],
+                "surface_id": payload["pane"]["surface_id"],
+                "outcome": "extension_approved",
+                "extension": 1,
+                "reason": args.reason,
+            },
+        )
+        print(json.dumps(status_payload(run_dir, cmux_cmd=args.cmux_cmd), indent=2, sort_keys=True))
+        return 0
+
+    if not args.reason:
+        raise ContractError("--decision relaunch requires a human-authored --reason")
+    state_path = run_dir / "state.json"
+    state = read_json(state_path)
+    stage = state.get("current_stage")
+    if stage in {"awaiting-spec-approval", "awaiting-ticket-approval"}:
+        raise ContractError(
+            "approval recovery reuses the same digest-bound walkthrough; use the approval view or an explicit revision command"
+        )
+    if stage in {"ready-to-publish", "complete"}:
+        raise ContractError("publication recovery never relaunches a worker")
+    target = stage
+    if stage in {"spec-blocked", "spec-review-blocked"}:
+        target = "spec"
+    elif stage in {"tickets-blocked", "tickets-review-blocked"}:
+        target = "tickets"
+    elif stage == "integrity-violation":
+        ensure_integrity_resolved(run_dir, state)
+        gates = state.get("gate_decisions", [])
+        source = gates[-1].get("stage") if gates and isinstance(gates[-1], dict) else None
+        target = "tickets" if isinstance(source, str) and source.startswith("tickets") else "spec"
+    elif stage not in STAGES:
+        raise ContractError(f"cannot relaunch from planning stage {stage!r}")
+    elif payload["pane"]["status"] not in {"dead", "watcher-expired"}:
+        raise ContractError(
+            "a fresh pass requires recorded pane death or watcher expiry; rejoin the existing assignment otherwise"
+        )
+
+    if stage in STAGES:
+        ensure_relaunch_tree_safe(run_dir, state, stage, stage_pass(state, stage))
+
+    old_pass = (
+        stage_pass(state, stage)
+        if stage in STAGES
+        else state["tickets_pass"]
+        if isinstance(stage, str) and stage.startswith("tickets")
+        else state["spec_pass"]
+    )
+    prior = resume_inputs(run_dir, state)
+    now = utc_now()
+    if target == "spec-review":
+        state["spec_review_pass"] = state.get("spec_review_pass", state["spec_pass"]) + 1
+        next_pass = state["spec_review_pass"]
+        state["reviewed_spec"] = None
+    elif target == "tickets-review":
+        state["tickets_review_pass"] = state.get("tickets_review_pass", state["tickets_pass"]) + 1
+        next_pass = state["tickets_review_pass"]
+        state["reviewed_tickets"] = None
+    elif target == "spec":
+        state["spec_pass"] += 1
+        state["spec_review_pass"] = state.get("spec_review_pass", old_pass) + 1
+        next_pass = state["spec_pass"]
+        state["author_spec"] = None
+        state["reviewed_spec"] = None
+        state["spec_revision_feedback"] = args.reason
+        if state.get("approved_spec") is not None:
+            state["tickets_pass"] += 1
+            state["tickets_review_pass"] = state.get("tickets_review_pass", state["tickets_pass"] - 1) + 1
+            reset_ticket_state(state)
+            discard_staging(run_dir)
+    else:
+        state["tickets_pass"] += 1
+        state["tickets_review_pass"] = state.get("tickets_review_pass", old_pass) + 1
+        next_pass = state["tickets_pass"]
+        state["author_tickets"] = None
+        state["reviewed_tickets"] = None
+        state["approved_tickets"] = None
+        state["staged_tracker"] = None
+        state["ticket_revision_feedback"] = args.reason
+        discard_staging(run_dir)
+
+    state["current_stage"] = target
+    state["prepared_stage"] = None
+    state["tree_baseline"] = None
+    state["resume_context"] = {
+        "recorded_at": now,
+        "reason": args.reason,
+        "from_stage": stage,
+        "from_pass": old_pass,
+        "to_stage": target,
+        "to_pass": next_pass,
+        "prior_handoffs": prior,
+    }
+    state["updated_at"] = now
+    write_json(state_path, state)
+    append_event(
+        run_dir,
+        "run.relaunch_approved",
+        "human approved one fresh numbered recovery pass; prior panes and handoffs were preserved",
+        state["resume_context"],
+        time=now,
+    )
+    pointer = prepare_stage(args, run_dir, target, next_pass)
+    print(json.dumps({"resume": state["resume_context"], "prepared": pointer}, sort_keys=True))
     return 0
 
 
@@ -1206,6 +1716,15 @@ def run(args: argparse.Namespace) -> int:
                     {"error": str(error)},
                 )
             raise
+    if args.command == "status":
+        print(json.dumps(status_payload(Path(args.run_dir), cmux_cmd=args.cmux_cmd), indent=2, sort_keys=True))
+        return 0
+    if args.command == "context":
+        run_dir = Path(args.run_dir).resolve()
+        print(json.dumps(recovery_context(run_dir, read_json(run_dir / "state.json")), indent=2, sort_keys=True))
+        return 0
+    if args.command == "resume":
+        return resume_run(args)
     raise AssertionError(args.command)
 
 

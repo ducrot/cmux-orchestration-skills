@@ -11,6 +11,7 @@ README = REPOSITORY / "README.md"
 NOTICE_MARKER = "> **Coordinated upgrade required:**"
 # Discovered, so a fourth skill cannot ship without the notice while this test still passes.
 GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
+PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
 
 
 def notice(text: str) -> str:
@@ -39,6 +40,35 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         for guide in GUIDES:
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
                 self.assertEqual(canonical, notice(guide.read_text(encoding="utf-8")))
+
+
+class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
+        if not README.is_file():
+            self.skipTest("repository README is not present in this independent installation")
+        guide = PLANNING.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+        normalized_guide = " ".join(guide.split())
+        for required in (
+            "## Prerequisites and installation",
+            "planning.reviewer",
+            "--grilling-json",
+            "explicit human",
+            "planning_state.py status",
+            "planning_state.py resume",
+            "planning_state.py context",
+            "--decision relaunch",
+            "pass_with_fixes",
+            "digest-bound",
+            "already moved but not recorded",
+            "baseline-untracked",
+            "contact no model provider",
+            "cmux-issue-chain",
+        ):
+            self.assertIn(required, normalized_guide)
+        self.assertIn("They form an optional progression, not a mandatory pipeline", readme)
+        self.assertIn("No workflow automatically invokes another", readme)
+        self.assertNotIn("first vertical slice currently ends", readme)
 
 
 if __name__ == "__main__":

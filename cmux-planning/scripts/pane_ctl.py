@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--surface", required=True)
     deliver.add_argument("--prompt", required=True)
     deliver.add_argument("--settle-seconds", type=float, default=3)
+    started = subparsers.add_parser("mark-started")
+    started.add_argument("--run-dir", required=True)
+    started.add_argument("--stage", choices=STAGES, required=True)
+    started.add_argument("--pass", dest="pass_num", type=int, required=True)
+    started.add_argument("--surface", required=True)
     close = subparsers.add_parser("close")
     close.add_argument("--run-dir", required=True)
     close.add_argument("--stage", choices=STAGES, required=True)
@@ -155,6 +160,31 @@ def run(args: argparse.Namespace) -> int:
             delivery_text(args.prompt),
             "worker.prompt_sent",
             {"stage": args.stage, "pass": args.pass_num, "surface_id": args.surface, "prompt": args.prompt},
+        )
+        return 0
+    if args.command == "mark-started":
+        snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
+        event(
+            run_dir,
+            "worker.started",
+            "orchestrator confirmed the deterministic assignment started in the visible pane",
+            {
+                "stage": args.stage,
+                "pass": args.pass_num,
+                "surface_id": args.surface,
+                **snapshot_launch_record(snapshot),
+            },
+        )
+        print(
+            json.dumps(
+                {
+                    "stage": args.stage,
+                    "pass": args.pass_num,
+                    "surface_id": args.surface,
+                    "started": True,
+                },
+                sort_keys=True,
+            )
         )
         return 0
     if args.command != "close":

@@ -3,10 +3,20 @@
 Three [Agent Skills](https://agentskills.io) that turn an AI coding agent into an orchestrator for multi-agent workflows running in visible [cmux](https://github.com/manaflow-ai/cmux) terminal panes:
 
 - **`cmux-grilling`**: autonomously stress-tests a plan by asking decision-level questions and answering them through four parallel research lanes, producing reviewed assumptions instead of guesses.
-- **`cmux-planning`**: turns a task or optional human-revalidated grilling result into a repository-grounded specification, independently reviews it in a fresh Codex pane, and pauses for explicit approval before ticket decomposition.
+- **`cmux-planning`**: turns a task or optional human-revalidated grilling result into an approved repository-grounded specification and an independently reviewed native issue tracker.
 - **`cmux-issue-chain`**: runs issues from a local Markdown issue tracker through a gated implement → simplify → review → test worker chain, fully AFK.
 
 All three skills follow the same philosophy: the orchestrating agent coordinates and judges, but never edits product code itself and never hides work in background subagents. Every worker runs in a visible cmux pane you can watch and intervene in.
+
+They form an optional progression, not a mandatory pipeline:
+
+```text
+optional decision research       planning synthesis and review       issue execution
+cmux-grilling               ->   cmux-planning                  ->   cmux-issue-chain
+```
+
+Start at planning when the task is already clear, execute an existing tracker without planning, or use
+grilling alone when only the decision stress-test is needed. No workflow automatically invokes another.
 
 ## Requirements
 
@@ -14,7 +24,7 @@ These skills are only useful if you have the full stack below. Check this list f
 
 - **[cmux](https://github.com/manaflow-ai/cmux)**: an open-source, Ghostty-based macOS terminal built for AI coding agents. The skills drive it via its CLI/socket interface to launch and monitor worker panes. macOS only.
 - **[Claude Code](https://claude.com/claude-code)**: runs the orchestrator and several worker roles. The built-in `/simplify` and `/code-review` commands are used by `cmux-issue-chain`, and skill support is needed to load the skills themselves.
-- **[Codex CLI](https://developers.openai.com/codex/cli)**: runs the implementer/tester roles (`cmux-issue-chain`) and the second-opinion research lane (`cmux-grilling`).
+- **[Codex CLI](https://developers.openai.com/codex/cli)**: runs the implementer/tester roles (`cmux-issue-chain`), the second-opinion research lane (`cmux-grilling`), and the mandatory independent reviewer (`cmux-planning`).
 - **Python 3**: the bundled orchestration scripts (prompt rendering, report parsing, gate watching, run state) use only the standard library; no packages to install.
 
 **A note on billing:** as of publication, both CLIs are covered by their regular subscriptions: Claude Code by Claude Pro/Max and Codex CLI by ChatGPT Plus/Pro. Agentic CLI usage of this kind is included in those plans, so no API key and no per-token billing is required.
@@ -48,13 +58,24 @@ Between stages, structured worker reports are parsed and gated: blockers, plan d
 
 The planning bridge between optional grilling and issue execution. It persists one task, imports and
 explicitly revalidates an optional grilling JSON/Markdown pair, and runs a fresh specification author
-followed by an independent Codex review. Strict report and digest validation plus complete before/after
-Git-visible working-tree inspection prevent a clean report from hiding unauthorized product changes.
-The human sees the reviewed candidate, corrections, assumptions, decisions, and proposed test seams
-before explicitly approving or requesting a fresh author-and-review pass.
+followed by an independent Codex review. After explicit spec approval, a fresh tickets author creates a
+small set of cohesive qualitative fresh-context vertical slices and another fresh Codex reviewer checks
+them. Workers synthesize persisted context and inspect the repository; they do not interview the user.
+Safe `pass_with_fixes` corrections go through deterministic validation and a human-visible diff, not an
+automatic model re-review. Product, scope, architecture, ticket-boundary, or dependency decisions block
+for human input.
 
-The first vertical slice currently ends at the approved-specification `tickets` boundary; native ticket
-decomposition and publication are added by the subsequent planning slices.
+Strict report and digest validation plus complete before/after Git-visible working-tree inspection
+prevent a clean report from hiding tracked changes or newly listed untracked paths. That boundary does
+not claim coverage for ignored files or content changes to baseline-untracked files. Likewise,
+structural and digest checks on optional grilling input prove integrity, not freshness; explicit human
+revalidation is the freshness policy.
+
+After ticket approval, planning stages and validates a native tracker and publishes it with one
+collision-safe atomic move. Public status, context, and resume commands recover interrupted grilling,
+author, reviewer, approval, and publication stages without duplicating workers, decisions, or targets.
+Recorded approvals remain bound to artifact digests, and completed runs never block a new planning
+session.
 
 ## Deterministic Worker Profiles
 

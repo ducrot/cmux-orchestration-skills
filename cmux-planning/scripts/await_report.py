@@ -62,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-seconds", type=float, default=60)
     parser.add_argument("--heartbeat-seconds", type=float, default=300)
+    parser.add_argument("--extension", type=int, choices=(0, 1), default=0)
     return parser
 
 
@@ -105,12 +106,22 @@ def watch(args: argparse.Namespace) -> int:
             "surface_id": args.surface,
             "elapsed_seconds": elapsed,
             "deadline_minutes": minutes,
+            "extension": args.extension,
         }
         # Workers write the report with their own non-atomic tools, so existence alone can mean
         # a half-written file. Requiring identical non-empty bytes twice avoids gating on a prefix.
         digest = sha256_file(report) if report.is_file() and report.stat().st_size else None
         if digest is not None and digest == settled:
-            event(run_dir, "planning report captured", {**data, "outcome": "report", "report": str(report)})
+            event(
+                run_dir,
+                "planning report captured",
+                {
+                    **data,
+                    "outcome": "report",
+                    "report": str(report),
+                    "report_sha256": digest,
+                },
+            )
             print(f"outcome=report report={report}")
             return EXIT_REPORT
         settled = digest

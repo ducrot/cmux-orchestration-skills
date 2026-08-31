@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ RENDER = SCRIPT_DIR / "render_prompt.py"
 TREE = SCRIPT_DIR / "tree_integrity.py"
 PANE = SCRIPT_DIR / "pane_ctl.py"
 AWAIT = SCRIPT_DIR / "await_report.py"
+ISSUE_CHAIN_STATE = SCRIPT_DIR.parents[1] / "cmux-issue-chain" / "scripts" / "run_state.py"
 
 FAKE_HARNESS = '''#!/usr/bin/env python3
 import os, sys
@@ -53,7 +56,8 @@ with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
 if "new-split" in sys.argv:
     print(json.dumps({"surface_id": "SURF-1", "surface_ref": "surface:1", "pane_id": "PANE-1"}))
 elif "surface-health" in sys.argv:
-    print(json.dumps({"surfaces": [{"id": "SURF-1", "ref": "surface:1", "type": "terminal"}]}))
+    surfaces = [] if os.environ.get("FAKE_CMUX_DEAD") else [{"id": "SURF-1", "ref": "surface:1", "type": "terminal"}]
+    print(json.dumps({"surfaces": surfaces}))
 elif "read-screen" in sys.argv:
     print("worker screen")
 else:
@@ -407,6 +411,11 @@ sha256 {resulting_digest or digest}
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
         self.assertIsNone(state["prepared_stage"], "a clean review goes to the human, not another model")
+        interrupted = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(interrupted["classification"], "awaiting-ticket-approval")
+        self.assertIn("ticket-approval-view", interrupted["recommended_next"]["command"])
         view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
         self.assertEqual(view.returncode, 0, view.stderr)
         walkthrough = json.loads(view.stdout)
@@ -465,6 +474,9 @@ sha256 {resulting_digest or digest}
 
     def test_ticket_revision_preserves_artifacts_and_requires_fresh_review(self):
         self.reach_ticket_approval()
+        reviewed_before_revision = json.loads(
+            (self.run_dir / "state.json").read_text(encoding="utf-8")
+        )["reviewed_tickets"]
         original = self.run_dir / "artifacts" / "tickets-1.json"
         revised = self.ticket_approval("revise", "Merge the two slices because their verification story is shared")
         self.assertEqual(revised.returncode, 0, revised.stderr)
@@ -473,6 +485,14 @@ sha256 {resulting_digest or digest}
         self.assertEqual(state["tickets_pass"], 2)
         self.assertTrue(original.is_file())
         self.assertEqual(state["prepared_stage"]["pass"], 2)
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "requested-revision")
+        self.assertEqual(
+            status["latest_review"]["candidate_sha256"],
+            reviewed_before_revision["candidate_sha256"],
+        )
         premature = self.ticket_approval("approve", "too soon", target=self.repo / ".scratch" / "planned-feature")
         self.assertNotEqual(premature.returncode, 0)
 
@@ -514,6 +534,21 @@ sha256 {resulting_digest or digest}
         target = self.repo / ".scratch" / slug
         approved = self.ticket_approval("approve", "approve", target=target)
         self.assertEqual(approved.returncode, 0, approved.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        canonical_stage = Path(state["staged_tracker"]["path"])
+        external_stage = self.root / "external-publication-stage"
+        os.rename(canonical_stage, external_stage)
+        state["staged_tracker"]["path"] = str(external_stage)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        unsafe = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(unsafe.returncode, 0)
+        self.assertIn("outside the planning run's staging area", unsafe.stderr)
+        self.assertTrue(external_stage.is_dir())
+        self.assertFalse(target.exists())
+        os.rename(external_stage, canonical_stage)
+        state["staged_tracker"]["path"] = str(canonical_stage)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
         staged_spec = self.run_dir / "publication-stage" / "spec.md"
         staged_spec.write_text("tampered\n", encoding="utf-8")
         failed = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
@@ -626,6 +661,18 @@ sha256 {resulting_digest or digest}
         self.assertIsNone(state["prepared_stage"], "safe fixes must not trigger automatic re-review")
         view = json.loads(self.cli(STATE, "approval-view", "--run-dir", str(self.run_dir)).stdout)
         self.assertIn("clarified", view["diff"])
+        interrupted = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(interrupted["classification"], "awaiting-spec-approval")
+        self.assertEqual(interrupted["latest_review"]["candidate_sha256"], candidate_digest)
+        self.assertIn("approval-view", interrupted["recommended_next"]["command"])
+        self.assertEqual(
+            json.loads(self.cli(STATE, "approval-view", "--run-dir", str(self.run_dir)).stdout)[
+                "candidate_sha256"
+            ],
+            candidate_digest,
+        )
 
         revised = self.cli(
             STATE,
@@ -642,6 +689,10 @@ sha256 {resulting_digest or digest}
         self.assertEqual(state["current_stage"], "spec")
         self.assertEqual(state["spec_pass"], 2)
         self.assertEqual(state["prepared_stage"]["stage"], "spec")
+        revision_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(revision_status["classification"], "requested-revision")
         self.assertTrue(draft.is_file())
         self.assertTrue(candidate.is_file())
         premature = self.cli(
@@ -729,6 +780,22 @@ sha256 {resulting_digest or digest}
         )
         self.assertEqual(captured.returncode, 0, captured.stderr)
         self.assertIn("outcome=report", captured.stdout)
+        capture_event = json.loads(
+            (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertEqual(
+            capture_event["data"]["report_sha256"], hashlib.sha256(report.read_bytes()).hexdigest()
+        )
+        captured_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertTrue(captured_status["report"]["ready"])
+        self.assertIn("accept-author", captured_status["recommended_next"]["command"])
+        report.write_text("changed after capture\n", encoding="utf-8")
+        changed_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(changed_status["classification"], "inconsistent")
 
     def test_unauthorized_tracked_write_gates_hitl_even_with_clean_report(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -740,6 +807,53 @@ sha256 {resulting_digest or digest}
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "integrity-violation")
         self.assertIn("product.txt", state["gate_decisions"][-1]["unauthorized_paths"])
+        before_path = self.run_dir / "tree-snapshots" / "spec-1-before.json"
+        before_bytes = before_path.read_bytes()
+        before_path.write_text("{}\n", encoding="utf-8")
+        unsafe_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(unsafe_status["classification"], "inconsistent")
+        tampered = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "Must not trust a changed launch baseline",
+        )
+        self.assertNotEqual(tampered.returncode, 0)
+        self.assertIn("baseline is missing or changed", tampered.stderr)
+        before_path.write_bytes(before_bytes)
+        unresolved = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "Human requested a clean recovery pass",
+        )
+        self.assertNotEqual(unresolved.returncode, 0)
+        self.assertIn("restore the armed baseline", unresolved.stderr)
+        (self.repo / "product.txt").write_text("baseline\n", encoding="utf-8")
+        resumed = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "Human resolved the unauthorized change",
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        recovered = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(recovered["current_stage"], "spec")
+        self.assertEqual(recovered["spec_pass"], 2)
 
     def test_detector_boundary_excludes_ignored_and_baseline_untracked_content(self):
         (self.repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
@@ -960,6 +1074,851 @@ Option?
         self.assertNotEqual(failed.returncode, 0)
         self.assertFalse(run_dir.exists())
         self.assertFalse(self.cmux_log.exists())
+
+    def test_status_reports_exact_recovery_action_and_init_offers_newest_unfinished_run(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+
+        status = self.cli(
+            STATE,
+            "status",
+            "--run-dir",
+            str(self.run_dir),
+            "--cmux-cmd",
+            str(self.cmux),
+        )
+
+        self.assertEqual(status.returncode, 0, status.stderr)
+        payload = json.loads(status.stdout)
+        self.assertEqual(payload["run_id"], "plan-test")
+        self.assertEqual(payload["classification"], "spec-authoring")
+        self.assertEqual(payload["stage"]["mode"], "author")
+        self.assertEqual(payload["stage"]["pass"], 1)
+        self.assertEqual(payload["pane"]["status"], "not-launched")
+        self.assertTrue(payload["report"]["pending"])
+        self.assertIn("render_prompt.py", payload["recommended_next"]["command"])
+        self.assertEqual(payload["input"]["task"]["sha256"], json.loads(
+            (self.run_dir / "state.json").read_text(encoding="utf-8")
+        )["task"]["sha256"])
+        recovered_context = json.loads(
+            self.cli(STATE, "context", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(recovered_context["paths"]["task"], str((self.run_dir / "task.md").resolve()))
+        self.assertEqual(recovered_context["paths"]["state"], str((self.run_dir / "state.json").resolve()))
+        self.assertTrue(
+            any("stage-snapshots/spec-1-" in item["path"] for item in recovered_context["history"])
+        )
+
+        duplicate = self.init_direct("new-plan")
+        self.assertEqual(duplicate.returncode, 3, duplicate.stderr)
+        offered = json.loads(duplicate.stdout)
+        self.assertEqual(offered["unfinished_run"]["run_id"], "plan-test")
+        self.assertIn("resume", offered["recommended_next"]["command"])
+
+        spaced_runs = self.root / "runs with spaces"
+        spaced_init = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Task in a spaced run root",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "spaced-plan",
+            "--runs-root",
+            str(spaced_runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+            "--new-run",
+        )
+        self.assertEqual(spaced_init.returncode, 0, spaced_init.stderr)
+        spaced_duplicate = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Another task",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "unused-plan",
+            "--runs-root",
+            str(spaced_runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+        )
+        self.assertEqual(spaced_duplicate.returncode, 3, spaced_duplicate.stderr)
+        resume_argv = shlex.split(
+            json.loads(spaced_duplicate.stdout)["recommended_next"]["command"]
+        )
+        self.assertEqual(resume_argv[-1], str((spaced_runs / "spaced-plan").resolve()))
+
+        deliberate = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "A separate deliberate planning session",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "new-plan",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+            "--new-run",
+        )
+        self.assertEqual(deliberate.returncode, 0, deliberate.stderr)
+        input_run = self.runs / "new-plan"
+        input_state_path = input_run / "state.json"
+        events_path = input_run / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+        init_event = next(event for event in events if event["type"] == "run.init")
+        input_state = init_event["data"]["state"]
+        self.assertEqual(input_state["current_stage"], "input")
+        input_state_path.write_text(json.dumps(input_state), encoding="utf-8")
+        events_path.write_text(json.dumps(init_event) + "\n", encoding="utf-8")
+        input_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(input_run)).stdout
+        )
+        self.assertEqual(input_status["classification"], "input-validation")
+        self.assertTrue(input_status["prepared_snapshot"]["valid"])
+        self.assertIn("--decision rejoin", input_status["recommended_next"]["command"])
+        resumed_input = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(input_run),
+            "--decision",
+            "rejoin",
+        )
+        self.assertEqual(resumed_input.returncode, 0, resumed_input.stderr)
+        self.assertEqual(json.loads(resumed_input.stdout)["classification"], "spec-authoring")
+
+    def test_live_worker_is_rejoined_never_started_work_is_redelivered_and_dead_worker_needs_fresh_pass(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+
+        def pane(verb: str, *tail: str) -> subprocess.CompletedProcess[str]:
+            return self.cli(
+                PANE,
+                "--cmux-cmd",
+                str(self.cmux),
+                verb,
+                "--run-dir",
+                str(self.run_dir),
+                "--stage",
+                "spec",
+                "--pass",
+                "1",
+                *tail,
+            )
+
+        launched = pane("launch", "--anchor", "CALLER")
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertEqual(status["pane"]["status"], "live")
+        self.assertFalse(status["pane"]["agent_launch_sent"])
+        self.assertIn("start-agent", status["recommended_next"]["command"])
+
+        started = pane("start-agent", "--surface", "SURF-1", "--settle-seconds", "0")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertTrue(status["pane"]["agent_launch_sent"])
+        self.assertFalse(status["pane"]["prompt_sent"])
+        self.assertIn("deliver", status["recommended_next"]["command"])
+
+        delivered = pane(
+            "deliver",
+            "--surface",
+            "SURF-1",
+            "--prompt",
+            str(self.run_dir / "prompts" / "spec-1.md"),
+            "--settle-seconds",
+            "0",
+        )
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertNotEqual(status["classification"], "pending-report")
+        self.assertIn("mark-started", status["recommended_next"]["command"])
+
+        # The visible pane showed the known summarized-and-waiting case, so the same immutable
+        # prompt may be re-delivered without creating a new worker or pass.
+        redelivered = pane(
+            "deliver",
+            "--surface",
+            "SURF-1",
+            "--prompt",
+            str(self.run_dir / "prompts" / "spec-1.md"),
+            "--settle-seconds",
+            "0",
+        )
+        self.assertEqual(redelivered.returncode, 0, redelivered.stderr)
+        marked = pane("mark-started", "--surface", "SURF-1")
+        self.assertEqual(marked.returncode, 0, marked.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertEqual(status["classification"], "pending-report")
+        self.assertIn("await_report.py", status["recommended_next"]["command"])
+        self.assertIn(str(self.cmux), shlex.split(status["recommended_next"]["command"]))
+        partial_report = self.run_dir / "reports" / "spec-1.md"
+        partial_report.write_text("partial handoff\n", encoding="utf-8")
+        partial_status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertTrue(partial_status["report"]["uncertain"])
+        self.assertEqual(partial_status["classification"], "pending-report")
+        self.assertIn("await_report.py", partial_status["recommended_next"]["command"])
+        partial_report.unlink()
+
+        dead_env = self.env()
+        dead_env["FAKE_CMUX_DEAD"] = "1"
+        watched = self.cli(
+            AWAIT,
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+            "--cmux-cmd",
+            str(self.cmux),
+            "--deadline-minutes",
+            "0.1",
+            "--poll-seconds",
+            "0.01",
+            env=dead_env,
+        )
+        self.assertEqual(watched.returncode, 7, watched.stderr)
+        status = json.loads(
+            self.cli(
+                STATE,
+                "status",
+                "--run-dir",
+                str(self.run_dir),
+                "--cmux-cmd",
+                str(self.cmux),
+                env=dead_env,
+            ).stdout
+        )
+        self.assertEqual(status["classification"], "hitl")
+        self.assertIn("--decision relaunch", status["recommended_next"]["command"])
+
+        partial_report.write_text("uncertain dead-pane handoff\n", encoding="utf-8")
+        uncertain = json.loads(
+            self.cli(
+                STATE,
+                "status",
+                "--run-dir",
+                str(self.run_dir),
+                "--cmux-cmd",
+                str(self.cmux),
+                env=dead_env,
+            ).stdout
+        )
+        self.assertEqual(uncertain["classification"], "hitl")
+        self.assertTrue(uncertain["report"]["uncertain"])
+        self.assertIn("context", uncertain["recommended_next"]["command"])
+        partial_report.unlink()
+
+        unauthorized = self.repo / "worker-created-product-file.txt"
+        unauthorized.write_text("must not become the next baseline\n", encoding="utf-8")
+        refused = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "The human confirmed that the dead pane may be replaced",
+            "--cmux-cmd",
+            str(self.cmux),
+            env=dead_env,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Git-visible product delta", refused.stderr)
+        unauthorized.unlink()
+
+        resumed = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "The human confirmed that the dead pane may be replaced",
+            "--cmux-cmd",
+            str(self.cmux),
+            env=dead_env,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["spec_pass"], 2)
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertEqual(state["prepared_stage"]["pass"], 2)
+        self.assertTrue(list((self.run_dir / "stage-snapshots").glob("spec-1-*.json")))
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "2"
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertIn(
+            "The human confirmed that the dead pane may be replaced",
+            (self.run_dir / "prompts" / "spec-2.md").read_text(encoding="utf-8"),
+        )
+
+    def test_dead_reviewer_relaunches_as_a_new_reviewer_pass_without_replacing_the_author(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("spec-review")
+        self.launch_prepared_stage("spec-review")
+        marked = self.cli(
+            PANE,
+            "--cmux-cmd",
+            str(self.cmux),
+            "mark-started",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec-review",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+        )
+        self.assertEqual(marked.returncode, 0, marked.stderr)
+        live = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertEqual(live["classification"], "pending-report")
+        self.assertEqual(live["stage"]["mode"], "reviewer")
+        self.assertIn("await_report.py", live["recommended_next"]["command"])
+        dead_env = self.env()
+        dead_env["FAKE_CMUX_DEAD"] = "1"
+        watched = self.cli(
+            AWAIT,
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec-review",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+            "--cmux-cmd",
+            str(self.cmux),
+            "--deadline-minutes",
+            "0.1",
+            "--poll-seconds",
+            "0.01",
+            env=dead_env,
+        )
+        self.assertEqual(watched.returncode, 7, watched.stderr)
+        resumed = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "Reviewer pane died before producing a handoff",
+            "--cmux-cmd",
+            str(self.cmux),
+            env=dead_env,
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["spec_pass"], 1)
+        self.assertEqual(state["spec_review_pass"], 2)
+        self.assertEqual(state["current_stage"], "spec-review")
+        self.assertEqual(Path(state["author_spec"]["draft"]), draft)
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec-review", "--pass", "2"
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        prompt = (self.run_dir / "prompts" / "spec-review-2.md").read_text(encoding="utf-8")
+        self.assertIn("Reviewer pane died before producing a handoff", prompt)
+        self.assertIn(str(draft), prompt)
+
+    def test_one_watcher_extension_can_be_rejoined_and_then_expires_to_hitl(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        marked = self.cli(
+            PANE,
+            "--cmux-cmd",
+            str(self.cmux),
+            "mark-started",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+        )
+        self.assertEqual(marked.returncode, 0, marked.stderr)
+        first = self.cli(
+            AWAIT,
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+            "--cmux-cmd",
+            str(self.cmux),
+            "--deadline-minutes",
+            "0.001",
+            "--poll-seconds",
+            "0.01",
+        )
+        self.assertEqual(first.returncode, 8, first.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertEqual(status["pane"]["status"], "deadline")
+        self.assertIn("--decision extend", status["recommended_next"]["command"])
+        extended = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "extend",
+            "--reason",
+            "The live worker is still making visible progress",
+            "--cmux-cmd",
+            str(self.cmux),
+        )
+        self.assertEqual(extended.returncode, 0, extended.stderr)
+        self.assertIn("--extension 1", json.loads(extended.stdout)["recommended_next"]["command"])
+        expired = self.cli(
+            AWAIT,
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--surface",
+            "SURF-1",
+            "--cmux-cmd",
+            str(self.cmux),
+            "--deadline-minutes",
+            "0.001",
+            "--poll-seconds",
+            "0.01",
+            "--extension",
+            "1",
+        )
+        self.assertEqual(expired.returncode, 8, expired.stderr)
+        status = json.loads(
+            self.cli(
+                STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
+            ).stdout
+        )
+        self.assertEqual(status["pane"]["status"], "watcher-expired")
+        self.assertEqual(status["classification"], "hitl")
+        self.assertIn("--decision relaunch", status["recommended_next"]["command"])
+
+    def test_tampered_prepared_snapshot_and_uncertain_handoff_stop_recovery(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        snapshot = self.run_dir / state["prepared_stage"]["path"]
+        snapshot.write_text("{}\n", encoding="utf-8")
+        status = self.cli(STATE, "status", "--run-dir", str(self.run_dir))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual(json.loads(status.stdout)["classification"], "inconsistent")
+        rejoin = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "rejoin",
+        )
+        self.assertNotEqual(rejoin.returncode, 0)
+
+        # A non-empty uncertain report plus a tampered snapshot is never treated as success or
+        # overwritten by a same-pass retry.
+        snapshot.write_bytes(b"{}\n")
+        (self.run_dir / "reports" / "spec-1.md").write_text("partial handoff\n", encoding="utf-8")
+        relaunch = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "replace it",
+        )
+        self.assertNotEqual(relaunch.returncode, 0)
+        self.assertEqual(
+            (self.run_dir / "reports" / "spec-1.md").read_text(encoding="utf-8"),
+            "partial handoff\n",
+        )
+
+    def test_interrupted_grilling_revalidation_preserves_partial_outcomes_and_cannot_launch(self):
+        artifact, markdown = self.grilling_pair()
+        run_dir = self.runs / "plan-grilling-interrupted"
+        initialized = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Planung",
+            "--grilling-json",
+            str(artifact),
+            "--grilling-markdown",
+            str(markdown),
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "plan-grilling-interrupted",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        partial_path = self.root / "partial-revalidation.json"
+        partial = {
+            "accepted": True,
+            "premise_corrections": [{"index": 1, "outcome": "confirmed", "reason": ""}],
+        }
+        partial_path.write_text(json.dumps(partial), encoding="utf-8")
+        interrupted = self.cli(
+            STATE,
+            "revalidate",
+            "--run-dir",
+            str(run_dir),
+            "--outcomes",
+            str(partial_path),
+        )
+        self.assertNotEqual(interrupted.returncode, 0)
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "awaiting-grilling-revalidation")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertEqual(
+            json.loads((run_dir / state["grilling_revalidation"]["path"]).read_text(encoding="utf-8")),
+            partial,
+        )
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "grilling-revalidation-interrupted")
+        shown = json.loads(
+            self.cli(STATE, "show-revalidation", "--run-dir", str(run_dir)).stdout
+        )
+        self.assertEqual(shown["recorded_outcomes"], partial)
+        progress_path = run_dir / state["grilling_revalidation"]["path"]
+        progress_bytes = progress_path.read_bytes()
+        progress_path.write_text("{}\n", encoding="utf-8")
+        changed = self.cli(STATE, "show-revalidation", "--run-dir", str(run_dir))
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("progress is missing or changed", changed.stderr)
+        progress_path.write_bytes(progress_bytes)
+        launch = self.cli(
+            PANE,
+            "--cmux-cmd",
+            str(self.cmux),
+            "launch",
+            "--run-dir",
+            str(run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--anchor",
+            "CALLER",
+        )
+        self.assertNotEqual(launch.returncode, 0)
+
+    def test_recorded_approvals_are_digest_bound_and_idempotent(self):
+        approved_path = self.approve_spec_to_tickets()
+        repeated = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Repeat the already recorded approval",
+        )
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertTrue(json.loads(repeated.stdout)["idempotent"])
+
+        approved_path.write_text(
+            approved_path.read_text(encoding="utf-8") + "\nChanged after approval.\n",
+            encoding="utf-8",
+        )
+        stale = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Must not inherit the stale approval",
+        )
+        self.assertNotEqual(stale.returncode, 0)
+        status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(status["classification"], "inconsistent")
+        self.assertFalse(status["approval"]["spec"]["valid"])
+
+    def test_publication_recovers_an_already_moved_tracker_and_refuses_duplicates(self):
+        proposal = self.reach_ticket_approval()
+        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        approved = self.ticket_approval(
+            "approve", "Human approved the reviewed tracker", target=target
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        repeated = self.ticket_approval("approve", "Repeat the same approval", target=target)
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertTrue(json.loads(repeated.stdout)["idempotent"])
+
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        staged = Path(state["staged_tracker"]["path"])
+        validated_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(validated_status["publication"]["phase"], "validated")
+        readme = staged / "README.md"
+        original_readme = readme.read_bytes()
+        readme.write_bytes(original_readme + b"tampered\n")
+        changed_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(changed_status["classification"], "inconsistent")
+        self.assertEqual(changed_status["publication"]["phase"], "inconsistent")
+        readme.write_bytes(original_readme)
+        os.rename(staged, target)
+        interrupted = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(interrupted["publication"]["phase"], "published")
+        recovered = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertTrue(json.loads(recovered.stdout)["recovered"])
+        final = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(final["current_stage"], "complete")
+        duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("already published", duplicate.stderr)
+
+    def test_status_distinguishes_unrecorded_complete_staging_from_validated_state(self):
+        proposal = self.reach_ticket_approval()
+        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        approved = self.ticket_approval(
+            "approve", "Human approved before the process interruption", target=target
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["approved_tickets"] = None
+        state["staged_tracker"] = None
+        state["current_stage"] = "awaiting-ticket-approval"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["publication"]["phase"], "fully-staged")
+        self.assertEqual(status["classification"], "awaiting-ticket-approval")
+        recovered = self.ticket_approval(
+            "approve", "Human repeated approval after inspecting recovered staging", target=target
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(recovered_state["current_stage"], "ready-to-publish")
+        recovered_status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(recovered_status["publication"]["phase"], "validated")
+
+    def test_review_blocked_resume_routes_to_a_new_author_pass(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("spec-review")
+        digest = validate_spec(draft)["sha256"]
+        (self.run_dir / "reports" / "spec-review-1.md").write_text(
+            review_report(
+                "blocked",
+                digest,
+                digest,
+                blockers="- Human must decide the rollout policy.",
+            ),
+            encoding="utf-8",
+        )
+        blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(status["classification"], "review-blocked")
+        self.assertEqual(status["latest_review"]["verdict"], "blocked")
+        resumed = self.cli(
+            STATE,
+            "resume",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "relaunch",
+            "--reason",
+            "Use staged rollout after the human decision",
+        )
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertEqual(state["spec_pass"], 2)
+        self.assertIsNone(state["author_spec"])
+        self.assertTrue(draft.is_file(), "the rejected author handoff remains preserved")
+
+    def test_offline_smoke_runs_all_visible_stages_with_safe_correction_and_issue_chain_handoff(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        draft = self.write_author_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        self.render_and_baseline("spec-review")
+        self.launch_prepared_stage("spec-review")
+        corrected = self.run_dir / "artifacts" / "spec-reviewed-1.md"
+        corrected.write_text(
+            spec(solution="Implement the clarified workflow already required by the task."),
+            encoding="utf-8",
+        )
+        input_digest = validate_spec(draft)["sha256"]
+        corrected_digest = validate_spec(corrected)["sha256"]
+        (self.run_dir / "reports" / "spec-review-1.md").write_text(
+            review_report(
+                "pass_with_fixes",
+                input_digest,
+                corrected_digest,
+                corrections="- Clarified established wording without changing scope.",
+            ),
+            encoding="utf-8",
+        )
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        approved = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Human approved the corrected specification and visible diff",
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+
+        self.render_and_baseline("tickets")
+        self.launch_prepared_stage("tickets")
+        proposal = self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review")
+        self.launch_prepared_stage("tickets-review")
+        self.write_tickets_review()
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+
+        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        approved = self.ticket_approval(
+            "approve", "Human approved ticket granularity and dependencies", target=target
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(status["classification"], "completed")
+        self.assertEqual(status["publication"]["phase"], "completed")
+
+        downstream = self.cli(
+            ISSUE_CHAIN_STATE,
+            "init",
+            "--tracker",
+            str(target),
+            "--issue",
+            proposal["ready_frontier"][0],
+            "--run-id",
+            "downstream-first-frontier",
+            "--runs-root",
+            str(self.root / "issue-runs"),
+            "--config",
+            str(self.config),
+            "--no-workspace",
+        )
+        self.assertEqual(downstream.returncode, 0, downstream.stderr)
+        downstream_state = json.loads(
+            (self.root / "issue-runs" / "downstream-first-frontier" / "state.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(downstream_state["current_stage"], "implement")
+        self.assertTrue(downstream_state["ready"])
+        self.assertEqual(downstream_state["prepared_stage"]["stage"], "implement")
+
+        # Completed runs are discoverable by status but never block a deliberate new session.
+        next_run = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "A later planning task",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "after-complete",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+        )
+        self.assertEqual(next_run.returncode, 0, next_run.stderr)
 
 
 if __name__ == "__main__":

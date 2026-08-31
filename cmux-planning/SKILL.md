@@ -10,6 +10,11 @@ an independently reviewed native issue tracker. The orchestrator coordinates; it
 planning artifacts or edit product code. Every author and reviewer runs as a fresh, visibly labeled
 CMUX pane.
 
+`cmux-planning` performs synthesis and independent review. Optional `cmux-grilling` is a separate
+upstream workflow for stress-testing uncertain decisions; it is neither required nor invoked here.
+`cmux-issue-chain` is a separate downstream workflow that may execute the published native tracker,
+but planning never starts it automatically. Each workflow can be used on its own.
+
 ```text
 input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
       -> awaiting-spec-approval -> tickets -> tickets-review
@@ -63,6 +68,23 @@ assignments, and rerun with `--accept-config`; that explicit rerun atomically mi
 starts initialization. Migration preserves existing profiles and assignments and leaves original
 bytes untouched on failure. `atomic_initialize` remains create-only.
 
+## Prerequisites and installation
+
+Install the skill into an agent that can run Python 3 and Git in the target repository. Visible worker
+operation additionally requires cmux, Claude Code for the default author profiles, and Codex CLI for
+the mandatory independent reviewer. Offline tests use fake harnesses and fake CMUX and contact no model
+provider.
+
+Use the skills CLI from this repository or copy the complete `cmux-planning` directory into the agent's
+skills directory. Upgrade installed siblings together before accepting schema-v1 migration. Runtime is
+standalone: a direct task needs neither sibling, and vendored contracts validate optional grilling input
+and the native tracker without locating another skill installation.
+
+On first use, let `planning_state.py init` create or preview the shared configuration. Inspect the
+displayed `planning.spec`, `planning.tickets`, and mandatory Codex `planning.reviewer` assignments, then
+rerun with `--accept-config`. Existing valid schema-v1 files are previewed and migrated atomically; the
+original remains untouched when the candidate cannot validate.
+
 ## Initialize
 
 Use one task source:
@@ -79,6 +101,21 @@ repository-mismatched, or ambiguous pairs fail before any launchable state or pa
 
 Direct input starts at `spec` with an immutable prepared snapshot. Grilling input starts at
 `awaiting-grilling-revalidation` with no snapshot.
+
+Concrete direct-task and optional grilling-pair starts are:
+
+```bash
+python3 scripts/planning_state.py init --task-file ./task.md --repo . \
+  --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
+python3 scripts/planning_state.py init --task-file ./task.md --repo . \
+  --grilling-json ./grilling-result.json --grilling-markdown ./grilling-result.md \
+  --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
+```
+
+Initialization first looks for the newest unfinished run recorded for the same repository. It prints
+that run and its exact `resume` command and exits before creating another. Completed runs never block a
+later session. Use `--new-run` only after the human deliberately chooses a separate planning session
+beside an unfinished one.
 
 ## Revalidate optional grilling input
 
@@ -110,14 +147,17 @@ decision. Record a JSON outcomes file with this shape:
 Each premise correction and assumption is `confirmed`, `corrected`, or `discarded`; corrected and
 discarded entries need reasons, and corrected entries need replacement text. Cover every source
 decision with `open`, `decided`, or `deferred`; resolved entries need outcome text. Refusal uses
-`{"accepted": false}` and remains at the same state with no prepared worker. Interruption also leaves
-the copied pair and state untouched.
+`{"accepted": false}` and remains at the same stage with no prepared worker. Interruption preserves
+the copied pair plus the latest partial outcomes without creating launchable state.
 
 ```bash
 python3 scripts/planning_state.py revalidate --run-dir <run-dir> --outcomes <outcomes.json>
 ```
 
 Workers consume only the resulting complete `grilling-input.json`, never the incomplete source pair.
+Every supplied outcomes checkpoint is atomically preserved before normalization, so an interrupted
+walkthrough can resume the same copied pair and recorded partial outcomes. Only a complete normalized
+handoff prepares `spec-1`; partial or refused outcomes never make a worker launchable.
 
 ## Run one stage
 
@@ -133,6 +173,8 @@ python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pa
   --surface <new-surface>
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <new-surface> --prompt <rendered-prompt>
+python3 scripts/pane_ctl.py mark-started --run-dir <run-dir> --stage <stage> --pass <n> \
+  --surface <new-surface>
 python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <new-surface>
 ```
@@ -141,6 +183,64 @@ The baseline makes the prepared snapshot launchable. `pane_ctl.py` always uses t
 and stable surface identity, starts a fresh configured process, labels the pane, and records lifecycle
 events. The armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and
 does not treat a transient health-command failure as worker failure.
+
+## Status and context recovery
+
+Status is read-only and derives progress from `state.json`, digest-bound files, structured lifecycle
+events, and optional CMUX surface health. It never treats pane text or a worker narrative as success:
+
+```bash
+python3 scripts/planning_state.py status --run-dir <run-dir>
+python3 scripts/planning_state.py resume --run-dir <run-dir>
+python3 scripts/planning_state.py context --run-dir <run-dir>
+```
+
+The status JSON reports the run and repository, task/source digest, copied and normalized grilling
+identities, revalidation progress, exact stage/mode/pass, prepared snapshot validity, live or last-known
+pane, pending report, latest review verdict and candidate digest, both digest-bound approvals, staging
+and publication phase, consistency errors, and one recommended next command. Its classifications
+distinguish awaiting or interrupted grilling revalidation, spec authoring/review, ticket authoring/review,
+pending report, both approval boundaries, requested revision, review-blocked, HITL, completed, and
+inconsistent state. Initialization persists a validated `input` checkpoint before activating the first
+stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
+pre-run input or configuration failure has no run state and remains an initialization error rather than
+being inferred as a worker stage.
+
+After context compaction, run `context` and status before acting. The context manifest enumerates the
+persisted task, copied grilling pair, normalized handoff, latest author and review artifacts, approved
+spec, latest ticket proposal, state, events, immutable stage and tree snapshots, reports, and digests.
+Read the applicable artifacts and human diff (`approval-view` or `ticket-approval-view`) plus reported
+pane health; do not reconstruct progress from conversation memory.
+
+Follow the status command exactly for active work:
+
+- A live pane whose deterministic prompt was sent and whose report is pending is rejoined with the
+  armed `await_report.py` command. Never launch a duplicate worker.
+- A recorded pane in which the worker or prompt was never started uses the reported `start-agent` or
+  `deliver` command and the same baseline-bound prompt. After delivery, inspect the visible screen:
+  re-deliver only for the known summarized-and-waiting case, otherwise record `mark-started` before
+  arming the watcher. A stage with no pane uses the launch command.
+- A non-empty handoff is gated or inspected and never overwritten as an uncertain retry.
+- A first live-pane deadline may receive the run's one human-reasoned `resume --decision extend`
+  watcher extension. Pane death, expiry of that extension, snapshot tampering, an integrity violation,
+  an unknown state shape, or an uncertain handoff stops at HITL. None automatically advances or
+  relaunches.
+- At either approval boundary, rerun the corresponding view. It reopens the same reviewed,
+  digest-bound candidate and never invokes a worker.
+
+An explicit human decision may replace a dead or expired worker with one fresh numbered pass:
+
+```bash
+python3 scripts/planning_state.py resume --run-dir <run-dir> \
+  --decision relaunch --reason <human-authored-reason>
+```
+
+The recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback by their
+recorded digests; failed panes, snapshots, events, and handoffs remain in history. A dead author gets a
+new author pass. A dead reviewer gets a new reviewer pass over the unchanged author identity. A blocked
+review routes back to an author and cannot be relabeled as another reviewer pass. If ticket review found
+an approved-spec defect, use `ticket-approval --decision revise --scope spec` so the full spec
+author/review/approval sequence repeats.
 
 ## Gate the author and reviewer
 
@@ -196,6 +296,10 @@ Approval freezes the exact candidate digest, advances to `tickets`, and prepares
 snapshot without reusing either spec worker session. Revision preserves rejected artifacts, increments
 the spec pass, prepares a fresh author, and requires a new independent review. A decision is deferrable
 only after moving it outside current scope.
+
+Repeating the same recorded approval is idempotent only while its candidate digest is unchanged. A
+changed draft or candidate makes the approval stale and blocks continuation; it never inherits the old
+approval.
 
 ## Ticket author and independent review
 
@@ -266,6 +370,30 @@ Publication refuses path escape, collisions, changed approved identities, malfor
 sets, duplicate IDs, unknown blockers, cycles, changed staging, and second publication. Staging or
 validation failure leaves the target unchanged and records diagnostics for human resolution.
 
+Status distinguishes publication not started, fully staged but not yet recorded, recorded and validated,
+already moved but not recorded, and completed. Repeating explicit ticket approval adopts complete
+unrecorded staging only after it validates against the reviewed proposal and approved spec; partial or
+changed staging stops for inspection. If interruption happens after the atomic move but before the final
+state write, rerunning `publish` validates the existing target against the approved spec, proposal,
+ticket set, and staged artifact identities before completing state. If both staging and target exist,
+identities differ, or the run is already complete, publication refuses to duplicate or partially
+overwrite anything.
+
+## Artifact locations and failure policy
+
+Runs live under `.scratch/orchestrator/planning-runs/<run-id>/` by default. `task.md`, optional `inputs/`,
+`grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
+`state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
+`spec.md`, `map.md`, `decisions.md`, and `issues/` at the explicit target. That target is immediately
+consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
+separate workflow.
+
+Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and integrity
+violations as evidence for human resolution. Never infer approval from prose, edit product code from
+the planning orchestrator, silently repair the working tree, or claim detection coverage for ignored
+files or contents of baseline-untracked files. Canonical persisted artifacts are English, literal
+product copy keeps its actual language, and human questions and walkthroughs use the user's language.
+
 ## Verification
 
 Run the planning suite and both sibling regression suites:
@@ -275,3 +403,13 @@ python3 -m unittest discover -s cmux-planning/scripts -p 'test_*.py'
 python3 -m unittest discover -s cmux-issue-chain/scripts -p 'test_*.py'
 python3 -m unittest discover -s cmux-grilling/scripts -p 'test_*.py'
 ```
+
+The dependency-free end-to-end smoke path is:
+
+```bash
+python3 scripts/test_planning_flow.py -v -k offline_smoke
+```
+
+It uses fake workers and fake CMUX to cover a direct task, both author/reviewer stages, a safe
+`pass_with_fixes`, both human approvals, publication, and initialization of the first ready issue
+through the sibling issue-chain source when this development repository contains it.
