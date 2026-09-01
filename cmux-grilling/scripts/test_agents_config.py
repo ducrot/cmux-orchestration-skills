@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -485,6 +486,45 @@ class AgentsConfigCli(unittest.TestCase):
                 self.assertIn("--accept", output)
                 self.assert_untouched(path, original, before)
 
+    def test_read_only_migration_emits_one_complete_guidance_block_on_stdout(self):
+        _, legacy = self.legacy_default()
+        path = self.write_config(legacy, "legacy-single-guidance.json")
+        original = path.read_bytes()
+        before = path.stat()
+
+        proc = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        digest_match = re.search(r"candidate SHA-256: ([0-9a-f]{64})", proc.stdout)
+        self.assertIsNotNone(digest_match, proc.stdout)
+        digest = digest_match.group(1)
+        preview_command = shlex.join(
+            ["python3", str(SCRIPT.resolve()), "migrate", "--config", str(path.resolve())]
+        )
+        acceptance_command = shlex.join(
+            [
+                "python3",
+                str(SCRIPT.resolve()),
+                "migrate",
+                "--accept",
+                "--expect-sha256",
+                digest,
+                "--config",
+                str(path.resolve()),
+            ]
+        )
+        self.assertEqual(proc.stdout.count("Read-only schema-v1 migration preview"), 1)
+        self.assertEqual(proc.stdout.count(f"Validated schema-v2 candidate SHA-256: {digest}"), 1)
+        self.assertEqual(proc.stdout.count(f"Preview command: {preview_command}"), 1)
+        self.assertEqual(proc.stdout.count(f"Acceptance command: {acceptance_command}"), 1)
+        self.assertEqual(
+            proc.stderr.strip(),
+            "migration preview completed without mutation; explicit acceptance is required",
+        )
+        self.assertNotIn(preview_command, proc.stderr)
+        self.assertNotIn(acceptance_command, proc.stderr)
+        self.assert_untouched(path, original, before)
+
     def test_version_one_is_migrated_only_with_acceptance(self):
         _, legacy = self.legacy_default()
         legacy["profiles"]["aaa-author"] = {
@@ -525,29 +565,34 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(path.read_bytes(), once)
         self.assertEqual(path.stat().st_ino, identity.st_ino)
 
-    def test_explicitly_empty_migration_digest_is_not_treated_as_omitted(self):
+    def test_invalid_migration_digest_guidance_matches_preview_and_accept_modes(self):
         _, legacy = self.legacy_default()
 
-        for index, value in enumerate(("", " \t\n ", "deadbeef", "z" * 64)):
-            with self.subTest(value=value):
-                path = self.write_config(legacy, f"legacy-empty-digest-{index}.json")
-                original = path.read_bytes()
-                before = path.stat()
+        for accepting in (False, True):
+            for index, value in enumerate(("", " \t\n ", "deadbeef", "z" * 64)):
+                with self.subTest(accepting=accepting, value=value):
+                    path = self.write_config(
+                        legacy, f"legacy-invalid-digest-{accepting}-{index}.json"
+                    )
+                    original = path.read_bytes()
+                    before = path.stat()
 
-                refused = self.run_cli(
-                    "migrate",
-                    "--accept",
-                    "--expect-sha256",
-                    value,
-                    "--config",
-                    str(path),
-                    cwd=self.tmp,
-                )
+                    args = ["migrate"]
+                    if accepting:
+                        args.append("--accept")
+                    args.extend(("--expect-sha256", value, "--config", str(path)))
+                    refused = self.run_cli(*args, cwd=self.tmp)
 
-                self.assertNotEqual(refused.returncode, 0)
-                self.assertIn("invalid --expect-sha256 digest", refused.stderr)
-                self.assertIn("omit --expect-sha256", refused.stderr)
-                self.assert_untouched(path, original, before)
+                    self.assertNotEqual(refused.returncode, 0)
+                    self.assertEqual(refused.stdout, "")
+                    self.assertIn("invalid --expect-sha256 digest", refused.stderr)
+                    expected = (
+                        "omit --expect-sha256 to accept without digest binding"
+                        if accepting
+                        else "omit --expect-sha256 to run a read-only preview"
+                    )
+                    self.assertIn(expected, refused.stderr)
+                    self.assert_untouched(path, original, before)
 
         omitted = self.write_config(legacy, "legacy-omitted-digest.json")
         accepted = self.run_cli("migrate", "--accept", "--config", str(omitted), cwd=self.tmp)

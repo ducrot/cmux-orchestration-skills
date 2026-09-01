@@ -95,6 +95,10 @@ workflow assignments, and the candidate digest without changing the file. After 
 approval, `agents_config.py migrate --accept [--config <path>]` is the only shared-CLI mutation path.
 The displayed acceptance command carries that candidate's digest as `--expect-sha256`, so a file edited
 between preview and acceptance is refused instead of migrated to a candidate nobody approved.
+The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
+guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
+For a schema-v1 refusal, planning initialization leaves stdout empty and writes one complete actionable
+guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
 
 Accepted migration preserves existing profiles and assignments, deterministically selects planning
 authors, requires a Codex reviewer (adding a collision-safe default only when necessary), validates the

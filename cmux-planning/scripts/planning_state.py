@@ -14,17 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from agents_config import (
-    COORDINATED_UPGRADE_WARNING,
     ConfigError,
     add_override_options,
     add_probe_options,
     atomic_initialize,
-    candidate_digest,
     config_path,
     git_root,
     is_legacy,
     load_validated,
-    migration_commands,
     migration_preview,
     parse_json,
     read_config_bytes,
@@ -241,14 +238,12 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
     except ConfigError:
         parsed = None
     if is_legacy(parsed):
-        payload, preview = migration_preview(parsed, path)
-        preview_command, accept_command = migration_commands(path, candidate_digest(payload))
-        print(preview)
+        preview = migration_preview(parsed, path)
         raise ConfigError(
-            f"{COORDINATED_UPGRADE_WARNING} Configuration at {path} requires explicit shared-CLI "
-            "migration. Run the read-only "
-            f"preview command ({preview_command}), present that preview in the human's language, "
-            f"obtain explicit confirmation, then run the acceptance command ({accept_command}). "
+            f"{preview.render_guidance()}\nPlanning initialization stopped: configuration at {path} "
+            "requires explicit shared-CLI migration. Run the preview command above, present that "
+            "preview in the human's language, obtain explicit confirmation, then run the acceptance "
+            "command above. "
             "--accept-config does not authorize schema migration. No configuration bytes, planning "
             "run, or launchable state were recorded."
         )

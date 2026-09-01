@@ -67,6 +67,16 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_migration_guidance_output_stream_contract_is_documented(self):
+        if not README.is_file():
+            self.skipTest("repository README is not present in this independent installation")
+        for guide in (README, PLANNING):
+            with self.subTest(guide=guide.relative_to(REPOSITORY)):
+                normalized = " ".join(guide.read_text(encoding="utf-8").split()).lower()
+                self.assertIn("complete migration guidance once on stdout", normalized)
+                self.assertIn("planning initialization leaves stdout empty", normalized)
+                self.assertIn("one complete actionable guidance block on stderr", normalized)
+
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")

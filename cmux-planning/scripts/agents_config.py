@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -716,42 +717,58 @@ def migration_commands(path: Path, digest: str | None = None) -> tuple[str, str]
     return shlex.join([*base, *selected]), shlex.join([*base, "--accept", *approval, *selected])
 
 
-def migration_preview(
-    data: dict[str, Any], source: Path, *, accepting: bool = False
-) -> tuple[bytes, str]:
-    """Build the validated v2 candidate and render the human-visible preview."""
-    candidate, payload = migrate_version_one(data, source)
-    digest = candidate_digest(payload)
-    preview_command, accept_command = migration_commands(source, digest)
-    preferred = DEFAULT_CONFIG["workflows"]["planning"]["spec"]
-    proposed = candidate["workflows"]["planning"]["spec"]
-    lines = [
-        COORDINATED_UPGRADE_WARNING,
-        "Acceptance requested for the schema-v1 migration candidate below."
-        if accepting
-        else "Read-only schema-v1 migration preview; the source file has not been changed.",
-        f"Validated schema-v2 candidate SHA-256: {digest}",
-    ]
-    if preferred not in data["profiles"]:
-        profile = candidate["profiles"][proposed]
+@dataclass(frozen=True)
+class MigrationPreview:
+    """One validated migration candidate and all human-facing data derived from it."""
+
+    source: Path
+    candidate: dict[str, Any]
+    payload: bytes
+    accepting: bool = False
+
+    @property
+    def digest(self) -> str:
+        return candidate_digest(self.payload)
+
+    def render_guidance(self) -> str:
+        preview_command, acceptance_command = migration_commands(self.source, self.digest)
+        preferred = DEFAULT_CONFIG["workflows"]["planning"]["spec"]
+        proposed = self.candidate["workflows"]["planning"]["spec"]
+        lines = [
+            COORDINATED_UPGRADE_WARNING,
+            "Acceptance requested for the schema-v1 migration candidate below."
+            if self.accepting
+            else "Read-only schema-v1 migration preview; the source file has not been changed.",
+            f"Validated schema-v2 candidate SHA-256: {self.digest}",
+        ]
+        if preferred not in self.candidate["profiles"]:
+            profile = self.candidate["profiles"][proposed]
+            lines.extend(
+                [
+                    f"Preferred planning author profile {preferred!r} is unavailable.",
+                    "Proposed deterministic compatible fallback "
+                    f"(no relative quality inferred): profile={proposed!r}, "
+                    f"harness={profile['harness']!r}, model={profile['model']!r}, "
+                    f"effort={profile['effort']!r}.",
+                ]
+            )
         lines.extend(
             [
-                f"Preferred planning author profile {preferred!r} is unavailable.",
-                "Proposed deterministic compatible fallback "
-                f"(no relative quality inferred): profile={proposed!r}, "
-                f"harness={profile['harness']!r}, model={profile['model']!r}, "
-                f"effort={profile['effort']!r}.",
+                "Resolved workflow assignments for the complete candidate:",
+                json.dumps(resolved_display(self.candidate, self.source), indent=2, sort_keys=True),
+                f"Preview command: {preview_command}",
+                f"Acceptance command: {acceptance_command}",
             ]
         )
-    lines.extend(
-        [
-            "Resolved workflow assignments for the complete candidate:",
-            json.dumps(resolved_display(candidate, source), indent=2, sort_keys=True),
-            f"Preview command: {preview_command}",
-            f"Acceptance command: {accept_command}",
-        ]
-    )
-    return payload, "\n".join(lines)
+        return "\n".join(lines)
+
+
+def migration_preview(
+    data: dict[str, Any], source: Path, *, accepting: bool = False
+) -> MigrationPreview:
+    """Build the one authoritative representation of a validated v2 candidate preview."""
+    candidate, payload = migrate_version_one(data, source)
+    return MigrationPreview(source=source, candidate=candidate, payload=payload, accepting=accepting)
 
 
 def migration_target(path: Path) -> tuple[Path, os.stat_result]:
@@ -832,7 +849,7 @@ def load_validated_with_payload(
     data = parse_json(original, path, error)
     if is_legacy(data):
         try:
-            _, preview = migration_preview(data, path)
+            preview = migration_preview(data, path)
         except ConfigError as cause:
             raise error(
                 context_error(
@@ -842,7 +859,8 @@ def load_validated_with_payload(
                 )
             ) from cause
         raise error(
-            f"{preview}\nSchema-v1 configuration cannot be used by inspection or orchestration "
+            f"{preview.render_guidance()}\n"
+            "Schema-v1 configuration cannot be used by inspection or orchestration "
             "preparation. Run the preview command, obtain explicit human approval, then run "
             "the acceptance command."
         )
@@ -1518,10 +1536,15 @@ def run(args: argparse.Namespace) -> int:
             # Shape-checked here so a truncated or mistyped digest is reported as a bad argument
             # rather than as "the source changed after its preview", which it did not.
             if not re.fullmatch(r"[0-9a-f]{64}", approved):
+                omission_guidance = (
+                    "omit --expect-sha256 to accept without digest binding"
+                    if args.accept
+                    else "omit --expect-sha256 to run a read-only preview"
+                )
                 raise ConfigError(
                     f"invalid --expect-sha256 digest: {args.expect_sha256!r} is not 64 hexadecimal "
                     "characters; provide the candidate SHA-256 printed by the migration preview, "
-                    "or omit --expect-sha256 to accept without digest binding"
+                    f"or {omission_guidance}"
                 )
         original = read_config_bytes(path, ConfigError)
         parsed = parse_json(original, path, ConfigError)
@@ -1529,22 +1552,19 @@ def run(args: argparse.Namespace) -> int:
             require_valid(parsed, path, ConfigError)
             print(f"already schema {SCHEMA_VERSION}; no migration needed: {path}")
             return 0
-        payload, preview = migration_preview(parsed, path, accepting=args.accept)
-        print(preview)
-        digest = candidate_digest(payload)
+        preview = migration_preview(parsed, path, accepting=args.accept)
+        print(preview.render_guidance())
         if not args.accept:
-            _, accept_command = migration_commands(path, digest)
             raise ConfigError(
-                "migration preview completed without mutation; explicit acceptance is required: "
-                + accept_command
+                "migration preview completed without mutation; explicit acceptance is required"
             )
-        if approved is not None and approved != digest:
+        if approved is not None and approved != preview.digest:
             raise ConfigError(
                 f"approved candidate {approved} is not the candidate this configuration now "
-                f"produces ({digest}); the source changed after its preview and was not replaced: "
+                f"produces ({preview.digest}); the source changed after its preview and was not replaced: "
                 f"{path}; preview again"
             )
-        atomic_replace(path, payload, expected_original=original)
+        atomic_replace(path, preview.payload, expected_original=original)
         print(f"migrated schema {LEGACY_SCHEMA_VERSION} to {SCHEMA_VERSION}: {path}")
         return 0
     data = load_validated(path)

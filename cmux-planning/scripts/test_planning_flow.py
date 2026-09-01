@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -1002,7 +1003,31 @@ sha256 {resulting_digest or digest}
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(run_dir.exists())
         self.assertEqual(self.config.read_bytes(), legacy_bytes)
-        self.assertIn('"schema_version": 2', proc.stdout)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn('"schema_version": 2', proc.stderr)
+        digest_match = re.search(r"candidate SHA-256: ([0-9a-f]{64})", proc.stderr)
+        self.assertIsNotNone(digest_match, proc.stderr)
+        digest = digest_match.group(1)
+        preview_command = shlex.join(
+            ["python3", str(AGENTS.resolve()), "migrate", "--config", str(self.config.resolve())]
+        )
+        acceptance_command = shlex.join(
+            [
+                "python3",
+                str(AGENTS.resolve()),
+                "migrate",
+                "--accept",
+                "--expect-sha256",
+                digest,
+                "--config",
+                str(self.config.resolve()),
+            ]
+        )
+        self.assertEqual(proc.stderr.count("Read-only schema-v1 migration preview"), 1)
+        self.assertEqual(proc.stderr.count(f"Validated schema-v2 candidate SHA-256: {digest}"), 1)
+        self.assertEqual(proc.stderr.count(f"Preview command: {preview_command}"), 1)
+        self.assertEqual(proc.stderr.count(f"Acceptance command: {acceptance_command}"), 1)
+        self.assertEqual(proc.stderr.lower().count("upgrade all three skills together"), 1)
         self.assertIn("upgrade all three skills together", proc.stderr.lower())
         self.assertIn("older separately installed", proc.stderr.lower())
         self.assertIn("cmux-grilling", proc.stderr)

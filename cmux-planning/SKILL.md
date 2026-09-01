@@ -67,6 +67,10 @@ every resolved workflow. For schema v1 it strictly validates and previews the co
 candidate without changing the original bytes, emits the compatibility warning above, and exits
 before a run exists. The shared `agents_config.py migrate` command is the read-only preview interface.
 Present its complete preview in the human's language and ask the human to accept exactly that proposal.
+Its stable output contract writes the complete migration guidance once on stdout; stderr contains only
+the short read-only refusal and does not repeat either command. A schema-v1 planning initialization leaves
+stdout empty and emits one complete actionable guidance block on stderr, including the candidate digest
+and exact preview and acceptance commands once each.
 On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
 argument, then rerun planning
 initialization; `--accept-config` never authorizes schema migration. When `claude-opus-xhigh` is absent,
