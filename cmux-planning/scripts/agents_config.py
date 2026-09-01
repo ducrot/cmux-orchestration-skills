@@ -1512,6 +1512,17 @@ def run(args: argparse.Namespace) -> int:
         print(f"initialized: {path}")
         return 0
     if args.command == "migrate":
+        approved = args.expect_sha256
+        if approved is not None:
+            approved = approved.strip().lower()
+            # Shape-checked here so a truncated or mistyped digest is reported as a bad argument
+            # rather than as "the source changed after its preview", which it did not.
+            if not re.fullmatch(r"[0-9a-f]{64}", approved):
+                raise ConfigError(
+                    f"invalid --expect-sha256 digest: {args.expect_sha256!r} is not 64 hexadecimal "
+                    "characters; provide the candidate SHA-256 printed by the migration preview, "
+                    "or omit --expect-sha256 to accept without digest binding"
+                )
         original = read_config_bytes(path, ConfigError)
         parsed = parse_json(original, path, ConfigError)
         if not is_legacy(parsed):
@@ -1527,8 +1538,7 @@ def run(args: argparse.Namespace) -> int:
                 "migration preview completed without mutation; explicit acceptance is required: "
                 + accept_command
             )
-        approved = (args.expect_sha256 or "").strip().lower()
-        if approved and approved != digest:
+        if approved is not None and approved != digest:
             raise ConfigError(
                 f"approved candidate {approved} is not the candidate this configuration now "
                 f"produces ({digest}); the source changed after its preview and was not replaced: "

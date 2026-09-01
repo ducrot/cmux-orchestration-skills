@@ -525,6 +525,36 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(path.read_bytes(), once)
         self.assertEqual(path.stat().st_ino, identity.st_ino)
 
+    def test_explicitly_empty_migration_digest_is_not_treated_as_omitted(self):
+        _, legacy = self.legacy_default()
+
+        for index, value in enumerate(("", " \t\n ", "deadbeef", "z" * 64)):
+            with self.subTest(value=value):
+                path = self.write_config(legacy, f"legacy-empty-digest-{index}.json")
+                original = path.read_bytes()
+                before = path.stat()
+
+                refused = self.run_cli(
+                    "migrate",
+                    "--accept",
+                    "--expect-sha256",
+                    value,
+                    "--config",
+                    str(path),
+                    cwd=self.tmp,
+                )
+
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("invalid --expect-sha256 digest", refused.stderr)
+                self.assertIn("omit --expect-sha256", refused.stderr)
+                self.assert_untouched(path, original, before)
+
+        omitted = self.write_config(legacy, "legacy-omitted-digest.json")
+        accepted = self.run_cli("migrate", "--accept", "--config", str(omitted), cwd=self.tmp)
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(omitted.read_text(encoding="utf-8"))["schema_version"], 2)
+
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
         _, legacy = self.legacy_default()
         legacy["profiles"].pop("claude-opus-xhigh")
@@ -587,6 +617,28 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertTrue(default_path.is_symlink(), "a shared configuration link must survive")
         self.assertEqual(json.loads(shared.read_text(encoding="utf-8"))["schema_version"], 2)
 
+    def test_acceptance_migrates_the_candidate_bound_to_the_previewed_digest(self):
+        _, legacy = self.legacy_default()
+        path = self.write_config(legacy, "legacy-previewed-digest.json")
+
+        preview = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
+        self.assertNotEqual(preview.returncode, 0)
+        output = preview.stdout + preview.stderr
+        digest = re.search(r"candidate SHA-256: ([0-9a-f]{64})", output).group(1)
+
+        accepted = self.run_cli(
+            "migrate",
+            "--accept",
+            "--expect-sha256",
+            f"  {digest.upper()}  ",
+            "--config",
+            str(path),
+            cwd=self.tmp,
+        )
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 2)
+
     def test_acceptance_refuses_a_candidate_the_preview_did_not_display(self):
         _, legacy = self.legacy_default()
         path = self.write_config(legacy, "legacy-restaged.json")
@@ -605,6 +657,8 @@ class AgentsConfigCli(unittest.TestCase):
         }
         edited = json.dumps(legacy).encode("utf-8")
         path.write_bytes(edited)
+        original = path.read_bytes()
+        before = path.stat()
 
         stale = self.run_cli(
             "migrate", "--accept", "--expect-sha256", digest, "--config", str(path), cwd=self.tmp
@@ -612,7 +666,7 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn("preview again", stale.stderr)
-        self.assertEqual(path.read_bytes(), edited)
+        self.assert_untouched(path, original, before)
 
     def test_version_one_migration_refuses_read_only_target_even_with_writable_parent(self):
         _, legacy = self.legacy_default()
