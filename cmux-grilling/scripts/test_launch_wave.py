@@ -179,20 +179,33 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
 
-    def test_version_one_config_migrates_before_grilling_launch_preparation(self):
+    def test_version_one_config_requires_explicit_migration_before_grilling_preparation(self):
         legacy = json.loads(self.config_path.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
         legacy["workflows"]["grilling"]["docs"] = "codex-sol-medium"
-        self.config_path.write_text(json.dumps(legacy), encoding="utf-8")
+        legacy_bytes = json.dumps(legacy).encode("utf-8")
+        self.config_path.write_bytes(legacy_bytes)
 
         proc = self.init_for("migrated-v1")
 
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        migrated = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 2)
-        self.assertEqual(migrated["workflows"]["grilling"]["docs"], "codex-sol-medium")
-        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-sol-xhigh")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.config_path.read_bytes(), legacy_bytes)
+        self.assertIn("Read-only schema-v1 migration preview", proc.stderr)
+        self.assertIn("Acceptance command:", proc.stderr)
+        self.assertFalse((self.run_dir("migrated-v1") / "state.json").exists())
+        self.assertFalse((self.run_dir("migrated-v1") / "launch-waves").exists())
+
+        accepted = subprocess.run(
+            [sys.executable, str(AGENTS_CONFIG), "migrate", "--accept", "--config", str(self.config_path)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        prepared = self.init_for("migrated-v1")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
         wave = self.read_wave("migrated-v1")
         self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-sol-medium")
 

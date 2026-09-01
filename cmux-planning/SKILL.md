@@ -59,14 +59,22 @@ handoffs.
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
 `claude-opus-xhigh`; the reviewer defaults to `codex-sol-xhigh` and must resolve to Codex.
+`validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
+commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
 `planning_state.py init` creates a missing config or detects a valid schema-v1 file, then displays
 every resolved workflow. For schema v1 it strictly validates and previews the complete schema-v2
 candidate without changing the original bytes, emits the compatibility warning above, and exits
-before a run exists. Let the human confirm that every installed sibling was upgraded, review the
-assignments, and rerun with `--accept-config`; that explicit rerun atomically migrates the file and
-starts initialization. Migration preserves existing profiles and assignments and leaves original
-bytes untouched on failure. `atomic_initialize` remains create-only.
+before a run exists. The shared `agents_config.py migrate` command is the read-only preview interface.
+Present its complete preview in the human's language and ask the human to accept exactly that proposal.
+On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
+argument, then rerun planning
+initialization; `--accept-config` never authorizes schema migration. When `claude-opus-xhigh` is absent,
+the preview identifies it as unavailable and displays the lexicographically first compatible fallback's
+profile name, harness, model, and effort without inferring relative quality. Migration preserves existing
+profiles and assignments and leaves original bytes untouched on failure. It refuses targets with no
+write bit or more than one hard link, preserves a symlink path, and applies both guards to its resolved
+target. `atomic_initialize` remains create-only.
 
 ## Prerequisites and installation
 
@@ -80,10 +88,11 @@ skills directory. Upgrade installed siblings together before accepting schema-v1
 standalone: a direct task needs neither sibling, and vendored contracts validate optional grilling input
 and the native tracker without locating another skill installation.
 
-On first use, let `planning_state.py init` create or preview the shared configuration. Inspect the
-displayed `planning.spec`, `planning.tickets`, and mandatory Codex `planning.reviewer` assignments, then
-rerun with `--accept-config`. Existing valid schema-v1 files are previewed and migrated atomically; the
-original remains untouched when the candidate cannot validate.
+On first use, let `planning_state.py init` create or preview the shared configuration. For a newly
+created schema-v2 default, inspect `planning.spec`, `planning.tickets`, and the mandatory Codex
+`planning.reviewer`, then rerun with `--accept-config`. For schema v1, run the shared read-only preview,
+obtain explicit confirmation, run `agents_config.py migrate --accept`, and only then rerun
+`planning_state.py init`.
 
 ## Initialize
 

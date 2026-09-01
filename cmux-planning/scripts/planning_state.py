@@ -14,15 +14,18 @@ from pathlib import Path
 from typing import Any
 
 from agents_config import (
+    COORDINATED_UPGRADE_WARNING,
     ConfigError,
     add_override_options,
     add_probe_options,
     atomic_initialize,
+    candidate_digest,
     config_path,
     git_root,
     is_legacy,
     load_validated,
-    migrate_version_one,
+    migration_commands,
+    migration_preview,
     parse_json,
     read_config_bytes,
     resolved_display,
@@ -97,7 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--run-id")
     init.add_argument("--runs-root", default=".scratch/orchestrator/planning-runs")
     init.add_argument("--config")
-    init.add_argument("--accept-config", action="store_true")
+    init.add_argument(
+        "--accept-config",
+        action="store_true",
+        help="accept a newly created schema-v2 default; never authorizes schema migration",
+    )
     init.add_argument("--workspace-id")
     init.add_argument("--no-workspace", action="store_true")
     init.add_argument(
@@ -232,27 +239,27 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
         parsed = parse_json(read_config_bytes(path, ConfigError), path, ConfigError)
     except ConfigError:
         parsed = None
-    legacy = parsed if is_legacy(parsed) else None
-    if legacy is not None and not args.accept_config:
-        preview, _ = migrate_version_one(legacy, path)
-        print(json.dumps(resolved_display(preview, path), indent=2, sort_keys=True))
+    if is_legacy(parsed):
+        payload, preview = migration_preview(parsed, path)
+        preview_command, accept_command = migration_commands(path, candidate_digest(payload))
+        print(preview)
         raise ConfigError(
-            f"configuration at {path} requires migration; review all resolved workflows and rerun "
-            "with --accept-config. No configuration bytes, planning run, or launchable state were "
-            "recorded. Compatibility warning: upgrade all three skills together before accepting "
-            "this migration. Older separately installed sibling skills (cmux-grilling or "
-            "cmux-issue-chain) will no longer read the migrated schema-v2 configuration."
+            f"{COORDINATED_UPGRADE_WARNING} Configuration at {path} requires explicit shared-CLI "
+            "migration. Run the read-only "
+            f"preview command ({preview_command}), present that preview in the human's language, "
+            f"obtain explicit confirmation, then run the acceptance command ({accept_command}). "
+            "--accept-config does not authorize schema migration. No configuration bytes, planning "
+            "run, or launchable state were recorded."
         )
     data = load_validated(path)
-    changed = created or legacy is not None
     print(json.dumps(resolved_display(data, path), indent=2, sort_keys=True))
-    # Only the create path reaches here unaccepted; the migration path already raised above.
+    # Only the create path can require this planning-specific acceptance; schema-v1 raised above.
     if created and not args.accept_config:
         raise ConfigError(
             f"configuration created at {path}; review all resolved workflows and rerun with "
             "--accept-config. No planning run or launchable state was recorded."
         )
-    return path, data, changed
+    return path, data, created
 
 
 def add_gate(
@@ -428,8 +435,8 @@ def init_run(args: argparse.Namespace) -> int:
     if run_dir.exists():
         raise ConfigError(f"planning run already exists: {run_dir}")
 
-    # Last of the checks: creating or migrating the shared configuration is irreversible and must
-    # not happen for an init that then fails on its own inputs.
+    # Last of the checks: creating the shared configuration is durable and must not happen for an
+    # init that then fails on its own inputs. Migration is a separate shared-CLI action.
     configuration_source, _, changed = planning_config(args, repository)
 
     # Preflight direct input before any run state is published. Grilling input cannot preflight

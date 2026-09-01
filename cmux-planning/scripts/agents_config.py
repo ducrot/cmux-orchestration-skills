@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,12 @@ from typing import Any, Callable, Iterable
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 DEFAULT_RELATIVE_PATH = Path(".scratch/orchestrator/agents.json")
+SCRIPT_PATH = Path(__file__).resolve()
+COORDINATED_UPGRADE_WARNING = (
+    "Coordinated upgrade required: upgrade all three skills together (cmux-planning, "
+    "cmux-grilling, and cmux-issue-chain) before migrating the shared configuration to schema v2. "
+    "Older separately installed sibling skills cannot read the migrated file."
+)
 
 TOP_LEVEL_FIELDS = {"schema_version", "profiles", "workflows"}
 PROFILE_FIELDS = {"harness", "executable", "model", "effort"}
@@ -693,16 +700,113 @@ def migrate_version_one(data: dict[str, Any], source: Path) -> tuple[dict[str, A
     return validated, payload
 
 
-def atomic_replace(path: Path, payload: bytes) -> None:
+def candidate_digest(payload: bytes) -> str:
+    """The digest a human approves in a preview and that an acceptance must still produce."""
+    return hashlib.sha256(payload).hexdigest()
+
+
+def migration_commands(path: Path, digest: str | None = None) -> tuple[str, str]:
+    """Exact runnable preview and acceptance commands for one selected configuration.
+
+    The acceptance command carries the previewed candidate's digest, so approval is bound to the
+    candidate the human actually saw rather than to whatever the file holds when it is run."""
+    base = ["python3", str(SCRIPT_PATH), "migrate"]
+    selected = ["--config", str(path)]
+    approval = ["--expect-sha256", digest] if digest else []
+    return shlex.join([*base, *selected]), shlex.join([*base, "--accept", *approval, *selected])
+
+
+def migration_preview(
+    data: dict[str, Any], source: Path, *, accepting: bool = False
+) -> tuple[bytes, str]:
+    """Build the validated v2 candidate and render the human-visible preview."""
+    candidate, payload = migrate_version_one(data, source)
+    digest = candidate_digest(payload)
+    preview_command, accept_command = migration_commands(source, digest)
+    preferred = DEFAULT_CONFIG["workflows"]["planning"]["spec"]
+    proposed = candidate["workflows"]["planning"]["spec"]
+    lines = [
+        COORDINATED_UPGRADE_WARNING,
+        "Acceptance requested for the schema-v1 migration candidate below."
+        if accepting
+        else "Read-only schema-v1 migration preview; the source file has not been changed.",
+        f"Validated schema-v2 candidate SHA-256: {digest}",
+    ]
+    if preferred not in data["profiles"]:
+        profile = candidate["profiles"][proposed]
+        lines.extend(
+            [
+                f"Preferred planning author profile {preferred!r} is unavailable.",
+                "Proposed deterministic compatible fallback "
+                f"(no relative quality inferred): profile={proposed!r}, "
+                f"harness={profile['harness']!r}, model={profile['model']!r}, "
+                f"effort={profile['effort']!r}.",
+            ]
+        )
+    lines.extend(
+        [
+            "Resolved workflow assignments for the complete candidate:",
+            json.dumps(resolved_display(candidate, source), indent=2, sort_keys=True),
+            f"Preview command: {preview_command}",
+            f"Acceptance command: {accept_command}",
+        ]
+    )
+    return payload, "\n".join(lines)
+
+
+def migration_target(path: Path) -> tuple[Path, os.stat_result]:
+    """Resolve and guard the file that an accepted migration would replace."""
+    try:
+        target = path.resolve(strict=True)
+        identity = target.stat()
+    except OSError as cause:
+        raise ConfigError(f"cannot resolve migration target {path}: {cause}") from cause
+    if not stat.S_ISREG(identity.st_mode):
+        raise ConfigError(f"migration target is not a regular file: {target}")
+    if stat.S_IMODE(identity.st_mode) & 0o222 == 0:
+        raise ConfigError(
+            f"migration target has no write bit and was not changed: {target}; "
+            "make the intended shared file writable, then preview again"
+        )
+    if identity.st_nlink != 1:
+        raise ConfigError(
+            f"migration target has {identity.st_nlink} hard links and was not changed: {target}; "
+            "select a single-link configuration file before migrating"
+        )
+    return target, identity
+
+
+def identity_key(info: os.stat_result) -> tuple[int, ...]:
+    """Fields that must not change between the preview and the replacement."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_nlink,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def atomic_replace(path: Path, payload: bytes, *, expected_original: bytes) -> None:
     """Replace an existing configuration atomically after its candidate is fully validated.
 
     Resolved first: replacing a symlink would drop the link and leave the shared file it
     points at unmigrated."""
-    target = path.resolve()
+    target, identity = migration_target(path)
+    if target.read_bytes() != expected_original:
+        raise ConfigError(
+            f"migration target changed after preview and was not replaced: {target}; preview again"
+        )
+    if identity_key(target.stat()) != identity_key(identity):
+        raise ConfigError(
+            f"migration target identity or metadata changed and was not replaced: {target}; preview again"
+        )
     durable_publish(
         target,
         payload,
-        mode=target.stat().st_mode & 0o777,
+        mode=stat.S_IMODE(identity.st_mode),
         suffix=".migration.tmp",
         publish=os.replace,
     )
@@ -711,8 +815,8 @@ def atomic_replace(path: Path, payload: bytes) -> None:
 def is_legacy(data: Any) -> bool:
     """Whether a parsed payload declares the previous schema version.
 
-    Shared so a caller that only wants to detect a migration cannot disagree with the loader
-    that performs it. `True == 1`, so a bool must not be mistaken for a version-one file."""
+    Shared so preview, refusal, and acceptance cannot disagree about what requires migration.
+    `True == 1`, so a bool must not be mistaken for a version-one file."""
     version = data.get("schema_version") if isinstance(data, dict) else None
     return (
         isinstance(version, int)
@@ -728,28 +832,20 @@ def load_validated_with_payload(
     data = parse_json(original, path, error)
     if is_legacy(data):
         try:
-            migrated, payload = migrate_version_one(data, path)
-            atomic_replace(path, payload)
-        except (ConfigError, OSError) as cause:
+            _, preview = migration_preview(data, path)
+        except ConfigError as cause:
             raise error(
                 context_error(
                     path,
-                    f"version-one migration failed; original file was not replaced: {cause}",
+                    f"cannot inspect invalid version-one migration candidate: {cause}",
                     field="migration",
                 )
             ) from cause
-        # Loading rewrote a shared file, including from commands named for inspection. Saying so
-        # is the difference between a recoverable surprise and a silently broken sibling skill.
-        print(
-            context_error(
-                path,
-                f"migrated schema {LEGACY_SCHEMA_VERSION} to {SCHEMA_VERSION}; separately "
-                "installed sibling skills must be upgraded before they can read this file",
-                field="migration",
-            ),
-            file=sys.stderr,
+        raise error(
+            f"{preview}\nSchema-v1 configuration cannot be used by inspection or orchestration "
+            "preparation. Run the preview command, obtain explicit human approval, then run "
+            "the acceptance command."
         )
-        return migrated, payload
     return require_valid(data, path, error), original
 
 
@@ -1389,6 +1485,21 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         subparser = subparsers.add_parser(name, help=help_text)
         add_path_options(subparser, suppress_defaults=True)
+    migrate = subparsers.add_parser(
+        "migrate",
+        help="preview schema-v1 migration; replace the file only with --accept",
+    )
+    add_path_options(migrate, suppress_defaults=True)
+    migrate.add_argument(
+        "--accept",
+        action="store_true",
+        help="explicitly accept and atomically publish the displayed schema-v2 candidate",
+    )
+    migrate.add_argument(
+        "--expect-sha256",
+        metavar="DIGEST",
+        help="refuse acceptance unless the candidate still matches this previewed digest",
+    )
     return parser
 
 
@@ -1399,6 +1510,32 @@ def run(args: argparse.Namespace) -> int:
         # Validate the persisted bytes through the same public contract used later.
         load_validated(path)
         print(f"initialized: {path}")
+        return 0
+    if args.command == "migrate":
+        original = read_config_bytes(path, ConfigError)
+        parsed = parse_json(original, path, ConfigError)
+        if not is_legacy(parsed):
+            require_valid(parsed, path, ConfigError)
+            print(f"already schema {SCHEMA_VERSION}; no migration needed: {path}")
+            return 0
+        payload, preview = migration_preview(parsed, path, accepting=args.accept)
+        print(preview)
+        digest = candidate_digest(payload)
+        if not args.accept:
+            _, accept_command = migration_commands(path, digest)
+            raise ConfigError(
+                "migration preview completed without mutation; explicit acceptance is required: "
+                + accept_command
+            )
+        approved = (args.expect_sha256 or "").strip().lower()
+        if approved and approved != digest:
+            raise ConfigError(
+                f"approved candidate {approved} is not the candidate this configuration now "
+                f"produces ({digest}); the source changed after its preview and was not replaced: "
+                f"{path}; preview again"
+            )
+        atomic_replace(path, payload, expected_original=original)
+        print(f"migrated schema {LEGACY_SCHEMA_VERSION} to {SCHEMA_VERSION}: {path}")
         return 0
     data = load_validated(path)
     if args.command == "validate":

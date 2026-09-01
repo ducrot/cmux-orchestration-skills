@@ -28,25 +28,29 @@ inside the target Git repository; the default path is the repository root's
 python3 scripts/agents_config.py init
 python3 scripts/agents_config.py validate
 python3 scripts/agents_config.py show-resolved
+python3 scripts/agents_config.py migrate
+python3 scripts/agents_config.py migrate --accept
 ```
 
 Use `--config <path>` after any command to select an explicit file, including outside Git,
 or `--repo <path>` to resolve the default path from a specific target repository. `init`
 atomically creates the complete shared defaults and never changes an existing file or the
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
-not launch workers or contact Claude Code, Codex, or any provider. They are not read-only,
-though: either one migrates a schema-v1 file in place, reporting the migration on stderr.
+not launch workers or contact Claude Code, Codex, or any provider. They are read-only and stop
+on schema v1 with the exact preview and acceptance commands; run initialization does the same
+before publishing a launch wave.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
 protocol:
 
-1. If the file already exists, inspect its `schema_version` before invoking the schema-v2 CLI. For
-   schema v1, present the coordinated-upgrade warning above and ask the human to confirm that every
-   installed sibling was upgraded. On refusal or interruption, stop without running `validate` or
-   `show-resolved`, because either command would migrate the shared file. On confirmation, validate
-   it and continue; a schema-v2 file needs no bootstrap question because its owner already had an
-   opportunity to edit it.
+1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
+   Present its coordinated-upgrade warning and complete validated preview in the human's language,
+   including every resolved workflow assignment. When `claude-opus-xhigh` is unavailable, call out
+   the displayed fallback profile name, harness, model, and effort without inferring relative quality.
+   Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
+   On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
+   argument included, then validate and continue. A schema-v2 file needs no migration question.
 2. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
    `show-resolved`. Do not call `run_state.py init` yet.
 3. Present the created path and all three workflows' resolved assignments, because the file is shared.
@@ -72,10 +76,13 @@ Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`, respectively. The `
 and `sonnet` strings are intentionally moving provider aliases; deterministic selection of an
 alias does not pin the provider's underlying model version.
 
-Configuration is strict and user-owned after its create-only bootstrap. An otherwise valid schema-v1
-file is atomically migrated to schema v2 before current validation: existing profiles and assignments
-are preserved, planning roles are selected deterministically, a collision-safe Codex reviewer is added
-only when needed, and the original bytes remain untouched if the complete candidate cannot validate.
+Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 reads never migrate.
+The read-only `migrate` preview validates the complete schema-v2 candidate before displaying it;
+`migrate --accept` is the only shared-CLI path that atomically replaces the file. Existing profiles and
+assignments are preserved, planning roles are selected deterministically, a collision-safe Codex
+reviewer is added only when needed, and the original bytes remain untouched if validation or publication
+fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
+preserved and those same guards apply to its intended target.
 Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model
 strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove

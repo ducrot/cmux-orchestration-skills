@@ -87,20 +87,33 @@ repository-only Python modules. From a target Git repository, `init` atomically 
 `.scratch/orchestrator/agents.json` once, `validate` performs strict local validation, and
 `show-resolved` displays the effective profiles and assignments. An explicit `--config <path>`
 works outside Git, while `--repo <path>` anchors default discovery to that repository's Git root.
-Create-only `init` never overwrites an existing file. Every CLI recognizes an otherwise valid schema-v1
-file and atomically migrates it to schema v2 before current required-workflow validation. Migration
-preserves existing profiles and assignments, deterministically selects planning authors, requires a
-Codex reviewer (adding a collision-safe default only when necessary), validates the complete candidate
-before replacement, and leaves original bytes untouched on failure.
+Create-only `init` never overwrites an existing file. `validate`, `show-resolved`, and orchestration
+preparation are read-only: a schema-v1 file makes them stop with the exact preview and acceptance
+commands instead of migrating as a side effect. Run `agents_config.py migrate [--config <path>]` to
+display the coordinated-upgrade warning, the validated complete schema-v2 candidate, all resolved
+workflow assignments, and the candidate digest without changing the file. After explicit human
+approval, `agents_config.py migrate --accept [--config <path>]` is the only shared-CLI mutation path.
+The displayed acceptance command carries that candidate's digest as `--expect-sha256`, so a file edited
+between preview and acceptance is refused instead of migrated to a candidate nobody approved.
+
+Accepted migration preserves existing profiles and assignments, deterministically selects planning
+authors, requires a Codex reviewer (adding a collision-safe default only when necessary), validates the
+complete candidate before atomic replacement, and leaves original bytes untouched on failure. If
+`claude-opus-xhigh` is unavailable, the preview identifies that fact and shows the lexicographically
+first compatible fallback's profile name, harness, model, and effort without inferring relative quality.
+A target with no write bit or more than one hard link is refused even when its parent is writable.
+Symlink paths remain symlinks: migration resolves the intended target and applies the same write-bit and
+hard-link guards there.
 
 Configuration creation is a first-use human checkpoint, not part of run initialization. When the
 selected file is missing, the interactive orchestrator creates it with `agents_config.py init`,
 shows all three workflows' resolved assignments, and asks whether to start with them or pause for edits.
-When `cmux-planning` **initializes a run** and finds schema v1, it previews the validated schema-v2
-assignments and the compatibility warning without changing the file; only an explicit acceptance rerun
-performs migration. That checkpoint covers `planning_state.py init` alone. Every other command in every
-skill that loads the configuration — including `validate` and `show-resolved` — migrates a schema-v1
-file as a side effect of reading it, reporting the migration on stderr.
+When any workflow checkpoint finds schema v1, it presents the shared CLI's read-only preview in the
+human's language and asks for explicit confirmation. On approval it invokes the same
+`agents_config.py migrate --accept` operation, then reloads and validates the current bytes before
+starting. Refusal or interruption leaves the file and run state untouched.
+`planning_state.py --accept-config` remains only the acceptance mechanism for a newly created
+schema-v2 default; it never authorizes schema migration.
 Claude Code and Codex use their native structured-input tool when available and fall back to a
 normal chat question otherwise. A negative answer ends the turn without a run or worker snapshot;
 after the human returns, the current file is validated before work starts. Direct calls to

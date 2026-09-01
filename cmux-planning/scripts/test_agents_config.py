@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -66,6 +68,21 @@ class AgentsConfigCli(unittest.TestCase):
         path = self.tmp / name
         path.write_text(json.dumps(data), encoding="utf-8")
         return path
+
+    def legacy_default(self) -> tuple[Path, dict]:
+        """The initialized default path plus a schema-v1 copy of its configuration."""
+        path, current = self.init_default()
+        legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        return path, legacy
+
+    def assert_untouched(self, path: Path, original: bytes, before: os.stat_result) -> None:
+        """Bytes, metadata, and path identity of a refused migration target."""
+        self.assertEqual(path.read_bytes(), original)
+        after = path.stat()
+        for field in ("st_mode", "st_ino", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns"):
+            self.assertEqual(getattr(after, field), getattr(before, field), field)
 
     def test_init_from_subdirectory_writes_complete_default_at_git_root(self):
         subdir = self.repo / "some" / "nested" / "directory"
@@ -444,11 +461,8 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(persisted["schema_version"], 2)
         self.assertEqual(len(persisted["profiles"]), 6)
 
-    def test_version_one_is_migrated_atomically_with_deterministic_planning_roles(self):
-        _, current = self.init_default()
-        legacy = copy.deepcopy(current)
-        legacy["schema_version"] = 1
-        del legacy["workflows"]["planning"]
+    def test_version_one_inspection_and_preview_are_read_only(self):
+        _, legacy = self.legacy_default()
         legacy["profiles"]["aaa-author"] = {
             "harness": "claude-code",
             "executable": "claude",
@@ -457,8 +471,37 @@ class AgentsConfigCli(unittest.TestCase):
         }
         legacy["workflows"]["issue-chain"]["implement"] = "aaa-author"
         path = self.write_config(legacy, "legacy.json")
+        original = path.read_bytes()
+        before = path.stat()
 
-        proc = self.run_cli("show-resolved", "--config", str(path), cwd=self.tmp)
+        for command in ("validate", "show-resolved", "migrate"):
+            with self.subTest(command=command):
+                proc = self.run_cli(command, "--config", str(path), cwd=self.tmp)
+                self.assertNotEqual(proc.returncode, 0)
+                output = proc.stdout + proc.stderr
+                self.assertIn("Coordinated upgrade required", output)
+                self.assertIn('"schema_version": 2', output)
+                self.assertIn("agents_config.py migrate", output)
+                self.assertIn("--accept", output)
+                self.assert_untouched(path, original, before)
+
+    def test_version_one_is_migrated_only_with_acceptance(self):
+        _, legacy = self.legacy_default()
+        legacy["profiles"]["aaa-author"] = {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "custom-author",
+            "effort": "medium",
+        }
+        legacy["workflows"]["issue-chain"]["implement"] = "aaa-author"
+        path = self.write_config(legacy, "legacy-accepted.json")
+        original = path.read_bytes()
+
+        refused = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(path.read_bytes(), original)
+
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
@@ -473,15 +516,17 @@ class AgentsConfigCli(unittest.TestCase):
             },
         )
         once = path.read_bytes()
+        identity = path.stat()
         again = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(path.read_bytes(), once, "version-two reads must be idempotent")
+        accepted_again = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
+        self.assertEqual(accepted_again.returncode, 0, accepted_again.stderr)
+        self.assertEqual(path.read_bytes(), once)
+        self.assertEqual(path.stat().st_ino, identity.st_ino)
 
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
-        _, current = self.init_default()
-        legacy = copy.deepcopy(current)
-        legacy["schema_version"] = 1
-        del legacy["workflows"]["planning"]
+        _, legacy = self.legacy_default()
         legacy["profiles"].pop("claude-opus-xhigh")
         for name in list(legacy["profiles"]):
             if legacy["profiles"][name]["harness"] == "codex":
@@ -500,8 +545,16 @@ class AgentsConfigCli(unittest.TestCase):
         }
         path = self.write_config(legacy, "legacy-collision.json")
 
-        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+        preview = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
 
+        self.assertNotEqual(preview.returncode, 0)
+        output = preview.stdout + preview.stderr
+        self.assertIn("claude-opus-xhigh", output)
+        self.assertIn("unavailable", output.lower())
+        for fragment in ("claude-opus-medium", "claude-code", "opus", "medium"):
+            self.assertIn(fragment, output)
+
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(migrated["profiles"]["codex-sol-xhigh"]["model"], "collision-must-survive")
@@ -510,35 +563,111 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(migrated["workflows"]["planning"]["spec"], "claude-opus-medium")
 
     def test_invalid_version_one_migration_preserves_original_bytes(self):
-        _, current = self.init_default()
-        legacy = copy.deepcopy(current)
-        legacy["schema_version"] = 1
-        del legacy["workflows"]["planning"]
+        _, legacy = self.legacy_default()
         legacy["workflows"]["grilling"]["web"] = "codex-sol-xhigh"
         path = self.write_config(legacy, "legacy-invalid.json")
         original = path.read_bytes()
 
-        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
 
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("migration failed", proc.stderr)
+        self.assertIn("invalid version-one", proc.stderr)
         self.assertEqual(path.read_bytes(), original)
 
     def test_version_one_migration_writes_through_a_symlinked_default_path(self):
-        default_path, current = self.init_default()
-        legacy = copy.deepcopy(current)
-        legacy["schema_version"] = 1
-        del legacy["workflows"]["planning"]
+        default_path, legacy = self.legacy_default()
         shared = self.tmp / "shared-agents.json"
         shared.write_text(json.dumps(legacy), encoding="utf-8")
         default_path.unlink()
         default_path.symlink_to(shared)
 
-        proc = self.run_cli("validate")
+        proc = self.run_cli("migrate", "--accept")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(default_path.is_symlink(), "a shared configuration link must survive")
         self.assertEqual(json.loads(shared.read_text(encoding="utf-8"))["schema_version"], 2)
+
+    def test_acceptance_refuses_a_candidate_the_preview_did_not_display(self):
+        _, legacy = self.legacy_default()
+        path = self.write_config(legacy, "legacy-restaged.json")
+
+        preview = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
+        self.assertNotEqual(preview.returncode, 0)
+        output = preview.stdout + preview.stderr
+        digest = re.search(r"candidate SHA-256: ([0-9a-f]{64})", output).group(1)
+        self.assertIn(f"--expect-sha256 {digest}", output)
+
+        legacy["profiles"]["zzz-late-edit"] = {
+            "harness": "codex",
+            "executable": "codex",
+            "model": "gpt-late",
+            "effort": "medium",
+        }
+        edited = json.dumps(legacy).encode("utf-8")
+        path.write_bytes(edited)
+
+        stale = self.run_cli(
+            "migrate", "--accept", "--expect-sha256", digest, "--config", str(path), cwd=self.tmp
+        )
+
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("preview again", stale.stderr)
+        self.assertEqual(path.read_bytes(), edited)
+
+    def test_version_one_migration_refuses_read_only_target_even_with_writable_parent(self):
+        _, legacy = self.legacy_default()
+        path = self.write_config(legacy, "read-only.json")
+        path.chmod(0o444)
+        original = path.read_bytes()
+        before = path.stat()
+
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("no write bit", proc.stderr.lower())
+        self.assert_untouched(path, original, before)
+
+    def test_version_one_migration_refuses_hard_linked_target(self):
+        _, legacy = self.legacy_default()
+        path = self.write_config(legacy, "hard-linked.json")
+        sibling = self.tmp / "hard-linked-peer.json"
+        os.link(path, sibling)
+        original = path.read_bytes()
+        before = path.stat()
+
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("hard link", proc.stderr.lower())
+        self.assert_untouched(path, original, before)
+        self.assertEqual(sibling.read_bytes(), original)
+        self.assertEqual(path.stat().st_nlink, 2)
+
+    def test_symlink_migration_applies_target_filesystem_guards(self):
+        default_path, legacy = self.legacy_default()
+        shared = self.tmp / "shared-read-only.json"
+        shared.write_text(json.dumps(legacy), encoding="utf-8")
+        shared.chmod(0o444)
+        original = shared.read_bytes()
+        default_path.unlink()
+        default_path.symlink_to(shared)
+
+        proc = self.run_cli("migrate", "--accept")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("no write bit", proc.stderr.lower())
+        self.assertTrue(default_path.is_symlink())
+        self.assertEqual(shared.read_bytes(), original)
+
+        shared.chmod(0o644)
+        peer = self.tmp / "shared-hard-link.json"
+        os.link(shared, peer)
+        hard_linked = self.run_cli("migrate", "--accept")
+        self.assertNotEqual(hard_linked.returncode, 0)
+        self.assertIn("hard link", hard_linked.stderr.lower())
+        self.assertTrue(default_path.is_symlink())
+        self.assertEqual(shared.read_bytes(), original)
+        self.assertEqual(peer.read_bytes(), original)
 
     def test_planning_reviewer_must_use_codex(self):
         _, current = self.init_default()

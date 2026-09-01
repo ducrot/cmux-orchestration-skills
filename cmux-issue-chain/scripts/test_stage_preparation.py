@@ -244,20 +244,32 @@ class PreparedStageCli(unittest.TestCase):
         state = self.read_state()
         return json.loads((self.run_dir / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
 
-    def test_version_one_config_migrates_before_issue_chain_launch_preparation(self):
+    def test_version_one_config_requires_explicit_migration_before_launch_preparation(self):
         legacy = json.loads(self.config_path.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
         legacy["workflows"]["issue-chain"]["implement"] = "codex-sol-medium"
-        self.config_path.write_text(json.dumps(legacy), encoding="utf-8")
+        legacy_bytes = json.dumps(legacy).encode("utf-8")
+        self.config_path.write_bytes(legacy_bytes)
 
         proc = self.init_for("migrated-v1")
 
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        migrated = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 2)
-        self.assertEqual(migrated["workflows"]["issue-chain"]["implement"], "codex-sol-medium")
-        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-sol-xhigh")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self.config_path.read_bytes(), legacy_bytes)
+        self.assertIn("Read-only schema-v1 migration preview", proc.stderr)
+        self.assertIn("Acceptance command:", proc.stderr)
+        self.assert_no_launchable_run(self.runs_root / "migrated-v1")
+
+        accepted = subprocess.run(
+            [sys.executable, str(AGENTS_CONFIG), "migrate", "--accept", "--config", str(self.config_path)],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        prepared = self.init_for("migrated-v1")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
         state = json.loads((self.runs_root / "migrated-v1" / "state.json").read_text(encoding="utf-8"))
         snapshot = json.loads((self.runs_root / "migrated-v1" / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
         self.assertEqual(snapshot["selected_worker"]["profile"], "codex-sol-medium")

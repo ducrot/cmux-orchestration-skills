@@ -929,6 +929,16 @@ sha256 {resulting_digest or digest}
         self.assertIn("cmux-issue-chain", proc.stderr)
 
         accepted = self.cli(
+            AGENTS,
+            "migrate",
+            "--accept",
+            "--config",
+            str(self.config),
+        )
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["schema_version"], 2)
+        initialized = self.cli(
             STATE,
             "init",
             "--task",
@@ -943,13 +953,10 @@ sha256 {resulting_digest or digest}
             "WORKSPACE-1",
             "--config",
             str(self.config),
-            "--accept-config",
         )
-
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
         state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-        self.assertTrue(state["configuration_created_or_migrated_and_accepted"])
+        self.assertFalse(state["configuration_created_or_migrated_and_accepted"])
 
     def grilling_pair(self) -> tuple[Path, Path]:
         markdown = self.repo / "grilling-result.md"

@@ -41,6 +41,30 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
                 self.assertEqual(canonical, notice(guide.read_text(encoding="utf-8")))
 
+    def test_every_shipped_guide_documents_explicit_read_only_migration(self):
+        if not README.is_file():
+            self.skipTest("repository README is not present in this independent installation")
+        for guide in (README, *GUIDES):
+            with self.subTest(guide=guide.relative_to(REPOSITORY)):
+                normalized = " ".join(guide.read_text(encoding="utf-8").split()).lower()
+                for required in (
+                    "validate",
+                    "show-resolved",
+                    "read-only",
+                    "migrate --accept",
+                    "no write bit",
+                    "hard link",
+                    "symlink",
+                    "claude-opus-xhigh",
+                    "profile name",
+                    "harness",
+                    "model",
+                    "effort",
+                    "without inferring relative quality",
+                ):
+                    self.assertIn(required, normalized)
+                self.assertNotIn("migrates a schema-v1 file as a side effect", normalized)
+
 
 class PlanningOperatorDocumentation(unittest.TestCase):
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
