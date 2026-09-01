@@ -238,7 +238,14 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
     except ConfigError:
         parsed = None
     if is_legacy(parsed):
-        preview = migration_preview(parsed, path)
+        try:
+            preview = migration_preview(parsed, path)
+        except ConfigError as cause:
+            raise ConfigError(
+                f"Planning initialization stopped: schema-v1 configuration at {path} cannot "
+                f"produce a valid migration candidate: {cause}\n"
+                "No configuration bytes, planning run, or launchable state were recorded."
+            ) from cause
         raise ConfigError(
             f"{preview.render_guidance()}\nPlanning initialization stopped: configuration at {path} "
             "requires explicit shared-CLI migration. Run the preview command above, present that "

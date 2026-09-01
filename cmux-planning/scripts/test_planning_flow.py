@@ -1074,6 +1074,58 @@ sha256 {resulting_digest or digest}
         self.assertFalse(state["configuration_created_and_accepted"])
         self.assertNotIn("configuration_created_or_migrated_and_accepted", state)
 
+    def test_invalid_version_one_migration_candidate_stops_initialization_without_mutation(self):
+        legacy = json.loads(self.config.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 1
+        del legacy["workflows"]["planning"]
+        legacy["workflows"]["grilling"]["web"] = "codex-sol-xhigh"
+        legacy_bytes = (json.dumps(legacy, indent=2) + "\n").encode("utf-8")
+        self.config.write_bytes(legacy_bytes)
+        self.config.chmod(0o640)
+        before = self.config.stat()
+        run_dir = self.runs / "invalid-migration-candidate"
+
+        proc = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Task",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "invalid-migration-candidate",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+        )
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("cannot produce a valid migration candidate", proc.stderr)
+        self.assertIn("cannot migrate invalid version-one configuration", proc.stderr)
+        self.assertIn("workflow=grilling worker=web profile=codex-sol-xhigh field=harness", proc.stderr)
+        self.assertIn(
+            "No configuration bytes, planning run, or launchable state were recorded", proc.stderr
+        )
+        self.assertNotIn("Preview command:", proc.stderr)
+        self.assertNotIn("Acceptance command:", proc.stderr)
+        self.assertFalse(run_dir.exists())
+        self.assertFalse(any(self.runs.rglob("stage-snapshots/*.json")))
+        self.assertEqual(self.config.read_bytes(), legacy_bytes)
+        after = self.config.stat()
+        for field in (
+            "st_mode",
+            "st_ino",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        ):
+            self.assertEqual(getattr(after, field), getattr(before, field), field)
+
     def grilling_pair(self) -> tuple[Path, Path]:
         markdown = self.repo / "grilling-result.md"
         artifact = self.repo / "grilling-result.json"
