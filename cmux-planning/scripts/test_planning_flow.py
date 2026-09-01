@@ -894,6 +894,86 @@ sha256 {resulting_digest or digest}
         self.assertFalse(run_dir.exists())
         self.assertIn('"planning"', proc.stdout)
 
+    def test_new_run_persists_only_the_creation_and_acceptance_state(self):
+        fresh_config = self.repo / "new-config" / "agents.json"
+        run_dir = self.runs / "created-config"
+
+        initialized = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Task",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "created-config",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(fresh_config),
+            "--accept-config",
+        )
+
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertTrue(state["configuration_created_and_accepted"])
+        self.assertNotIn("configuration_created_or_migrated_and_accepted", state)
+
+    def test_legacy_only_state_remains_resumable_without_rewriting_its_bytes(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        recorded = state.pop("configuration_created_and_accepted")
+        state["configuration_created_or_migrated_and_accepted"] = recorded
+        legacy_bytes = (json.dumps(state, indent=3, sort_keys=False) + "\n").encode("utf-8")
+        state_path.write_bytes(legacy_bytes)
+
+        for command in ("status", "context", "resume"):
+            with self.subTest(command=command):
+                inspected = self.cli(STATE, command, "--run-dir", str(self.run_dir))
+                self.assertEqual(inspected.returncode, 0, inspected.stderr)
+                self.assertEqual(state_path.read_bytes(), legacy_bytes)
+
+    def test_matching_dual_configuration_state_is_compatible_and_not_rewritten(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["configuration_created_or_migrated_and_accepted"] = state[
+            "configuration_created_and_accepted"
+        ]
+        dual_bytes = (json.dumps(state, indent=4, sort_keys=False) + "\n").encode("utf-8")
+        state_path.write_bytes(dual_bytes)
+
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir))
+
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(state_path.read_bytes(), dual_bytes)
+
+    def test_conflicting_dual_configuration_state_is_refused_actionably(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["configuration_created_or_migrated_and_accepted"] = not state[
+            "configuration_created_and_accepted"
+        ]
+        conflicting_bytes = (json.dumps(state, indent=2) + "\n").encode("utf-8")
+        state_path.write_bytes(conflicting_bytes)
+
+        for command in ("status", "context", "resume"):
+            with self.subTest(command=command):
+                refused = self.cli(STATE, command, "--run-dir", str(self.run_dir))
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("conflicting planning configuration state", refused.stderr)
+                self.assertIn("configuration_created_and_accepted", refused.stderr)
+                self.assertIn("configuration_created_or_migrated_and_accepted", refused.stderr)
+                self.assertIn("make the values agree", refused.stderr)
+                self.assertEqual(state_path.read_bytes(), conflicting_bytes)
+
     def test_version_one_migration_checkpoint_warns_about_older_sibling_skills(self):
         legacy = json.loads(self.config.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
@@ -956,7 +1036,8 @@ sha256 {resulting_digest or digest}
         )
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-        self.assertFalse(state["configuration_created_or_migrated_and_accepted"])
+        self.assertFalse(state["configuration_created_and_accepted"])
+        self.assertNotIn("configuration_created_or_migrated_and_accepted", state)
 
     def grilling_pair(self) -> tuple[Path, Path]:
         markdown = self.repo / "grilling-result.md"

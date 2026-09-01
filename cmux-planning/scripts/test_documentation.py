@@ -88,6 +88,10 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "baseline-untracked",
             "contact no model provider",
             "cmux-issue-chain",
+            "`configuration_created_and_accepted`",
+            "`configuration_created_or_migrated_and_accepted`",
+            "without rewriting the run merely because it was read",
+            "conflicting values are rejected",
         ):
             self.assertIn(required, normalized_guide)
         self.assertIn("They form an optional progression, not a mandatory pipeline", readme)

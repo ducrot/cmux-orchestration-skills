@@ -15,7 +15,7 @@ from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     STAGES,
     append_event,
-    read_json,
+    read_planning_state,
     sha256_file,
     utc_now,
 )
@@ -86,7 +86,7 @@ def watch(args: argparse.Namespace) -> int:
     minutes = args.deadline_minutes if args.deadline_minutes is not None else MINIMUM_WAIT_MINUTES[args.stage]
     if minutes <= 0 or args.poll_seconds <= 0:
         raise ValueError("wait durations must be positive")
-    state = read_json(run_dir / "state.json")
+    state = read_planning_state(run_dir / "state.json")
     workspace = state.get("workspace_id")
     if args.surface and not workspace:
         raise ValueError("surface health checks require the run's pinned workspace")

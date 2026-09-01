@@ -9,7 +9,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from orchestrator_lib import STAGES, read_json, sha256_file
+from orchestrator_lib import (
+    STAGES,
+    PlanningStateCompatibilityError,
+    read_json,
+    read_planning_state,
+    sha256_file,
+)
 from stage_snapshot import SnapshotError, load_prepared_snapshot
 from tracker_contract import ContractError, validate_native_tracker, validate_proposal
 from tree_integrity import snapshot_digest
@@ -685,9 +691,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise ValueError(f"No state.json under {run_dir}")
-    state = read_json(state_path)
-    if not isinstance(state, dict):
-        raise ValueError("planning state root is not an object")
+    state = read_planning_state(state_path)
     events, errors = read_events(run_dir)
     stage = state.get("current_stage")
     pass_num = None
@@ -928,10 +932,14 @@ def unfinished_runs(runs_root: Path, repository: Path) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for state_path in runs_root.glob("*/state.json"):
         try:
-            state = read_json(state_path)
+            state = read_planning_state(state_path)
+        # PlanningStateCompatibilityError subclasses ValueError; an unreadable durable run must
+        # surface here instead of silently disappearing from the recovery listing.
+        except PlanningStateCompatibilityError:
+            raise
         except (OSError, ValueError):
             continue
-        if not isinstance(state, dict) or not isinstance(state.get("repository"), str):
+        if not isinstance(state.get("repository"), str):
             continue
         try:
             same = Path(state["repository"]).resolve() == repository

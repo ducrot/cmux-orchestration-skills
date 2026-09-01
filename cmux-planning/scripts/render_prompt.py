@@ -7,7 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from orchestrator_lib import STAGES, atomic_write, read_json, sha256_bytes, sha256_file
+from orchestrator_lib import STAGES, atomic_write, read_planning_state, sha256_bytes, sha256_file
 from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
 from tracker_contract import validate_proposal
@@ -550,7 +550,7 @@ python3 {tracker_contract_path()} review-report {paths['report']} \\
 
 def render(run_dir: Path, stage: str, pass_num: int) -> str:
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=False)
-    state = read_json(run_dir / "state.json")
+    state = read_planning_state(run_dir / "state.json")
     renderers = {
         "spec": author_prompt,
         "spec-review": review_prompt,

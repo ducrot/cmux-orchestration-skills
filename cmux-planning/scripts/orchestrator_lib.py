@@ -43,6 +43,45 @@ PROMPT_DELIVERY_TEMPLATE = (
     "Your task assignment is in {prompt_path}. It is not a document to read back or summarize. "
     "Execute it now and write your final report to the handoff path it names."
 )
+CURRENT_CONFIGURATION_CREATED_KEY = "configuration_created_and_accepted"
+LEGACY_CONFIGURATION_CREATED_KEY = "configuration_created_or_migrated_and_accepted"
+
+
+class PlanningStateCompatibilityError(ValueError):
+    """A durable planning state cannot be interpreted without guessing."""
+
+
+def configuration_created_and_accepted(state: dict[str, Any], *, source: Path) -> bool:
+    """Resolve the current or legacy field without changing the persisted representation."""
+    current_present = CURRENT_CONFIGURATION_CREATED_KEY in state
+    legacy_present = LEGACY_CONFIGURATION_CREATED_KEY in state
+    if not current_present and not legacy_present:
+        raise PlanningStateCompatibilityError(
+            f"planning state {source} has no configuration creation acceptance field; expected "
+            f"{CURRENT_CONFIGURATION_CREATED_KEY!r} (current) or "
+            f"{LEGACY_CONFIGURATION_CREATED_KEY!r} (legacy)"
+        )
+
+    for key in (CURRENT_CONFIGURATION_CREATED_KEY, LEGACY_CONFIGURATION_CREATED_KEY):
+        if key in state and not isinstance(state[key], bool):
+            raise PlanningStateCompatibilityError(
+                f"planning state {source} field {key!r} must be true or false, not "
+                f"{type(state[key]).__name__}"
+            )
+
+    if current_present and legacy_present:
+        current = state[CURRENT_CONFIGURATION_CREATED_KEY]
+        legacy = state[LEGACY_CONFIGURATION_CREATED_KEY]
+        if current != legacy:
+            raise PlanningStateCompatibilityError(
+                f"conflicting planning configuration state in {source}: "
+                f"{CURRENT_CONFIGURATION_CREATED_KEY!r} is {current!r}, but legacy "
+                f"{LEGACY_CONFIGURATION_CREATED_KEY!r} is {legacy!r}; make the values agree "
+                "before loading or resuming this run"
+            )
+        return current
+    key = CURRENT_CONFIGURATION_CREATED_KEY if current_present else LEGACY_CONFIGURATION_CREATED_KEY
+    return state[key]
 
 
 def integrity_boundary() -> dict[str, list[str]]:
@@ -63,6 +102,21 @@ def sha256_file(path: Path) -> str:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_planning_state(path: Path) -> dict[str, Any]:
+    """Read durable run state through the explicit current/legacy compatibility contract.
+
+    The returned dict is the persisted representation, so a legacy-only run has no current key.
+    Read the value through configuration_created_and_accepted(), never by indexing the dict.
+    """
+    state = read_json(path)
+    # A structurally invalid file is not a compatibility question, so callers that deliberately
+    # skip unreadable directories keep skipping it instead of aborting on the whole listing.
+    if not isinstance(state, dict):
+        raise ValueError(f"planning state root in {path} is not an object")
+    configuration_created_and_accepted(state, source=path)
+    return state
 
 
 def write_json(path: Path, data: Any) -> None:

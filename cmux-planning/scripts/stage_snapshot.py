@@ -26,7 +26,13 @@ from agents_config import (
     snapshot_identity,
     valid_executable_syntax,
 )
-from orchestrator_lib import integrity_boundary, read_json, sha256_file, utc_now, write_json
+from orchestrator_lib import (
+    integrity_boundary,
+    read_planning_state,
+    sha256_file,
+    utc_now,
+    write_json,
+)
 
 
 WORKFLOW = "planning"
@@ -204,7 +210,7 @@ def load_prepared_snapshot(
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise SnapshotError(f"No state.json under {run_dir}")
-    state = read_json(state_path)
+    state = read_planning_state(state_path)
     pointer = state.get("prepared_stage")
     if state.get("current_stage") != stage:
         raise SnapshotError(f"run current_stage is {state.get('current_stage')!r}, not {stage!r}")

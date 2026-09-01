@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import ROLE_LABELS, STAGES, append_event, delivery_text, read_json
+from orchestrator_lib import ROLE_LABELS, STAGES, append_event, delivery_text, read_planning_state
 from stage_snapshot import (
     SnapshotError,
     load_prepared_snapshot,
@@ -68,7 +68,7 @@ def pinned_workspace(state: dict) -> str:
 
 
 def workspace(run_dir: Path) -> str:
-    return pinned_workspace(read_json(run_dir / "state.json"))
+    return pinned_workspace(read_planning_state(run_dir / "state.json"))
 
 
 def cmux(args: argparse.Namespace, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -97,7 +97,7 @@ def run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     if args.command == "launch":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
-        state = read_json(run_dir / "state.json")
+        state = read_planning_state(run_dir / "state.json")
         pinned = pinned_workspace(state)
         result = cmux(
             args,
@@ -152,7 +152,7 @@ def run(args: argparse.Namespace) -> int:
         load_prepared_snapshot(run_dir, args.stage, args.pass_num)
         # The baseline pinned and digest-verified exactly one prompt file. Delivering any other
         # path hands the pane an unaudited work order that every later gate still calls verified.
-        verified = read_json(run_dir / "state.json")["tree_baseline"]["prompt_path"]
+        verified = read_planning_state(run_dir / "state.json")["tree_baseline"]["prompt_path"]
         if Path(args.prompt).resolve() != Path(verified).resolve():
             raise SnapshotError(f"--prompt is not the baseline-verified prompt: {verified}")
         send(

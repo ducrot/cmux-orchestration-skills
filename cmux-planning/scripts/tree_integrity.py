@@ -15,6 +15,7 @@ from orchestrator_lib import (
     append_event,
     integrity_boundary,
     read_json,
+    read_planning_state,
     sha256_bytes,
     sha256_file,
     utc_now,
@@ -164,7 +165,7 @@ def compare_tree(
 def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=False)
     state_path = run_dir / "state.json"
-    state = read_json(state_path)
+    state = read_planning_state(state_path)
     repository = Path(state["repository"])
     captured = capture_tree(repository)
     prompt_path = run_dir / "prompts" / f"{stage}-{pass_num}.md"
@@ -224,7 +225,7 @@ def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
 
 def verify(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=True)
-    state = read_json(run_dir / "state.json")
+    state = read_planning_state(run_dir / "state.json")
     pointer = state["tree_baseline"]
     before_path = run_dir / pointer["path"]
     before = read_json(before_path)
