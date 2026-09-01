@@ -207,7 +207,8 @@ python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
 
 The baseline makes the prepared snapshot launchable. `pane_ctl.py` always uses the pinned workspace
 and stable surface identity, starts a fresh configured process, labels the pane, and records lifecycle
-events. The armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and
+events. Every interactive Claude author starts in `auto` permission mode; the safe, tool-disabled live
+provider probe remains in `plan` mode. The armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and
 does not treat a transient health-command failure as worker failure.
 
 ## Status and context recovery

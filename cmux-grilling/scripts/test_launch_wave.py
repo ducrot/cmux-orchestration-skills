@@ -282,7 +282,10 @@ class PreparedLaunchWaveCli(unittest.TestCase):
 
         self.assertEqual(
             wave["resolved_profiles"]["codebase"]["argv"],
-            ["claude", "--model", "opus", "--effort", "xhigh"],
+            [
+                "claude", "--model", "opus", "--effort", "xhigh",
+                "--permission-mode", "auto",
+            ],
         )
         codebase2 = wave["resolved_profiles"]["codebase2"]["argv"]
         docs = wave["resolved_profiles"]["docs"]["argv"]
@@ -503,11 +506,17 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         )
         self.assertEqual(
             wave["resolved_profiles"]["codebase2"]["argv"],
-            ["claude", "--model", "opus", "--effort", "max"],
+            [
+                "claude", "--model", "opus", "--effort", "max",
+                "--permission-mode", "auto",
+            ],
         )
         self.assertEqual(
             wave["resolved_profiles"]["docs"]["argv"],
-            ["claude", "--model", "sonnet", "--effort", "medium"],
+            [
+                "claude", "--model", "sonnet", "--effort", "medium",
+                "--permission-mode", "auto",
+            ],
         )
         self.assertEqual(
             wave["effective_overrides"]["codebase"]["model"],

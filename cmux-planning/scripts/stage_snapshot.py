@@ -82,10 +82,7 @@ def approved_spec_from_state(
 
 
 def stage_argv(role: str, profile: dict[str, Any]) -> list[str]:
-    argv = adapter_argv(profile, codex_arguments=CODEX_SAFETY_ARGUMENTS)
-    if profile["harness"] == "claude-code":
-        argv.extend(["--permission-mode", "acceptEdits"])
-    return argv
+    return adapter_argv(profile, codex_arguments=CODEX_SAFETY_ARGUMENTS)
 
 
 def handoff_paths(run_dir: Path, stage: str, pass_num: int) -> dict[str, str]:

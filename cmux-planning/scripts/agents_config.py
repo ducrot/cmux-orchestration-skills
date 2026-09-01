@@ -915,7 +915,7 @@ PREFLIGHT_RULES = {
         "probe_tokens": ("--ephemeral", "--skip-git-repo-check", "--sandbox", "--model", "--config"),
     },
     "claude-code": {
-        "help_tokens": ("--model", "--effort", "auth"),
+        "help_tokens": ("--model", "--effort", "--permission-mode", "auth"),
         "auth_help": ("auth", "--help"),
         "auth_tokens": ("status",),
         "auth_status": ("auth", "status"),
@@ -1055,7 +1055,15 @@ def adapter_argv(profile: dict[str, Any], *, codex_arguments: list[str]) -> list
     # resolved_executable as audit data.
     executable = profile["requested_executable"]
     if profile["harness"] == "claude-code":
-        return [executable, "--model", profile["model"], "--effort", profile["effort"]]
+        return [
+            executable,
+            "--model",
+            profile["model"],
+            "--effort",
+            profile["effort"],
+            "--permission-mode",
+            "auto",
+        ]
     if profile["harness"] == "codex":
         return [
             executable,

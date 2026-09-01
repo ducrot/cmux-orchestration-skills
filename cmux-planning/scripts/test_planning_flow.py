@@ -345,6 +345,16 @@ sha256 {resulting_digest or digest}
         self.assertEqual((self.run_dir / "task.md").read_text(), "Bitte sichere Planung erstellen.")
         self.assertIsNotNone(state["prepared_stage"])
         self.assertIsNone(state["tree_baseline"])
+        author_snapshot = json.loads(
+            (self.run_dir / state["prepared_stage"]["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            author_snapshot["selected_worker"]["argv"],
+            [
+                "claude", "--model", "opus", "--effort", "xhigh",
+                "--permission-mode", "auto",
+            ],
+        )
 
         self.render_and_baseline("spec")
         draft = self.write_author_handoff()

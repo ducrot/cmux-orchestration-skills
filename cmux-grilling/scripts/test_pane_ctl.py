@@ -243,7 +243,8 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             self.cmux_calls()[0][-1],
-            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model sonnet --effort medium",
+            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model sonnet --effort medium "
+            "--permission-mode auto",
         )
 
 

@@ -317,7 +317,8 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(
             self.cmux_calls()[0][-1],
-            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model opus --effort xhigh",
+            "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model opus --effort xhigh "
+            "--permission-mode auto",
         )
 
     def test_argument_vector_is_shell_quoted_without_losing_boundaries(self):

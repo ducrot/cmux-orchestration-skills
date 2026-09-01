@@ -538,7 +538,8 @@ missing, failed, mismatched, or tampered lane blocks every pane. The default wav
 
 ```bash
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model opus --effort xhigh                              # codebase
+  --model opus --effort xhigh \
+  --permission-mode auto                                   # codebase
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
@@ -553,7 +554,8 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --model gpt-5.6-luna \
   -c model_reasoning_effort=medium                         # docs
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model sonnet --effort medium                           # web
+  --model sonnet --effort medium \
+  --permission-mode auto                                   # web
 ```
 
 `CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux
@@ -568,6 +570,8 @@ Use plain `claude` / `codex`, not `cmux claude-teams` / `cmux codex-teams`. The 
 wrappers open lane-spawned subagents as extra cmux panes, and those splits anchor to the
 focused workspace instead of the lane's workspace — while the human works in another
 workspace, subagent panes land there. Plain launches keep subagents internal to the lane's
+Claude Code process. Every interactive Claude lane starts in `auto` permission mode; the safe,
+tool-disabled live provider probe remains in `plan` mode.
 own TUI; the lane pane stays the visible unit, and cmux pane integration (hooks,
 notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
 

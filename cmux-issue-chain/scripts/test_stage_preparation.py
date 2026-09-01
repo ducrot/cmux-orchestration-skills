@@ -642,7 +642,11 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(test_worker["model"], "test/model")
         self.assertEqual(
             test_worker["argv"],
-            [str(self.bin_dir / "claude"), "--model", "test/model", "--effort", "max"],
+            [
+                str(self.bin_dir / "claude"),
+                "--model", "test/model", "--effort", "max",
+                "--permission-mode", "auto",
+            ],
         )
 
         duplicate = self.init_for(

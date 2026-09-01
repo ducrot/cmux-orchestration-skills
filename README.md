@@ -132,6 +132,10 @@ intentionally moving aliases; syntax-validating any local model string does not 
 authenticated provider account is entitled to use it. Pi and Hermes are explicitly unsupported;
 their registry entries mark the code-owned adapter boundary for future support.
 
+Every interactive Claude worker is launched with `--permission-mode auto`, including roles switched
+to Claude through typed overrides. The tool-disabled live provider probe remains isolated in `plan`
+mode and the version, help, and authentication preflight calls remain non-interactive diagnostics.
+
 All workflows accept repeatable typed `--profile`, `--harness`, `--model`, `--effort`, and
 `--executable` overrides. Precedence is file assignment, then profile override, then direct field
 overrides. Issue-chain reloads and fully revalidates the pinned source for each fresh stage;

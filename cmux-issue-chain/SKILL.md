@@ -436,7 +436,8 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --model gpt-5.6-sol \
   -c model_reasoning_effort=xhigh                # implement, test
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model opus --effort xhigh                   # simplify, review
+  --model opus --effort xhigh \
+  --permission-mode auto                        # simplify, review
 ```
 
 `CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux keys its notification
@@ -450,7 +451,8 @@ The defaults use plain `codex` for implement and test workers and plain `claude`
 workers. Typed preparation overrides may select Claude Code or Codex for every role. Simplify and review default
 to Claude Code because its bundled `/simplify` and `/code-review medium --fix` fan out internal review agents; on
 Codex the same duties are rendered inline as a single-agent pass, which is a deliberate, weaker substitute the
-operator opts into per run or per tracker config. `render_prompt.py` reads the harness from the prepared stage
+operator opts into per run or per tracker config. Every interactive Claude worker starts in `auto` permission mode;
+the safe tool-disabled live provider probe remains in `plan` mode. `render_prompt.py` reads the harness from the prepared stage
 snapshot, so the prompt variant and the launch command cannot disagree. Never use `cmux codex-teams` / `cmux claude-teams`. The teams wrappers open
 worker-spawned subagents as extra cmux panes, and those splits anchor to the focused workspace instead of the worker's workspace: while the human works in another
 workspace, subagent panes land there. Plain launches keep subagents internal to the worker's own TUI; neither the
