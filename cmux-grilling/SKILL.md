@@ -83,6 +83,10 @@ assignments are preserved, planning roles are selected deterministically, a coll
 reviewer is added only when needed, and the original bytes remain untouched if validation or publication
 fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
 preserved and those same guards apply to its intended target.
+The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
+guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
+For a schema-v1 refusal, planning initialization leaves stdout empty and writes one complete actionable
+guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
 Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model
 strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove

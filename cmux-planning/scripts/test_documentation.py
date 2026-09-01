@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -12,6 +13,18 @@ NOTICE_MARKER = "> **Coordinated upgrade required:**"
 # Discovered, so a fourth skill cannot ship without the notice while this test still passes.
 GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
 PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
+# The three skills bound by the shared migration contract. Outside the repository the glob above
+# also matches unrelated cmux-* skills sharing the installation directory.
+SIBLINGS = tuple(
+    guide
+    for name in ("cmux-planning", "cmux-grilling", "cmux-issue-chain")
+    if (guide := REPOSITORY / name / "SKILL.md").is_file()
+)
+
+
+@lru_cache(maxsize=None)
+def normalized(guide: Path) -> str:
+    return " ".join(guide.read_text(encoding="utf-8").split()).lower()
 
 
 def notice(text: str) -> str:
@@ -46,7 +59,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             self.skipTest("repository README is not present in this independent installation")
         for guide in (README, *GUIDES):
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
-                normalized = " ".join(guide.read_text(encoding="utf-8").split()).lower()
+                text = normalized(guide)
                 for required in (
                     "validate",
                     "show-resolved",
@@ -62,20 +75,27 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                     "effort",
                     "without inferring relative quality",
                 ):
-                    self.assertIn(required, normalized)
-                self.assertNotIn("migrates a schema-v1 file as a side effect", normalized)
+                    self.assertIn(required, text)
+                self.assertNotIn("migrates a schema-v1 file as a side effect", text)
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
     def test_migration_guidance_output_stream_contract_is_documented(self):
-        if not README.is_file():
-            self.skipTest("repository README is not present in this independent installation")
-        for guide in (README, PLANNING):
+        # Named siblings rather than the glob, so an independent installation alongside unrelated
+        # cmux-* skills still checks every guide that ships this contract.
+        for guide in ((README, *SIBLINGS) if README.is_file() else SIBLINGS):
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
-                normalized = " ".join(guide.read_text(encoding="utf-8").split()).lower()
-                self.assertIn("complete migration guidance once on stdout", normalized)
-                self.assertIn("planning initialization leaves stdout empty", normalized)
-                self.assertIn("one complete actionable guidance block on stderr", normalized)
+                text = normalized(guide)
+                self.assertIn("complete migration guidance once on stdout", text)
+                self.assertRegex(
+                    text, r"stderr contains only (?:its short|the short read-only) refusal"
+                )
+                self.assertRegex(text, r"(?:never repeats|does not repeat) either command")
+                self.assertIn("planning initialization leaves stdout empty", text)
+                self.assertIn("one complete actionable guidance block on stderr", text)
+                self.assertIn(
+                    "candidate digest and exact preview and acceptance commands once each", text
+                )
 
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
         if not README.is_file():
