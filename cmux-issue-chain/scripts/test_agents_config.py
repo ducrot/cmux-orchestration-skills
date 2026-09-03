@@ -116,6 +116,18 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "sonnet",
                     "effort": "medium",
                 },
+                "claude-fable-medium": {
+                    "harness": "claude-code",
+                    "executable": "claude",
+                    "model": "fable",
+                    "effort": "medium",
+                },
+                "claude-fable-high": {
+                    "harness": "claude-code",
+                    "executable": "claude",
+                    "model": "fable",
+                    "effort": "high",
+                },
                 "codex-sol-medium": {
                     "harness": "codex",
                     "executable": "codex",
@@ -152,8 +164,8 @@ class AgentsConfigCli(unittest.TestCase):
                     "web": "claude-sonnet-medium",
                 },
                 "planning": {
-                    "spec": "claude-opus-xhigh",
-                    "tickets": "claude-opus-xhigh",
+                    "spec": "claude-fable-high",
+                    "tickets": "claude-fable-high",
                     "reviewer": "codex-sol-xhigh",
                 },
             },
@@ -460,7 +472,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(persisted["schema_version"], 2)
-        self.assertEqual(len(persisted["profiles"]), 6)
+        self.assertEqual(len(persisted["profiles"]), 8)
 
     def test_version_one_inspection_and_preview_are_read_only(self):
         _, legacy = self.legacy_default()
@@ -550,8 +562,8 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(
             migrated["workflows"]["planning"],
             {
-                "spec": "claude-opus-xhigh",
-                "tickets": "claude-opus-xhigh",
+                "spec": "claude-fable-high",
+                "tickets": "claude-fable-high",
                 "reviewer": "codex-sol-xhigh",
             },
         )
@@ -603,6 +615,8 @@ class AgentsConfigCli(unittest.TestCase):
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
         _, legacy = self.legacy_default()
         legacy["profiles"].pop("claude-opus-xhigh")
+        legacy["profiles"].pop("claude-fable-medium")
+        legacy["profiles"].pop("claude-fable-high")
         for name in list(legacy["profiles"]):
             if legacy["profiles"][name]["harness"] == "codex":
                 legacy["profiles"].pop(name)
@@ -624,7 +638,7 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertNotEqual(preview.returncode, 0)
         output = preview.stdout + preview.stderr
-        self.assertIn("claude-opus-xhigh", output)
+        self.assertIn("claude-fable-high", output)
         self.assertIn("unavailable", output.lower())
         for fragment in ("claude-opus-medium", "claude-code", "opus", "medium"):
             self.assertIn(fragment, output)

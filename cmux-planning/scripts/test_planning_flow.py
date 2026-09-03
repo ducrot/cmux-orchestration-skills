@@ -351,7 +351,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(
             author_snapshot["selected_worker"]["argv"],
             [
-                "claude", "--model", "opus", "--effort", "xhigh",
+                "claude", "--model", "fable", "--effort", "high",
                 "--permission-mode", "auto",
             ],
         )

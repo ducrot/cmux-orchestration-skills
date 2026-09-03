@@ -110,6 +110,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "sonnet",
             "effort": "medium",
         },
+        "claude-fable-medium": {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "fable",
+            "effort": "medium",
+        },
+        "claude-fable-high": {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "fable",
+            "effort": "high",
+        },
         "codex-sol-medium": {
             "harness": "codex",
             "executable": "codex",
@@ -143,8 +155,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "web": "claude-sonnet-medium",
         },
         "planning": {
-            "spec": "claude-opus-xhigh",
-            "tickets": "claude-opus-xhigh",
+            "spec": "claude-fable-high",
+            "tickets": "claude-fable-high",
             "reviewer": "codex-sol-xhigh",
         },
     },
