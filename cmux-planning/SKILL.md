@@ -211,6 +211,19 @@ events. Every interactive Claude author starts in `auto` permission mode; the sa
 provider probe remains in `plan` mode. The armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and
 does not treat a transient health-command failure as worker failure.
 
+After `accept-author` or `accept-review` records its gate decision for the captured report, close
+that worker's pane:
+
+```bash
+python3 scripts/pane_ctl.py close --run-dir <run-dir> --stage <stage> --pass <n> \
+  --surface <surface-id>
+```
+
+`close` closes the surface and records `pane.closed`. Never close a pane whose report is still
+pending. Keep at most the orchestrator pane and the current active worker pane open; at an approval
+boundary, HITL stop, revision, or completion, close every completed worker pane whose report and
+gate decision are already recorded.
+
 ## Status and context recovery
 
 Status is read-only and derives progress from `state.json`, digest-bound files, structured lifecycle

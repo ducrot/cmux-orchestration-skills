@@ -37,7 +37,6 @@ from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     STAGES,
     append_event,
-    append_jsonl,
     atomic_write,
     checkout_identity,
     integrity_boundary,
@@ -1071,25 +1070,29 @@ def approval(args: argparse.Namespace) -> int:
         validated = validate_spec(candidate, require_closed_decisions=True)
         if validated["sha256"] != reviewed["candidate_sha256"]:
             raise ContractError("reviewed candidate changed after review")
-        event = {
-            "time": utc_now(),
-            "type": "spec.approved",
-            "reason": args.reason,
-            "path": str(candidate),
-            "sha256": validated["sha256"],
-            "verdict": reviewed["verdict"],
-        }
+        now = utc_now()
         state["approved_spec"] = {
             "path": str(candidate),
             "sha256": validated["sha256"],
-            "approved_at": event["time"],
+            "approved_at": now,
         }
         state["current_stage"] = "tickets"
         state["prepared_stage"] = None
         state["tree_baseline"] = None
-        state["updated_at"] = event["time"]
+        state["updated_at"] = now
         write_json(state_path, state)
-        append_jsonl(run_dir / "events.jsonl", event)
+        append_event(
+            run_dir,
+            "spec.approved",
+            "human explicitly approved the reviewed specification",
+            {
+                "reason": args.reason,
+                "path": str(candidate),
+                "sha256": validated["sha256"],
+                "verdict": reviewed["verdict"],
+            },
+            time=now,
+        )
         pointer = prepare_stage(args, run_dir, "tickets", state["tickets_pass"])
         print(json.dumps({"approved_spec": state["approved_spec"], "prepared": pointer}, sort_keys=True))
         return 0

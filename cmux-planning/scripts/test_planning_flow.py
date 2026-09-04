@@ -196,6 +196,15 @@ PASS
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "tickets")
         self.assertEqual(state["prepared_stage"]["stage"], "tickets")
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        approvals = [entry for entry in events if entry.get("type") == "spec.approved"]
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(set(approvals[0]), {"time", "type", "message", "data"})
+        self.assertEqual(approvals[0]["data"]["sha256"], state["approved_spec"]["sha256"])
+        self.assertEqual(approvals[0]["data"]["reason"], "Approved after independent review")
         return draft
 
     def write_tickets_handoff(self, pass_num: int = 1, *, data: dict | None = None) -> dict:
@@ -755,6 +764,31 @@ sha256 {resulting_digest or digest}
         result = json.loads(launched.stdout)
         self.assertEqual(result["surface_id"], "SURF-1")
         self.assertIn("Spec Author 1", result["label"])
+
+    def test_close_closes_surface_and_records_enveloped_pane_closed_event(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        closed = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "close",
+            "--run-dir", str(self.run_dir),
+            "--stage", "spec", "--pass", "1", "--surface", "SURF-1",
+        )
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+        calls = [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            calls[-1],
+            ["close-surface", "--workspace", "WORKSPACE-1", "--surface", "SURF-1"],
+        )
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(events[-1]["type"], "pane.closed")
+        self.assertEqual(set(events[-1]), {"time", "type", "message", "data"})
+        self.assertEqual(
+            events[-1]["data"], {"stage": "spec", "pass": 1, "surface_id": "SURF-1"}
+        )
 
     def test_armed_watcher_reports_pane_death_and_existing_handoff(self):
         self.assertEqual(self.init_direct().returncode, 0)
