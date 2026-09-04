@@ -138,6 +138,102 @@ def append_event(
     )
 
 
+def read_event_stream(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """Read the durable event stream, collecting per-line problems instead of raising."""
+    path = run_dir / "events.jsonl"
+    errors: list[str] = []
+    events: list[dict[str, Any]] = []
+    if not path.is_file():
+        return events, ["events.jsonl is missing"]
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        # A blank separator line is not corruption, and rejecting it would strand every
+        # lifecycle command, close included, on an otherwise readable stream.
+        if not raw.strip():
+            continue
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            errors.append(f"events.jsonl line {number} is malformed")
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"events.jsonl line {number} is not an object")
+            continue
+        events.append(entry)
+    return events, errors
+
+
+def planning_events(run_dir: Path) -> list[dict[str, Any]]:
+    """Read the durable event stream strictly for lifecycle-changing commands."""
+    events, errors = read_event_stream(run_dir)
+    if errors:
+        raise ValueError(f"planning event stream in {run_dir} is unusable: {errors[0]}")
+    return events
+
+
+def matching_event(entry: dict[str, Any], stage: str, pass_num: int) -> bool:
+    data = entry.get("data")
+    return (
+        isinstance(data, dict)
+        and data.get("stage") == stage
+        and data.get("pass") == pass_num
+    )
+
+
+def matching_stage_pass_event(
+    entry: dict[str, Any], event_type: str, stage: str, pass_num: int
+) -> bool:
+    return entry.get("type") == event_type and matching_event(entry, stage, pass_num)
+
+
+def surface_event_recorded(
+    events: list[dict[str, Any]], event_type: str, stage: str, pass_num: int, surface: str
+) -> bool:
+    """Report whether one stage pass already recorded ``event_type`` under this identity."""
+    return any(
+        matching_stage_pass_event(entry, event_type, stage, pass_num)
+        and entry.get("data", {}).get("surface_id") == surface
+        for entry in events
+    )
+
+
+def validate_recorded_surface(
+    events: list[dict[str, Any]], stage: str, pass_num: int, supplied_surface: str,
+    *, any_launch: bool = False,
+) -> str:
+    """Reject identities other than a UUID persisted by ``pane.launched`` for this stage pass.
+
+    Work verbs take only the latest launch. ``any_launch`` is the accepted close-only recovery
+    exception: a pane orphaned by a later failed or retried launch stays closable, while
+    positional refs and unrecorded UUIDs remain invalid for every verb.
+    """
+    recorded = [
+        entry["data"]["surface_id"]
+        for entry in events
+        if matching_stage_pass_event(entry, "pane.launched", stage, pass_num)
+        and isinstance(entry.get("data", {}).get("surface_id"), str)
+        and entry["data"]["surface_id"]
+    ]
+    launched = any(
+        matching_stage_pass_event(entry, "pane.launched", stage, pass_num) for entry in events
+    )
+    if not launched:
+        raise ValueError(
+            f"no recorded pane launch identity for {stage} pass {pass_num}; run pane_ctl.py launch first"
+        )
+    if not recorded:
+        raise ValueError(
+            f"recorded pane launch for {stage} pass {pass_num} has no stable surface_id"
+        )
+    accepted = recorded if any_launch else recorded[-1:]
+    if supplied_surface not in accepted:
+        listed = ", ".join(repr(value) for value in accepted)
+        raise ValueError(
+            f"--surface {supplied_surface!r} does not match recorded stable surface_id "
+            f"{listed} for {stage} pass {pass_num}; use --surface {accepted[-1]!r}"
+        )
+    return supplied_surface
+
+
 def atomic_write(path: Path, payload: bytes) -> None:
     """Publish one complete file in place; readers see old bytes or new bytes, never a prefix."""
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,9 +12,13 @@ from typing import Any
 from orchestrator_lib import (
     STAGES,
     PlanningStateCompatibilityError,
+    matching_event,
+    matching_stage_pass_event,
+    read_event_stream,
     read_json,
     read_planning_state,
     sha256_file,
+    surface_event_recorded,
 )
 from stage_snapshot import SnapshotError, load_prepared_snapshot
 from tracker_contract import ContractError, validate_native_tracker, validate_proposal
@@ -74,34 +78,6 @@ def report_for(run_dir: Path, stage: str, pass_num: int) -> Path:
     return run_dir / "reports" / f"{stage}-{pass_num}.md"
 
 
-def read_events(run_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    path = run_dir / "events.jsonl"
-    errors: list[str] = []
-    events: list[dict[str, Any]] = []
-    if not path.is_file():
-        return events, ["events.jsonl is missing"]
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            errors.append(f"events.jsonl line {number} is malformed")
-            continue
-        if not isinstance(event, dict):
-            errors.append(f"events.jsonl line {number} is not an object")
-            continue
-        events.append(event)
-    return events, errors
-
-
-def matching_event(event: dict[str, Any], stage: str, pass_num: int) -> bool:
-    data = event.get("data")
-    return (
-        isinstance(data, dict)
-        and data.get("stage") == stage
-        and data.get("pass") == pass_num
-    )
-
-
 def surface_health(cmux_cmd: str, workspace: str | None, surface: str) -> str:
     if not isinstance(workspace, str) or not workspace:
         return "last-known"
@@ -141,7 +117,7 @@ def pane_status(
     launches = [
         event
         for event in events
-        if event.get("type") == "pane.launched" and matching_event(event, stage, pass_num)
+        if matching_stage_pass_event(event, "pane.launched", stage, pass_num)
     ]
     current = [
         event
@@ -167,23 +143,15 @@ def pane_status(
         return payload
 
     data = launch["data"]
-    surface = data.get("surface_id") or data.get("surface_ref")
+    # Only the stable UUID; every pane command rejects a positional ref, so recommending one
+    # would hand the operator a command that cannot run.
+    surface = data.get("surface_id")
     later = events[events.index(launch) + 1 :]
     relevant = [event for event in later if matching_event(event, stage, pass_num)]
-    agent_launch_sent = any(
-        event.get("type") == "worker.launch_sent"
-        and event.get("data", {}).get("surface_id") == surface
-        for event in relevant
-    )
-    prompt_sent = any(
-        event.get("type") == "worker.prompt_sent"
-        and event.get("data", {}).get("surface_id") == surface
-        for event in relevant
-    )
-    assignment_start_confirmed = any(
-        event.get("type") == "worker.started"
-        and event.get("data", {}).get("surface_id") == surface
-        for event in relevant
+    agent_launch_sent = surface_event_recorded(relevant, "worker.launch_sent", stage, pass_num, surface)
+    prompt_sent = surface_event_recorded(relevant, "worker.prompt_sent", stage, pass_num, surface)
+    assignment_start_confirmed = surface_event_recorded(
+        relevant, "worker.started", stage, pass_num, surface
     )
     waits = [
         event
@@ -198,7 +166,13 @@ def pane_status(
     elif wait_outcome == "deadline":
         health = "watcher-expired" if extension else "deadline"
     else:
-        health = surface_health(cmux_cmd, state.get("workspace_id"), str(surface))
+        # An event stream without the stable UUID cannot be health-checked; "None" would be
+        # probed as a surface name and always come back dead.
+        health = (
+            surface_health(cmux_cmd, state.get("workspace_id"), surface)
+            if isinstance(surface, str) and surface
+            else "last-known"
+        )
     return {
         "status": health,
         "surface_id": surface,
@@ -692,7 +666,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
     if not state_path.is_file():
         raise ValueError(f"No state.json under {run_dir}")
     state = read_planning_state(state_path)
-    events, errors = read_events(run_dir)
+    events, errors = read_event_stream(run_dir)
     stage = state.get("current_stage")
     pass_num = None
     if stage in STAGES:
@@ -796,8 +770,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
     captured_reports = [
         event.get("data")
         for event in events
-        if event.get("type") == "worker.waiting"
-        and matching_event(event, stage, pass_num)
+        if matching_stage_pass_event(event, "worker.waiting", stage, pass_num)
         and isinstance(event.get("data"), dict)
         and event["data"].get("outcome") == "report"
     ] if stage in STAGES and pass_num is not None else []

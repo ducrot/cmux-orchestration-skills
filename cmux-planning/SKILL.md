@@ -196,31 +196,41 @@ python3 scripts/tree_integrity.py baseline --run-dir <run-dir> --stage <stage> -
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n> \
   --anchor <caller-surface>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <new-surface>
+  --surface <launch-surface-id>
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <new-surface> --prompt <rendered-prompt>
+  --surface <launch-surface-id> --prompt <rendered-prompt>
 python3 scripts/pane_ctl.py mark-started --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <new-surface>
+  --surface <launch-surface-id>
 python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <new-surface>
+  --surface <launch-surface-id>
 ```
 
-The baseline makes the prepared snapshot launchable. `pane_ctl.py` always uses the pinned workspace
-and stable surface identity, starts a fresh configured process, labels the pane, and records lifecycle
-events. Every interactive Claude author starts in `auto` permission mode; the safe, tool-disabled live
-provider probe remains in `plan` mode. The armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and
-does not treat a transient health-command failure as worker failure.
+The baseline makes the prepared snapshot launchable. `pane_ctl.py launch` prints JSON whose
+`surface_id` is the new pane's stable UUID; copy that exact value into every later pane command for
+the stage pass, including the watcher and `close`. The auxiliary `surface_ref` is only a human-readable
+launch-time position such as `surface:107`; positional refs shift when panes close and must never be
+used as a planning worker's post-launch identity. `start-agent`, `deliver`, `mark-started`, and the
+watcher validate their supplied identity against the latest recorded launch UUID before calling CMUX,
+and a mismatch stops with the recorded UUID in the error. `close` is the one recovery exception: it
+accepts any stable UUID this stage pass recorded, so a pane orphaned by a failed or retried launch
+stays closable; an unknown UUID or a positional ref still fails before any CMUX call.
+`pane_ctl.py` always uses the pinned workspace, starts a fresh configured process,
+labels the pane, and records lifecycle events under that UUID. Every interactive Claude author starts
+in `auto` permission mode; the safe, tool-disabled live provider probe remains in `plan` mode. The
+armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and does not
+treat a transient health-command failure as worker failure.
 
 After `accept-author` or `accept-review` records its gate decision for the captured report, close
 that worker's pane:
 
 ```bash
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <surface-id>
+  --surface <launch-surface-id>
 ```
 
-`close` closes the surface and records `pane.closed`. Never close a pane whose report is still
-pending. Keep at most the orchestrator pane and the current active worker pane open; at an approval
+`close` closes the surface and records `pane.closed`. A repeated `mark-started` for an already
+confirmed stage pass writes no second event and reports `"already_recorded": true`, so the recovery
+sequence is safe to re-run. Never close a pane whose report is still pending. Keep at most the orchestrator pane and the current active worker pane open; at an approval
 boundary, HITL stop, revision, or completion, close every completed worker pane whose report and
 gate decision are already recorded.
 

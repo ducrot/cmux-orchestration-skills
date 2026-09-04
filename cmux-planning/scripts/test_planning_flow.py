@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import orchestrator_lib  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
 from test_spec_contract import review_report, spec  # noqa: E402
 from test_tracker_contract import proposal as tracker_proposal  # noqa: E402
@@ -55,7 +56,10 @@ import json, os, sys
 with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
 if "new-split" in sys.argv:
-    print(json.dumps({"surface_id": "SURF-1", "surface_ref": "surface:1", "pane_id": "PANE-1"}))
+    created = {"surface_ref": "surface:1", "pane_id": "PANE-1"}
+    if not os.environ.get("FAKE_CMUX_POSITIONAL_ONLY"):
+        created["surface_id"] = os.environ.get("FAKE_CMUX_SURFACE", "SURF-1")
+    print(json.dumps(created))
 elif "surface-health" in sys.argv:
     surfaces = [] if os.environ.get("FAKE_CMUX_DEAD") else [{"id": "SURF-1", "ref": "surface:1", "type": "terminal"}]
     print(json.dumps({"surfaces": surfaces}))
@@ -763,7 +767,75 @@ sha256 {resulting_digest or digest}
         self.assertEqual(launched.returncode, 0, launched.stderr)
         result = json.loads(launched.stdout)
         self.assertEqual(result["surface_id"], "SURF-1")
+        self.assertEqual(result["surface_ref"], "surface:1")
         self.assertIn("Spec Author 1", result["label"])
+
+    def test_launch_refuses_to_record_a_positional_ref_as_the_stable_identity(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        env = self.env()
+        env["FAKE_CMUX_POSITIONAL_ONLY"] = "1"
+        launched = self.cli(
+            PANE,
+            "--cmux-cmd", str(self.cmux),
+            "launch",
+            "--run-dir", str(self.run_dir),
+            "--stage", "spec",
+            "--pass", "1",
+            "--anchor", "CALLER",
+            env=env,
+        )
+        self.assertNotEqual(launched.returncode, 0)
+        self.assertIn("stable surface identity", launched.stderr)
+        calls = [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(calls), 1)
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertNotIn("pane.launched", [event["type"] for event in events])
+
+    def test_pane_commands_reject_positional_surface_before_any_cmux_call(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        launched = self.cli(
+            PANE,
+            "--cmux-cmd", str(self.cmux),
+            "launch",
+            "--run-dir", str(self.run_dir),
+            "--stage", "spec",
+            "--pass", "1",
+            "--anchor", "CALLER",
+        )
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        cmux_before = self.cmux_log.read_text(encoding="utf-8")
+        events_before = (self.run_dir / "events.jsonl").read_text(encoding="utf-8")
+        prompt = str(self.run_dir / "prompts" / "spec-1.md")
+        commands = (
+            ("start-agent", "--settle-seconds", "0"),
+            ("deliver", "--prompt", prompt, "--settle-seconds", "0"),
+            ("mark-started",),
+            ("close",),
+        )
+        for command in commands:
+            with self.subTest(command=command[0]):
+                result = self.cli(
+                    PANE,
+                    "--cmux-cmd", str(self.cmux),
+                    command[0],
+                    "--run-dir", str(self.run_dir),
+                    "--stage", "spec",
+                    "--pass", "1",
+                    "--surface", "surface:1",
+                    *command[1:],
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SURF-1", result.stderr)
+                self.assertEqual(self.cmux_log.read_text(encoding="utf-8"), cmux_before)
+                self.assertEqual(
+                    (self.run_dir / "events.jsonl").read_text(encoding="utf-8"),
+                    events_before,
+                )
 
     def test_close_closes_surface_and_records_enveloped_pane_closed_event(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -790,25 +862,109 @@ sha256 {resulting_digest or digest}
             events[-1]["data"], {"stage": "spec", "pass": 1, "surface_id": "SURF-1"}
         )
 
+    def test_close_reaches_a_pane_orphaned_by_a_retried_launch(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        retried_env = self.env()
+        retried_env["FAKE_CMUX_SURFACE"] = "SURF-2"
+        relaunched = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "launch",
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--anchor", "CALLER", env=retried_env,
+        )
+        self.assertEqual(relaunched.returncode, 0, relaunched.stderr)
+        # Work verbs stay bound to the newest launch, and name it in the error.
+        stale_work = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "start-agent",
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--surface", "SURF-1", "--settle-seconds", "0",
+        )
+        self.assertNotEqual(stale_work.returncode, 0)
+        self.assertIn("SURF-2", stale_work.stderr)
+        cmux_before = self.cmux_log.read_text(encoding="utf-8")
+        unknown = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "close",
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--surface", "SURF-9",
+        )
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn("SURF-1", unknown.stderr)
+        self.assertIn("SURF-2", unknown.stderr)
+        self.assertEqual(self.cmux_log.read_text(encoding="utf-8"), cmux_before)
+        orphan = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "close",
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--surface", "SURF-1",
+        )
+        self.assertEqual(orphan.returncode, 0, orphan.stderr)
+        calls = [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            calls[-1], ["close-surface", "--workspace", "WORKSPACE-1", "--surface", "SURF-1"]
+        )
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(events[-1]["type"], "pane.closed")
+        self.assertEqual(events[-1]["data"]["surface_id"], "SURF-1")
+
     def test_armed_watcher_reports_pane_death_and_existing_handoff(self):
         self.assertEqual(self.init_direct().returncode, 0)
         self.render_and_baseline("spec")
+        launched = self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "launch",
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--anchor", "CALLER",
+        )
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        cmux_before = self.cmux_log.read_text(encoding="utf-8")
+        events_before = (self.run_dir / "events.jsonl").read_text(encoding="utf-8")
+        mismatched = self.cli(
+            AWAIT,
+            "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--surface", "surface:1", "--cmux-cmd", str(self.cmux),
+            "--deadline-minutes", "0.1", "--poll-seconds", "0.01",
+        )
+        self.assertEqual(mismatched.returncode, 1)
+        self.assertIn("SURF-1", mismatched.stderr)
+        self.assertEqual(self.cmux_log.read_text(encoding="utf-8"), cmux_before)
+        self.assertEqual(
+            (self.run_dir / "events.jsonl").read_text(encoding="utf-8"), events_before
+        )
+        dead_env = self.env()
+        dead_env["FAKE_CMUX_DEAD"] = "1"
         dead = self.cli(
             AWAIT,
             "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
-            "--surface", "MISSING", "--cmux-cmd", str(self.cmux),
+            "--surface", "SURF-1", "--cmux-cmd", str(self.cmux),
             "--deadline-minutes", "0.1", "--poll-seconds", "0.01",
+            env=dead_env,
         )
         self.assertEqual(dead.returncode, 7, dead.stderr)
         self.assertIn("pane_dead", dead.stdout)
+        dead_event = json.loads(
+            (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+        )
+        self.assertEqual(dead_event["data"]["surface_id"], "SURF-1")
+        waiting_before = len(
+            (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
         alive = self.cli(
             AWAIT,
             "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
             "--surface", "SURF-1", "--cmux-cmd", str(self.cmux),
             "--deadline-minutes", "0.02", "--poll-seconds", "0.01",
+            "--heartbeat-seconds", "0.001",
         )
         self.assertEqual(alive.returncode, 8, alive.stderr)
         self.assertIn("deadline", alive.stdout)
+        waiting_events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[waiting_before:]
+        ]
+        self.assertTrue(any(event["data"]["outcome"] == "pending" for event in waiting_events))
+        self.assertEqual({event["data"]["surface_id"] for event in waiting_events}, {"SURF-1"})
         broken = self.cli(
             AWAIT,
             "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
@@ -821,6 +977,7 @@ sha256 {resulting_digest or digest}
         captured = self.cli(
             AWAIT,
             "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+            "--surface", "SURF-1",
             "--deadline-minutes", "0.1", "--poll-seconds", "0.01",
         )
         self.assertEqual(captured.returncode, 0, captured.stderr)
@@ -1482,12 +1639,39 @@ Option?
         self.assertEqual(redelivered.returncode, 0, redelivered.stderr)
         marked = pane("mark-started", "--surface", "SURF-1")
         self.assertEqual(marked.returncode, 0, marked.stderr)
+        self.assertFalse(json.loads(marked.stdout)["already_recorded"])
+        started_events_before = sum(
+            json.loads(line)["type"] == "worker.started"
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
+        repeated = pane("mark-started", "--surface", "SURF-1")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertTrue(json.loads(repeated.stdout)["already_recorded"])
+        started_events_after = sum(
+            json.loads(line)["type"] == "worker.started"
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        )
+        self.assertEqual(started_events_after, started_events_before)
         status = json.loads(
             self.cli(
                 STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
             ).stdout
         )
         self.assertEqual(status["classification"], "pending-report")
+        self.assertTrue(status["pane"]["agent_launch_sent"])
+        self.assertTrue(status["pane"]["prompt_sent"])
+        self.assertTrue(status["pane"]["assignment_start_confirmed"])
+        lifecycle_types = {
+            "pane.launched", "pane.labeled", "worker.launch_sent", "worker.prompt_sent", "worker.started"
+        }
+        lifecycle_events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            if json.loads(line)["type"] in lifecycle_types
+        ]
+        self.assertEqual(
+            {event["data"]["surface_id"] for event in lifecycle_events}, {"SURF-1"}
+        )
         self.assertIn("await_report.py", status["recommended_next"]["command"])
         self.assertIn(str(self.cmux), shlex.split(status["recommended_next"]["command"]))
         partial_report = self.run_dir / "reports" / "spec-1.md"
@@ -2128,6 +2312,49 @@ Option?
             str(self.config),
         )
         self.assertEqual(next_run.returncode, 0, next_run.stderr)
+
+
+class SurfaceIdentityRules(unittest.TestCase):
+    def events(self, *surfaces):
+        return [
+            {
+                "type": "pane.launched",
+                "data": {"stage": "spec", "pass": 1, "surface_id": surface},
+            }
+            for surface in surfaces
+        ]
+
+    def test_work_verbs_take_only_the_latest_launch_identity(self):
+        events = self.events("SURF-1", "SURF-2")
+        self.assertEqual(
+            orchestrator_lib.validate_recorded_surface(events, "spec", 1, "SURF-2"), "SURF-2"
+        )
+        with self.assertRaises(ValueError):
+            orchestrator_lib.validate_recorded_surface(events, "spec", 1, "SURF-1")
+
+    def test_close_may_target_any_launch_identity_of_the_stage_pass(self):
+        events = self.events("SURF-1", "SURF-2")
+        for surface in ("SURF-1", "SURF-2"):
+            self.assertEqual(
+                orchestrator_lib.validate_recorded_surface(
+                    events, "spec", 1, surface, any_launch=True
+                ),
+                surface,
+            )
+        with self.assertRaises(ValueError) as unknown:
+            orchestrator_lib.validate_recorded_surface(
+                events, "spec", 1, "surface:1", any_launch=True
+            )
+        self.assertIn("SURF-1", str(unknown.exception))
+        self.assertIn("SURF-2", str(unknown.exception))
+
+    def test_blank_lines_do_not_make_the_event_stream_unusable(self):
+        with tempfile.TemporaryDirectory() as root:
+            run_dir = Path(root)
+            orchestrator_lib.append_event(run_dir, "pane.launched", "launched", {"pass": 1})
+            with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write("\n")
+            self.assertEqual(len(orchestrator_lib.planning_events(run_dir)), 1)
 
 
 if __name__ == "__main__":

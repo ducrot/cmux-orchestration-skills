@@ -15,9 +15,10 @@ from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     STAGES,
     append_event,
+    planning_events,
     read_planning_state,
     sha256_file,
-    utc_now,
+    validate_recorded_surface,
 )
 from stage_snapshot import load_prepared_snapshot
 
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--stage", choices=STAGES, required=True)
     parser.add_argument("--pass", dest="pass_num", type=int, required=True)
-    parser.add_argument("--surface")
+    parser.add_argument("--surface", required=True)
     parser.add_argument("--cmux-cmd", default="cmux")
     parser.add_argument("--deadline-minutes", type=float)
     parser.add_argument("--poll-seconds", type=float, default=15)
@@ -82,16 +83,19 @@ def health_says_dead(command: list[str], surface: str) -> bool:
 
 def watch(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
+    surface = validate_recorded_surface(
+        planning_events(run_dir), args.stage, args.pass_num, args.surface
+    )
     report = report_path(run_dir, args.stage, args.pass_num)
     minutes = args.deadline_minutes if args.deadline_minutes is not None else MINIMUM_WAIT_MINUTES[args.stage]
     if minutes <= 0 or args.poll_seconds <= 0:
         raise ValueError("wait durations must be positive")
     state = read_planning_state(run_dir / "state.json")
     workspace = state.get("workspace_id")
-    if args.surface and not workspace:
+    if not workspace:
         raise ValueError("surface health checks require the run's pinned workspace")
     health_command = shlex.split(args.cmux_cmd) + [
-        "--json", "--id-format", "both", "surface-health", "--workspace", workspace or "",
+        "--json", "--id-format", "both", "surface-health", "--workspace", workspace,
     ]
     started = time.monotonic()
     deadline = started + minutes * 60
@@ -103,7 +107,7 @@ def watch(args: argparse.Namespace) -> int:
         data = {
             "stage": args.stage,
             "pass": args.pass_num,
-            "surface_id": args.surface,
+            "surface_id": surface,
             "elapsed_seconds": elapsed,
             "deadline_minutes": minutes,
             "extension": args.extension,
@@ -130,8 +134,8 @@ def watch(args: argparse.Namespace) -> int:
             event(run_dir, "planning report deadline exceeded", {**data, "outcome": "deadline"})
             print("outcome=deadline")
             return EXIT_DEADLINE
-        if args.surface and now >= next_health:
-            if health_says_dead(health_command, args.surface):
+        if now >= next_health:
+            if health_says_dead(health_command, surface):
                 event(run_dir, "planning worker pane disappeared", {**data, "outcome": "pane_dead"})
                 print("outcome=pane_dead")
                 return EXIT_PANE_DEAD

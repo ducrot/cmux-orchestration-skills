@@ -80,6 +80,18 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_launch_json_is_documented_as_the_only_post_launch_surface_identity(self):
+        text = normalized(PLANNING)
+        for required in (
+            "`surface_id` is the new pane's stable uuid",
+            "copy that exact value into every later pane command",
+            "the auxiliary `surface_ref`",
+            "positional refs shift when panes close",
+            "must never be used as a planning worker's post-launch identity",
+            "`close` is the one recovery exception",
+        ):
+            self.assertIn(required, text)
+
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated
         # cmux-* skills still checks every guide that ships this contract.

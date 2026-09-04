@@ -11,7 +11,16 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import ROLE_LABELS, STAGES, append_event, delivery_text, read_planning_state
+from orchestrator_lib import (
+    ROLE_LABELS,
+    STAGES,
+    append_event,
+    delivery_text,
+    planning_events,
+    read_planning_state,
+    surface_event_recorded,
+    validate_recorded_surface,
+)
 from stage_snapshot import (
     SnapshotError,
     load_prepared_snapshot,
@@ -24,35 +33,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cmux-cmd", help="override cmux executable for tests")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    launch = subparsers.add_parser("launch")
-    launch.add_argument("--run-dir", required=True)
-    launch.add_argument("--stage", choices=STAGES, required=True)
-    launch.add_argument("--pass", dest="pass_num", type=int, required=True)
+    stage_pass = argparse.ArgumentParser(add_help=False)
+    stage_pass.add_argument("--run-dir", required=True)
+    stage_pass.add_argument("--stage", choices=STAGES, required=True)
+    stage_pass.add_argument("--pass", dest="pass_num", type=int, required=True)
+    # Every verb but launch addresses an already-launched pane, so --surface lives on this
+    # shared parent and run() validates it once for all of them.
+    launched_pane = argparse.ArgumentParser(add_help=False, parents=[stage_pass])
+    launched_pane.add_argument("--surface", required=True)
+    launch = subparsers.add_parser("launch", parents=[stage_pass])
     launch.add_argument("--anchor", required=True)
     launch.add_argument("--direction", choices=("left", "right", "up", "down"), default="right")
-    start = subparsers.add_parser("start-agent")
-    start.add_argument("--run-dir", required=True)
-    start.add_argument("--stage", choices=STAGES, required=True)
-    start.add_argument("--pass", dest="pass_num", type=int, required=True)
-    start.add_argument("--surface", required=True)
+    start = subparsers.add_parser("start-agent", parents=[launched_pane])
     start.add_argument("--settle-seconds", type=float, default=8)
-    deliver = subparsers.add_parser("deliver")
-    deliver.add_argument("--run-dir", required=True)
-    deliver.add_argument("--stage", choices=STAGES, required=True)
-    deliver.add_argument("--pass", dest="pass_num", type=int, required=True)
-    deliver.add_argument("--surface", required=True)
+    deliver = subparsers.add_parser("deliver", parents=[launched_pane])
     deliver.add_argument("--prompt", required=True)
     deliver.add_argument("--settle-seconds", type=float, default=3)
-    started = subparsers.add_parser("mark-started")
-    started.add_argument("--run-dir", required=True)
-    started.add_argument("--stage", choices=STAGES, required=True)
-    started.add_argument("--pass", dest="pass_num", type=int, required=True)
-    started.add_argument("--surface", required=True)
-    close = subparsers.add_parser("close")
-    close.add_argument("--run-dir", required=True)
-    close.add_argument("--stage", choices=STAGES, required=True)
-    close.add_argument("--pass", dest="pass_num", type=int, required=True)
-    close.add_argument("--surface", required=True)
+    subparsers.add_parser("mark-started", parents=[launched_pane])
+    subparsers.add_parser("close", parents=[launched_pane])
     return parser
 
 
@@ -82,9 +80,9 @@ def event(run_dir: Path, kind: str, message: str, data: dict) -> None:
     append_event(run_dir, kind, message, data)
 
 
-def send(args: argparse.Namespace, text: str, kind: str, data: dict) -> None:
+def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dict) -> None:
     run_dir = Path(args.run_dir)
-    target = ["--workspace", workspace(run_dir), "--surface", args.surface]
+    target = ["--workspace", workspace(run_dir), "--surface", surface]
     cmux(args, ["send", *target, text])
     cmux(args, ["send-key", *target, "enter"])
     event(run_dir, kind, "sent and submitted text to stable planning pane", data)
@@ -119,8 +117,8 @@ def run(args: argparse.Namespace) -> int:
             created = json.loads(result.stdout)
         except json.JSONDecodeError as error:
             raise SnapshotError("cmux new-split did not return JSON") from error
-        surface = created.get("surface_id") or created.get("surface_ref")
-        if not surface:
+        surface = created.get("surface_id")
+        if not isinstance(surface, str) or not surface:
             raise SnapshotError("cmux new-split returned no stable surface identity")
         label = f"{ROLE_LABELS[args.stage]} {args.pass_num} - {state['run_id']}"
         data = {
@@ -139,13 +137,22 @@ def run(args: argparse.Namespace) -> int:
         event(run_dir, "pane.labeled", "labeled fresh planning worker", data)
         print(json.dumps(data, sort_keys=True))
         return 0
+    # One choke point for every post-launch verb: a positional ref or any other identity stops
+    # here, before the first cmux call, and a later verb cannot forget to check.
+    events = planning_events(run_dir)
+    # close is the accepted recovery exception: it may reach any pane this stage pass launched,
+    # so a pane orphaned by a failed or retried launch stays closable. Work verbs stay latest-only.
+    surface = validate_recorded_surface(
+        events, args.stage, args.pass_num, args.surface, any_launch=args.command == "close"
+    )
     if args.command == "start-agent":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
         send(
             args,
+            surface,
             snapshot_shell_command(snapshot),
             "worker.launch_sent",
-            {"stage": args.stage, "pass": args.pass_num, "surface_id": args.surface, **snapshot_launch_record(snapshot)},
+            {"stage": args.stage, "pass": args.pass_num, "surface_id": surface, **snapshot_launch_record(snapshot)},
         )
         return 0
     if args.command == "deliver":
@@ -157,30 +164,36 @@ def run(args: argparse.Namespace) -> int:
             raise SnapshotError(f"--prompt is not the baseline-verified prompt: {verified}")
         send(
             args,
+            surface,
             delivery_text(args.prompt),
             "worker.prompt_sent",
-            {"stage": args.stage, "pass": args.pass_num, "surface_id": args.surface, "prompt": args.prompt},
+            {"stage": args.stage, "pass": args.pass_num, "surface_id": surface, "prompt": args.prompt},
         )
         return 0
     if args.command == "mark-started":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
-        event(
-            run_dir,
-            "worker.started",
-            "orchestrator confirmed the deterministic assignment started in the visible pane",
-            {
-                "stage": args.stage,
-                "pass": args.pass_num,
-                "surface_id": args.surface,
-                **snapshot_launch_record(snapshot),
-            },
+        already_recorded = surface_event_recorded(
+            events, "worker.started", args.stage, args.pass_num, surface
         )
-        print(
-            json.dumps(
+        if not already_recorded:
+            event(
+                run_dir,
+                "worker.started",
+                "orchestrator confirmed the deterministic assignment started in the visible pane",
                 {
                     "stage": args.stage,
                     "pass": args.pass_num,
-                    "surface_id": args.surface,
+                    "surface_id": surface,
+                    **snapshot_launch_record(snapshot),
+                },
+            )
+        print(
+            json.dumps(
+                {
+                    "already_recorded": already_recorded,
+                    "stage": args.stage,
+                    "pass": args.pass_num,
+                    "surface_id": surface,
                     "started": True,
                 },
                 sort_keys=True,
@@ -189,12 +202,12 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command != "close":
         raise SnapshotError(f"unhandled command: {args.command}")
-    cmux(args, ["close-surface", "--workspace", workspace(run_dir), "--surface", args.surface])
+    cmux(args, ["close-surface", "--workspace", workspace(run_dir), "--surface", surface])
     event(
         run_dir,
         "pane.closed",
         "closed planning worker pane",
-        {"stage": args.stage, "pass": args.pass_num, "surface_id": args.surface},
+        {"stage": args.stage, "pass": args.pass_num, "surface_id": surface},
     )
     return 0
 
