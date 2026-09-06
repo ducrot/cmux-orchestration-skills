@@ -94,7 +94,11 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "--decision confirm",
             "--decision refuse",
             "human-authored reason",
+            "exit code 2",
             "pending-diversity-confirmation",
+            "awaiting confirmation",
+            "recorded refusal",
+            "human inspection and configuration recovery",
             "shared configuration file",
             "refusal never prepares a snapshot even when the resolved combination changed",
         ):

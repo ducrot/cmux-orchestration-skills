@@ -155,6 +155,35 @@ class PlanningFlow(unittest.TestCase):
             reason,
         )
 
+    def assert_gated_prepare(
+        self, stage: str, confirmation_command: str, pass_num: int = 1
+    ) -> dict:
+        """Prepare a gated author stage and assert it exits 2 without publishing anything."""
+        prepared = self.cli(
+            STATE,
+            "prepare",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            stage,
+            "--pass",
+            str(pass_num),
+        )
+        self.assertEqual(prepared.returncode, 2, prepared.stderr)
+        self.assertEqual(prepared.stderr, "")
+        payload = json.loads(prepared.stdout)
+        self.assertIsNone(payload["prepared"])
+        self.assertEqual(
+            payload["diversity_warning"]["confirmation_command"], confirmation_command
+        )
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIsNone(state["prepared_stage"])
+        self.assertIsNone(state["tree_baseline"])
+        self.assertFalse(
+            list((self.run_dir / "stage-snapshots").glob(f"{stage}-{pass_num}-*.json"))
+        )
+        return payload
+
     def render_and_baseline(self, stage: str, pass_num: int = 1, run_dir: Path | None = None) -> None:
         selected = run_dir or self.run_dir
         rendered = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
@@ -432,7 +461,17 @@ sha256 {resulting_digest or digest}
 
         initialized = self.init_direct()
 
-        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.assertEqual(initialized.returncode, 2, initialized.stderr)
+        self.assertEqual(initialized.stderr, "")
+        initialized_payload = json.loads(
+            next(
+                line
+                for line in initialized.stdout.splitlines()
+                if line.startswith('{"diversity_warning"')
+            )
+        )
+        self.assertIsNone(initialized_payload["prepared"])
+        self.assertIn("confirmation_command", initialized_payload["diversity_warning"])
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["current_stage"], "spec")
         self.assertIsNone(state["prepared_stage"])
@@ -477,6 +516,15 @@ sha256 {resulting_digest or digest}
         )
         self.assertIn("diversity-confirmation", status["recommended_next"]["command"])
         self.assertIn("--decision confirm", status["recommended_next"]["command"])
+        prepared_payload = self.assert_gated_prepare(
+            "spec", status["recommended_next"]["command"]
+        )
+        self.assertEqual(
+            prepared_payload["diversity_warning"]["author"], pending["author"]
+        )
+        self.assertEqual(
+            prepared_payload["diversity_warning"]["reviewer"], pending["reviewer"]
+        )
         blocked_launch = self.cli(
             PANE,
             "--cmux-cmd",
@@ -533,12 +581,13 @@ sha256 {resulting_digest or digest}
         )
         self.assertEqual(prepared_again.returncode, 0, prepared_again.stderr)
         self.assertIn('"stage": "spec"', prepared_again.stdout)
+        self.assertNotIn("diversity_warning", prepared_again.stdout)
         self.render_and_baseline("spec")
         self.launch_prepared_stage("spec")
 
     def test_refusing_spec_author_collision_preserves_stage_and_configuration_guidance(self):
         self.assign_planning_profile("spec", "codex-sol-xhigh")
-        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(self.init_direct().returncode, 2)
 
         refused = self.decide_diversity(
             "refuse", "Wait until the independent provider is available"
@@ -560,10 +609,14 @@ sha256 {resulting_digest or digest}
         )
         self.assertEqual(status["classification"], "pending-diversity-confirmation")
         self.assertEqual(status["diversity_confirmation"]["status"], "refused")
+        self.assertIn("human inspection", status["recommended_next"]["action"])
+        self.assertIn("shared configuration", status["recommended_next"]["action"])
+        self.assertIn(" context ", f" {status['recommended_next']['command']} ")
+        self.assertNotIn("diversity-confirmation", status["recommended_next"]["command"])
 
     def test_refusing_a_changed_diverse_resolution_records_it_without_preparing(self):
         self.assign_planning_profile("spec", "codex-sol-xhigh")
-        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(self.init_direct().returncode, 2)
         self.assign_planning_profile("spec", "claude-fable-high")
 
         refused = self.decide_diversity("refuse", "Do not launch before an independent check")
@@ -607,7 +660,7 @@ sha256 {resulting_digest or digest}
 
     def test_refusing_a_changed_still_colliding_resolution_records_the_fresh_combination(self):
         self.assign_planning_profile("spec", "codex-sol-xhigh")
-        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(self.init_direct().returncode, 2)
         first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
             "diversity_confirmation"
         ]
@@ -632,7 +685,7 @@ sha256 {resulting_digest or digest}
     def test_one_confirmation_covers_both_author_stages_for_the_same_combination(self):
         self.assign_planning_profile("spec", "codex-sol-xhigh")
         self.assign_planning_profile("tickets", "codex-sol-xhigh")
-        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity(
                 "confirm", "One provider is available for this complete planning run"
@@ -710,13 +763,32 @@ sha256 {resulting_digest or digest}
             "Specification approved",
         )
 
-        self.assertEqual(approved.returncode, 0, approved.stderr)
+        self.assertEqual(approved.returncode, 2, approved.stderr)
+        self.assertEqual(approved.stderr, "")
+        approved_payload = json.loads(approved.stdout)
+        self.assertIsNone(approved_payload["prepared"])
+        self.assertEqual(
+            approved_payload["diversity_warning"]["author"]["role"],
+            "planning.tickets",
+        )
+        self.assertEqual(
+            approved_payload["diversity_warning"]["reviewer"]["role"],
+            "planning.reviewer",
+        )
+        self.assertIn(
+            "--decision confirm",
+            approved_payload["diversity_warning"]["confirmation_command"],
+        )
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["current_stage"], "tickets")
         self.assertIsNone(state["prepared_stage"])
         self.assertEqual(state["diversity_confirmation"]["author"]["role"], "planning.tickets")
         self.assertFalse(list((self.run_dir / "stage-snapshots").glob("tickets-1-*.json")))
         self.assertIn("planning.tickets", approved.stdout)
+
+        self.assert_gated_prepare(
+            "tickets", approved_payload["diversity_warning"]["confirmation_command"]
+        )
 
         confirmed = self.decide_diversity(
             "confirm", "The alternate provider quota is exhausted"
@@ -729,7 +801,7 @@ sha256 {resulting_digest or digest}
 
     def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
         self.assign_planning_profile("spec", "codex-sol-xhigh")
-        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity("confirm", "Temporary single-model operation").returncode,
             0,
@@ -751,7 +823,8 @@ sha256 {resulting_digest or digest}
             "1",
         )
 
-        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.assertEqual(prepared.returncode, 2, prepared.stderr)
+        self.assertIsNone(json.loads(prepared.stdout)["prepared"])
         changed = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         self.assertIsNone(changed["prepared_stage"])
         self.assertEqual(changed["diversity_confirmation"]["status"], "pending")
@@ -768,6 +841,7 @@ sha256 {resulting_digest or digest}
         initialized = self.init_direct()
 
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.assertNotIn("diversity_warning", initialized.stdout)
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         self.assertIsNotNone(state["prepared_stage"])
         self.assertIsNone(state["diversity_confirmation"])

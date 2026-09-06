@@ -113,9 +113,10 @@ The JSON's `markdownPath` remains authoritative. Missing, malformed, path-incons
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
 Direct input starts at `spec` with an immutable prepared snapshot, unless the resolved author and
-reviewer share a harness and model: that start prints one extra warning object before the run
-directory and leaves `spec` waiting on the confirmation described below with no snapshot. Grilling
-input starts at `awaiting-grilling-revalidation` with no snapshot.
+reviewer share a harness and model: that start prints one extra warning object with `prepared: null`
+before the run directory, exits with code 2, and leaves `spec` waiting on the confirmation described
+below with no snapshot. Grilling input starts at `awaiting-grilling-revalidation` with no
+snapshot.
 
 Every newly initialized run records the creation-only boolean
 `configuration_created_and_accepted` in `state.json`. It is true only when that invocation created a
@@ -194,6 +195,10 @@ Before preparing either author stage, planning compares the resolved `planning.s
 same harness and model, preparation stops before a launchable snapshot exists and prints a warning
 naming both roles, profile names, harnesses, and models. Present that warning and ask the confirmation
 question in the user's language. Never substitute or fall back to another profile automatically.
+This expected gate is not a crash: every public command that reaches the blocked author preparation
+prints structured JSON with `prepared: null`, the warning, and the exact confirmation command, exits
+with exit code 2, and writes no traceback to stderr. A diverse or already-confirmed resolution remains
+successful and exits 0 with its launchable snapshot and no extra warning.
 
 If the human knowingly accepts same-harness-and-model operation, translate the recorded decision and
 their human-authored reason into English and run the exact command reported by `status`:
@@ -289,7 +294,11 @@ and publication phase, consistency errors, and one recommended next command. Its
 distinguish awaiting or interrupted grilling revalidation, spec authoring/review, ticket authoring/review,
 pending model-diversity confirmation, pending report, both approval boundaries, requested revision,
 review-blocked, HITL, completed, and inconsistent state. A `pending-diversity-confirmation`
-classification includes the warning and the exact `diversity-confirmation --decision confirm` command.
+classification includes the warning, but its decision status controls the recovery guidance. A
+`pending` decision means awaiting confirmation and recommends the exact
+`diversity-confirmation --decision confirm` command. A `refused` decision is a recorded refusal and
+recommends human inspection and configuration recovery through `context` and the named shared
+configuration assignment; it never recommends confirmation.
 Initialization persists a validated `input` checkpoint before activating the first
 stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
 pre-run input or configuration failure has no run state and remains an initialization error rather than

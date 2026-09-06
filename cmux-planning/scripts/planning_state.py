@@ -91,6 +91,28 @@ from tracker_contract import (
 
 
 RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+DIVERSITY_GATED_EXIT = 2
+
+
+def gated_payload(confirmation: dict[str, Any]) -> dict[str, Any]:
+    """The one public shape for a preparation stopped by the diversity gate."""
+    return {"prepared": None, "diversity_warning": public_warning(confirmation)}
+
+
+def diversity_gated_preparation(result: dict[str, Any]) -> bool:
+    """Whether valid preparation stopped for a human diversity decision."""
+    return result.get("prepared") is None and isinstance(result.get("diversity_warning"), dict)
+
+
+def preparation_exit_code(result: dict[str, Any]) -> int:
+    return DIVERSITY_GATED_EXIT if diversity_gated_preparation(result) else 0
+
+
+def preparation_payload(result: dict[str, Any], **context: Any) -> dict[str, Any]:
+    """Keep a gated preparation explicit at the public JSON boundary."""
+    if diversity_gated_preparation(result):
+        return {**context, **result}
+    return {**context, "prepared": result}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -438,10 +460,7 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
     if not reconcile_diversity_confirmation(
         state, snapshot, run_dir=run_dir, state_path=state_path
     ):
-        return {
-            "prepared": None,
-            "diversity_warning": public_warning(state["diversity_confirmation"]),
-        }
+        return gated_payload(state["diversity_confirmation"])
     return activate_snapshot(run_dir, snapshot)
 
 
@@ -506,8 +525,8 @@ def decide_diversity(args: argparse.Namespace) -> int:
         if args.decision == "confirm":
             # A confirmation binds one combination, so a changed one is asked again, never assumed.
             if not may_prepare:
-                print(json.dumps(public_warning(state["diversity_confirmation"]), sort_keys=True))
-                return 2
+                print(json.dumps(gated_payload(state["diversity_confirmation"]), sort_keys=True))
+                return DIVERSITY_GATED_EXIT
             pointer = activate_snapshot(run_dir, snapshot)
             print(json.dumps({"prepared": pointer, "diversity_required": False}, sort_keys=True))
             return 0
@@ -791,10 +810,12 @@ def init_run(args: argparse.Namespace) -> int:
         {"state": state},
     )
     finish_input_validation(run_dir)
+    prepared: dict[str, Any] = {}
     if diversity_confirmation is not None:
-        print(json.dumps({"diversity_warning": public_warning(diversity_confirmation)}, sort_keys=True))
+        prepared = gated_payload(diversity_confirmation)
+        print(json.dumps(prepared, sort_keys=True))
     print(run_dir)
-    return 0
+    return preparation_exit_code(prepared)
 
 
 def imported_from_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
@@ -922,8 +943,12 @@ def revalidate(args: argparse.Namespace) -> int:
         state["normalized_grilling_input"],
     )
     pointer = prepare_stage(args, run_dir, "spec", state["spec_pass"])
-    print(json.dumps({"normalized": str(normalized_path), "prepared": pointer}, sort_keys=True))
-    return 0
+    print(
+        json.dumps(
+            preparation_payload(pointer, normalized=str(normalized_path)), sort_keys=True
+        )
+    )
+    return preparation_exit_code(pointer)
 
 
 def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
@@ -1042,7 +1067,7 @@ def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str,
     review_pass = stage_pass(state, "spec-review")
     pointer = prepare_stage(args, run_dir, "spec-review", review_pass)
     print(json.dumps(pointer, sort_keys=True))
-    return 0
+    return preparation_exit_code(pointer)
 
 
 def accept_tickets_author(
@@ -1092,7 +1117,7 @@ def accept_tickets_author(
     review_pass = stage_pass(state, "tickets-review")
     pointer = prepare_stage(args, run_dir, "tickets-review", review_pass)
     print(json.dumps(pointer, sort_keys=True))
-    return 0
+    return preparation_exit_code(pointer)
 
 
 def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
@@ -1355,8 +1380,13 @@ def approval(args: argparse.Namespace) -> int:
             time=now,
         )
         pointer = prepare_stage(args, run_dir, "tickets", state["tickets_pass"])
-        print(json.dumps({"approved_spec": state["approved_spec"], "prepared": pointer}, sort_keys=True))
-        return 0
+        print(
+            json.dumps(
+                preparation_payload(pointer, approved_spec=state["approved_spec"]),
+                sort_keys=True,
+            )
+        )
+        return preparation_exit_code(pointer)
 
     if state.get("current_stage") not in {
         "awaiting-spec-approval",
@@ -1399,7 +1429,7 @@ def approval(args: argparse.Namespace) -> int:
     )
     pointer = prepare_stage(args, run_dir, "spec", state["spec_pass"])
     print(json.dumps(pointer, sort_keys=True))
-    return 0
+    return preparation_exit_code(pointer)
 
 
 def bound_proposal(approved_spec: dict, path: Path, digest: str, mismatch: str) -> dict:
@@ -1562,7 +1592,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         )
         pointer = prepare_stage(args, run_dir, next_stage, next_pass)
         print(json.dumps(pointer, sort_keys=True))
-        return 0
+        return preparation_exit_code(pointer)
 
     if args.decision == "approve" and state.get("current_stage") in {"ready-to-publish", "complete"}:
         approved_spec = state.get("approved_spec")
@@ -1950,8 +1980,12 @@ def resume_run(args: argparse.Namespace) -> int:
         time=now,
     )
     pointer = prepare_stage(args, run_dir, target, next_pass)
-    print(json.dumps({"resume": state["resume_context"], "prepared": pointer}, sort_keys=True))
-    return 0
+    print(
+        json.dumps(
+            preparation_payload(pointer, resume=state["resume_context"]), sort_keys=True
+        )
+    )
+    return preparation_exit_code(pointer)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1964,7 +1998,7 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "prepare":
         pointer = prepare_stage(args, Path(args.run_dir), args.stage, args.pass_num)
         print(json.dumps(pointer, sort_keys=True))
-        return 0
+        return preparation_exit_code(pointer)
     if args.command == "diversity-confirmation":
         return decide_diversity(args)
     if args.command == "accept-author":
