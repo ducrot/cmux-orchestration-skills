@@ -183,7 +183,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         legacy = json.loads(self.config_path.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
-        legacy["workflows"]["grilling"]["docs"] = "codex-sol-medium"
+        legacy["workflows"]["grilling"]["docs"] = "codex-astra-medium"
         legacy_bytes = json.dumps(legacy).encode("utf-8")
         self.config_path.write_bytes(legacy_bytes)
 
@@ -207,7 +207,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         prepared = self.init_for("migrated-v1")
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         wave = self.read_wave("migrated-v1")
-        self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-sol-medium")
+        self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-astra-medium")
 
     def test_init_uses_config_and_audits_all_four_lanes_in_one_wave(self):
         proc = self.init_for("wave")
@@ -229,7 +229,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             {lane: (entry["harness"], entry["model"], entry["effort"]) for lane, entry in lanes.items()},
             {
                 "codebase": ("claude-code", "opus", "xhigh"),
-                "codebase2": ("codex", "gpt-5.6-sol", "xhigh"),
+                "codebase2": ("codex", "gpt-6-astra", "xhigh"),
                 "docs": ("codex", "gpt-5.6-luna", "medium"),
                 "web": ("claude-code", "sonnet", "medium"),
             },
@@ -545,7 +545,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         before = self.read_wave("immutable")
         config_path = Path(self.read_state("immutable")["configuration_source"])
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["profiles"]["codex-sol-xhigh"]["model"] = "changed/after-start"
+        config["profiles"]["codex-astra-xhigh"]["model"] = "changed/after-start"
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         run_dir = self.run_dir("immutable")
@@ -560,7 +560,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         )
         self.assertEqual(delivered.returncode, 0, delivered.stderr)
         sends = [call[-1] for call in self.cmux_calls() if call and call[0] == "send"]
-        self.assertIn("gpt-5.6-sol", sends[0])
+        self.assertIn("gpt-6-astra", sends[0])
         self.assertNotIn("changed/after-start", sends[0])
         self.assertEqual(sends[1], "round two")
         self.assertEqual(before, self.read_wave("immutable"))

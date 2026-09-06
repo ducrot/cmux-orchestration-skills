@@ -457,7 +457,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(final["prepared_stage"]["stage"], "tickets")
 
     def test_spec_author_collision_requires_recorded_confirmation_and_survives_resume(self):
-        self.assign_planning_profile("spec", "codex-sol-medium")
+        self.assign_planning_profile("spec", "codex-astra-medium")
 
         initialized = self.init_direct()
 
@@ -482,27 +482,27 @@ sha256 {resulting_digest or digest}
             pending["author"],
             {
                 "role": "planning.spec",
-                "profile": "codex-sol-medium",
+                "profile": "codex-astra-medium",
                 "harness": "codex",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
             },
         )
         self.assertEqual(
             pending["reviewer"],
             {
                 "role": "planning.reviewer",
-                "profile": "codex-sol-xhigh",
+                "profile": "codex-astra-xhigh",
                 "harness": "codex",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
             },
         )
         for value in (
             "planning.spec",
             "planning.reviewer",
-            "codex-sol-medium",
-            "codex-sol-xhigh",
+            "codex-astra-medium",
+            "codex-astra-xhigh",
             "codex",
-            "gpt-5.6-sol",
+            "gpt-6-astra",
         ):
             self.assertIn(value, initialized.stdout)
 
@@ -586,7 +586,7 @@ sha256 {resulting_digest or digest}
         self.launch_prepared_stage("spec")
 
     def test_refusing_spec_author_collision_preserves_stage_and_configuration_guidance(self):
-        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
         self.assertEqual(self.init_direct().returncode, 2)
 
         refused = self.decide_diversity(
@@ -615,7 +615,7 @@ sha256 {resulting_digest or digest}
         self.assertNotIn("diversity-confirmation", status["recommended_next"]["command"])
 
     def test_refusing_a_changed_diverse_resolution_records_it_without_preparing(self):
-        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assign_planning_profile("spec", "claude-fable-high")
 
@@ -659,7 +659,7 @@ sha256 {resulting_digest or digest}
         )
 
     def test_refusing_a_changed_still_colliding_resolution_records_the_fresh_combination(self):
-        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
         self.assertEqual(self.init_direct().returncode, 2)
         first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
             "diversity_confirmation"
@@ -683,8 +683,8 @@ sha256 {resulting_digest or digest}
         self.assertIn(str(self.config.resolve()), refused.stdout)
 
     def test_one_confirmation_covers_both_author_stages_for_the_same_combination(self):
-        self.assign_planning_profile("spec", "codex-sol-xhigh")
-        self.assign_planning_profile("tickets", "codex-sol-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("tickets", "codex-astra-xhigh")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity(
@@ -750,7 +750,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(
             self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
         )
-        self.assign_planning_profile("tickets", "codex-sol-xhigh")
+        self.assign_planning_profile("tickets", "codex-astra-xhigh")
 
         approved = self.cli(
             STATE,
@@ -800,7 +800,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(prepared["stage"], "tickets")
 
     def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
-        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity("confirm", "Temporary single-model operation").returncode,
@@ -1712,7 +1712,7 @@ sha256 {resulting_digest or digest}
         legacy = json.loads(self.config.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
-        legacy["workflows"]["grilling"]["web"] = "codex-sol-xhigh"
+        legacy["workflows"]["grilling"]["web"] = "codex-astra-xhigh"
         legacy_bytes = (json.dumps(legacy, indent=2) + "\n").encode("utf-8")
         self.config.write_bytes(legacy_bytes)
         self.config.chmod(0o640)
@@ -1740,7 +1740,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(proc.stdout, "")
         self.assertIn("cannot produce a valid migration candidate", proc.stderr)
         self.assertIn("cannot migrate invalid version-one configuration", proc.stderr)
-        self.assertIn("workflow=grilling worker=web profile=codex-sol-xhigh field=harness", proc.stderr)
+        self.assertIn("workflow=grilling worker=web profile=codex-astra-xhigh field=harness", proc.stderr)
         self.assertIn(
             "No configuration bytes, planning run, or launchable state were recorded", proc.stderr
         )

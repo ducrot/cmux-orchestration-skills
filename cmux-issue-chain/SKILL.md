@@ -64,8 +64,8 @@ not emulate it with shell input, a sleeping process, or polling while the human 
 
 The six shipped profiles are `claude-opus-medium` (`claude-code`, `opus`, `medium`),
 `claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`), `claude-sonnet-medium` (`claude-code`,
-`sonnet`, `medium`), `codex-sol-medium` (`codex`, `gpt-5.6-sol`, `medium`),
-`codex-sol-xhigh` (`codex`, `gpt-5.6-sol`, `xhigh`), and `codex-luna-medium` (`codex`,
+`sonnet`, `medium`), `codex-astra-medium` (`codex`, `gpt-6-astra`, `medium`),
+`codex-astra-xhigh` (`codex`, `gpt-6-astra`, `xhigh`), and `codex-luna-medium` (`codex`,
 `gpt-5.6-luna`, `medium`). The issue-chain defaults assign Sol/xhigh to `implement` and `test`
 and Opus/xhigh to `simplify` and `review`.
 The `opus` and `sonnet` model strings are intentionally moving provider aliases; deterministic
@@ -433,7 +433,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   -c model_reasoning_effort=xhigh                # implement, test
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
   --model opus --effort xhigh \

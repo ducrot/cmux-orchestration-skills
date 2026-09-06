@@ -58,7 +58,7 @@ handoffs.
 
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
-`claude-opus-xhigh`; the reviewer defaults to `codex-sol-xhigh` and must resolve to Codex.
+`claude-opus-xhigh`; the reviewer defaults to `codex-astra-xhigh` and must resolve to Codex.
 `validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 

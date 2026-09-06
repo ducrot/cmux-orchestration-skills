@@ -70,8 +70,8 @@ class PaneCtlCase(unittest.TestCase):
             {"profile": "claude-opus-xhigh", "harness": "claude-code",
              "requested_executable": "claude", "model": "opus", "effort": "xhigh"}
             if role in {"review", "simplify"}
-            else {"profile": "codex-sol-xhigh", "harness": "codex",
-                  "requested_executable": "codex", "model": "gpt-5.6-sol", "effort": "xhigh"}
+            else {"profile": "codex-astra-xhigh", "harness": "codex",
+                  "requested_executable": "codex", "model": "gpt-6-astra", "effort": "xhigh"}
         )
         selected = {
             **profile,

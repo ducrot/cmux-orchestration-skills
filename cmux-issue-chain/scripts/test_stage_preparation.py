@@ -248,7 +248,7 @@ class PreparedStageCli(unittest.TestCase):
         legacy = json.loads(self.config_path.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
-        legacy["workflows"]["issue-chain"]["implement"] = "codex-sol-medium"
+        legacy["workflows"]["issue-chain"]["implement"] = "codex-astra-medium"
         legacy_bytes = json.dumps(legacy).encode("utf-8")
         self.config_path.write_bytes(legacy_bytes)
 
@@ -272,7 +272,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         state = json.loads((self.runs_root / "migrated-v1" / "state.json").read_text(encoding="utf-8"))
         snapshot = json.loads((self.runs_root / "migrated-v1" / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
-        self.assertEqual(snapshot["selected_worker"]["profile"], "codex-sol-medium")
+        self.assertEqual(snapshot["selected_worker"]["profile"], "codex-astra-medium")
 
     def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):
         proc = self.init()
@@ -287,8 +287,8 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(snapshot["config"]["sha256"], hashlib.sha256(config.read_bytes()).hexdigest())
         self.assertEqual(set(snapshot["resolved_profiles"]), {"implement", "simplify", "review", "test"})
         selected = snapshot["selected_worker"]
-        self.assertEqual(selected["profile"], "codex-sol-xhigh")
-        self.assertEqual(selected["model"], "gpt-5.6-sol")
+        self.assertEqual(selected["profile"], "codex-astra-xhigh")
+        self.assertEqual(selected["model"], "gpt-6-astra")
         self.assertEqual(selected["effort"], "xhigh")
         self.assertEqual(selected["detected_version"], "codex 99.1-test")
         self.assertEqual(selected["entitlement"]["status"], "unverified")
@@ -304,7 +304,7 @@ class PreparedStageCli(unittest.TestCase):
                 "--ask-for-approval", "on-request",
                 "-c", "approvals_reviewer=auto_review",
                 "-c", "check_for_update_on_startup=false",
-                "--model", "gpt-5.6-sol",
+                "--model", "gpt-6-astra",
                 "-c", "model_reasoning_effort=xhigh",
             ],
         )
@@ -662,7 +662,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "temporary/model")
         second_refresh = self.prepare("implement", 3)
         self.assertEqual(second_refresh.returncode, 0, second_refresh.stderr)
-        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-5.6-sol")
+        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6-astra")
         self.assertEqual(self.read_snapshot()["effective_overrides"], {})
 
     def test_incompatible_override_invalidates_previous_snapshot_before_pane_creation(self):
@@ -701,7 +701,7 @@ class PreparedStageCli(unittest.TestCase):
         for proc in (with_config, with_override):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("already exists", proc.stderr)
-        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-5.6-sol")
+        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6-astra")
 
     def test_reinit_restores_a_deleted_runs_root_ignore(self):
         self.assertEqual(self.init().returncode, 0)

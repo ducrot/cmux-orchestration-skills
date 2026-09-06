@@ -38,8 +38,8 @@ class PaneCtlCase(unittest.TestCase):
                 "executable": "claude", "model": "opus", "effort": "xhigh",
             },
             "codebase2": {
-                "profile": "codex-sol-xhigh", "harness": "codex",
-                "executable": "codex", "model": "gpt-5.6-sol", "effort": "xhigh",
+                "profile": "codex-astra-xhigh", "harness": "codex",
+                "executable": "codex", "model": "gpt-6-astra", "effort": "xhigh",
             },
             "docs": {
                 "profile": "codex-luna-medium", "harness": "codex",
@@ -229,7 +229,7 @@ class StartAgent(PaneCtlCase):
         # The marker is what keeps the lane pane out of the human's notification centre.
         self.assertTrue(command.startswith("CMUX_AGENT_MANAGED_SUBAGENT=1 codex "), command)
         self.assertIn("approvals_reviewer=auto_review", command)
-        self.assertIn("--model gpt-5.6-sol", command)
+        self.assertIn("--model gpt-6-astra", command)
 
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["worker.launch_sent"])

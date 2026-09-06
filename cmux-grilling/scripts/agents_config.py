@@ -122,16 +122,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "fable",
             "effort": "high",
         },
-        "codex-sol-medium": {
+        "codex-astra-medium": {
             "harness": "codex",
             "executable": "codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "effort": "medium",
         },
-        "codex-sol-xhigh": {
+        "codex-astra-xhigh": {
             "harness": "codex",
             "executable": "codex",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-astra",
             "effort": "xhigh",
         },
         "codex-luna-medium": {
@@ -143,21 +143,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "workflows": {
         "issue-chain": {
-            "implement": "codex-sol-xhigh",
+            "implement": "codex-astra-xhigh",
             "simplify": "claude-opus-xhigh",
             "review": "claude-opus-xhigh",
-            "test": "codex-sol-xhigh",
+            "test": "codex-astra-xhigh",
         },
         "grilling": {
             "codebase": "claude-opus-xhigh",
-            "codebase2": "codex-sol-xhigh",
+            "codebase2": "codex-astra-xhigh",
             "docs": "codex-luna-medium",
             "web": "claude-sonnet-medium",
         },
         "planning": {
             "spec": "claude-fable-high",
             "tickets": "claude-fable-high",
-            "reviewer": "codex-sol-xhigh",
+            "reviewer": "codex-astra-xhigh",
         },
     },
 }
