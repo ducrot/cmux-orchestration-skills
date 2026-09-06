@@ -200,6 +200,19 @@ prints structured JSON with `prepared: null`, the warning, and the exact confirm
 with exit code 2, and writes no traceback to stderr. A diverse or already-confirmed resolution remains
 successful and exits 0 with its launchable snapshot and no extra warning.
 
+Exit code 2 is not unique to the diversity gate: argument-usage errors and other precondition
+refusals also use it. Wrappers must inspect stdout and stderr, identifying a gated preparation by
+`prepared: null` and `diversity_warning` in its structured stdout response, rather than treating the
+exit code alone as a request for diversity confirmation.
+
+A non-zero preparation result does not roll back an earlier state transition. For example,
+`approval --decision approve` can persist spec approval and move to `tickets` before ticket author
+preparation exits 2. Revision, revalidation, and relaunch commands can likewise persist progress before
+reaching the gate. A wrapper using `set -e` must handle this outcome explicitly: read `status` and
+`context` for the same run, then follow the recommended next command. Do not blindly retry the original
+transition command; its approval or revision may already be recorded and its original stage guard may
+no longer apply.
+
 If the human knowingly accepts same-harness-and-model operation, translate the recorded decision and
 their human-authored reason into English and run the exact command reported by `status`:
 
@@ -297,8 +310,11 @@ review-blocked, HITL, completed, and inconsistent state. A `pending-diversity-co
 classification includes the warning, but its decision status controls the recovery guidance. A
 `pending` decision means awaiting confirmation and recommends the exact
 `diversity-confirmation --decision confirm` command. A `refused` decision is a recorded refusal and
-recommends human inspection and configuration recovery through `context` and the named shared
-configuration assignment; it never recommends confirmation.
+recommends human inspection and configuration recovery through `context`; it never recommends
+confirmation. The short action text refers to a diverse author profile in the shared configuration.
+For the exact file and assignment, inspect `shared_configuration_path` and `assignment_path` in the
+`diversity_confirmation` payload returned by `status` (`workflows.planning.spec` or
+`workflows.planning.tickets`).
 Initialization persists a validated `input` checkpoint before activating the first
 stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
 pre-run input or configuration failure has no run state and remains an initialization error rather than
