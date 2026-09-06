@@ -345,17 +345,19 @@ def append_gate(args: argparse.Namespace) -> int:
 
 
 def append_snapshot(args: argparse.Namespace) -> int:
-    def git(*argv: str) -> str:
-        result = subprocess.run(["git", *argv], capture_output=True, text=True)
+    def git(*argv: str) -> bytes:
+        # Diffs can contain non-UTF-8 bytes; replacement decoding loses fingerprint input.
+        result = subprocess.run(["git", *argv], capture_output=True)
         if result.returncode != 0:
-            raise SystemExit(f"git {' '.join(argv)} failed: {result.stderr.strip()}")
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            raise SystemExit(f"git {' '.join(argv)} failed: {detail}")
         return result.stdout
 
-    head = git("rev-parse", "HEAD").strip()
+    head = git("rev-parse", "HEAD").decode("ascii").strip()
     status = git("status", "--porcelain")
     # Covers tracked-file changes plus the untracked-file listing; untracked *content* is not hashed.
     diff = git("diff") + git("diff", "--cached")
-    fingerprint = hashlib.sha256((status + diff).encode("utf-8")).hexdigest()[:16]
+    fingerprint = hashlib.sha256(status + diff).hexdigest()[:16]
 
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
