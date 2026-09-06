@@ -80,6 +80,26 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_run_artifact_and_product_tree_integrity_boundaries_are_documented(self):
+        text = normalized(PLANNING)
+        for required in (
+            "two explicit integrity boundaries",
+            "ignored product files",
+            "content changes to product files already untracked",
+            "artifact manifest",
+            "canonical run-relative path",
+            "byte size",
+            "sha-256",
+            "attempt identity",
+            "`-attempt-n` suffix",
+            "unexpected files",
+            "never attached implicitly",
+            "before run-state schema 2",
+            "human decision to restart",
+            "separately reviewed migration procedure",
+        ):
+            self.assertIn(required, text)
+
     def test_model_diversity_confirmation_gate_is_documented(self):
         text = normalized(PLANNING)
         for required in (

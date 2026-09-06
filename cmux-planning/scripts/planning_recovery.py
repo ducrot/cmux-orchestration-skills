@@ -9,6 +9,13 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from artifact_manifest import (
+    ArtifactIntegrityError,
+    current_attempt,
+    require_current_format,
+    stage_paths,
+    tree_snapshot_path,
+)
 from orchestrator_lib import (
     STAGES,
     PlanningStateCompatibilityError,
@@ -75,8 +82,13 @@ def stage_pass(state: dict[str, Any], stage: str) -> int:
     return value
 
 
-def report_for(run_dir: Path, stage: str, pass_num: int) -> Path:
-    return run_dir / "reports" / f"{stage}-{pass_num}.md"
+def report_for(state: dict[str, Any], stage: str, pass_num: int) -> Path | None:
+    try:
+        return Path(current_attempt(state, stage, pass_num)["paths"]["report"])
+    except ArtifactIntegrityError:
+        # No armed attempt: the pass has no report to gate. Falling back to the first attempt's
+        # location would report a closed attempt's preserved file as the ready current handoff.
+        return None
 
 
 def surface_health(cmux_cmd: str, workspace: str | None, surface: str) -> str:
@@ -454,7 +466,14 @@ def recovery_context(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
                 for path in sorted(root.iterdir())
                 if path.is_file()
             )
-    return {"paths": paths, "history": files, "resume_context": state.get("resume_context")}
+    return {
+        "paths": paths,
+        "history": files,
+        "resume_context": state.get("resume_context"),
+        "artifact_manifest": state.get("artifact_manifest"),
+        "artifact_audit": state.get("artifact_audit"),
+        "attempt_history": state.get("attempt_history"),
+    }
 
 
 def recommended_next(
@@ -514,7 +533,14 @@ def recommended_next(
                     + ["prepare", "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
                 ),
             }
-        prompt = run_dir / "prompts" / f"{stage}-{pass_num}.md"
+        try:
+            attempt_record = current_attempt(state, stage, pass_num)
+        except ArtifactIntegrityError:
+            attempt_record = None
+        if attempt_record is None:
+            prompt = Path(stage_paths(run_dir, stage, pass_num, 1)["prompt"])
+        else:
+            prompt = Path(attempt_record["paths"]["prompt"])
         if not prompt.is_file():
             return {
                 "action": "render the deterministic worker prompt",
@@ -522,6 +548,26 @@ def recommended_next(
                     ["python3", script("render_prompt.py"), "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
                 ),
             }
+        # An interrupted emission can leave the armed attempt's prompt or baseline path occupied by
+        # bytes no manifest entry covers. Both writers then refuse forever, so the only way forward
+        # is a fresh attempt; recommending the failing command instead would loop the operator.
+        rearm = {
+            "action": (
+                "prepare the current stage again: the armed attempt has an unfinalized emission "
+                "and its paths can never be reused"
+            ),
+            "command": shell_join(
+                base + ["prepare", "--run-dir", run_dir, "--stage", stage, "--pass", str(pass_num)]
+            ),
+        }
+        if attempt_record is not None and not attempt_record.get("prompt_manifest_id"):
+            return rearm
+        if not isinstance(state.get("tree_baseline"), dict) and attempt_record is not None:
+            orphan = tree_snapshot_path(
+                run_dir, stage, pass_num, attempt_record["attempt"], "before"
+            )
+            if orphan.exists():
+                return rearm
         if not isinstance(state.get("tree_baseline"), dict):
             return {
                 "action": "capture the immutable launch baseline",
@@ -685,6 +731,10 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         raise ValueError(f"No state.json under {run_dir}")
     state = read_planning_state(state_path)
     events, errors = read_event_stream(run_dir)
+    try:
+        require_current_format(state, source=state_path)
+    except ArtifactIntegrityError as error:
+        errors.append(str(error))
     stage = state.get("current_stage")
     pass_num = None
     if stage in STAGES:
@@ -757,7 +807,10 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         else:
             try:
                 source_pass = stage_pass(state, source_stage)
-                before_path = run_dir / "tree-snapshots" / f"{source_stage}-{source_pass}-before.json"
+                attempt = gate.get("attempt", 1)
+                before_path = tree_snapshot_path(
+                    run_dir, source_stage, source_pass, attempt, "before"
+                )
                 before = read_json(before_path)
                 seals = state.get("tree_baseline_seals")
                 expected = (
@@ -783,7 +836,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         }
     )
     report_path = (
-        report_for(run_dir, stage, pass_num)
+        report_for(state, stage, pass_num)
         if stage in STAGES and pass_num is not None
         else None
     )
@@ -795,6 +848,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         if matching_stage_pass_event(event, "worker.waiting", stage, pass_num)
         and isinstance(event.get("data"), dict)
         and event["data"].get("outcome") == "report"
+        and event["data"].get("report") == str(report_path)
     ] if stage in STAGES and pass_num is not None else []
     captured_digest = captured_reports[-1].get("report_sha256") if captured_reports else None
     report_ready = bool(report_digest and report_digest == captured_digest)

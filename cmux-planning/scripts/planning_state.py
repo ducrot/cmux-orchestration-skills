@@ -14,6 +14,23 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from artifact_manifest import (
+    ArtifactIntegrityError,
+    HANDOFF_KINDS,
+    MANIFEST_VERSION,
+    RUN_STATE_SCHEMA_VERSION,
+    arm_attempt,
+    close_attempt,
+    current_attempt,
+    find_attempt_entry,
+    gate_violation,
+    next_attempt,
+    record_artifact,
+    reviewed_candidate_kind,
+    tree_snapshot_path,
+    verify_entry,
+    verify_or_gate,
+)
 from agents_config import (
     ConfigError,
     add_override_options,
@@ -397,7 +414,6 @@ def reconcile_diversity_confirmation(
 
 
 def activate_snapshot(run_dir: Path, snapshot: dict[str, Any]) -> dict[str, Any]:
-    pointer = persist_snapshot(run_dir, snapshot)
     state_path = run_dir / "state.json"
     latest = read_planning_state(state_path)
     if (
@@ -407,8 +423,26 @@ def activate_snapshot(run_dir: Path, snapshot: dict[str, Any]) -> dict[str, Any]
         raise SnapshotError(
             f"run moved stages while {snapshot['stage']}-{snapshot['pass']} was being prepared"
         )
-    latest["prepared_stage"] = pointer
+    key = f"{snapshot['stage']}-{snapshot['pass']}"
+    expected_attempt = next_attempt(latest, snapshot["stage"], snapshot["pass"])
+    if snapshot.get("attempt") != expected_attempt:
+        raise SnapshotError("prepared snapshot does not carry the next artifact attempt identity")
+    latest["artifact_attempt_counters"][key] = expected_attempt
+    arm_attempt(latest, run_dir, snapshot["stage"], snapshot["pass"], expected_attempt)
+    latest["prepared_stage"] = None
     latest["tree_baseline"] = None
+    latest["updated_at"] = utc_now()
+    # Reserve the attempt and its unique paths before creating the snapshot. If publication is
+    # interrupted, the next prepare advances again instead of adopting or overwriting the orphan.
+    write_json(state_path, latest)
+    append_event(
+        run_dir,
+        "artifact.attempt_armed",
+        "reserved a fresh immutable planning artifact attempt",
+        latest["current_attempt"],
+    )
+    pointer = persist_snapshot(run_dir, snapshot, latest)
+    latest["prepared_stage"] = pointer
     latest["updated_at"] = pointer["prepared_at"]
     write_json(state_path, latest)
     append_event(
@@ -426,7 +460,7 @@ def activate_snapshot(run_dir: Path, snapshot: dict[str, Any]) -> dict[str, Any]
 
 def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage=stage)
     if state.get("current_stage") != stage:
         raise SnapshotError(f"cannot prepare {stage}: current stage is {state.get('current_stage')!r}")
     # Bound to the run's own pass, or a stale number would repoint the handoff paths at the
@@ -443,20 +477,23 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
         )
     if is_tickets:
         approved_spec_from_state(state, run_dir=run_dir)
-    state["prepared_stage"] = None
-    state["tree_baseline"] = None
-    write_json(state_path, state)
+    attempt = next_attempt(state, stage, pass_num)
     _, snapshot = snapshot_from_args(
         args,
         run_dir=run_dir,
         run_id=state["run_id"],
         stage=stage,
         pass_num=pass_num,
+        attempt=attempt,
         config_source=state["configuration_source"],
     )
     state = read_planning_state(state_path)
     if state.get("current_stage") != stage:
         raise SnapshotError(f"run moved stages while {stage}-{pass_num} was being prepared")
+    close_attempt(state, "closed", "stage re-emitted with a fresh artifact attempt")
+    state["prepared_stage"] = None
+    state["tree_baseline"] = None
+    write_json(state_path, state)
     if not reconcile_diversity_confirmation(
         state, snapshot, run_dir=run_dir, state_path=state_path
     ):
@@ -467,11 +504,12 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
 def decide_diversity(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).resolve()
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="diversity-confirmation")
     stage = state.get("current_stage")
     pending = pending_confirmation(state, stage if isinstance(stage, str) else None)
     if pending is None or stage not in {"spec", "tickets"}:
         raise SnapshotError("this run has no pending planning model-diversity confirmation")
+    diversity_pass = stage_pass(state, stage)
     reason = args.reason.strip()
     if not reason or reason == "<human-reason>":
         raise SnapshotError("diversity confirmation requires a human-authored --reason")
@@ -492,7 +530,8 @@ def decide_diversity(args: argparse.Namespace) -> int:
         run_dir=run_dir,
         run_id=state["run_id"],
         stage=stage,
-        pass_num=stage_pass(state, stage),
+        pass_num=diversity_pass,
+        attempt=next_attempt(state, stage, diversity_pass),
         config_source=state["configuration_source"],
         overrides=overrides,
         probe_profiles=bool(probe.get("enabled")),
@@ -595,7 +634,7 @@ def checked_run_id(value: str) -> str:
 def finish_input_validation(run_dir: Path) -> dict[str, Any]:
     """Complete the durable input checkpoint without repeating input or profile validation."""
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="input")
     if state.get("current_stage") != "input":
         raise ConfigError(
             f"input recovery is available only from the input stage, not {state.get('current_stage')!r}"
@@ -614,6 +653,13 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
             snapshot_path = run_dir / relative
             if not snapshot_path.is_file() or sha256_file(snapshot_path) != pointer.get("sha256"):
                 raise ConfigError("validated input snapshot is missing or changed")
+            verify_entry(
+                state,
+                run_dir,
+                pointer.get("manifest_id", ""),
+                expected_kind="stage-snapshot",
+                expected_path=snapshot_path,
+            )
         elif pending is None:
             raise ConfigError(
                 "validated direct input has neither a prepared specification snapshot nor a "
@@ -749,11 +795,15 @@ def init_run(args: argparse.Namespace) -> int:
             run_dir=run_dir,
             configuration_source=str(configuration_source),
         )
-        if diversity_confirmation is None:
-            initial_pointer = persist_snapshot(run_dir, prepared_snapshot)
     target_stage = "awaiting-grilling-revalidation" if grilling else "spec"
     state = {
-        "schema_version": 1,
+        "schema_version": RUN_STATE_SCHEMA_VERSION,
+        "artifact_manifest_version": MANIFEST_VERSION,
+        "artifact_manifest": {},
+        "artifact_attempt_counters": {},
+        "current_attempt": None,
+        "attempt_history": [],
+        "artifact_audit": {"unexpected": [], "stale": [], "checked_at": now},
         "run_id": run_id,
         "created_at": now,
         "repository": str(repository),
@@ -802,6 +852,47 @@ def init_run(args: argparse.Namespace) -> int:
             "prepared_stage": initial_pointer,
         },
     }
+    task_entry = record_artifact(
+        state,
+        run_dir,
+        task_path,
+        kind="task",
+        stage="input",
+        pass_num=1,
+        attempt=1,
+        producer="run.init",
+    )
+    state["task"]["manifest_id"] = task_entry["id"]
+    if grilling_state is not None:
+        json_entry = record_artifact(
+            state,
+            run_dir,
+            run_dir / grilling_state["copied_json"],
+            kind="grilling-source-json",
+            stage="input",
+            pass_num=1,
+            attempt=1,
+            producer="run.init",
+            expected_path=run_dir / "inputs" / "grilling-source.json",
+        )
+        markdown_entry = record_artifact(
+            state,
+            run_dir,
+            run_dir / grilling_state["copied_markdown"],
+            kind="grilling-source-markdown",
+            stage="input",
+            pass_num=1,
+            attempt=1,
+            producer="run.init",
+            expected_path=run_dir / "inputs" / "grilling-source.md",
+        )
+        grilling_state["json_manifest_id"] = json_entry["id"]
+        grilling_state["markdown_manifest_id"] = markdown_entry["id"]
+    if prepared_snapshot is not None and diversity_confirmation is None:
+        state["artifact_attempt_counters"]["spec-1"] = 1
+        arm_attempt(state, run_dir, "spec", 1, 1)
+        initial_pointer = persist_snapshot(run_dir, prepared_snapshot, state)
+        state["initialization"]["prepared_stage"] = initial_pointer
     write_json(run_dir / "state.json", state)
     append_event(
         run_dir,
@@ -824,6 +915,20 @@ def imported_from_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         raise GrillingInputError("run has no grilling input")
     json_path = run_dir / imported["copied_json"]
     markdown_path = run_dir / imported["copied_markdown"]
+    verify_entry(
+        state,
+        run_dir,
+        imported.get("json_manifest_id", ""),
+        expected_kind="grilling-source-json",
+        expected_path=json_path,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        imported.get("markdown_manifest_id", ""),
+        expected_kind="grilling-source-markdown",
+        expected_path=markdown_path,
+    )
     json_bytes = json_path.read_bytes()
     markdown_bytes = markdown_path.read_bytes()
     if sha256_bytes(json_bytes) != imported["source_json_sha256"]:
@@ -855,6 +960,13 @@ def show_revalidation(run_dir: Path) -> int:
         progress_path = run_dir / relative
         if not progress_path.is_file() or sha256_file(progress_path) != progress.get("sha256"):
             raise GrillingInputError("recorded revalidation progress is missing or changed")
+        verify_entry(
+            state,
+            run_dir,
+            progress.get("manifest_id", ""),
+            expected_kind="grilling-revalidation-progress",
+            expected_path=progress_path,
+        )
         recorded_outcomes = read_json(progress_path)
     print(
         json.dumps(
@@ -881,7 +993,7 @@ def show_revalidation(run_dir: Path) -> int:
 def revalidate(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="input")
     if state.get("current_stage") != "awaiting-grilling-revalidation":
         raise GrillingInputError("run is not awaiting grilling revalidation")
     imported = imported_from_state(run_dir, state)
@@ -891,11 +1003,33 @@ def revalidate(args: argparse.Namespace) -> int:
     # Save every human walkthrough checkpoint before complete normalization. A compacted or
     # interrupted conversation can therefore resume the same copied pair without replaying
     # already recorded outcomes, while only the complete validator can advance the run.
-    progress_path = run_dir / "inputs" / "grilling-revalidation-progress.json"
+    progress_attempt = state.get("grilling_revalidation_attempt", 0) + 1
+    state["grilling_revalidation_attempt"] = progress_attempt
+    state["updated_at"] = utc_now()
+    # Reserve the checkpoint identity before writing, so an interrupted write is preserved and
+    # the next human attempt advances to a fresh path rather than overwriting it.
+    write_json(state_path, state)
+    suffix = "" if progress_attempt == 1 else f"-{progress_attempt}"
+    progress_path = run_dir / "inputs" / f"grilling-revalidation-progress{suffix}.json"
+    if progress_path.exists():
+        raise GrillingInputError(
+            f"unexpected file occupies fresh revalidation checkpoint path: {progress_path}"
+        )
     write_json(progress_path, outcomes)
+    progress_entry = record_artifact(
+        state,
+        run_dir,
+        progress_path,
+        kind="grilling-revalidation-progress",
+        stage="input",
+        pass_num=1,
+        attempt=progress_attempt,
+        producer="grilling.revalidation_progress",
+    )
     state["grilling_revalidation"] = {
-        "path": "inputs/grilling-revalidation-progress.json",
-        "sha256": sha256_file(progress_path),
+        "path": str(progress_path.relative_to(run_dir)),
+        "sha256": progress_entry["sha256"],
+        "manifest_id": progress_entry["id"],
         "status": "in-progress",
         "updated_at": utc_now(),
     }
@@ -925,12 +1059,36 @@ def revalidate(args: argparse.Namespace) -> int:
         )
         print("revalidation=refused stage=awaiting-grilling-revalidation")
         return 2
-    normalized_path = run_dir / "grilling-input.json"
+    normalized_attempt = state.get("normalized_grilling_attempt", 0) + 1
+    state["normalized_grilling_attempt"] = normalized_attempt
+    state["updated_at"] = utc_now()
+    write_json(state_path, state)
+    normalized_name = (
+        "grilling-input.json"
+        if normalized_attempt == 1
+        else f"grilling-input-{normalized_attempt}.json"
+    )
+    normalized_path = run_dir / normalized_name
+    if normalized_path.exists():
+        raise GrillingInputError(
+            f"unexpected file occupies fresh normalized grilling path: {normalized_path}"
+        )
     write_json(normalized_path, normalized)
+    normalized_entry = record_artifact(
+        state,
+        run_dir,
+        normalized_path,
+        kind="normalized-grilling-input",
+        stage="input",
+        pass_num=1,
+        attempt=normalized_attempt,
+        producer="grilling.revalidated",
+    )
     state["normalized_grilling_input"] = {
-        "path": "grilling-input.json",
-        "sha256": sha256_file(normalized_path),
+        "path": normalized_name,
+        "sha256": normalized_entry["sha256"],
         "event_id": normalized["revalidation_event_id"],
+        "manifest_id": normalized_entry["id"],
     }
     state["grilling_revalidation"]["status"] = "complete"
     state["current_stage"] = "spec"
@@ -957,6 +1115,7 @@ def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
         return True
     state_path = run_dir / "state.json"
     state = read_planning_state(state_path)
+    attempt = current_attempt(state, stage, pass_num)
     event = add_gate(
         state,
         stage,
@@ -966,10 +1125,13 @@ def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
         head_moved=result["head_moved"],
         head_before=result["head_before"],
         head_after=result["head_after"],
+        attempt=attempt["attempt"],
+        attempt_id=attempt["attempt_id"],
     )
     state["current_stage"] = "integrity-violation"
     state["prepared_stage"] = None
     state["tree_baseline"] = None
+    close_attempt(state, "integrity-violation", "unauthorized Git-visible worker delta")
     write_json(state_path, state)
     append_event(run_dir, "gate", "integrity violation requires human resolution", event)
     return False
@@ -983,7 +1145,8 @@ def ensure_integrity_resolved(run_dir: Path, state: dict[str, Any]) -> None:
     if stage not in STAGES:
         raise IntegrityError("integrity violation has no recoverable stage identity")
     pass_num = stage_pass(state, stage)
-    before_path = run_dir / "tree-snapshots" / f"{stage}-{pass_num}-before.json"
+    attempt = gate.get("attempt", 1)
+    before_path = tree_snapshot_path(run_dir, stage, pass_num, attempt, "before")
     if not before_path.is_file():
         raise IntegrityError("integrity violation has no preserved launch baseline")
     before = read_json(before_path)
@@ -1033,28 +1196,115 @@ def ensure_relaunch_tree_safe(
         )
 
 
+def capture_current_handoffs(
+    run_dir: Path, stage: str, pass_num: int, *, optional: set[str] | None = None
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Finalize the current attempt's exact files before any contract parser consumes them."""
+    state_path = run_dir / "state.json"
+    state = read_planning_state(state_path)
+    attempt = current_attempt(state, stage, pass_num)
+    optional = optional or set()
+    captured: dict[str, dict[str, Any]] = {}
+    for name, expected in attempt["paths"].items():
+        if name == "prompt":
+            continue
+        if name not in HANDOFF_KINDS:
+            raise ArtifactIntegrityError(f"armed attempt declares an unknown handoff role: {name}")
+        path = Path(expected)
+        if name in optional and (not path.is_file() or path.stat().st_size == 0):
+            continue
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ContractError(f"{stage} {name} handoff is missing or empty: {path}")
+        existing = find_attempt_entry(state, HANDOFF_KINDS[name], attempt["attempt_id"])
+        if existing is not None:
+            entry = verify_entry(
+                state,
+                run_dir,
+                existing["id"],
+                expected_kind=HANDOFF_KINDS[name],
+                expected_path=expected,
+            )
+        else:
+            entry = record_artifact(
+                state,
+                run_dir,
+                path,
+                kind=HANDOFF_KINDS[name],
+                stage=stage,
+                pass_num=pass_num,
+                attempt=attempt["attempt"],
+                producer="worker.handoff_captured",
+                expected_path=expected,
+            )
+        captured[name] = entry
+    state["current_attempt"]["captured_manifest_ids"] = {
+        name: entry["id"] for name, entry in captured.items()
+    }
+    write_json(state_path, state)
+    append_event(
+        run_dir,
+        "worker.handoff_captured",
+        "captured stable non-empty worker handoff bytes before validation",
+        {
+            "stage": stage,
+            "pass": pass_num,
+            "attempt": attempt["attempt"],
+            "attempt_id": attempt["attempt_id"],
+            "artifacts": {
+                name: {
+                    "manifest_id": entry["id"],
+                    "path": entry["path"],
+                    "sha256": entry["sha256"],
+                }
+                for name, entry in captured.items()
+            },
+        },
+    )
+    return state, captured
+
+
+def close_current_attempt(
+    run_dir: Path, state: dict[str, Any], status: str, reason: str
+) -> None:
+    closed = close_attempt(state, status, reason)
+    state["prepared_stage"] = None
+    state["tree_baseline"] = None
+    state["updated_at"] = utc_now()
+    write_json(run_dir / "state.json", state)
+    if closed is not None:
+        append_event(
+            run_dir,
+            "artifact.attempt_closed",
+            "closed the immutable planning artifact attempt",
+            closed,
+        )
+
+
 def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
     pass_num = state["spec_pass"]
     if not integrity_gate(run_dir, "spec", pass_num):
         print("gate=hitl reason=integrity-violation")
         return 2
-    draft = run_dir / "artifacts" / f"spec-{pass_num}.md"
-    report = run_dir / "reports" / f"spec-{pass_num}.md"
+    state, captured = capture_current_handoffs(
+        run_dir, "spec", pass_num, optional={"draft"}
+    )
+    paths = current_attempt(state, "spec", pass_num)["paths"]
+    draft = Path(paths["draft"])
+    report = Path(paths["report"])
     result = validate_author_report(report, draft)
+    result["report"] = str(report)
+    result["report_manifest_id"] = captured["report"]["id"]
     if result["result"] == "BLOCKED":
         state = read_planning_state(run_dir / "state.json")
         state["current_stage"] = "spec-blocked"
-        state["prepared_stage"] = None
-        state["tree_baseline"] = None
         gate = add_gate(state, "spec", "blocked", "spec author reported a blocker")
-        write_json(run_dir / "state.json", state)
+        close_current_attempt(run_dir, state, "blocked", "spec author reported a blocker")
         append_event(run_dir, "gate", "spec author reported a blocker", gate)
         return 2
     state = read_planning_state(run_dir / "state.json")
+    result["draft_manifest_id"] = captured["draft"]["id"]
     state["author_spec"] = result
     state["current_stage"] = "spec-review"
-    state["prepared_stage"] = None
-    state["tree_baseline"] = None
     gate = add_gate(
         state,
         "spec",
@@ -1062,7 +1312,7 @@ def accept_spec_author(args: argparse.Namespace, run_dir: Path, state: dict[str,
         "author report validated; independent review required",
         draft_sha256=result["draft_sha256"],
     )
-    write_json(run_dir / "state.json", state)
+    close_current_attempt(run_dir, state, "accepted", "spec author handoff accepted")
     append_event(run_dir, "gate", "author report validated; independent review required", gate)
     review_pass = stage_pass(state, "spec-review")
     pointer = prepare_stage(args, run_dir, "spec-review", review_pass)
@@ -1080,9 +1330,13 @@ def accept_tickets_author(
     approved = state.get("approved_spec")
     if not isinstance(approved, dict):
         raise ContractError("tickets author gate has no approved specification")
-    proposal = run_dir / "artifacts" / f"tickets-{pass_num}.json"
-    summary = run_dir / "artifacts" / f"tickets-{pass_num}.md"
-    report = run_dir / "reports" / f"tickets-{pass_num}.md"
+    state, captured = capture_current_handoffs(
+        run_dir, "tickets", pass_num, optional={"proposal", "summary"}
+    )
+    paths = current_attempt(state, "tickets", pass_num)["paths"]
+    proposal = Path(paths["proposal"])
+    summary = Path(paths["summary"])
+    report = Path(paths["report"])
     result = validate_ticket_author_report(
         report,
         proposal,
@@ -1091,15 +1345,17 @@ def accept_tickets_author(
         expected_spec_sha256=approved["sha256"],
     )
     state = read_planning_state(run_dir / "state.json")
-    state["prepared_stage"] = None
-    state["tree_baseline"] = None
+    result["report"] = str(report)
+    result["report_manifest_id"] = captured["report"]["id"]
     if result["result"] == "BLOCKED":
         state["current_stage"] = "tickets-blocked"
         gate = add_gate(state, "tickets", "blocked", "tickets author reported a blocker")
-        write_json(run_dir / "state.json", state)
+        close_current_attempt(run_dir, state, "blocked", "tickets author reported a blocker")
         append_event(run_dir, "gate", "tickets author reported a blocker", gate)
         print("gate=blocked")
         return 2
+    result["proposal_manifest_id"] = captured["proposal"]["id"]
+    result["summary_manifest_id"] = captured["summary"]["id"]
     state["author_tickets"] = result
     state["current_stage"] = "tickets-review"
     gate = add_gate(
@@ -1112,7 +1368,7 @@ def accept_tickets_author(
         ticket_count=result["ticket_count"],
         ready_frontier=result["ready_frontier"],
     )
-    write_json(run_dir / "state.json", state)
+    close_current_attempt(run_dir, state, "accepted", "tickets author handoff accepted")
     append_event(run_dir, "gate", "ticket proposal validated; independent review required", gate)
     review_pass = stage_pass(state, "tickets-review")
     pointer = prepare_stage(args, run_dir, "tickets-review", review_pass)
@@ -1127,12 +1383,23 @@ def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str,
         return 2
     author = state.get("author_spec")
     draft = Path(author["draft"]) if isinstance(author, dict) and author.get("draft") else None
-    candidate = run_dir / "artifacts" / f"spec-reviewed-{pass_num}.md"
-    report = run_dir / "reports" / f"spec-review-{pass_num}.md"
     # Fail closed: `expected_input_sha256=None` means "skip the binding check", so a missing
     # author gate would silently let a reviewer certify a draft it rewrote itself.
     if not isinstance(author, dict) or not author.get("draft_sha256") or draft is None:
         raise ContractError("review cannot be accepted without the author gate's draft digest")
+    verify_entry(
+        state,
+        run_dir,
+        author.get("draft_manifest_id", ""),
+        expected_kind="spec-draft",
+        expected_path=draft,
+    )
+    state, captured = capture_current_handoffs(
+        run_dir, "spec-review", pass_num, optional={"candidate"}
+    )
+    paths = current_attempt(state, "spec-review", pass_num)["paths"]
+    candidate = Path(paths["candidate"])
+    report = Path(paths["report"])
     result = validate_review_report(
         report,
         draft,
@@ -1140,15 +1407,21 @@ def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str,
         expected_input_sha256=author["draft_sha256"],
     )
     state = read_planning_state(run_dir / "state.json")
-    state["prepared_stage"] = None
-    state["tree_baseline"] = None
+    result["input_manifest_id"] = author["draft_manifest_id"]
+    result["report"] = str(report)
+    result["report_manifest_id"] = captured["report"]["id"]
     if result["verdict"] == "blocked":
         state["current_stage"] = "spec-review-blocked"
         gate = add_gate(state, "spec-review", "blocked", "review requires a human-owned decision")
-        write_json(run_dir / "state.json", state)
+        close_current_attempt(run_dir, state, "blocked", "spec review reported a blocker")
         append_event(run_dir, "gate", "review requires a human-owned decision", {**gate, **result})
         print("gate=blocked")
         return 2
+    result["candidate_manifest_id"] = (
+        author["draft_manifest_id"]
+        if result["verdict"] == "pass"
+        else captured["candidate"]["id"]
+    )
     state["reviewed_spec"] = result
     state["current_stage"] = "awaiting-spec-approval"
     gate = add_gate(
@@ -1159,7 +1432,7 @@ def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str,
         verdict=result["verdict"],
         candidate_sha256=result["candidate_sha256"],
     )
-    write_json(run_dir / "state.json", state)
+    close_current_attempt(run_dir, state, "accepted", "spec review handoff accepted")
     append_event(
         run_dir,
         "gate",
@@ -1181,10 +1454,28 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
         raise ContractError("tickets review gate requires approved spec and author identities")
     proposal = Path(author["proposal"])
     summary = Path(author["summary"])
+    verify_entry(
+        state,
+        run_dir,
+        author.get("proposal_manifest_id", ""),
+        expected_kind="tickets-proposal",
+        expected_path=proposal,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        author.get("summary_manifest_id", ""),
+        expected_kind="tickets-summary",
+        expected_path=summary,
+    )
     if not summary.is_file() or sha256_file(summary) != author["summary_sha256"]:
         raise ContractError("human-readable ticket summary changed after the author gate")
-    candidate = run_dir / "artifacts" / f"tickets-reviewed-{pass_num}.json"
-    report = run_dir / "reports" / f"tickets-review-{pass_num}.md"
+    state, captured = capture_current_handoffs(
+        run_dir, "tickets-review", pass_num, optional={"candidate"}
+    )
+    paths = current_attempt(state, "tickets-review", pass_num)["paths"]
+    candidate = Path(paths["candidate"])
+    report = Path(paths["report"])
     result = validate_ticket_review_report(
         report,
         proposal,
@@ -1194,8 +1485,9 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
         expected_spec_sha256=approved["sha256"],
     )
     state = read_planning_state(run_dir / "state.json")
-    state["prepared_stage"] = None
-    state["tree_baseline"] = None
+    result["input_manifest_id"] = author["proposal_manifest_id"]
+    result["report"] = str(report)
+    result["report_manifest_id"] = captured["report"]["id"]
     if result["verdict"] == "blocked":
         state["current_stage"] = "tickets-review-blocked"
         gate = add_gate(
@@ -1204,7 +1496,7 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
             "blocked",
             "ticket review requires a human-owned decision or approved-spec correction",
         )
-        write_json(run_dir / "state.json", state)
+        close_current_attempt(run_dir, state, "blocked", "tickets review reported a blocker")
         append_event(
             run_dir,
             "gate",
@@ -1213,6 +1505,11 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
         )
         print("gate=blocked")
         return 2
+    result["candidate_manifest_id"] = (
+        author["proposal_manifest_id"]
+        if result["verdict"] == "pass"
+        else captured["candidate"]["id"]
+    )
     state["reviewed_tickets"] = result
     state["current_stage"] = "awaiting-ticket-approval"
     gate = add_gate(
@@ -1225,7 +1522,7 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
         ticket_count=result["ticket_count"],
         ready_frontier=result["ready_frontier"],
     )
-    write_json(run_dir / "state.json", state)
+    close_current_attempt(run_dir, state, "accepted", "tickets review handoff accepted")
     append_event(
         run_dir,
         "gate",
@@ -1242,11 +1539,30 @@ REVIEW_GATES = {"spec-review": accept_spec_review, "tickets-review": accept_tick
 
 def _accept(args: argparse.Namespace, gates: dict[str, Any], label: str) -> int:
     run_dir = Path(args.run_dir)
-    state = read_planning_state(run_dir / "state.json")
+    state = verify_or_gate(run_dir)
     stage = state.get("current_stage")
     if stage not in gates:
         raise ContractError(f"cannot accept {label} from stage {stage!r}")
-    return gates[stage](args, run_dir, state)
+    try:
+        return gates[stage](args, run_dir, state)
+    except ArtifactIntegrityError as error:
+        gate_violation(run_dir, error, stage=stage)
+        raise
+    except ContractError:
+        latest = read_planning_state(run_dir / "state.json")
+        current = latest.get("current_attempt")
+        if (
+            latest.get("current_stage") == stage
+            and isinstance(current, dict)
+            and current.get("status") == "armed"
+        ):
+            close_current_attempt(
+                run_dir,
+                latest,
+                "malformed",
+                f"{label} failed deterministic validation; a fresh attempt is required",
+            )
+        raise
 
 
 def accept_author(args: argparse.Namespace) -> int:
@@ -1258,14 +1574,26 @@ def accept_review(args: argparse.Namespace) -> int:
 
 
 def approval_view(run_dir: Path) -> int:
-    state = read_planning_state(run_dir / "state.json")
+    state = verify_or_gate(run_dir, stage="spec-approval")
     if state.get("current_stage") != "awaiting-spec-approval":
         raise ContractError("approval walkthrough is available only after a valid review")
     reviewed = state["reviewed_spec"]
-    pass_num = state["spec_pass"]
-    review_pass = stage_pass(state, "spec-review")
     draft = Path(state["author_spec"]["draft"])
     candidate = Path(reviewed["candidate"])
+    verify_entry(
+        state,
+        run_dir,
+        state["author_spec"].get("draft_manifest_id", ""),
+        expected_kind="spec-draft",
+        expected_path=draft,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        reviewed.get("candidate_manifest_id", ""),
+        expected_kind=reviewed_candidate_kind(reviewed, "spec-draft"),
+        expected_path=candidate,
+    )
     draft_text = draft.read_text(encoding="utf-8")
     candidate_text = candidate.read_text(encoding="utf-8")
     candidate_contract = validate_spec(candidate, require_closed_decisions=True)
@@ -1273,8 +1601,24 @@ def approval_view(run_dir: Path) -> int:
         raise ContractError("reviewed specification candidate changed before approval walkthrough")
     if sha256_file(draft) != state["author_spec"].get("draft_sha256"):
         raise ContractError("author specification changed before approval walkthrough")
-    author_report = sections((run_dir / "reports" / f"spec-{pass_num}.md").read_text(encoding="utf-8"))
-    review_report = sections((run_dir / "reports" / f"spec-review-{review_pass}.md").read_text(encoding="utf-8"))
+    author_report_path = Path(state["author_spec"]["report"])
+    review_report_path = Path(reviewed["report"])
+    verify_entry(
+        state,
+        run_dir,
+        state["author_spec"].get("report_manifest_id", ""),
+        expected_kind="worker-report",
+        expected_path=author_report_path,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        reviewed.get("report_manifest_id", ""),
+        expected_kind="worker-report",
+        expected_path=review_report_path,
+    )
+    author_report = sections(author_report_path.read_text(encoding="utf-8"))
+    review_report = sections(review_report_path.read_text(encoding="utf-8"))
     normalized_pointer = state.get("normalized_grilling_input")
     normalized = read_json(run_dir / normalized_pointer["path"]) if normalized_pointer else None
     payload = {
@@ -1328,7 +1672,7 @@ def reset_ticket_state(state: dict[str, Any]) -> None:
 def approval(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="spec-approval")
     if args.decision == "approve":
         if state.get("current_stage") != "awaiting-spec-approval" and isinstance(
             state.get("approved_spec"), dict
@@ -1336,6 +1680,13 @@ def approval(args: argparse.Namespace) -> int:
             approved = state["approved_spec"]
             reviewed = state.get("reviewed_spec")
             candidate = Path(approved["path"])
+            verify_entry(
+                state,
+                run_dir,
+                approved.get("manifest_id", ""),
+                expected_kind="approved-spec",
+                expected_path=candidate,
+            )
             validated = validate_spec(candidate, require_closed_decisions=True)
             if (
                 validated["sha256"] != approved.get("sha256")
@@ -1353,13 +1704,33 @@ def approval(args: argparse.Namespace) -> int:
         if not isinstance(reviewed, dict):
             raise ContractError("run has no reviewed specification candidate")
         candidate = Path(reviewed["candidate"])
+        candidate_entry = verify_entry(
+            state,
+            run_dir,
+            reviewed.get("candidate_manifest_id", ""),
+            expected_kind=reviewed_candidate_kind(reviewed, "spec-draft"),
+            expected_path=candidate,
+        )
         validated = validate_spec(candidate, require_closed_decisions=True)
         if validated["sha256"] != reviewed["candidate_sha256"]:
             raise ContractError("reviewed candidate changed after review")
         now = utc_now()
+        approved_entry = record_artifact(
+            state,
+            run_dir,
+            candidate,
+            kind="approved-spec",
+            stage="spec-approval",
+            pass_num=state["spec_pass"],
+            attempt=candidate_entry["attempt"],
+            producer="spec.approved",
+            expected_path=candidate,
+            source_manifest_id=candidate_entry["id"],
+        )
         state["approved_spec"] = {
             "path": str(candidate),
             "sha256": validated["sha256"],
+            "manifest_id": approved_entry["id"],
             "approved_at": now,
         }
         state["current_stage"] = "tickets"
@@ -1444,7 +1815,7 @@ def bound_proposal(approved_spec: dict, path: Path, digest: str, mismatch: str) 
 
 
 def ticket_approval_view(run_dir: Path) -> int:
-    state = read_planning_state(run_dir / "state.json")
+    state = verify_or_gate(run_dir, stage="ticket-approval")
     if state.get("current_stage") != "awaiting-ticket-approval":
         raise ContractError("ticket approval walkthrough is available only after a valid review")
     reviewed = state.get("reviewed_tickets")
@@ -1453,18 +1824,37 @@ def ticket_approval_view(run_dir: Path) -> int:
     if not all(isinstance(value, dict) for value in (reviewed, approved, author)):
         raise ContractError("ticket approval state is incomplete")
     candidate = Path(reviewed["candidate"])
+    verify_entry(
+        state,
+        run_dir,
+        reviewed.get("candidate_manifest_id", ""),
+        expected_kind=reviewed_candidate_kind(reviewed, "tickets-proposal"),
+        expected_path=candidate,
+    )
     proposal = bound_proposal(
         approved, candidate, reviewed["candidate_sha256"], "reviewed ticket candidate changed after review"
     )
     author_proposal = Path(author["proposal"])
+    verify_entry(
+        state,
+        run_dir,
+        author.get("proposal_manifest_id", ""),
+        expected_kind="tickets-proposal",
+        expected_path=author_proposal,
+    )
     if not author_proposal.is_file() or sha256_file(author_proposal) != author["proposal_sha256"]:
         raise ContractError("ticket author proposal changed after its own gate")
     author_text = json.dumps(read_json(author_proposal), indent=2, sort_keys=True) + "\n"
     candidate_text = json.dumps(read_json(candidate), indent=2, sort_keys=True) + "\n"
-    review_pass = stage_pass(state, "tickets-review")
-    review_report = sections(
-        (run_dir / "reports" / f"tickets-review-{review_pass}.md").read_text(encoding="utf-8")
+    review_report_path = Path(reviewed["report"])
+    verify_entry(
+        state,
+        run_dir,
+        reviewed.get("report_manifest_id", ""),
+        expected_kind="worker-report",
+        expected_path=review_report_path,
     )
+    review_report = sections(review_report_path.read_text(encoding="utf-8"))
     payload = {
         "verdict": reviewed["verdict"],
         "candidate_path": str(candidate.resolve()),
@@ -1531,7 +1921,7 @@ def checked_publication_target(
 def ticket_approval(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="ticket-approval")
     if args.decision == "revise":
         if state.get("current_stage") not in {
             "awaiting-ticket-approval",
@@ -1600,6 +1990,20 @@ def ticket_approval(args: argparse.Namespace) -> int:
         if not isinstance(approved_spec, dict) or not isinstance(approved_tickets, dict):
             raise ContractError("recorded ticket approval is incomplete")
         spec_path = Path(approved_spec["path"])
+        verify_entry(
+            state,
+            run_dir,
+            approved_spec.get("manifest_id", ""),
+            expected_kind="approved-spec",
+            expected_path=spec_path,
+        )
+        verify_entry(
+            state,
+            run_dir,
+            approved_tickets.get("manifest_id", ""),
+            expected_kind="approved-tickets",
+            expected_path=approved_tickets["path"],
+        )
         if not spec_path.is_file() or sha256_file(spec_path) != approved_spec.get("sha256"):
             raise ContractError("recorded ticket approval is stale because the approved spec changed")
         proposal = bound_proposal(
@@ -1646,6 +2050,13 @@ def ticket_approval(args: argparse.Namespace) -> int:
     if not isinstance(reviewed, dict) or not isinstance(approved_spec, dict):
         raise ContractError("ticket approval state is incomplete")
     candidate = Path(reviewed["candidate"])
+    candidate_entry = verify_entry(
+        state,
+        run_dir,
+        reviewed.get("candidate_manifest_id", ""),
+        expected_kind=reviewed_candidate_kind(reviewed, "tickets-proposal"),
+        expected_path=candidate,
+    )
     proposal = bound_proposal(
         approved_spec,
         candidate,
@@ -1690,9 +2101,22 @@ def ticket_approval(args: argparse.Namespace) -> int:
             raise
     now = utc_now()
     state = read_planning_state(state_path)
+    approved_tickets_entry = record_artifact(
+        state,
+        run_dir,
+        candidate,
+        kind="approved-tickets",
+        stage="ticket-approval",
+        pass_num=state["tickets_pass"],
+        attempt=candidate_entry["attempt"],
+        producer="tickets.approved",
+        expected_path=candidate,
+        source_manifest_id=candidate_entry["id"],
+    )
     state["approved_tickets"] = {
         "path": str(candidate.resolve()),
         "sha256": proposal["sha256"],
+        "manifest_id": approved_tickets_entry["id"],
         "source_spec_sha256": proposal["source_spec_sha256"],
         "approved_at": now,
         "target": str(target),
@@ -1723,7 +2147,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
 
 def publish_tracker(run_dir: Path) -> int:
     state_path = run_dir / "state.json"
-    state = read_planning_state(state_path)
+    state = verify_or_gate(run_dir, stage="publish")
     if state.get("current_stage") == "complete":
         raise ContractError("this planning run already published its approved tracker")
     if state.get("current_stage") != "ready-to-publish":
@@ -1734,6 +2158,20 @@ def publish_tracker(run_dir: Path) -> int:
     if not all(isinstance(value, dict) for value in (approved_spec, approved_tickets, staged_state)):
         raise ContractError("publication state is incomplete")
     spec_path = Path(approved_spec["path"])
+    verify_entry(
+        state,
+        run_dir,
+        approved_spec.get("manifest_id", ""),
+        expected_kind="approved-spec",
+        expected_path=spec_path,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        approved_tickets.get("manifest_id", ""),
+        expected_kind="approved-tickets",
+        expected_path=approved_tickets["path"],
+    )
     if not spec_path.is_file() or sha256_file(spec_path) != approved_spec["sha256"]:
         raise ContractError("approved specification identity changed before publication")
     proposal = bound_proposal(
@@ -1819,34 +2257,36 @@ def publish_tracker(run_dir: Path) -> int:
 
 
 def resume_inputs(run_dir: Path, state: dict[str, Any]) -> list[dict[str, str]]:
-    """Freeze the useful prior handoffs into the new prompt without copying or rewriting them."""
-    candidates: list[tuple[str, str]] = []
-    for key, label, path_key in (
-        ("author_spec", "prior specification author handoff", "draft"),
-        ("reviewed_spec", "prior reviewed specification candidate", "candidate"),
-        ("approved_spec", "approved specification", "path"),
-        ("author_tickets", "prior ticket author proposal", "proposal"),
-        ("reviewed_tickets", "prior reviewed ticket candidate", "candidate"),
-    ):
-        pointer = state.get(key)
-        if isinstance(pointer, dict) and isinstance(pointer.get(path_key), str):
-            candidates.append((label, pointer[path_key]))
-    for directory in (run_dir / "reports", run_dir / "artifacts"):
-        if directory.is_dir():
-            candidates.extend(("preserved run handoff", str(path)) for path in sorted(directory.iterdir()) if path.is_file())
+    """Attach only finalized manifest identities; unexpected files remain audit evidence."""
+    labels = {
+        "spec-draft": "prior specification author handoff",
+        "reviewed-candidate": "prior reviewed candidate",
+        "approved-spec": "approved specification",
+        "tickets-proposal": "prior ticket author proposal",
+        "tickets-summary": "prior ticket author summary",
+        "worker-report": "prior worker report",
+    }
+    candidates = [
+        (labels[entry["kind"]], entry)
+        for entry in state.get("artifact_manifest", {}).values()
+        if isinstance(entry, dict) and entry.get("kind") in labels and entry.get("finalized")
+    ]
     result: list[dict[str, str]] = []
     seen: set[str] = set()
-    root = run_dir.resolve()
-    for label, value in candidates:
-        path = Path(value).resolve()
-        if str(path) in seen or not path.is_file():
+    for label, entry in sorted(candidates, key=lambda item: item[1]["id"]):
+        path = (run_dir / entry["path"]).resolve()
+        if str(path) in seen:
             continue
-        try:
-            path.relative_to(root)
-        except ValueError:
-            continue
+        verify_entry(state, run_dir, entry["id"], expected_path=path)
         seen.add(str(path))
-        result.append({"label": label, "path": str(path), "sha256": sha256_file(path)})
+        result.append(
+            {
+                "label": label,
+                "path": str(path),
+                "sha256": entry["sha256"],
+                "manifest_id": entry["id"],
+            }
+        )
     return result
 
 
@@ -1864,6 +2304,8 @@ def resume_run(args: argparse.Namespace) -> int:
             )
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
+
+    verify_or_gate(run_dir, stage="resume")
 
     if args.decision == "extend":
         if not args.reason:

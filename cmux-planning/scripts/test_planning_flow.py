@@ -193,9 +193,11 @@ class PlanningFlow(unittest.TestCase):
 
     def write_author_handoff(self, pass_num: int = 1, run_dir: Path | None = None) -> Path:
         selected = run_dir or self.run_dir
-        draft = selected / "artifacts" / f"spec-{pass_num}.md"
+        state = json.loads((selected / "state.json").read_text(encoding="utf-8"))
+        paths = state["current_attempt"]["paths"]
+        draft = Path(paths["draft"])
         draft.write_text(spec(), encoding="utf-8")
-        report = selected / "reports" / f"spec-{pass_num}.md"
+        report = Path(paths["report"])
         report.write_text(
             f"""## Result
 PASS
@@ -262,14 +264,15 @@ PASS
     def write_tickets_handoff(self, pass_num: int = 1, *, data: dict | None = None) -> dict:
         state = json.loads((self.run_dir / "state.json").read_text())
         spec_path = Path(state["approved_spec"]["path"])
-        proposal_path = self.run_dir / "artifacts" / f"tickets-{pass_num}.json"
+        paths = state["current_attempt"]["paths"]
+        proposal_path = Path(paths["proposal"])
         proposal_path.write_text(
             json.dumps(data or tracker_proposal(spec_path), indent=2) + "\n", encoding="utf-8"
         )
         result = validate_proposal(proposal_path)
-        summary = self.run_dir / "artifacts" / f"tickets-{pass_num}.md"
+        summary = Path(paths["summary"])
         summary.write_text(render_summary(result), encoding="utf-8")
-        report = self.run_dir / "reports" / f"tickets-{pass_num}.md"
+        report = Path(paths["report"])
         frontier = "\n".join(f"- {issue_id}" for issue_id in result["ready_frontier"])
         report.write_text(
             f"""## Result
@@ -311,7 +314,7 @@ sha256 {state['approved_spec']['sha256']}
     ) -> None:
         state = json.loads((self.run_dir / "state.json").read_text())
         digest = state["author_tickets"]["proposal_sha256"]
-        (self.run_dir / "reports" / f"tickets-review-{state['tickets_pass']}.md").write_text(
+        Path(state["current_attempt"]["paths"]["report"]).write_text(
             f"""## Verdict
 {verdict}
 
@@ -351,10 +354,11 @@ sha256 {resulting_digest or digest}
 
         surface = json.loads(pane("launch", "--anchor", "CALLER").stdout)["surface_id"]
         pane("start-agent", "--surface", surface, "--settle-seconds", "0")
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         pane(
             "deliver",
             "--surface", surface,
-            "--prompt", str(self.run_dir / "prompts" / f"{stage}-{pass_num}.md"),
+            "--prompt", state["tree_baseline"]["prompt_path"],
             "--settle-seconds", "0",
         )
 
@@ -402,6 +406,16 @@ sha256 {resulting_digest or digest}
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["artifact_manifest_version"], 1)
+        self.assertEqual(state["current_attempt"]["attempt_id"], "spec-1-attempt-1")
+        task_entries = [
+            entry
+            for entry in state["artifact_manifest"].values()
+            if entry["kind"] == "task"
+        ]
+        self.assertEqual(len(task_entries), 1)
+        self.assertEqual(task_entries[0]["path"], "task.md")
+        self.assertTrue(task_entries[0]["finalized"])
         self.assertEqual(state["current_stage"], "spec")
         self.assertEqual((self.run_dir / "task.md").read_text(), "Bitte sichere Planung erstellen.")
         self.assertIsNotNone(state["prepared_stage"])
@@ -455,6 +469,367 @@ sha256 {resulting_digest or digest}
         self.assertEqual(final["current_stage"], "tickets")
         self.assertEqual(final["approved_spec"]["sha256"], digest)
         self.assertEqual(final["prepared_stage"]["stage"], "tickets")
+
+    def test_manifest_binds_every_spec_flow_artifact_with_complete_identity(self):
+        self.approve_spec_to_tickets()
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        entries = list(state["artifact_manifest"].values())
+        kinds = {entry["kind"] for entry in entries}
+        self.assertTrue(
+            {
+                "task",
+                "stage-snapshot",
+                "prompt",
+                "tree-baseline",
+                "tree-verification",
+                "spec-draft",
+                "worker-report",
+                "approved-spec",
+            }.issubset(kinds)
+        )
+        for entry in entries:
+            self.assertEqual(
+                set(entry).issuperset(
+                    {
+                        "id",
+                        "path",
+                        "kind",
+                        "stage",
+                        "pass",
+                        "attempt",
+                        "attempt_id",
+                        "byte_size",
+                        "sha256",
+                        "producer",
+                        "finalized",
+                        "finalized_at",
+                    }
+                ),
+                True,
+                entry,
+            )
+            self.assertFalse(Path(entry["path"]).is_absolute())
+            self.assertNotIn("..", Path(entry["path"]).parts)
+            self.assertGreater(entry["byte_size"], 0)
+            self.assertRegex(entry["sha256"], r"\A[0-9a-f]{64}\Z")
+            self.assertTrue(entry["finalized"])
+        approved = state["approved_spec"]
+        approved_entry = state["artifact_manifest"][approved["manifest_id"]]
+        reviewed_entry = state["artifact_manifest"][approved_entry["source_manifest_id"]]
+        self.assertEqual(approved_entry["sha256"], reviewed_entry["sha256"])
+        self.assertEqual(approved_entry["path"], reviewed_entry["path"])
+
+    def test_tampered_or_missing_finalized_prompt_gates_hitl_without_rearming(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        prompt = Path(state["current_attempt"]["paths"]["prompt"])
+        original = prompt.read_bytes()
+        rerendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(rerendered.returncode, 0, rerendered.stderr)
+        self.assertEqual(prompt.read_bytes(), original)
+        prompt.write_bytes(b"")
+
+        refused = self.cli(
+            TREE,
+            "baseline",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+        )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("empty", refused.stderr)
+        failed = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["current_stage"], "integrity-violation")
+        self.assertEqual(failed["attempt_history"][-1]["status"], "integrity-violation")
+        self.assertIsNone(failed["current_attempt"])
+        self.assertEqual(
+            failed["artifact_manifest"][state["current_attempt"]["prompt_manifest_id"]][
+                "sha256"
+            ],
+            hashlib.sha256(original).hexdigest(),
+        )
+
+    def test_missing_task_and_artifact_kind_substitution_gate_before_transition(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        (self.run_dir / "task.md").unlink()
+        missing = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("missing", missing.stderr)
+        self.assertEqual(
+            json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+                "current_stage"
+            ],
+            "integrity-violation",
+        )
+
+        second = self.runs / "plan-kind"
+        initialized = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Plan kind binding",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "plan-kind",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+            "--new-run",
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        second_state_path = second / "state.json"
+        second_state = json.loads(second_state_path.read_text(encoding="utf-8"))
+        manifest_id = second_state["task"]["manifest_id"]
+        second_state["artifact_manifest"][manifest_id]["kind"] = "prompt"
+        second_state_path.write_text(json.dumps(second_state), encoding="utf-8")
+        substituted = self.cli(
+            STATE, "prepare", "--run-dir", str(second), "--stage", "spec", "--pass", "1"
+        )
+        self.assertNotEqual(substituted.returncode, 0)
+        self.assertIn("manifest identity was substituted", substituted.stderr)
+
+    def test_directory_substitution_of_finalized_artifact_records_integrity_gate(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        state_path = self.run_dir / "state.json"
+        before = json.loads(state_path.read_text(encoding="utf-8"))
+        task_manifest_id = before["task"]["manifest_id"]
+        task_identity = dict(before["artifact_manifest"][task_manifest_id])
+        task_path = self.run_dir / task_identity["path"]
+        task_path.unlink()
+        task_path.mkdir()
+
+        refused = self.cli(
+            TREE,
+            "baseline",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+        )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("not a regular file", refused.stderr)
+        failed = json.loads(state_path.read_text(encoding="utf-8"))
+        violation = failed["artifact_integrity_violation"]
+        self.assertEqual(failed["current_stage"], "integrity-violation")
+        self.assertEqual(violation["decision"], "hitl")
+        self.assertEqual(violation["reason"], "run artifact integrity violation")
+        self.assertIn("not a regular file", violation["error"])
+        self.assertEqual(failed["gate_decisions"][-1], violation)
+        self.assertEqual(failed["attempt_history"][-1]["status"], "integrity-violation")
+        self.assertIsNone(failed["current_attempt"])
+        self.assertEqual(failed["artifact_manifest"][task_manifest_id], task_identity)
+        self.assertTrue(task_path.is_dir())
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(events[-1]["type"], "artifact.integrity_violation")
+
+    def test_artifact_path_substitution_and_symlink_escape_gate_before_launch(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        outside = self.root / "outside-report.md"
+        outside.write_text("untrusted\n", encoding="utf-8")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["current_attempt"]["paths"]["report"] = str(outside)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        substituted = self.cli(
+            PANE,
+            "--cmux-cmd",
+            str(self.cmux),
+            "launch",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--anchor",
+            "CALLER",
+        )
+
+        self.assertNotEqual(substituted.returncode, 0)
+        self.assertIn("escapes the pinned planning run", substituted.stderr)
+        self.assertEqual(
+            json.loads(state_path.read_text(encoding="utf-8"))["current_stage"],
+            "integrity-violation",
+        )
+
+        # A separate run proves filesystem resolution, not just JSON path validation.
+        second = self.runs / "plan-symlink"
+        initialized = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Plan symlink safety",
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "plan-symlink",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+            "--new-run",
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.assertEqual(
+            self.cli(RENDER, "--run-dir", str(second), "--stage", "spec", "--pass", "1").returncode,
+            0,
+        )
+        second_state = json.loads((second / "state.json").read_text(encoding="utf-8"))
+        second_prompt = Path(second_state["current_attempt"]["paths"]["prompt"])
+        second_prompt.unlink()
+        second_prompt.symlink_to(outside)
+        escaped = self.cli(
+            TREE, "baseline", "--run-dir", str(second), "--stage", "spec", "--pass", "1"
+        )
+        self.assertNotEqual(escaped.returncode, 0)
+        self.assertIn("escapes the pinned planning run", escaped.stderr)
+
+    def test_malformed_reviewer_attempt_preserves_stale_candidate_and_clean_retry_ignores_it(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("spec-review")
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        stale_candidate = Path(state["current_attempt"]["paths"]["candidate"])
+        stale_candidate.write_text(
+            spec(solution="A stale correction from the malformed attempt."), encoding="utf-8"
+        )
+        stale_report = Path(state["current_attempt"]["paths"]["report"])
+        stale_report.write_text("malformed\n", encoding="utf-8")
+
+        malformed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+
+        self.assertNotEqual(malformed.returncode, 0)
+        failed = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["current_stage"], "spec-review")
+        self.assertIsNone(failed["prepared_stage"])
+        self.assertEqual(failed["attempt_history"][-1]["status"], "malformed")
+        self.assertTrue(stale_candidate.is_file())
+        prepared = self.cli(
+            STATE,
+            "prepare",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec-review",
+            "--pass",
+            "1",
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        retry = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(retry["current_attempt"]["attempt_id"], "spec-review-1-attempt-2")
+        self.assertNotEqual(
+            Path(retry["current_attempt"]["paths"]["candidate"]), stale_candidate
+        )
+        self.render_and_baseline("spec-review")
+        digest = validate_spec(draft)["sha256"]
+        Path(retry["current_attempt"]["paths"]["report"]).write_text(
+            review_report("pass", digest, digest), encoding="utf-8"
+        )
+        clean = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        final = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(final["reviewed_spec"]["candidate"], str(draft.resolve()))
+        self.assertIn(
+            str(stale_candidate.relative_to(self.run_dir.resolve())),
+            final["artifact_audit"]["stale"],
+        )
+
+    def test_unexpected_run_file_is_audited_but_never_consumed_by_retry(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        unexpected = self.run_dir / "artifacts" / "not-declared.md"
+        unexpected.write_text("audit only\n", encoding="utf-8")
+        prepared = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIn("artifacts/not-declared.md", state["artifact_audit"]["unexpected"])
+        self.assertNotIn(
+            "artifacts/not-declared.md",
+            {entry["path"] for entry in state["artifact_manifest"].values()},
+        )
+
+    def test_failed_prompt_emission_preserves_bytes_and_retry_uses_fresh_paths(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        first_prompt = Path(state["current_attempt"]["paths"]["prompt"])
+        first_prompt.write_text("orphan from interrupted renderer\n", encoding="utf-8")
+
+        failed = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("unexpected prompt", failed.stderr)
+        prepared = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        retry = json.loads(state_path.read_text(encoding="utf-8"))
+        second_prompt = Path(retry["current_attempt"]["paths"]["prompt"])
+        self.assertEqual(retry["current_attempt"]["attempt_id"], "spec-1-attempt-2")
+        self.assertNotEqual(first_prompt, second_prompt)
+        self.assertEqual(
+            first_prompt.read_text(encoding="utf-8"), "orphan from interrupted renderer\n"
+        )
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        audited = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertIn("prompts/spec-1.md", audited["artifact_audit"]["unexpected"])
+
+    def test_pre_manifest_run_requires_human_restart_or_reviewed_migration(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        legacy = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 1
+        legacy.pop("artifact_manifest_version")
+        legacy.pop("artifact_manifest")
+        legacy.pop("artifact_attempt_counters")
+        state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        refused = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("predates artifact-manifest format", refused.stderr)
+        self.assertIn("human decision", refused.stderr)
+        self.assertIn("restart", refused.stderr)
 
     def test_spec_author_collision_requires_recorded_confirmation_and_survives_resume(self):
         self.assign_planning_profile("spec", "codex-astra-medium")
@@ -873,6 +1248,23 @@ sha256 {resulting_digest or digest}
         self.assertNotEqual(prepared.returncode, 0)
         self.assertIn("explicitly approved specification", prepared.stderr)
 
+    def test_approved_spec_tampering_gates_before_ticket_prompt_consumption(self):
+        approved_path = self.approve_spec_to_tickets()
+        approved_path.write_text(
+            approved_path.read_text(encoding="utf-8") + "\nchanged after approval\n",
+            encoding="utf-8",
+        )
+
+        rendered = self.cli(
+            RENDER, "--run-dir", str(self.run_dir), "--stage", "tickets", "--pass", "1"
+        )
+
+        self.assertNotEqual(rendered.returncode, 0)
+        self.assertIn("artifact", rendered.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "integrity-violation")
+        self.assertEqual(state["gate_decisions"][-1]["reason"], "run artifact integrity violation")
+
     def test_complete_ticket_flow_publishes_native_tracker_once(self):
         proposal_result = self.reach_ticket_approval(launch_panes=True)
         state = json.loads((self.run_dir / "state.json").read_text())
@@ -1041,9 +1433,10 @@ sha256 {resulting_digest or digest}
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
 
         self.assertNotEqual(reviewed.returncode, 0)
-        self.assertIn("changed after its own gate", reviewed.stderr)
+        self.assertIn("artifact byte size changed", reviewed.stderr)
         self.assertEqual(
-            json.loads((self.run_dir / "state.json").read_text())["current_stage"], "spec-review"
+            json.loads((self.run_dir / "state.json").read_text())["current_stage"],
+            "integrity-violation",
         )
 
     def test_a_second_baseline_cannot_relaunder_an_armed_pass(self):
@@ -1161,6 +1554,54 @@ sha256 {resulting_digest or digest}
         )
         self.assertEqual(revision_status["classification"], "requested-revision")
         self.assertTrue(draft.is_file())
+
+    def test_reviewed_candidate_tampering_gates_before_spec_approval(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("spec-review")
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        candidate = Path(state["current_attempt"]["paths"]["candidate"])
+        candidate.write_text(
+            spec(solution="Implement the reviewed correction."), encoding="utf-8"
+        )
+        input_digest = validate_spec(draft)["sha256"]
+        candidate_digest = validate_spec(candidate)["sha256"]
+        Path(state["current_attempt"]["paths"]["report"]).write_text(
+            review_report(
+                "pass_with_fixes",
+                input_digest,
+                candidate_digest,
+                corrections="- Corrected established wording.",
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        candidate.write_text(candidate.read_text(encoding="utf-8") + "\ntampered\n", encoding="utf-8")
+
+        refused = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Must not approve changed bytes",
+        )
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(
+            json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+                "current_stage"
+            ],
+            "integrity-violation",
+        )
         self.assertTrue(candidate.is_file())
         premature = self.cli(
             STATE,
@@ -1441,6 +1882,14 @@ sha256 {resulting_digest or digest}
             self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
         )
         self.assertEqual(changed_status["classification"], "inconsistent")
+        gated = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(gated.returncode, 0)
+        self.assertEqual(
+            json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+                "current_stage"
+            ],
+            "integrity-violation",
+        )
 
     def test_unauthorized_tracked_write_gates_hitl_even_with_clean_report(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -1470,7 +1919,7 @@ sha256 {resulting_digest or digest}
             "Must not trust a changed launch baseline",
         )
         self.assertNotEqual(tampered.returncode, 0)
-        self.assertIn("baseline is missing or changed", tampered.stderr)
+        self.assertIn("artifact byte size changed", tampered.stderr)
         before_path.write_bytes(before_bytes)
         unresolved = self.cli(
             STATE,
@@ -1827,6 +2276,14 @@ Option?
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "awaiting-grilling-revalidation")
+        self.assertEqual(
+            {
+                entry["kind"]
+                for entry in state["artifact_manifest"].values()
+                if entry["kind"].startswith("grilling-source")
+            },
+            {"grilling-source-json", "grilling-source-markdown"},
+        )
         self.assertIsNone(state["prepared_stage"])
         self.assertEqual((run_dir / state["grilling_import"]["copied_json"]).read_bytes(), artifact.read_bytes())
         shown = self.cli(STATE, "show-revalidation", "--run-dir", str(run_dir))
@@ -1860,6 +2317,12 @@ Option?
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "spec")
+        self.assertEqual(
+            state["artifact_manifest"][state["normalized_grilling_input"]["manifest_id"]][
+                "kind"
+            ],
+            "normalized-grilling-input",
+        )
         normalized = json.loads((run_dir / "grilling-input.json").read_text())
         self.assertEqual(normalized["assumptions"][1]["value"], "Zwei korrigiert")
         self.assertIsNone(normalized["assumptions"][2]["value"])
@@ -1869,6 +2332,58 @@ Option?
         prompt = (run_dir / "prompts" / "spec-1.md").read_text()
         self.assertIn("grilling-input.json", prompt)
         self.assertNotIn("inputs/grilling-source.json", prompt)
+        (run_dir / "grilling-input.json").write_text("{}\n", encoding="utf-8")
+        gated = self.cli(
+            TREE, "baseline", "--run-dir", str(run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertNotEqual(gated.returncode, 0)
+        self.assertEqual(
+            json.loads((run_dir / "state.json").read_text(encoding="utf-8"))["current_stage"],
+            "integrity-violation",
+        )
+
+    def test_imported_grilling_source_tampering_gates_before_revalidation_transition(self):
+        artifact, markdown = self.grilling_pair()
+        run_dir = self.runs / "plan-grilling-tamper"
+        initialized = self.cli(
+            STATE,
+            "init",
+            "--task",
+            "Planung",
+            "--grilling-json",
+            str(artifact),
+            "--grilling-markdown",
+            str(markdown),
+            "--repo",
+            str(self.repo),
+            "--run-id",
+            "plan-grilling-tamper",
+            "--runs-root",
+            str(self.runs),
+            "--workspace-id",
+            "WORKSPACE-1",
+            "--config",
+            str(self.config),
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        (run_dir / state["grilling_import"]["copied_json"]).write_text("{}\n", encoding="utf-8")
+        outcomes = self.root / "unused-outcomes.json"
+        outcomes.write_text('{"accepted": false}\n', encoding="utf-8")
+
+        refused = self.cli(
+            STATE,
+            "revalidate",
+            "--run-dir",
+            str(run_dir),
+            "--outcomes",
+            str(outcomes),
+        )
+
+        self.assertNotEqual(refused.returncode, 0)
+        failed = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(failed["current_stage"], "integrity-violation")
+        self.assertEqual(failed["gate_decisions"][-1]["reason"], "run artifact integrity violation")
 
     def test_invalid_grilling_pair_fails_before_run_or_pane(self):
         artifact, markdown = self.grilling_pair()
@@ -2298,7 +2813,7 @@ Option?
         self.assertEqual(state["spec_pass"], 1)
         self.assertEqual(state["spec_review_pass"], 2)
         self.assertEqual(state["current_stage"], "spec-review")
-        self.assertEqual(Path(state["author_spec"]["draft"]), draft)
+        self.assertEqual(Path(state["author_spec"]["draft"]), draft.resolve())
         rendered = self.cli(
             RENDER, "--run-dir", str(self.run_dir), "--stage", "spec-review", "--pass", "2"
         )

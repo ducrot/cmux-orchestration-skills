@@ -11,6 +11,12 @@ import sys
 import time
 from pathlib import Path
 
+from artifact_manifest import (
+    ArtifactIntegrityError,
+    current_attempt,
+    record_artifact,
+    verify_or_gate,
+)
 from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     STAGES,
@@ -19,6 +25,7 @@ from orchestrator_lib import (
     read_planning_state,
     sha256_file,
     validate_recorded_surface,
+    write_json,
 )
 from stage_snapshot import load_prepared_snapshot
 
@@ -83,6 +90,8 @@ def health_says_dead(command: list[str], surface: str) -> bool:
 
 def watch(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
+    state = verify_or_gate(run_dir, stage=args.stage)
+    attempt = current_attempt(state, args.stage, args.pass_num)
     surface = validate_recorded_surface(
         planning_events(run_dir), args.stage, args.pass_num, args.surface
     )
@@ -107,6 +116,8 @@ def watch(args: argparse.Namespace) -> int:
         data = {
             "stage": args.stage,
             "pass": args.pass_num,
+            "attempt": attempt["attempt"],
+            "attempt_id": attempt["attempt_id"],
             "surface_id": surface,
             "elapsed_seconds": elapsed,
             "deadline_minutes": minutes,
@@ -116,6 +127,21 @@ def watch(args: argparse.Namespace) -> int:
         # a half-written file. Requiring identical non-empty bytes twice avoids gating on a prefix.
         digest = sha256_file(report) if report.is_file() and report.stat().st_size else None
         if digest is not None and digest == settled:
+            state = verify_or_gate(run_dir, stage=args.stage)
+            attempt = current_attempt(state, args.stage, args.pass_num)
+            entry = record_artifact(
+                state,
+                run_dir,
+                report,
+                kind="worker-report",
+                stage=args.stage,
+                pass_num=args.pass_num,
+                attempt=attempt["attempt"],
+                producer="worker.report_captured",
+                expected_path=attempt["paths"]["report"],
+            )
+            state["current_attempt"]["report_manifest_id"] = entry["id"]
+            write_json(run_dir / "state.json", state)
             event(
                 run_dir,
                 "planning report captured",
@@ -123,7 +149,10 @@ def watch(args: argparse.Namespace) -> int:
                     **data,
                     "outcome": "report",
                     "report": str(report),
-                    "report_sha256": digest,
+                    # The manifest identity, not the earlier poll digest: a worker that appended
+                    # between the two would otherwise leave the event and the manifest disagreeing.
+                    "report_sha256": entry["sha256"],
+                    "report_manifest_id": entry["id"],
                 },
             )
             print(f"outcome=report report={report}")
@@ -149,7 +178,7 @@ def watch(args: argparse.Namespace) -> int:
 def main() -> int:
     try:
         return watch(build_parser().parse_args())
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except (ArtifactIntegrityError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(error, file=sys.stderr)
         return 1
 

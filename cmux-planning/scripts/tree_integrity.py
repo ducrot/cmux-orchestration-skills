@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from artifact_manifest import (
+    ArtifactIntegrityError,
+    current_attempt,
+    record_artifact,
+    tree_snapshot_path,
+    verify_entry,
+    verify_or_gate,
+)
 from orchestrator_lib import (
     STAGES,
     append_event,
@@ -117,7 +125,10 @@ def capture_tree(repository: Path) -> dict[str, Any]:
 
 
 def snapshot_digest(snapshot: dict[str, Any]) -> str:
-    return sha256_bytes(json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    # Capture time is audit metadata, not product-tree identity. Excluding it lets a clean retry
+    # prove it starts from the exact same tree even when the observations occur seconds apart.
+    identity = {key: value for key, value in snapshot.items() if key != "captured_at"}
+    return sha256_bytes(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 def repository_relative(repository: Path, absolute: str) -> str | None:
@@ -163,12 +174,14 @@ def compare_tree(
 
 
 def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
+    verify_or_gate(run_dir, stage=stage)
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=False)
     state_path = run_dir / "state.json"
     state = read_planning_state(state_path)
     repository = Path(state["repository"])
     captured = capture_tree(repository)
-    prompt_path = run_dir / "prompts" / f"{stage}-{pass_num}.md"
+    attempt_record = current_attempt(state, stage, pass_num)
+    prompt_path = Path(snapshot["prompt_path"])
     if not prompt_path.is_file():
         raise IntegrityError(
             f"render the deterministic prompt before capturing the launch baseline: {prompt_path}"
@@ -180,6 +193,7 @@ def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
         isinstance(existing, dict)
         and existing.get("stage") == stage
         and existing.get("pass") == pass_num
+        and existing.get("attempt_id") == attempt_record["attempt_id"]
         and existing.get("snapshot_id") == snapshot["snapshot_id"]
     ):
         raise IntegrityError(
@@ -190,24 +204,54 @@ def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     # snapshot_id. Without it the guard above is bypassed by the rearm it recommends, and the
     # second baseline adopts the first worker's delta as the new "before".
     seals = state.setdefault("tree_baseline_seals", {})
-    sealed = seals.get(f"{stage}-{pass_num}")
+    # All retries of the same logical stage/pass must start from the same product-tree bytes.
+    # Attempt-scoped run paths prevent handoff reuse; this cross-attempt seal prevents a retry
+    # from laundering the prior worker's product delta into a fresh baseline.
+    seal_key = f"{stage}-{pass_num}"
+    sealed = seals.get(seal_key)
     if sealed is not None and sealed != digest:
         raise IntegrityError(
             f"{stage}-{pass_num} was already armed against a different working tree; rearming "
             "now would adopt the current delta as its baseline. Resolve the working-tree change "
             "or start a new pass"
         )
-    seals[f"{stage}-{pass_num}"] = digest
-    relative = Path("tree-snapshots") / f"{stage}-{pass_num}-before.json"
-    write_json(run_dir / relative, captured)
+    seals[seal_key] = digest
+    before_path = tree_snapshot_path(
+        run_dir, stage, pass_num, attempt_record["attempt"], "before"
+    )
+    relative = before_path.relative_to(run_dir)
+    if before_path.exists():
+        raise IntegrityError(f"unexpected file occupies fresh tree baseline path: {before_path}")
+    write_json(before_path, captured)
+    before_entry = record_artifact(
+        state,
+        run_dir,
+        before_path,
+        kind="tree-baseline",
+        stage=stage,
+        pass_num=pass_num,
+        attempt=attempt_record["attempt"],
+        producer="tree.baseline",
+    )
+    prompt_entry = verify_entry(
+        state,
+        run_dir,
+        attempt_record.get("prompt_manifest_id", ""),
+        expected_kind="prompt",
+        expected_path=prompt_path,
+    )
     pointer = {
         "stage": stage,
         "pass": pass_num,
+        "attempt": attempt_record["attempt"],
+        "attempt_id": attempt_record["attempt_id"],
         "path": str(relative),
         "sha256": digest,
+        "manifest_id": before_entry["id"],
         "snapshot_id": snapshot["snapshot_id"],
         "prompt_path": str(prompt_path),
         "prompt_sha256": sha256_file(prompt_path),
+        "prompt_manifest_id": prompt_entry["id"],
         "captured_at": captured["captured_at"],
     }
     state["tree_baseline"] = pointer
@@ -224,16 +268,43 @@ def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
 
 
 def verify(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
+    verify_or_gate(run_dir, stage=stage)
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num, require_baseline=True)
     state = read_planning_state(run_dir / "state.json")
+    attempt_record = current_attempt(state, stage, pass_num)
     pointer = state["tree_baseline"]
     before_path = run_dir / pointer["path"]
     before = read_json(before_path)
+    verify_entry(
+        state,
+        run_dir,
+        pointer.get("manifest_id", ""),
+        expected_kind="tree-baseline",
+        expected_path=before_path,
+    )
     if snapshot_digest(before) != pointer["sha256"]:
         raise IntegrityError("tree baseline is missing or changed")
     after = capture_tree(Path(state["repository"]))
-    after_relative = Path("tree-snapshots") / f"{stage}-{pass_num}-after.json"
-    write_json(run_dir / after_relative, after)
+    after_path = tree_snapshot_path(
+        run_dir, stage, pass_num, attempt_record["attempt"], "after"
+    )
+    after_relative = after_path.relative_to(run_dir)
+    if after_path.exists():
+        raise IntegrityError(
+            f"unexpected file occupies fresh tree verification path: {after_path}"
+        )
+    write_json(after_path, after)
+    after_entry = record_artifact(
+        state,
+        run_dir,
+        after_path,
+        kind="tree-verification",
+        stage=stage,
+        pass_num=pass_num,
+        attempt=attempt_record["attempt"],
+        producer="tree.verified",
+    )
+    write_json(run_dir / "state.json", state)
     result = compare_tree(
         before,
         after,
@@ -241,6 +312,7 @@ def verify(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     )
     result["after_path"] = str(after_relative)
     result["after_sha256"] = snapshot_digest(after)
+    result["after_manifest_id"] = after_entry["id"]
     append_event(
         run_dir,
         "tree.verified" if result["ok"] else "integrity.violation",
@@ -276,7 +348,15 @@ def main() -> int:
         )
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("ok", True) else 2
-    except (IntegrityError, SnapshotError, OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
+    except (
+        ArtifactIntegrityError,
+        IntegrityError,
+        SnapshotError,
+        OSError,
+        KeyError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
         print(error, file=sys.stderr)
         return 1
 

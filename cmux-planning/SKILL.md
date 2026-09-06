@@ -36,10 +36,17 @@ input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
 - Before each launch, capture the complete Git status, tracked diff, and staged diff. After the
   report, compare path and diff content. Any unauthorized Git-visible delta gates HITL regardless
   of report content; never silently revert it.
-- The detector covers tracked changes and newly listed untracked paths. It does not cover ignored
-  files, content changes to files already untracked in the baseline, or the Git-ignored run
-  directory; run-directory handoffs are gated by digest instead. A baseline arms one pass and is
-  never recaptured, so a relaunch cannot adopt an unauthorized delta as its new "before".
+- Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, staged
+  changes, newly listed untracked paths, and HEAD movement. It does not cover ignored product files
+  or content changes to product files already untracked in the baseline. Separately, every trusted
+  file in the Git-ignored run directory is finalized in `state.json`'s artifact manifest with its
+  canonical run-relative path, kind, stage, pass, attempt, byte size, SHA-256, producer event, and
+  immutable status. A baseline arms one pass and is never recaptured against different product-tree
+  bytes, so a relaunch cannot adopt an unauthorized delta as its new "before".
+- Every worker emission has an immutable attempt identity. The first attempt retains the concise
+  stage/pass filenames; every later same-pass attempt uses an `-attempt-N` suffix for its prompt,
+  report, draft/proposal, optional corrected candidate, stage snapshot, and tree snapshots. Preparing
+  a retry closes the earlier attempt and never reuses, deletes, or silently re-baselines its paths.
 - Ask human revalidation and approval questions in the user's language. Persist task inputs,
   specifications, reports, state, and events in English; preserve literal product copy.
 - Ticket decomposition prefers a small number of cohesive tracer-bullet vertical slices. Never
@@ -130,6 +137,12 @@ Durable runs that contain only the legacy key remain readable and resumable. Its
 used as the compatibility value without rewriting the run merely because it was read. A state containing
 both names is accepted only when their boolean values match; conflicting values are rejected with an
 error that requires the operator to make them agree before the run can continue.
+
+That configuration-field compatibility does not authorize legacy run-artifact trust. A run created
+before run-state schema 2 / artifact-manifest version 1 remains inspectable through `status` and
+`context`, but every state-changing command and worker launch refuses it with guidance to obtain a
+human decision to restart or to use a separately reviewed migration procedure. No automatic migration
+or digest baseline is inferred from files already present in such a run.
 
 Concrete direct-task and optional grilling-pair starts are:
 
@@ -275,6 +288,13 @@ in `auto` permission mode; the safe, tool-disabled live provider probe remains i
 armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and does not
 treat a transient health-command failure as worker failure.
 
+Use the prompt and handoff paths recorded under the current attempt in `state.json`; do not construct
+them from stage/pass alone. The watcher accepts a report only after observing identical non-empty bytes
+twice, records that exact identity in the manifest before emitting its captured-report event, and the
+gate repeats a stable capture when invoked directly. A missing, truncated, replaced, or changed
+finalized artifact records `artifact.integrity_violation`, closes the attempt, and gates HITL before
+the artifact can be parsed or launched.
+
 After `accept-author` or `accept-review` records its gate decision for the captured report, close
 that worker's pane:
 
@@ -349,12 +369,13 @@ python3 scripts/planning_state.py resume --run-dir <run-dir> \
   --decision relaunch --reason <human-authored-reason>
 ```
 
-The recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback by their
-recorded digests; failed panes, snapshots, events, and handoffs remain in history. A dead author gets a
-new author pass. A dead reviewer gets a new reviewer pass over the unchanged author identity. A blocked
-review routes back to an author and cannot be relabeled as another reviewer pass. If ticket review found
-an approved-spec defect, use `ticket-approval --decision revise --scope spec` so the full spec
-author/review/approval sequence repeats.
+The recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback only by
+their finalized manifest identities; failed panes, snapshots, events, and handoffs remain in history.
+Unexpected files are listed as audit information and are never attached implicitly. A dead author gets
+a new author pass. A dead reviewer gets a new reviewer pass over the unchanged author identity. A
+blocked review routes back to an author and cannot be relabeled as another reviewer pass. If ticket
+review found an approved-spec defect, use `ticket-approval --decision revise --scope spec` so the full
+spec author/review/approval sequence repeats.
 
 ## Gate the author and reviewer
 
@@ -373,11 +394,13 @@ After independent review:
 python3 scripts/planning_state.py accept-review --run-dir <run-dir>
 ```
 
-`pass` binds the unchanged draft digest. `pass_with_fixes` requires a complete corrected candidate and
+`pass` binds the unchanged draft's manifest identity. `pass_with_fixes` requires a complete corrected candidate and
 structured correction summary; deterministic validation leads directly to human approval without
 another automatic model review. `blocked` preserves evidence and requires human input plus a new author
 pass. A malformed, ungrounded, drifting, digest-mismatched, or open-decision candidate never reaches
-approval.
+approval. A malformed attempt is closed with all captured files preserved; a later `prepare` arms a
+new attempt-specific path set. A candidate left by an older attempt is stale audit evidence: it neither
+blocks a legitimate current `pass`/`blocked` verdict nor becomes the current approval candidate.
 
 ## Human approval or revision
 
@@ -501,6 +524,13 @@ Runs live under `.scratch/orchestrator/planning-runs/<run-id>/` by default. `tas
 `spec.md`, `map.md`, `decisions.md`, and `issues/` at the explicit target. That target is immediately
 consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
 separate workflow.
+
+`artifact_manifest` is the trust list for run files; `current_attempt` declares only the writable paths
+for the armed worker, `attempt_history` closes earlier emissions without deleting them, and
+`artifact_audit` lists stale finalized identities and unexpected files. Unexpected files do not become
+trusted merely because their names resemble a draft, report, or reviewed candidate. Absolute paths,
+traversal, symlink escape, role-location substitution, kind substitution, and digest or byte-size drift
+all fail before consumption. Finalized identities are never rewritten or adopted as a fresh baseline.
 
 Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and integrity
 violations as evidence for human resolution. Never infer approval from prose, edit product code from

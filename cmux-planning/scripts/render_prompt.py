@@ -7,7 +7,22 @@ import argparse
 import sys
 from pathlib import Path
 
-from orchestrator_lib import STAGES, atomic_write, read_planning_state, sha256_bytes, sha256_file
+from artifact_manifest import (
+    ArtifactIntegrityError,
+    current_attempt,
+    find_attempt_entry,
+    record_artifact,
+    verify_entry,
+    verify_or_gate,
+)
+from orchestrator_lib import (
+    STAGES,
+    atomic_write,
+    read_planning_state,
+    sha256_bytes,
+    sha256_file,
+    write_json,
+)
 from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
 from tracker_contract import validate_proposal
@@ -51,6 +66,13 @@ def normalized_context(run_dir: Path, state: dict) -> str:
     if not pointer:
         return "No normalized grilling input was supplied."
     path = run_dir / pointer["path"]
+    verify_entry(
+        state,
+        run_dir,
+        pointer.get("manifest_id", ""),
+        expected_kind="normalized-grilling-input",
+        expected_path=path,
+    )
     payload = path.read_bytes()
     if sha256_bytes(payload) != pointer["sha256"]:
         raise SnapshotError("normalized grilling input changed after revalidation")
@@ -79,6 +101,14 @@ def resumed_context(run_dir: Path, state: dict) -> str:
             path.relative_to(run_dir.resolve())
         except ValueError as error:
             raise SnapshotError("resume context points outside this planning run") from error
+        if not isinstance(item.get("manifest_id"), str):
+            raise SnapshotError("resume context handoff has no immutable manifest identity")
+        verify_entry(
+            state,
+            run_dir,
+            item["manifest_id"],
+            expected_path=path,
+        )
         if not path.is_file() or sha256_file(path) != item.get("sha256"):
             raise SnapshotError(f"resume context handoff is missing or changed: {path}")
         try:
@@ -94,6 +124,13 @@ def resumed_context(run_dir: Path, state: dict) -> str:
 
 def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
     task_path = (run_dir / state["task"]["path"]).resolve()
+    verify_entry(
+        state,
+        run_dir,
+        state["task"].get("manifest_id", ""),
+        expected_kind="task",
+        expected_path=task_path,
+    )
     task = task_path.read_text(encoding="utf-8")
     paths = snapshot["allowed_worker_writes"]
     feedback = state.get("spec_revision_feedback") or "None recorded for this specification pass."
@@ -186,7 +223,21 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
         raise SnapshotError("review prompt requires the validated author handoff")
     task_path = (run_dir / state["task"]["path"]).resolve()
     draft = Path(author["draft"]).resolve()
-    author_report = (run_dir / "reports" / f"spec-{state['spec_pass']}.md").resolve()
+    verify_entry(
+        state,
+        run_dir,
+        author.get("draft_manifest_id", ""),
+        expected_kind="spec-draft",
+        expected_path=draft,
+    )
+    author_report = Path(author["report"]).resolve()
+    verify_entry(
+        state,
+        run_dir,
+        author.get("report_manifest_id", ""),
+        expected_kind="worker-report",
+        expected_path=author_report,
+    )
     paths = snapshot["allowed_worker_writes"]
     return f"""# Planning Worker Prompt: independent specification review (pass {pass_num})
 
@@ -316,7 +367,7 @@ ready-for-agent label when published; no adoption conversion is used."""
 
 
 def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
-    approved_spec, spec_digest = approved_spec_from_state(state)
+    approved_spec, spec_digest = approved_spec_from_state(state, run_dir=run_dir)
     task_path = (run_dir / state["task"]["path"]).resolve()
     paths = snapshot["allowed_worker_writes"]
     feedback = state.get("ticket_revision_feedback") or "None recorded for this tickets pass."
@@ -428,14 +479,35 @@ python3 {tracker_contract_path()} author-report {paths['report']} \\
 
 
 def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
-    approved_spec, spec_digest = approved_spec_from_state(state)
+    approved_spec, spec_digest = approved_spec_from_state(state, run_dir=run_dir)
     author = state.get("author_tickets")
     if not isinstance(author, dict) or not author.get("proposal_sha256"):
         raise SnapshotError("tickets review prompt requires the validated tickets author handoff")
     task_path = (run_dir / state["task"]["path"]).resolve()
     proposal = Path(author["proposal"]).resolve()
     summary = Path(author["summary"]).resolve()
-    report = (run_dir / "reports" / f"tickets-{state['tickets_pass']}.md").resolve()
+    verify_entry(
+        state,
+        run_dir,
+        author.get("proposal_manifest_id", ""),
+        expected_kind="tickets-proposal",
+        expected_path=proposal,
+    )
+    verify_entry(
+        state,
+        run_dir,
+        author.get("summary_manifest_id", ""),
+        expected_kind="tickets-summary",
+        expected_path=summary,
+    )
+    report = Path(author["report"]).resolve()
+    verify_entry(
+        state,
+        run_dir,
+        author.get("report_manifest_id", ""),
+        expected_kind="worker-report",
+        expected_path=report,
+    )
     paths = snapshot["allowed_worker_writes"]
     validate_proposal(
         proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest
@@ -565,12 +637,45 @@ def render(run_dir: Path, stage: str, pass_num: int) -> str:
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        run_dir = Path(args.run_dir)
-        output = Path(args.out) if args.out else run_dir / "prompts" / f"{args.stage}-{args.pass_num}.md"
-        atomic_write(output, render(run_dir, args.stage, args.pass_num).encode("utf-8"))
+        run_dir = Path(args.run_dir).resolve()
+        state = verify_or_gate(run_dir, stage=args.stage)
+        attempt = current_attempt(state, args.stage, args.pass_num)
+        expected = Path(attempt["paths"]["prompt"])
+        output = Path(args.out).resolve() if args.out else expected
+        if output != expected:
+            raise SnapshotError(f"prompt path substitution: expected {expected}, got {output}")
+        payload = render(run_dir, args.stage, args.pass_num).encode("utf-8")
+        existing = find_attempt_entry(state, "prompt", attempt["attempt_id"])
+        if existing is not None:
+            verified = verify_entry(
+                state,
+                run_dir,
+                existing["id"],
+                expected_kind="prompt",
+                expected_path=output,
+            )
+            if verified["sha256"] != sha256_bytes(payload) or verified["byte_size"] != len(payload):
+                raise SnapshotError("finalized prompt cannot be re-rendered with different bytes")
+        else:
+            if output.exists():
+                raise SnapshotError("unexpected prompt already occupies the armed attempt path")
+            atomic_write(output, payload)
+            entry = record_artifact(
+                state,
+                run_dir,
+                output,
+                kind="prompt",
+                stage=args.stage,
+                pass_num=args.pass_num,
+                attempt=attempt["attempt"],
+                producer="prompt.rendered",
+                expected_path=expected,
+            )
+            state["current_attempt"]["prompt_manifest_id"] = entry["id"]
+            write_json(run_dir / "state.json", state)
         print(output)
         return 0
-    except (SnapshotError, OSError, KeyError, ValueError) as error:
+    except (ArtifactIntegrityError, SnapshotError, OSError, KeyError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1
 

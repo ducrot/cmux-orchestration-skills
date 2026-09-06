@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+from artifact_manifest import ArtifactIntegrityError, current_attempt, verify_or_gate
 from orchestrator_lib import (
     ROLE_LABELS,
     STAGES,
@@ -93,9 +94,11 @@ def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dic
 
 def run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
+    if args.command != "close":
+        state = verify_or_gate(run_dir, stage=args.stage)
+        attempt = current_attempt(state, args.stage, args.pass_num)
     if args.command == "launch":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
-        state = read_planning_state(run_dir / "state.json")
         pinned = pinned_workspace(state)
         result = cmux(
             args,
@@ -124,6 +127,8 @@ def run(args: argparse.Namespace) -> int:
         data = {
             "stage": args.stage,
             "pass": args.pass_num,
+            "attempt": attempt["attempt"],
+            "attempt_id": attempt["attempt_id"],
             "surface_id": surface,
             "surface_ref": created.get("surface_ref"),
             "pane_id": created.get("pane_id") or created.get("pane_ref"),
@@ -215,7 +220,14 @@ def run(args: argparse.Namespace) -> int:
 def main() -> int:
     try:
         return run(build_parser().parse_args())
-    except (SnapshotError, OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
+    except (
+        ArtifactIntegrityError,
+        SnapshotError,
+        OSError,
+        KeyError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
         print(error, file=sys.stderr)
         return 1
 
