@@ -112,8 +112,10 @@ also pass `--grilling-json <result.json>` and optionally the exact `--grilling-m
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
-Direct input starts at `spec` with an immutable prepared snapshot. Grilling input starts at
-`awaiting-grilling-revalidation` with no snapshot.
+Direct input starts at `spec` with an immutable prepared snapshot, unless the resolved author and
+reviewer share a harness and model: that start prints one extra warning object before the run
+directory and leaves `spec` waiting on the confirmation described below with no snapshot. Grilling
+input starts at `awaiting-grilling-revalidation` with no snapshot.
 
 Every newly initialized run records the creation-only boolean
 `configuration_created_and_accepted` in `state.json`. It is true only when that invocation created a
@@ -185,6 +187,41 @@ Every supplied outcomes checkpoint is atomically preserved before normalization,
 walkthrough can resume the same copied pair and recorded partial outcomes. Only a complete normalized
 handoff prepares `spec-1`; partial or refused outcomes never make a worker launchable.
 
+## Confirm author/reviewer model diversity
+
+Before preparing either author stage, planning compares the resolved `planning.spec` or
+`planning.tickets` profile with the resolved mandatory `planning.reviewer`. When both resolve to the
+same harness and model, preparation stops before a launchable snapshot exists and prints a warning
+naming both roles, profile names, harnesses, and models. Present that warning and ask the confirmation
+question in the user's language. Never substitute or fall back to another profile automatically.
+
+If the human knowingly accepts same-harness-and-model operation, translate the recorded decision and
+their human-authored reason into English and run the exact command reported by `status`:
+
+```bash
+python3 scripts/planning_state.py diversity-confirmation --run-dir <run-dir> \
+  --decision confirm --reason <human-reason-in-English>
+```
+
+That decision is persisted in state and events and prepares the waiting author stage. It covers later
+passes and the other author stage only while the resolved author/reviewer harness-and-model combination
+is unchanged. A changed combination invalidates the decision; another collision asks again. Profile
+names or effort may change without invalidation when the resolved harnesses and models remain the same.
+
+Refusal is also explicit and reasoned:
+
+```bash
+python3 scripts/planning_state.py diversity-confirmation --run-dir <run-dir> \
+  --decision refuse --reason <human-reason-in-English>
+```
+
+Refusal leaves the run at its current `spec` or `tickets` stage with no launchable snapshot. Follow the
+printed guidance naming the shared configuration file and the exact
+`workflows.planning.spec` or `workflows.planning.tickets` assignment to change. Refusal never prepares
+a snapshot even when the resolved combination changed meanwhile and is now diverse: the refusal and its
+reason are recorded, the guidance is printed, and launching that stage takes a later explicit `prepare`.
+A genuinely diverse resolution prepares normally with no warning or extra prompt.
+
 ## Run one stage
 
 For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the corresponding current pass number
@@ -250,8 +287,10 @@ identities, revalidation progress, exact stage/mode/pass, prepared snapshot vali
 pane, pending report, latest review verdict and candidate digest, both digest-bound approvals, staging
 and publication phase, consistency errors, and one recommended next command. Its classifications
 distinguish awaiting or interrupted grilling revalidation, spec authoring/review, ticket authoring/review,
-pending report, both approval boundaries, requested revision, review-blocked, HITL, completed, and
-inconsistent state. Initialization persists a validated `input` checkpoint before activating the first
+pending model-diversity confirmation, pending report, both approval boundaries, requested revision,
+review-blocked, HITL, completed, and inconsistent state. A `pending-diversity-confirmation`
+classification includes the warning and the exact `diversity-confirmation --decision confirm` command.
+Initialization persists a validated `input` checkpoint before activating the first
 stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
 pre-run input or configuration failure has no run state and remains an initialization error rather than
 being inferred as a worker stage.

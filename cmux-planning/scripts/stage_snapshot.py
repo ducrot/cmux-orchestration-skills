@@ -170,6 +170,30 @@ def snapshot_from_args(
 ) -> tuple[Path, dict[str, Any]]:
     overrides = parse_overrides(args, workflow=WORKFLOW)
     probe_profiles, probe_timeout = probe_options(args)
+    return snapshot_from_settings(
+        run_dir=run_dir,
+        run_id=run_id,
+        stage=stage,
+        pass_num=pass_num,
+        config_source=config_source,
+        overrides=overrides,
+        probe_profiles=probe_profiles,
+        probe_timeout_seconds=probe_timeout,
+    )
+
+
+def snapshot_from_settings(
+    *,
+    run_dir: Path,
+    run_id: str,
+    stage: str,
+    pass_num: int,
+    config_source: str,
+    overrides: dict[str, dict[str, str]],
+    probe_profiles: bool = False,
+    probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve a snapshot from already-normalized settings persisted by a pending gate."""
     source, data, digest = resolve_config_source(config_source)
     return source, build_stage_snapshot(
         run_dir=run_dir,
@@ -181,7 +205,7 @@ def snapshot_from_args(
         data=data,
         overrides=overrides,
         probe_profiles=probe_profiles,
-        probe_timeout_seconds=probe_timeout,
+        probe_timeout_seconds=probe_timeout_seconds,
     )
 
 

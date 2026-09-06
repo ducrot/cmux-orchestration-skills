@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
 import json
 import os
@@ -55,6 +56,15 @@ from planning_recovery import (
     status_payload,
     unfinished_runs,
 )
+from planning_diversity import (
+    DECISION_STATUSES,
+    collision_warning,
+    pending_confirmation,
+    public_warning,
+    resolution_from_snapshot,
+    resolution_record,
+    warning_record,
+)
 from spec_contract import (
     ContractError,
     sections,
@@ -68,6 +78,7 @@ from stage_snapshot import (
     approved_spec_from_state,
     persist_snapshot,
     snapshot_from_args,
+    snapshot_from_settings,
 )
 from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_digest, verify
 from tracker_contract import (
@@ -127,6 +138,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--pass", dest="pass_num", type=int, required=True)
     add_override_options(prepare, workflow=WORKFLOW)
     add_probe_options(prepare)
+
+    diversity = subparsers.add_parser(
+        "diversity-confirmation",
+        help="Confirm or refuse a pending same-harness-and-model author/reviewer resolution",
+    )
+    diversity.add_argument("--run-dir", required=True)
+    diversity.add_argument("--decision", choices=("confirm", "refuse"), required=True)
+    diversity.add_argument("--reason", required=True)
 
     author = subparsers.add_parser("accept-author")
     author.add_argument("--run-dir", required=True)
@@ -278,6 +297,111 @@ def add_gate(
     return gate
 
 
+def invalidate_diversity_confirmation(
+    state: dict[str, Any], resolution: dict[str, Any], *, invalidated_at: str
+) -> dict[str, Any] | None:
+    current = state.get("diversity_confirmation")
+    if not isinstance(current, dict) or current.get("combination_id") == resolution["combination_id"]:
+        return None
+    archived = copy.deepcopy(current)
+    archived["previous_status"] = archived.get("status")
+    archived["status"] = "invalidated"
+    archived["invalidated_at"] = invalidated_at
+    archived["replacement_combination_id"] = resolution["combination_id"]
+    state.setdefault("diversity_confirmation_history", []).append(archived)
+    state["diversity_confirmation"] = None
+    return archived
+
+
+def reconcile_diversity_confirmation(
+    state: dict[str, Any], snapshot: dict[str, Any], *, run_dir: Path, state_path: Path
+) -> bool:
+    """Reconcile the author/reviewer waiver against a freshly resolved snapshot.
+
+    Persists and records only the changes it makes, and returns whether the stage may be prepared.
+    Reviewer stages never alter the waiver. For author stages, the active decision is retained
+    only while the harness-and-model combination is unchanged.
+    """
+    resolution = resolution_from_snapshot(snapshot)
+    if resolution is None:
+        return True
+    current = state.get("diversity_confirmation")
+    if isinstance(current, dict) and current.get("status") not in DECISION_STATUSES:
+        raise SnapshotError("planning model-diversity confirmation has an unknown status")
+    invalidated = invalidate_diversity_confirmation(
+        state, resolution, invalidated_at=snapshot["resolved_at"]
+    )
+    current = state.get("diversity_confirmation")
+    unchanged_combination = (
+        isinstance(current, dict) and current.get("combination_id") == resolution["combination_id"]
+    )
+    may_prepare = not resolution["collision"] or (
+        unchanged_combination and current.get("status") == "confirmed"
+    )
+
+    required = None
+    if not may_prepare:
+        fresh = warning_record(
+            snapshot,
+            run_dir=run_dir,
+            configuration_source=state["configuration_source"],
+            resolution=resolution,
+        )
+        if unchanged_combination:
+            for key in ("status", "reason", "refused_at", "confirmed_at", "decisions"):
+                if key in current:
+                    fresh[key] = copy.deepcopy(current[key])
+        else:
+            required = fresh
+        state["diversity_confirmation"] = fresh
+
+    if invalidated is not None or not may_prepare:
+        write_json(state_path, state)
+    if invalidated is not None:
+        append_event(
+            run_dir,
+            "diversity.confirmation_invalidated",
+            "invalidated the prior model-diversity decision after the resolved combination changed",
+            public_warning(invalidated),
+        )
+    if required is not None:
+        append_event(
+            run_dir,
+            "diversity.confirmation_required",
+            "same-harness-and-model planning author and reviewer require explicit human confirmation",
+            public_warning(required),
+        )
+    return may_prepare
+
+
+def activate_snapshot(run_dir: Path, snapshot: dict[str, Any]) -> dict[str, Any]:
+    pointer = persist_snapshot(run_dir, snapshot)
+    state_path = run_dir / "state.json"
+    latest = read_planning_state(state_path)
+    if (
+        latest.get("current_stage") != snapshot["stage"]
+        or stage_pass(latest, snapshot["stage"]) != snapshot["pass"]
+    ):
+        raise SnapshotError(
+            f"run moved stages while {snapshot['stage']}-{snapshot['pass']} was being prepared"
+        )
+    latest["prepared_stage"] = pointer
+    latest["tree_baseline"] = None
+    latest["updated_at"] = pointer["prepared_at"]
+    write_json(state_path, latest)
+    append_event(
+        run_dir,
+        "stage.prepared",
+        f"prepared immutable {snapshot['stage']}-{snapshot['pass']} snapshot",
+        {
+            **pointer,
+            "role": snapshot["role"],
+            "harness": snapshot["selected_worker"]["harness"],
+        },
+    )
+    return pointer
+
+
 def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     state_path = run_dir / "state.json"
     state = read_planning_state(state_path)
@@ -308,21 +432,132 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
         pass_num=pass_num,
         config_source=state["configuration_source"],
     )
-    pointer = persist_snapshot(run_dir, snapshot)
     state = read_planning_state(state_path)
     if state.get("current_stage") != stage:
         raise SnapshotError(f"run moved stages while {stage}-{pass_num} was being prepared")
-    state["prepared_stage"] = pointer
+    if not reconcile_diversity_confirmation(
+        state, snapshot, run_dir=run_dir, state_path=state_path
+    ):
+        return {
+            "prepared": None,
+            "diversity_warning": public_warning(state["diversity_confirmation"]),
+        }
+    return activate_snapshot(run_dir, snapshot)
+
+
+def decide_diversity(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).resolve()
+    state_path = run_dir / "state.json"
+    state = read_planning_state(state_path)
+    stage = state.get("current_stage")
+    pending = pending_confirmation(state, stage if isinstance(stage, str) else None)
+    if pending is None or stage not in {"spec", "tickets"}:
+        raise SnapshotError("this run has no pending planning model-diversity confirmation")
+    reason = args.reason.strip()
+    if not reason or reason == "<human-reason>":
+        raise SnapshotError("diversity confirmation requires a human-authored --reason")
+    if state.get("prepared_stage") is not None:
+        raise SnapshotError("a pending diversity confirmation must not have a prepared stage snapshot")
+
+    probe = pending.get("live_profile_probe")
+    if not isinstance(probe, dict):
+        raise SnapshotError("pending diversity confirmation has no reusable profile-probe settings")
+    probe_timeout = probe.get("timeout_seconds")
+    # A missing timeout would replay the probe with no deadline at all instead of failing fast.
+    if isinstance(probe_timeout, bool) or not isinstance(probe_timeout, (int, float)) or probe_timeout <= 0:
+        raise SnapshotError("pending diversity confirmation has no valid profile-probe timeout")
+    overrides = pending.get("effective_overrides")
+    if not isinstance(overrides, dict):
+        raise SnapshotError("pending diversity confirmation has no reusable override settings")
+    _, snapshot = snapshot_from_settings(
+        run_dir=run_dir,
+        run_id=state["run_id"],
+        stage=stage,
+        pass_num=stage_pass(state, stage),
+        config_source=state["configuration_source"],
+        overrides=overrides,
+        probe_profiles=bool(probe.get("enabled")),
+        probe_timeout_seconds=float(probe_timeout),
+    )
+    resolution = resolution_from_snapshot(snapshot)
+    if resolution is None:
+        raise SnapshotError("diversity confirmation is available only for planning author stages")
+
+    # Profile probing can take long enough for the run to move on, so the decision must never write
+    # back state that predates the resolution, and it owes the tickets stage the same approved-spec
+    # guard that `prepare` enforces before it activates a snapshot.
+    state = read_planning_state(state_path)
+    if state.get("current_stage") != stage or stage_pass(state, stage) != snapshot["pass"]:
+        raise SnapshotError(
+            f"run moved stages while the {stage} diversity confirmation was being resolved"
+        )
+    if state.get("prepared_stage") is not None:
+        raise SnapshotError("a pending diversity confirmation must not have a prepared stage snapshot")
+    pending = pending_confirmation(state, stage)
+    if pending is None:
+        raise SnapshotError("this run has no pending planning model-diversity confirmation")
+    if stage == "tickets":
+        approved_spec_from_state(state, run_dir=run_dir)
+    archived = False
+    if resolution["combination_id"] != pending["combination_id"]:
+        may_prepare = reconcile_diversity_confirmation(
+            state, snapshot, run_dir=run_dir, state_path=state_path
+        )
+        if args.decision == "confirm":
+            # A confirmation binds one combination, so a changed one is asked again, never assumed.
+            if not may_prepare:
+                print(json.dumps(public_warning(state["diversity_confirmation"]), sort_keys=True))
+                return 2
+            pointer = activate_snapshot(run_dir, snapshot)
+            print(json.dumps({"prepared": pointer, "diversity_required": False}, sort_keys=True))
+            return 0
+        # A refusal never leaves a launchable snapshot behind, even when the collision it named
+        # disappeared while the decision was being resolved. It is recorded against the fresh
+        # resolution, and preparing that stage again takes an explicit `prepare`.
+        pending = pending_confirmation(state, stage)
+        archived = pending is None
+        if archived:
+            pending = resolution_record(
+                snapshot, resolution, configuration_source=state["configuration_source"]
+            )
+            state.setdefault("diversity_confirmation_history", []).append(pending)
+
+    now = utc_now()
+    decision = {"decision": args.decision, "reason": reason, "time": now}
+    pending.setdefault("decisions", []).append(decision)
+    pending["status"] = "confirmed" if args.decision == "confirm" else "refused"
+    pending["reason"] = reason
+    # Only the current decision may carry a timestamp, or an overturned one reads as still standing.
+    pending.pop("confirmed_at", None)
+    pending.pop("refused_at", None)
+    pending[f"{pending['status']}_at"] = now
+    if not archived:
+        # A refused record keeps asking; a non-colliding one must not, or it blocks its own prepare.
+        state["diversity_confirmation"] = pending
+    state["prepared_stage"] = None
     state["tree_baseline"] = None
-    state["updated_at"] = pointer["prepared_at"]
+    state["updated_at"] = now
     write_json(state_path, state)
+    decided = public_warning(pending)
+    if args.decision == "refuse":
+        append_event(
+            run_dir,
+            "diversity.refused",
+            "human refused same-harness-and-model planning author/reviewer operation",
+            {**decided, "reason": reason},
+        )
+        print(json.dumps(decided, sort_keys=True))
+        return 2
+
     append_event(
         run_dir,
-        "stage.prepared",
-        f"prepared immutable {stage}-{pass_num} snapshot",
-        {**pointer, "role": snapshot["role"], "harness": snapshot["selected_worker"]["harness"]},
+        "diversity.confirmed",
+        "human explicitly confirmed same-harness-and-model planning author/reviewer operation",
+        {**decided, "reason": reason},
     )
-    return pointer
+    pointer = activate_snapshot(run_dir, snapshot)
+    print(json.dumps({"confirmed": decided, "prepared": pointer}, sort_keys=True))
+    return 0
 
 
 def checked_run_id(value: str) -> str:
@@ -352,14 +587,19 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
     target = initialization.get("target_stage")
     pointer = initialization.get("prepared_stage")
     if target == "spec":
-        if not isinstance(pointer, dict):
-            raise ConfigError("validated direct input has no prepared specification snapshot")
-        relative = Path(pointer.get("path", ""))
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ConfigError("validated input snapshot path is unsafe")
-        snapshot_path = run_dir / relative
-        if not snapshot_path.is_file() or sha256_file(snapshot_path) != pointer.get("sha256"):
-            raise ConfigError("validated input snapshot is missing or changed")
+        pending = pending_confirmation(state, "spec")
+        if isinstance(pointer, dict):
+            relative = Path(pointer.get("path", ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ConfigError("validated input snapshot path is unsafe")
+            snapshot_path = run_dir / relative
+            if not snapshot_path.is_file() or sha256_file(snapshot_path) != pointer.get("sha256"):
+                raise ConfigError("validated input snapshot is missing or changed")
+        elif pending is None:
+            raise ConfigError(
+                "validated direct input has neither a prepared specification snapshot nor a "
+                "pending model-diversity confirmation"
+            )
     elif target == "awaiting-grilling-revalidation":
         if pointer is not None:
             raise ConfigError("grilling input must not prepare a worker before revalidation")
@@ -374,6 +614,14 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
     write_json(state_path, state)
     if isinstance(pointer, dict):
         append_event(run_dir, "stage.prepared", "prepared immutable spec-1 snapshot", pointer)
+    elif target == "spec":
+        append_event(
+            run_dir,
+            "diversity.confirmation_required",
+            "same-harness-and-model planning author and reviewer require explicit human confirmation",
+            public_warning(state["diversity_confirmation"]),
+            time=now,
+        )
     else:
         append_event(
             run_dir,
@@ -474,7 +722,16 @@ def init_run(args: argparse.Namespace) -> int:
             "copied_markdown": "inputs/grilling-source.md",
             "premise_corrections": grilling["premise_corrections"],
         }
-    initial_pointer = persist_snapshot(run_dir, prepared_snapshot) if prepared_snapshot is not None else None
+    diversity_confirmation = None
+    initial_pointer = None
+    if prepared_snapshot is not None:
+        diversity_confirmation = collision_warning(
+            prepared_snapshot,
+            run_dir=run_dir,
+            configuration_source=str(configuration_source),
+        )
+        if diversity_confirmation is None:
+            initial_pointer = persist_snapshot(run_dir, prepared_snapshot)
     target_stage = "awaiting-grilling-revalidation" if grilling else "spec"
     state = {
         "schema_version": 1,
@@ -510,6 +767,8 @@ def init_run(args: argparse.Namespace) -> int:
         "staged_tracker": None,
         "published_tracker": None,
         "gate_decisions": [],
+        "diversity_confirmation": diversity_confirmation,
+        "diversity_confirmation_history": [],
         "worker_wait_policy": {
             "watcher": "await_report.py",
             "missing_report_gate": "pending",
@@ -532,6 +791,8 @@ def init_run(args: argparse.Namespace) -> int:
         {"state": state},
     )
     finish_input_validation(run_dir)
+    if diversity_confirmation is not None:
+        print(json.dumps({"diversity_warning": public_warning(diversity_confirmation)}, sort_keys=True))
     print(run_dir)
     return 0
 
@@ -1704,6 +1965,8 @@ def run(args: argparse.Namespace) -> int:
         pointer = prepare_stage(args, Path(args.run_dir), args.stage, args.pass_num)
         print(json.dumps(pointer, sort_keys=True))
         return 0
+    if args.command == "diversity-confirmation":
+        return decide_diversity(args)
     if args.command == "accept-author":
         return accept_author(args)
     if args.command == "accept-review":

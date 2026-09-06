@@ -136,6 +136,25 @@ class PlanningFlow(unittest.TestCase):
             str(self.config),
         )
 
+    def assign_planning_profile(self, role: str, profile: str) -> None:
+        data = json.loads(self.config.read_text(encoding="utf-8"))
+        data["workflows"]["planning"][role] = profile
+        self.config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def decide_diversity(
+        self, decision: str, reason: str, *, run_dir: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return self.cli(
+            STATE,
+            "diversity-confirmation",
+            "--run-dir",
+            str(run_dir or self.run_dir),
+            "--decision",
+            decision,
+            "--reason",
+            reason,
+        )
+
     def render_and_baseline(self, stage: str, pass_num: int = 1, run_dir: Path | None = None) -> None:
         selected = run_dir or self.run_dir
         rendered = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
@@ -407,6 +426,356 @@ sha256 {resulting_digest or digest}
         self.assertEqual(final["current_stage"], "tickets")
         self.assertEqual(final["approved_spec"]["sha256"], digest)
         self.assertEqual(final["prepared_stage"]["stage"], "tickets")
+
+    def test_spec_author_collision_requires_recorded_confirmation_and_survives_resume(self):
+        self.assign_planning_profile("spec", "codex-sol-medium")
+
+        initialized = self.init_direct()
+
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertFalse(list((self.run_dir / "stage-snapshots").glob("spec-1-*.json")))
+        pending = state["diversity_confirmation"]
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(
+            pending["author"],
+            {
+                "role": "planning.spec",
+                "profile": "codex-sol-medium",
+                "harness": "codex",
+                "model": "gpt-5.6-sol",
+            },
+        )
+        self.assertEqual(
+            pending["reviewer"],
+            {
+                "role": "planning.reviewer",
+                "profile": "codex-sol-xhigh",
+                "harness": "codex",
+                "model": "gpt-5.6-sol",
+            },
+        )
+        for value in (
+            "planning.spec",
+            "planning.reviewer",
+            "codex-sol-medium",
+            "codex-sol-xhigh",
+            "codex",
+            "gpt-5.6-sol",
+        ):
+            self.assertIn(value, initialized.stdout)
+
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "pending-diversity-confirmation")
+        self.assertEqual(
+            status["recommended_next"]["command"],
+            status["diversity_confirmation"]["confirmation_command"],
+        )
+        self.assertIn("diversity-confirmation", status["recommended_next"]["command"])
+        self.assertIn("--decision confirm", status["recommended_next"]["command"])
+        blocked_launch = self.cli(
+            PANE,
+            "--cmux-cmd",
+            str(self.cmux),
+            "launch",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+            "--anchor",
+            "CALLER",
+        )
+        self.assertNotEqual(blocked_launch.returncode, 0)
+        self.assertIn("no matching prepared stage snapshot", blocked_launch.stderr)
+
+        confirmed = self.decide_diversity(
+            "confirm", "Only Codex capacity is currently available"
+        )
+        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        confirmed_state = json.loads(
+            (self.run_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(confirmed_state["diversity_confirmation"]["status"], "confirmed")
+        self.assertEqual(
+            confirmed_state["diversity_confirmation"]["reason"],
+            "Only Codex capacity is currently available",
+        )
+        self.assertEqual(confirmed_state["prepared_stage"]["stage"], "spec")
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        confirmation = [event for event in events if event["type"] == "diversity.confirmed"]
+        self.assertEqual(len(confirmation), 1)
+        self.assertEqual(
+            confirmation[0]["data"]["reason"],
+            "Only Codex capacity is currently available",
+        )
+
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(json.loads(resumed.stdout)["classification"], "spec-authoring")
+        prepared_again = self.cli(
+            STATE,
+            "prepare",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+        )
+        self.assertEqual(prepared_again.returncode, 0, prepared_again.stderr)
+        self.assertIn('"stage": "spec"', prepared_again.stdout)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+
+    def test_refusing_spec_author_collision_preserves_stage_and_configuration_guidance(self):
+        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assertEqual(self.init_direct().returncode, 0)
+
+        refused = self.decide_diversity(
+            "refuse", "Wait until the independent provider is available"
+        )
+
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertEqual(state["diversity_confirmation"]["status"], "refused")
+        self.assertEqual(
+            state["diversity_confirmation"]["reason"],
+            "Wait until the independent provider is available",
+        )
+        self.assertIn(str(self.config.resolve()), refused.stdout)
+        self.assertIn("planning.spec", refused.stdout)
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "pending-diversity-confirmation")
+        self.assertEqual(status["diversity_confirmation"]["status"], "refused")
+
+    def test_refusing_a_changed_diverse_resolution_records_it_without_preparing(self):
+        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.assign_planning_profile("spec", "claude-fable-high")
+
+        refused = self.decide_diversity("refuse", "Do not launch before an independent check")
+
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "spec")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertIsNone(state["diversity_confirmation"])
+        self.assertEqual(
+            [entry["status"] for entry in state["diversity_confirmation_history"]],
+            ["invalidated", "refused"],
+        )
+        self.assertEqual(
+            state["diversity_confirmation_history"][-1]["reason"],
+            "Do not launch before an independent check",
+        )
+        self.assertIn(str(self.config.resolve()), refused.stdout)
+        self.assertIn("planning.spec", refused.stdout)
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len([event for event in events if event["type"] == "diversity.refused"]), 1)
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "spec-authoring")
+
+        prepared = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.assertEqual(
+            json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))["prepared_stage"][
+                "stage"
+            ],
+            "spec",
+        )
+
+    def test_refusing_a_changed_still_colliding_resolution_records_the_fresh_combination(self):
+        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assertEqual(self.init_direct().returncode, 0)
+        first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+            "diversity_confirmation"
+        ]
+        self.assign_planning_profile("spec", "codex-luna-medium")
+        self.assign_planning_profile("reviewer", "codex-luna-medium")
+
+        refused = self.decide_diversity("refuse", "No independent reviewer is reachable today")
+
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIsNone(state["prepared_stage"])
+        record = state["diversity_confirmation"]
+        self.assertEqual(record["status"], "refused")
+        self.assertNotEqual(record["combination_id"], first["combination_id"])
+        self.assertEqual(record["author"]["model"], "gpt-5.6-luna")
+        self.assertEqual(record["reason"], "No independent reviewer is reachable today")
+        self.assertEqual(
+            [entry["status"] for entry in state["diversity_confirmation_history"]], ["invalidated"]
+        )
+        self.assertIn(str(self.config.resolve()), refused.stdout)
+
+    def test_one_confirmation_covers_both_author_stages_for_the_same_combination(self):
+        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assign_planning_profile("tickets", "codex-sol-xhigh")
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(
+            self.decide_diversity(
+                "confirm", "One provider is available for this complete planning run"
+            ).returncode,
+            0,
+        )
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("spec-review")
+        digest = validate_spec(draft)["sha256"]
+        (self.run_dir / "reports" / "spec-review-1.md").write_text(
+            review_report("pass", digest, digest), encoding="utf-8"
+        )
+        self.assertEqual(
+            self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+
+        approved = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Specification approved",
+        )
+
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "tickets")
+        self.assertEqual(state["prepared_stage"]["stage"], "tickets")
+        self.assertEqual(state["diversity_confirmation"]["status"], "confirmed")
+        events = [
+            json.loads(line)
+            for line in (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(
+            len([event for event in events if event["type"] == "diversity.confirmed"]),
+            1,
+        )
+        self.assertEqual(
+            len([event for event in events if event["type"] == "diversity.confirmation_required"]),
+            1,
+        )
+
+    def test_tickets_author_collision_is_gated_before_its_snapshot(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        draft = self.write_author_handoff()
+        self.assertEqual(
+            self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.render_and_baseline("spec-review")
+        digest = validate_spec(draft)["sha256"]
+        (self.run_dir / "reports" / "spec-review-1.md").write_text(
+            review_report("pass", digest, digest), encoding="utf-8"
+        )
+        self.assertEqual(
+            self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
+        )
+        self.assign_planning_profile("tickets", "codex-sol-xhigh")
+
+        approved = self.cli(
+            STATE,
+            "approval",
+            "--run-dir",
+            str(self.run_dir),
+            "--decision",
+            "approve",
+            "--reason",
+            "Specification approved",
+        )
+
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "tickets")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertEqual(state["diversity_confirmation"]["author"]["role"], "planning.tickets")
+        self.assertFalse(list((self.run_dir / "stage-snapshots").glob("tickets-1-*.json")))
+        self.assertIn("planning.tickets", approved.stdout)
+
+        confirmed = self.decide_diversity(
+            "confirm", "The alternate provider quota is exhausted"
+        )
+        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        prepared = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+            "prepared_stage"
+        ]
+        self.assertEqual(prepared["stage"], "tickets")
+
+    def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
+        self.assign_planning_profile("spec", "codex-sol-xhigh")
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(
+            self.decide_diversity("confirm", "Temporary single-model operation").returncode,
+            0,
+        )
+        first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
+            "diversity_confirmation"
+        ]
+        self.assign_planning_profile("spec", "codex-luna-medium")
+        self.assign_planning_profile("reviewer", "codex-luna-medium")
+
+        prepared = self.cli(
+            STATE,
+            "prepare",
+            "--run-dir",
+            str(self.run_dir),
+            "--stage",
+            "spec",
+            "--pass",
+            "1",
+        )
+
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        changed = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIsNone(changed["prepared_stage"])
+        self.assertEqual(changed["diversity_confirmation"]["status"], "pending")
+        self.assertNotEqual(
+            changed["diversity_confirmation"]["combination_id"], first["combination_id"]
+        )
+        self.assertEqual(changed["diversity_confirmation"]["author"]["model"], "gpt-5.6-luna")
+        self.assertEqual(len(changed["diversity_confirmation_history"]), 1)
+        self.assertEqual(
+            changed["diversity_confirmation_history"][0]["status"], "invalidated"
+        )
+
+    def test_diverse_author_and_reviewer_prepare_without_confirmation(self):
+        initialized = self.init_direct()
+
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertIsNotNone(state["prepared_stage"])
+        self.assertIsNone(state["diversity_confirmation"])
+        status = json.loads(
+            self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout
+        )
+        self.assertEqual(status["classification"], "spec-authoring")
+        self.assertIsNone(status["diversity_confirmation"])
 
     def test_tickets_cannot_prepare_without_same_run_approved_spec(self):
         self.assertEqual(self.init_direct().returncode, 0)

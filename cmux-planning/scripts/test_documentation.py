@@ -80,6 +80,26 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_model_diversity_confirmation_gate_is_documented(self):
+        text = normalized(PLANNING)
+        for required in (
+            "planning.spec",
+            "planning.tickets",
+            "planning.reviewer",
+            "same harness and model",
+            "before a launchable snapshot exists",
+            "ask the confirmation question in the user's language",
+            "never substitute or fall back to another profile automatically",
+            "diversity-confirmation",
+            "--decision confirm",
+            "--decision refuse",
+            "human-authored reason",
+            "pending-diversity-confirmation",
+            "shared configuration file",
+            "refusal never prepares a snapshot even when the resolved combination changed",
+        ):
+            self.assertIn(required, text)
+
     def test_launch_json_is_documented_as_the_only_post_launch_surface_identity(self):
         text = normalized(PLANNING)
         for required in (

@@ -20,6 +20,7 @@ from orchestrator_lib import (
     sha256_file,
     surface_event_recorded,
 )
+from planning_diversity import DECISION_STATUSES, pending_confirmation, public_warning
 from stage_snapshot import SnapshotError, load_prepared_snapshot
 from tracker_contract import ContractError, validate_native_tracker, validate_proposal
 from tree_integrity import snapshot_digest
@@ -489,6 +490,23 @@ def recommended_next(
         pass_num = stage_pass(state, stage)
         pointer = state.get("prepared_stage")
         if not isinstance(pointer, dict):
+            pending = pending_confirmation(state, stage)
+            if pending is not None:
+                if pending.get("status") == "refused":
+                    return {
+                        "action": (
+                            "stop for human inspection: the recorded refusal requires a diverse "
+                            "author profile in the shared configuration"
+                        ),
+                        "command": shell_join(base + ["context", "--run-dir", run_dir]),
+                    }
+                return {
+                    "action": (
+                        "ask the human to confirm the same-harness-and-model planning "
+                        "author/reviewer resolution"
+                    ),
+                    "command": pending["confirmation_command"],
+                }
             return {
                 "action": "prepare the current stage",
                 "command": shell_join(
@@ -712,12 +730,16 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
             errors.append("validated input checkpoint metadata is missing")
             prepared = None
         elif initialization.get("target_stage") == "spec":
-            prepared = pointer_identity(
-                run_dir,
-                initialization.get("prepared_stage"),
-                "validated input snapshot",
-                errors,
-            )
+            initial_pointer = initialization.get("prepared_stage")
+            if initial_pointer is None and pending_confirmation(state, "spec") is not None:
+                prepared = None
+            else:
+                prepared = pointer_identity(
+                    run_dir,
+                    initial_pointer,
+                    "validated input snapshot",
+                    errors,
+                )
         elif initialization.get("target_stage") == "awaiting-grilling-revalidation":
             prepared = None
             if initialization.get("prepared_stage") is not None:
@@ -819,6 +841,17 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
                 errors.append("latest reviewed candidate is missing or changed")
     approval = approval_status(run_dir, state, errors)
     publication = publication_status(run_dir, state, errors)
+    diversity = state.get("diversity_confirmation")
+    diversity_status = None
+    if isinstance(diversity, dict):
+        diversity_status = public_warning(diversity)
+        if diversity.get("status") not in DECISION_STATUSES:
+            errors.append("model-diversity confirmation has an unknown status")
+    elif diversity is not None:
+        errors.append("model-diversity confirmation state is malformed")
+    pending_diversity = pending_confirmation(state, stage if isinstance(stage, str) else None)
+    if pending_diversity is not None and isinstance(prepared, dict):
+        errors.append("pending model-diversity confirmation has a prepared stage snapshot")
 
     if errors:
         classification = "inconsistent"
@@ -832,6 +865,8 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         classification = "review-blocked" if "review" in stage else "hitl"
     elif stage in HITL_STAGES:
         classification = "hitl"
+    elif stage in STAGES and pending_diversity is not None:
+        classification = "pending-diversity-confirmation"
     elif stage in STAGES and report["uncertain"] and pane["status"] not in {"live", "last-known"}:
         classification = "hitl"
     elif stage in STAGES and pane["status"] in {"dead", "deadline", "watcher-expired"}:
@@ -873,6 +908,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
             "pass": pass_num,
         },
         "prepared_snapshot": prepared,
+        "diversity_confirmation": diversity_status,
         "pane": pane,
         "report": report,
         "latest_review": {
