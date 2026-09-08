@@ -99,6 +99,12 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(
             data["profiles"],
             {
+                "claude-opus-high": {
+                    "harness": "claude-code",
+                    "executable": "claude",
+                    "model": "opus",
+                    "effort": "high",
+                },
                 "claude-opus-medium": {
                     "harness": "claude-code",
                     "executable": "claude",
@@ -129,6 +135,12 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "fable",
                     "effort": "high",
                 },
+                "codex-astra-high": {
+                    "harness": "codex",
+                    "executable": "codex",
+                    "model": "gpt-6-astra",
+                    "effort": "high",
+                },
                 "codex-astra-medium": {
                     "harness": "codex",
                     "executable": "codex",
@@ -154,20 +166,20 @@ class AgentsConfigCli(unittest.TestCase):
             {
                 "issue-chain": {
                     "implement": "codex-astra-xhigh",
-                    "simplify": "claude-opus-xhigh",
-                    "review": "claude-opus-xhigh",
-                    "test": "codex-astra-xhigh",
+                    "simplify": "claude-opus-high",
+                    "review": "claude-opus-high",
+                    "test": "codex-astra-high",
                 },
                 "grilling": {
-                    "codebase": "claude-opus-xhigh",
-                    "codebase2": "codex-astra-xhigh",
+                    "codebase": "claude-opus-high",
+                    "codebase2": "codex-astra-high",
                     "docs": "codex-luna-medium",
                     "web": "claude-sonnet-medium",
                 },
                 "planning": {
                     "spec": "claude-fable-high",
                     "tickets": "claude-fable-high",
-                    "reviewer": "codex-astra-xhigh",
+                    "reviewer": "codex-astra-high",
                 },
             },
         )
@@ -473,7 +485,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(persisted["schema_version"], 2)
-        self.assertEqual(len(persisted["profiles"]), 8)
+        self.assertEqual(len(persisted["profiles"]), 10)
 
     def test_version_one_inspection_and_preview_are_read_only(self):
         _, legacy = self.legacy_default()
@@ -565,7 +577,7 @@ class AgentsConfigCli(unittest.TestCase):
             {
                 "spec": "claude-fable-high",
                 "tickets": "claude-fable-high",
-                "reviewer": "codex-astra-xhigh",
+                "reviewer": "codex-astra-high",
             },
         )
         once = path.read_bytes()
@@ -616,12 +628,13 @@ class AgentsConfigCli(unittest.TestCase):
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
         _, legacy = self.legacy_default()
         legacy["profiles"].pop("claude-opus-xhigh")
+        legacy["profiles"].pop("claude-opus-high")
         legacy["profiles"].pop("claude-fable-medium")
         legacy["profiles"].pop("claude-fable-high")
         for name in list(legacy["profiles"]):
             if legacy["profiles"][name]["harness"] == "codex":
                 legacy["profiles"].pop(name)
-        legacy["profiles"]["codex-astra-xhigh"] = {
+        legacy["profiles"]["codex-astra-high"] = {
             "harness": "claude-code",
             "executable": "claude",
             "model": "collision-must-survive",
@@ -647,9 +660,9 @@ class AgentsConfigCli(unittest.TestCase):
         proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["profiles"]["codex-astra-xhigh"]["model"], "collision-must-survive")
-        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-astra-xhigh-2")
-        self.assertEqual(migrated["profiles"]["codex-astra-xhigh-2"]["harness"], "codex")
+        self.assertEqual(migrated["profiles"]["codex-astra-high"]["model"], "collision-must-survive")
+        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-astra-high-2")
+        self.assertEqual(migrated["profiles"]["codex-astra-high-2"]["harness"], "codex")
         self.assertEqual(migrated["workflows"]["planning"]["spec"], "claude-opus-medium")
 
     def test_invalid_version_one_migration_preserves_original_bytes(self):

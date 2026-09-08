@@ -103,7 +103,7 @@ guidance block on stderr, with the candidate digest and exact preview and accept
 Accepted migration preserves existing profiles and assignments, deterministically selects planning
 authors, requires a Codex reviewer (adding a collision-safe default only when necessary), validates the
 complete candidate before atomic replacement, and leaves original bytes untouched on failure. If
-`claude-opus-xhigh` is unavailable, the preview identifies that fact and shows the lexicographically
+`claude-fable-high` is unavailable, the preview identifies that fact and shows the lexicographically
 first compatible fallback's profile name, harness, model, and effort without inferring relative quality.
 A target with no write bit or more than one hard link is refused even when its parent is writable.
 Symlink paths remain symlinks: migration resolves the intended target and applies the same write-bit and
@@ -123,13 +123,15 @@ normal chat question otherwise. A negative answer ends the turn without a run or
 after the human returns, the current file is validated before work starts. Direct calls to
 `run_state.py init` require an existing configuration and never silently bootstrap one.
 
-The defaults provide Claude Opus at medium and xhigh effort, Sonnet/medium, Codex GPT-5.6 Sol at
-medium and xhigh effort, and Luna/medium. Issue-chain assigns Sol/xhigh to implement/test and
-Opus/xhigh to simplify/review. Grilling assigns Opus/xhigh, Sol/xhigh, Luna/medium, and
-Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`. Planning assigns Opus/xhigh to `spec`
-and `tickets` and Codex Sol/xhigh to its mandatory Codex `reviewer`. Claude's `opus` and `sonnet` names are
-intentionally moving aliases; syntax-validating any local model string does not prove that the
-authenticated provider account is entitled to use it. Pi and Hermes are explicitly unsupported;
+The ten default profiles provide Claude Fable at high and medium effort, Opus at high, medium,
+and xhigh effort, Sonnet/medium, Codex GPT-6 Astra at high, medium, and xhigh effort, and
+GPT-5.6 Luna/medium. Issue-chain assigns Astra/xhigh to `implement`, Opus/high to `simplify`
+and `review`, and Astra/high to `test`. Grilling assigns Opus/high, Astra/high, Luna/medium,
+and Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`. Planning assigns Fable/high
+to `spec` and `tickets` and Astra/high to its mandatory Codex `reviewer`. Claude's `fable`,
+`opus`, and `sonnet` names are moving provider aliases; selecting an alias does not pin the
+provider's underlying model version. Syntax-validating a local model string does not prove that
+the authenticated provider account is entitled to use it. Pi and Hermes are explicitly unsupported;
 their registry entries mark the code-owned adapter boundary for future support.
 
 Every interactive Claude worker is launched with `--permission-mode auto`, including roles switched

@@ -380,7 +380,7 @@ class PreparedStageCli(unittest.TestCase):
 
         calls = [json.loads(line) for line in self.harness_log.read_text().splitlines()]
         probes = [call for call in calls if PROBE_SENTINEL in " ".join(call["argv"])]
-        self.assertEqual(len(probes), 2, "duplicate worker assignments must share one profile probe")
+        self.assertEqual(len(probes), 3, "duplicate worker assignments must share one profile probe")
         self.assertEqual({call["program"] for call in probes}, {"claude", "codex"})
         codex = next(call["argv"] for call in probes if call["program"] == "codex")
         claude = next(call["argv"] for call in probes if call["program"] == "claude")

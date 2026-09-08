@@ -92,6 +92,12 @@ def valid_executable_syntax(value: str) -> bool:
 DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "profiles": {
+        "claude-opus-high": {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "opus",
+            "effort": "high",
+        },
         "claude-opus-medium": {
             "harness": "claude-code",
             "executable": "claude",
@@ -122,6 +128,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "fable",
             "effort": "high",
         },
+        "codex-astra-high": {
+            "harness": "codex",
+            "executable": "codex",
+            "model": "gpt-6-astra",
+            "effort": "high",
+        },
         "codex-astra-medium": {
             "harness": "codex",
             "executable": "codex",
@@ -144,20 +156,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "workflows": {
         "issue-chain": {
             "implement": "codex-astra-xhigh",
-            "simplify": "claude-opus-xhigh",
-            "review": "claude-opus-xhigh",
-            "test": "codex-astra-xhigh",
+            "simplify": "claude-opus-high",
+            "review": "claude-opus-high",
+            "test": "codex-astra-high",
         },
         "grilling": {
-            "codebase": "claude-opus-xhigh",
-            "codebase2": "codex-astra-xhigh",
+            "codebase": "claude-opus-high",
+            "codebase2": "codex-astra-high",
             "docs": "codex-luna-medium",
             "web": "claude-sonnet-medium",
         },
         "planning": {
             "spec": "claude-fable-high",
             "tickets": "claude-fable-high",
-            "reviewer": "codex-astra-xhigh",
+            "reviewer": "codex-astra-high",
         },
     },
 }

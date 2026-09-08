@@ -228,8 +228,8 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertEqual(
             {lane: (entry["harness"], entry["model"], entry["effort"]) for lane, entry in lanes.items()},
             {
-                "codebase": ("claude-code", "opus", "xhigh"),
-                "codebase2": ("codex", "gpt-6-astra", "xhigh"),
+                "codebase": ("claude-code", "opus", "high"),
+                "codebase2": ("codex", "gpt-6-astra", "high"),
                 "docs": ("codex", "gpt-5.6-luna", "medium"),
                 "web": ("claude-code", "sonnet", "medium"),
             },
@@ -283,7 +283,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertEqual(
             wave["resolved_profiles"]["codebase"]["argv"],
             [
-                "claude", "--model", "opus", "--effort", "xhigh",
+                "claude", "--model", "opus", "--effort", "high",
                 "--permission-mode", "auto",
             ],
         )
@@ -545,7 +545,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         before = self.read_wave("immutable")
         config_path = Path(self.read_state("immutable")["configuration_source"])
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["profiles"]["codex-astra-xhigh"]["model"] = "changed/after-start"
+        config["profiles"]["codex-astra-high"]["model"] = "changed/after-start"
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         run_dir = self.run_dir("immutable")

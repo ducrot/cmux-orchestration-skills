@@ -65,7 +65,7 @@ handoffs.
 
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
-`claude-opus-xhigh`; the reviewer defaults to `codex-astra-xhigh` and must resolve to Codex.
+`claude-fable-high`; the reviewer defaults to `codex-astra-high` and must resolve to Codex.
 `validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
@@ -80,7 +80,7 @@ stdout empty and emits one complete actionable guidance block on stderr, includi
 and exact preview and acceptance commands once each.
 On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
 argument, then rerun planning
-initialization; `--accept-config` never authorizes schema migration. When `claude-opus-xhigh` is absent,
+initialization; `--accept-config` never authorizes schema migration. When `claude-fable-high` is absent,
 the preview identifies it as unavailable and displays the lexicographically first compatible fallback's
 profile name, harness, model, and effort without inferring relative quality. Migration preserves existing
 profiles and assignments and leaves original bytes untouched on failure. It refuses targets with no

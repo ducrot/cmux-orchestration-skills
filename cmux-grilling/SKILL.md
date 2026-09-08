@@ -46,7 +46,7 @@ protocol:
 
 1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,
-   including every resolved workflow assignment. When `claude-opus-xhigh` is unavailable, call out
+   including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
    the displayed fallback profile name, harness, model, and effort without inferring relative quality.
    Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
    On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
@@ -67,14 +67,15 @@ protocol:
 This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
 not emulate it with shell input, a sleeping process, or polling while the human edits the file.
 
-The six shipped profiles are `claude-opus-medium` (`claude-code`, `opus`, `medium`),
-`claude-opus-xhigh` (`claude-code`, `opus`, `xhigh`), `claude-sonnet-medium` (`claude-code`,
-`sonnet`, `medium`), `codex-astra-medium` (`codex`, `gpt-6-astra`, `medium`),
-`codex-astra-xhigh` (`codex`, `gpt-6-astra`, `xhigh`), and `codex-luna-medium` (`codex`,
-`gpt-5.6-luna`, `medium`). Grilling assigns Opus/xhigh, Sol/xhigh, Luna/medium, and
-Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`, respectively. The `opus`
-and `sonnet` strings are intentionally moving provider aliases; deterministic selection of an
-alias does not pin the provider's underlying model version.
+The ten shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
+`claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
+(`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
+`codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
+`gpt-6-astra`); and `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`). Each tuple lists
+harness, executable, and model; the profile suffix specifies effort. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
+`codebase`, `codebase2`, `docs`, and `web`, respectively. The `fable`, `opus`, and `sonnet`
+strings are intentionally moving provider aliases; deterministic selection of an alias does not
+pin the provider's underlying model version.
 
 Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 reads never migrate.
 The read-only `migrate` preview validates the complete schema-v2 candidate before displaying it;
@@ -175,7 +176,7 @@ Roles:
    already decide. Respect the remaining question budget (`max_questions`, default 10).
 2. **Research lanes** — four persistent visible panes, launched once and kept open for the
    whole session:
-   - `codebase` — repo-only research, no web (Claude Opus/xhigh by default).
+   - `codebase` — repo-only research, no web (Claude Opus/high by default).
    - `codebase2` — independent second-opinion repo research, no web (Codex by default).
    - `docs` — official documentation for the versions the repo pins (Codex Luna/medium by default).
    - `web` — public-web research (Claude Sonnet/medium and Claude-only by policy).
@@ -538,14 +539,14 @@ missing, failed, mismatched, or tampered lane blocks every pane. The default wav
 
 ```bash
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model opus --effort xhigh \
+  --model opus --effort high \
   --permission-mode auto                                   # codebase
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
   --model gpt-6-astra \
-  -c model_reasoning_effort=xhigh                          # codebase2
+  -c model_reasoning_effort=high                          # codebase2
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c sandbox_workspace_write.network_access=true \
   --ask-for-approval on-request \

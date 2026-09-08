@@ -1001,7 +1001,7 @@ sha256 {resulting_digest or digest}
             pending["reviewer"],
             {
                 "role": "planning.reviewer",
-                "profile": "codex-astra-xhigh",
+                "profile": "codex-astra-high",
                 "harness": "codex",
                 "model": "gpt-6-astra",
             },
@@ -1010,7 +1010,7 @@ sha256 {resulting_digest or digest}
             "planning.spec",
             "planning.reviewer",
             "codex-astra-medium",
-            "codex-astra-xhigh",
+            "codex-astra-high",
             "codex",
             "gpt-6-astra",
         ):
