@@ -44,6 +44,7 @@ from agents_config import (
     parse_json,
     read_config_bytes,
     resolved_display,
+    supplied_configuration_inputs,
 )
 from grilling_input import (
     GrillingInputError,
@@ -658,7 +659,7 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
                 run_dir,
                 pointer.get("manifest_id", ""),
                 expected_kind="stage-snapshot",
-                expected_path=snapshot_path,
+                expected_path=relative,
             )
         elif pending is None:
             raise ConfigError(
@@ -702,6 +703,30 @@ def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     task_bytes, task_source = task_input(args)
     runs_root = Path(args.runs_root)
+    now = utc_now()
+    seed = task_bytes.decode("utf-8").strip().splitlines()[0][:48]
+    run_id = (
+        checked_run_id(args.run_id)
+        if args.run_id
+        else RUN_ID_RE.sub("-", f"plan-{seed}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+    )
+    run_dir = runs_root / run_id
+    # Like the sibling workflows, a persisted state makes init idempotent. This only returns
+    # the existing run; advancing it still requires the normal resume and integrity checks.
+    if (run_dir / "state.json").is_file():
+        existing = read_planning_state(run_dir / "state.json")
+        if Path(existing["repository"]).resolve() != repository:
+            raise ConfigError(f"planning run belongs to another repository: {run_dir}")
+        if supplied_configuration_inputs(args, workflow=WORKFLOW) or args.accept_config:
+            raise ConfigError(
+                f"run {run_id} already exists; configuration, typed-override, and live-probe "
+                "inputs belong to planning_state.py prepare, not to re-initialization"
+            )
+        ensure_runs_ignored(runs_root)
+        for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
+            (run_dir / name).mkdir(parents=True, exist_ok=True)
+        print(run_dir)
+        return 0
     if not args.new_run:
         unfinished = unfinished_runs(runs_root, repository)
         if unfinished:
@@ -739,16 +764,6 @@ def init_run(args: argparse.Namespace) -> int:
             cwd=repository,
         )
     workspace = resolve_workspace(args)
-    now = utc_now()
-    seed = task_bytes.decode("utf-8").strip().splitlines()[0][:48]
-    run_id = (
-        checked_run_id(args.run_id)
-        if args.run_id
-        else RUN_ID_RE.sub("-", f"plan-{seed}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
-    )
-    run_dir = runs_root / run_id
-    if run_dir.exists():
-        raise ConfigError(f"planning run already exists: {run_dir}")
 
     # Last of the checks: creating the shared configuration is durable and must not happen for an
     # init that then fails on its own inputs. Migration is a separate shared-CLI action.
@@ -855,7 +870,7 @@ def init_run(args: argparse.Namespace) -> int:
     task_entry = record_artifact(
         state,
         run_dir,
-        task_path,
+        "task.md",
         kind="task",
         stage="input",
         pass_num=1,
@@ -867,24 +882,24 @@ def init_run(args: argparse.Namespace) -> int:
         json_entry = record_artifact(
             state,
             run_dir,
-            run_dir / grilling_state["copied_json"],
+            grilling_state["copied_json"],
             kind="grilling-source-json",
             stage="input",
             pass_num=1,
             attempt=1,
             producer="run.init",
-            expected_path=run_dir / "inputs" / "grilling-source.json",
+            expected_path="inputs/grilling-source.json",
         )
         markdown_entry = record_artifact(
             state,
             run_dir,
-            run_dir / grilling_state["copied_markdown"],
+            grilling_state["copied_markdown"],
             kind="grilling-source-markdown",
             stage="input",
             pass_num=1,
             attempt=1,
             producer="run.init",
-            expected_path=run_dir / "inputs" / "grilling-source.md",
+            expected_path="inputs/grilling-source.md",
         )
         grilling_state["json_manifest_id"] = json_entry["id"]
         grilling_state["markdown_manifest_id"] = markdown_entry["id"]
@@ -920,14 +935,14 @@ def imported_from_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         run_dir,
         imported.get("json_manifest_id", ""),
         expected_kind="grilling-source-json",
-        expected_path=json_path,
+        expected_path=imported["copied_json"],
     )
     verify_entry(
         state,
         run_dir,
         imported.get("markdown_manifest_id", ""),
         expected_kind="grilling-source-markdown",
-        expected_path=markdown_path,
+        expected_path=imported["copied_markdown"],
     )
     json_bytes = json_path.read_bytes()
     markdown_bytes = markdown_path.read_bytes()
@@ -965,7 +980,7 @@ def show_revalidation(run_dir: Path) -> int:
             run_dir,
             progress.get("manifest_id", ""),
             expected_kind="grilling-revalidation-progress",
-            expected_path=progress_path,
+            expected_path=relative,
         )
         recorded_outcomes = read_json(progress_path)
     print(
@@ -1019,7 +1034,7 @@ def revalidate(args: argparse.Namespace) -> int:
     progress_entry = record_artifact(
         state,
         run_dir,
-        progress_path,
+        progress_path.relative_to(run_dir),
         kind="grilling-revalidation-progress",
         stage="input",
         pass_num=1,
@@ -1077,7 +1092,7 @@ def revalidate(args: argparse.Namespace) -> int:
     normalized_entry = record_artifact(
         state,
         run_dir,
-        normalized_path,
+        normalized_name,
         kind="normalized-grilling-input",
         stage="input",
         pass_num=1,

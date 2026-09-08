@@ -71,7 +71,7 @@ def normalized_context(run_dir: Path, state: dict) -> str:
         run_dir,
         pointer.get("manifest_id", ""),
         expected_kind="normalized-grilling-input",
-        expected_path=path,
+        expected_path=pointer["path"],
     )
     payload = path.read_bytes()
     if sha256_bytes(payload) != pointer["sha256"]:

@@ -235,7 +235,7 @@ def persist_snapshot(
         entry = record_artifact(
             state,
             run_dir,
-            destination,
+            relative,
             kind="stage-snapshot",
             stage=snapshot["stage"],
             pass_num=snapshot["pass"],
@@ -284,7 +284,7 @@ def load_prepared_snapshot(
             run_dir,
             pointer.get("manifest_id", ""),
             expected_kind="stage-snapshot",
-            expected_path=path,
+            expected_path=relative,
         )
     except ArtifactIntegrityError as error:
         raise SnapshotError(str(error)) from error

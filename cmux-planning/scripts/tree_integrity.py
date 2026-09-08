@@ -226,7 +226,7 @@ def baseline(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     before_entry = record_artifact(
         state,
         run_dir,
-        before_path,
+        relative,
         kind="tree-baseline",
         stage=stage,
         pass_num=pass_num,
@@ -280,7 +280,7 @@ def verify(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
         run_dir,
         pointer.get("manifest_id", ""),
         expected_kind="tree-baseline",
-        expected_path=before_path,
+        expected_path=pointer["path"],
     )
     if snapshot_digest(before) != pointer["sha256"]:
         raise IntegrityError("tree baseline is missing or changed")
@@ -297,7 +297,7 @@ def verify(run_dir: Path, stage: str, pass_num: int) -> dict[str, Any]:
     after_entry = record_artifact(
         state,
         run_dir,
-        after_path,
+        after_relative,
         kind="tree-verification",
         stage=stage,
         pass_num=pass_num,

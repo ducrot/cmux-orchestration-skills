@@ -154,10 +154,21 @@ python3 scripts/planning_state.py init --task-file ./task.md --repo . \
   --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
 ```
 
-Initialization first looks for the newest unfinished run recorded for the same repository. It prints
-that run and its exact `resume` command and exits before creating another. Completed runs never block a
-later session. Use `--new-run` only after the human deliberately chooses a separate planning session
-beside an unfinished one.
+Relative `--runs-root` and `--run-dir` paths are interpreted from the command's working directory,
+as in grilling and issue-chain. Stored artifact pointers are canonical run-relative paths; readers
+join them to the run directory exactly once. Absolute worker handoff paths remain supported.
+
+Initialization is idempotent for the same run ID when `state.json` already exists: it prints the
+existing run directory and exits successfully without replacing input, preparing workers, or advancing
+the run. Inspect `status` and use `resume` to continue, including any pending human gates. Configuration,
+typed overrides, live probes, and `--accept-config` are refused on re-initialization rather than silently
+ignored; use stage preparation for fresh configuration. A directory without `state.json` does not by
+itself block initialization, so a failed start that only wrote `task.md` can be retried.
+
+For a different run ID, initialization looks for the newest unfinished run recorded for the same
+repository. It prints that run and its exact `resume` command and exits before creating another.
+Completed runs never block a later session. Use `--new-run` only after the human deliberately chooses
+a separate planning session beside an unfinished one; it never resets an existing run.
 
 ## Revalidate optional grilling input
 

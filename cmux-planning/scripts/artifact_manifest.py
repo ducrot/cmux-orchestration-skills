@@ -123,9 +123,10 @@ def _lexical_parts(root: Path, candidate: Path) -> tuple[str, ...]:
 
 
 def _relative_path(run_dir: Path, path: Path | str) -> tuple[Path, str]:
+    """Accept a run-relative pointer or an absolute handoff, never a cwd-relative full path."""
     root = run_dir.resolve()
     raw = Path(path)
-    candidate = raw if raw.is_absolute() else run_dir / raw
+    candidate = raw if raw.is_absolute() else root / raw
     resolved = candidate.resolve(strict=False)
     try:
         relative = resolved.relative_to(root)
@@ -340,7 +341,8 @@ def _verify_role_location(state: dict[str, Any], run_dir: Path, entry: dict[str,
         elif kind in {"tree-baseline", "tree-verification"}:
             tail = "before" if kind == "tree-baseline" else "after"
             _, expected = _relative_path(
-                run_dir, tree_snapshot_path(run_dir, stage, pass_num, attempt, tail)
+                run_dir,
+                tree_snapshot_path(run_dir, stage, pass_num, attempt, tail).relative_to(run_dir),
             )
         elif kind == "stage-snapshot":
             prefix = stage_snapshot_prefix(stage, pass_num, attempt)
@@ -402,7 +404,7 @@ def audit_artifacts(state: dict[str, Any], run_dir: Path) -> dict[str, list[str]
         if not (path.is_file() or path.is_symlink()):
             continue
         try:
-            _, relative = _relative_path(run_dir, path)
+            _, relative = _relative_path(run_dir, path.relative_to(run_dir))
         except ArtifactIntegrityError:
             relative = str(path.absolute())
         if relative in {"state.json", "events.jsonl"} or relative.startswith("publication-stage/"):

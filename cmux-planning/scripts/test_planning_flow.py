@@ -109,6 +109,14 @@ class PlanningFlow(unittest.TestCase):
         }
 
     def cli(self, script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        if getattr(self, "relative_cli_paths", False):
+            argv = list(args)
+            for index, value in enumerate(argv[:-1]):
+                if value in {"--runs-root", "--run-dir"}:
+                    path = Path(argv[index + 1])
+                    if path.is_absolute():
+                        argv[index + 1] = os.path.relpath(path, self.repo)
+            args = tuple(argv)
         return subprocess.run(
             [sys.executable, str(script), *args],
             cwd=self.repo,
@@ -128,13 +136,140 @@ class PlanningFlow(unittest.TestCase):
             str(self.repo),
             "--run-id",
             run_id,
-            "--runs-root",
-            str(self.runs),
             "--workspace-id",
             "WORKSPACE-1",
             "--config",
             str(self.config),
         )
+
+    def test_initialization_supports_default_relative_and_absolute_roots(self):
+        for mode, root_args in (
+            ("default", []),
+            ("relative", ["--runs-root", ".scratch/orchestrator/planning-runs"]),
+            ("absolute", ["--runs-root", str(self.runs)]),
+        ):
+            with self.subTest(mode=mode):
+                result = self.cli(
+                    STATE, "init", "--task", "Title\nSecond line\nThird line",
+                    "--run-id", f"plan-{mode}", "--workspace-id", "WORKSPACE-1",
+                    "--new-run", *root_args,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run_dir = self.runs / f"plan-{mode}"
+                state = json.loads((run_dir / "state.json").read_text())
+                self.assertEqual(state["current_stage"], "spec")
+                self.assertEqual(state["artifact_audit"]["unexpected"], [])
+                self.assertEqual((run_dir / "task.md").read_text(), "Title\nSecond line\nThird line")
+                for entry in state["artifact_manifest"].values():
+                    self.assertFalse(Path(entry["path"]).is_absolute())
+                    self.assertEqual(
+                        hashlib.sha256((run_dir / entry["path"]).read_bytes()).hexdigest(),
+                        entry["sha256"],
+                    )
+                printed = result.stdout.strip().splitlines()[-1]
+                expected = run_dir if mode == "absolute" else run_dir.relative_to(self.repo)
+                self.assertEqual(printed, str(expected))
+
+    def test_initialization_retries_a_directory_without_state(self):
+        (self.run_dir / "inputs").mkdir(parents=True)
+        (self.run_dir / "task.md").write_text("Task left by a failed initialization\n")
+        orphan = self.run_dir / "inputs" / "unclaimed.md"
+        orphan.write_text("Preserve this evidence\n")
+
+        result = self.init_direct()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.run_dir / "task.md").read_text(), "Bitte sichere Planung erstellen.")
+        self.assertEqual(orphan.read_text(), "Preserve this evidence\n")
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["artifact_audit"]["unexpected"], ["inputs/unclaimed.md"])
+
+    def test_reinitialization_preserves_existing_run_without_reloading_configuration(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.write_author_handoff()
+        before = {p.relative_to(self.run_dir): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+        self.config.write_text("invalid configuration: must not be reloaded\n")
+
+        for extra in ([], ["--new-run"]):
+            with self.subTest(extra=extra):
+                result = self.cli(
+                    STATE, "init", "--task", "Replacement task must not be used",
+                    "--run-id", "plan-test", *extra,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), str(self.run_dir.relative_to(self.repo)))
+                after = {p.relative_to(self.run_dir): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+                self.assertEqual(after, before)
+
+    def test_reinitialization_refuses_configuration_inputs_without_changing_run(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        before = (self.run_dir / "state.json").read_bytes()
+        for extra in (
+            ["--config", str(self.config)], ["--accept-config"],
+            ["--model", "spec=opus"], ["--probe-profiles"], ["--probe-timeout", "10"],
+        ):
+            with self.subTest(extra=extra):
+                result = self.cli(STATE, "init", "--task", "Same run", "--run-id", "plan-test", *extra)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("not to re-initialization", result.stderr)
+                self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
+
+    def test_reinitialization_preserves_pending_human_confirmation(self):
+        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        result = self.init_direct()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        before = (self.run_dir / "state.json").read_bytes()
+        repeated = self.cli(STATE, "init", "--task", "Same run", "--run-id", "plan-test")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
+        self.assertFalse(list((self.run_dir / "stage-snapshots").iterdir()))
+
+    def test_reinitialization_refuses_a_run_owned_by_another_repository(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        other_repo = self.root / "other-repo"
+        subprocess.run(["git", "init", "-q", str(other_repo)], check=True)
+        before = (self.run_dir / "state.json").read_bytes()
+        repeated = self.cli(
+            STATE, "init", "--task", "Another repository", "--run-id", "plan-test",
+            "--repo", str(other_repo),
+        )
+        self.assertEqual(repeated.returncode, 1, repeated.stderr)
+        self.assertIn("belongs to another repository", repeated.stderr)
+        self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
+
+    def test_relative_run_path_still_rejects_a_symlink_to_an_artifact_inside_the_run(self):
+        self.relative_cli_paths = True
+        self.assertEqual(self.init_direct().returncode, 0)
+        task = self.run_dir / "task.md"
+        moved = self.run_dir / "inputs" / "moved-task.md"
+        task.rename(moved)
+        task.symlink_to("inputs/moved-task.md")
+
+        result = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("artifact path uses a symlink", result.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "integrity-violation")
+
+    def test_relative_run_paths_reach_publication_without_false_integrity_gates(self):
+        self.relative_cli_paths = True
+        proposal = self.reach_ticket_approval(launch_panes=True)
+        view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
+        self.assertEqual(view.returncode, 0, view.stderr)
+        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        approved = self.ticket_approval("approve", "Approved for path regression", target=target)
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertTrue((target / "issues").is_dir())
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "complete")
+        self.assertEqual(state["artifact_audit"]["unexpected"], [])
+        self.assertNotIn("artifact_integrity_violation", state)
 
     def assign_planning_profile(self, role: str, profile: str) -> None:
         data = json.loads(self.config.read_text(encoding="utf-8"))
@@ -2264,6 +2399,7 @@ Option?
         return artifact, markdown
 
     def test_grilling_input_requires_revalidation_and_normalizes_every_outcome(self):
+        self.relative_cli_paths = True
         artifact, markdown = self.grilling_pair()
         run_dir = self.runs / "plan-grilling"
         initialized = self.cli(
@@ -2948,6 +3084,7 @@ Option?
         )
 
     def test_interrupted_grilling_revalidation_preserves_partial_outcomes_and_cannot_launch(self):
+        self.relative_cli_paths = True
         artifact, markdown = self.grilling_pair()
         run_dir = self.runs / "plan-grilling-interrupted"
         initialized = self.cli(
