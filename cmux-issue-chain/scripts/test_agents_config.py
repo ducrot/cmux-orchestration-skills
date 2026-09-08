@@ -6,6 +6,7 @@ test below fails until all copies match."""
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import os
@@ -838,6 +839,45 @@ class AgentsConfigCli(unittest.TestCase):
                 self.assertEqual(shown_first.returncode, shown_sibling.returncode)
                 self.assertEqual(shown_first.stdout, shown_sibling.stdout)
                 self.assertEqual(shown_first.stderr, shown_sibling.stderr)
+
+
+class ProbeArguments(unittest.TestCase):
+    def test_claude_probe_passes_a_positional_prompt_and_disables_tools(self):
+        sys.path.insert(0, str(SCRIPT_DIR))
+        try:
+            import agents_config
+        finally:
+            sys.path.pop(0)
+
+        argv = agents_config.probe_argv({
+            "resolved_executable": "/test-bin/claude",
+            "harness": "claude-code",
+            "model": "opus",
+            "effort": "high",
+        })
+        # Model the probe's CLI grammar, especially --tools <tools...>: an empty string is
+        # a value, not a terminator. A later prompt would be consumed as another tool value.
+        # This checks the parsed meaning instead of requiring one exact argument ordering.
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--safe-mode", action="store_true")
+        parser.add_argument("--print", dest="print_mode", action="store_true")
+        parser.add_argument("--no-session-persistence", action="store_true")
+        parser.add_argument("--model")
+        parser.add_argument("--effort")
+        parser.add_argument("--permission-mode")
+        parser.add_argument("--tools", nargs="+")
+        parser.add_argument("prompt", nargs="?")
+
+        parsed = parser.parse_args(argv[1:])
+
+        self.assertEqual(parsed.prompt, agents_config.PROBE_PROMPT)
+        self.assertEqual(parsed.tools, [""])
+        self.assertTrue(parsed.safe_mode)
+        self.assertTrue(parsed.print_mode)
+        self.assertTrue(parsed.no_session_persistence)
+        self.assertEqual(parsed.permission_mode, "plan")
+        self.assertEqual(parsed.model, "opus")
+        self.assertEqual(parsed.effort, "high")
 
 
 if __name__ == "__main__":

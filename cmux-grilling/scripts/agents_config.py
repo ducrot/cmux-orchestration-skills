@@ -1102,9 +1102,10 @@ def probe_argv(profile: dict[str, Any]) -> list[str]:
             profile["effort"],
             "--permission-mode",
             "plan",
+            # The prompt goes before the variadic --tools, which would swallow it.
+            PROBE_PROMPT,
             "--tools",
             "",
-            PROBE_PROMPT,
         ]
     if profile["harness"] == "codex":
         return [
