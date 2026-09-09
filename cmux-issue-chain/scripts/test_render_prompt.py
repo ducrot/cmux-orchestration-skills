@@ -118,6 +118,35 @@ class RenderCli(unittest.TestCase):
         self.assertIn("cannot render simplify-1", rendered.stderr)
         self.assertFalse((self.run_dir / "prompts" / "simplify-1.md").exists())
 
+    def test_artifact_path_stays_in_run_when_handoff_paths_are_overridden(self):
+        initialized = self.init()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        for pass_num in (1, 2):
+            if pass_num == 2:
+                prepared = self.run_script(
+                    RUN_STATE, "prepare", "--run-dir", str(self.run_dir),
+                    "--stage", "implement", "--pass", str(pass_num),
+                )
+                self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            for custom_paths in (False, True):
+                with self.subTest(pass_num=pass_num, custom_paths=custom_paths):
+                    out = self.repo / "custom-prompt.md" if custom_paths else (
+                        self.run_dir / "prompts" / f"implement-{pass_num}.md"
+                    )
+                    extra = (
+                        ("--out", str(out), "--report-path", str(self.repo / "custom-report.md"))
+                        if custom_paths else ()
+                    )
+                    rendered = self.run_script(
+                        RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+                        "--role", "implement", "--pass", str(pass_num),
+                        "--run-dir", str(self.run_dir), *extra,
+                    )
+                    self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                    expected = self.run_dir / "artifacts" / f"implement-{pass_num}"
+                    text = out.read_text(encoding="utf-8")
+                    self.assertIn(f"Worker artifact directory: `{expected}`", text)
+
     def test_renders_the_snapshot_harness_variant(self):
         self.assertEqual(self.init("--harness", "implement=claude-code").returncode, 0)
         rendered = self.render("implement")
@@ -125,6 +154,7 @@ class RenderCli(unittest.TestCase):
         text = (self.run_dir / "prompts" / "implement-1.md").read_text(encoding="utf-8")
         self.assertIn("Harness: claude-code\n", text)
         self.assertIn("Stage snapshot: ", text)
+        self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'implement-1'}`", text)
 
         gate = self.run_script(
             RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "implement",
@@ -142,6 +172,7 @@ class RenderCli(unittest.TestCase):
         self.assertIn("Harness: codex\n", text)
         self.assertIn("review pass (standards, spec, correctness)", text)
         self.assertNotIn("/code-review", text)
+        self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'review-1'}`", text)
 
 
 if __name__ == "__main__":

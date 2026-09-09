@@ -140,6 +140,13 @@ prompt delivery, or other runtime safety overrides.
 - Require workers to write structured reports to their exact rendered report handoff paths and return the
   same report body in the console. That exact report file is the only orchestration lifecycle state a worker
   may write; all other run state remains orchestrator-owned.
+- Workers may also write task-specific artifacts in their rendered
+  `.scratch/orchestrator/runs/<run-id>/artifacts/<role>-<pass>/` directory. Create it as needed for
+  helper scripts, report drafts, logs, snapshots, and raw evidence; do not create ad-hoc
+  `.scratch/issue-*` directories. Workers may read earlier workers' artifacts but write artifacts only
+  in their own directory, and reference relevant files in their reports. Reusable tests belong in the
+  repository's normal test locations, subject to role permissions. Keep artifacts after completion;
+  the human deletes run directories manually. There is no automatic cleanup or retention deadline.
 - Allow code-writing worker roles only for implementation, simplify/refactor, and code review in its self-fix pass. Test workers must inspect, run checks, and report findings without product-code edits.
 - Allow simplify/refactor workers to apply behavior-preserving refactorings from their simplify pass themselves. They must not implement missing feature scope, change acceptance behavior, or perform broad hardening outside the issue.
 - Allow review workers to apply the safe fixes from their review pass themselves. They must not broaden scope, implement unrelated features, or hand unresolved findings back to the implementer for another automatic loop.
@@ -595,10 +602,11 @@ necessarily the worker. Attribute first; if an accusation turns out wrong, retra
 
 Keep at most the orchestrator pane and the current active worker pane. Do not leave old implementer, tester, simplify, or reviewer panes open after their reports have been captured and used.
 
-Before launching a worker, choose both paths deterministically and render them into the prompt:
+Before launching a worker, choose these paths deterministically and render them into the prompt:
 
 - Prompt path: `.scratch/orchestrator/runs/<run-id>/prompts/<role>-<pass>.md`
 - Report handoff path: `.scratch/orchestrator/runs/<run-id>/reports/<role>-<pass>.md`
+- Worker artifact directory: `.scratch/orchestrator/runs/<run-id>/artifacts/<role>-<pass>/`
 - Context files: every earlier report of the current pass, passed with `--context-file` — simplify
   receives the implement report; review receives implement and simplify; the final test receives all
   three. Prior reports carry the decisions, trade-offs, and drift notes of earlier stages; passing them
@@ -606,7 +614,8 @@ Before launching a worker, choose both paths deterministically and render them i
 
 Send the visible CMUX worker the prompt file path and require it to write the final report to the exact
 rendered report handoff path before returning the same report body in the console. That exact report file
-is the worker's only lifecycle-state write exception; workers must not edit any other run-state file.
+is the worker's only lifecycle-state write exception. The assigned artifact directory is separately
+worker-writable; workers must not edit any other lifecycle-state file.
 
 Send any instruction, prompt, or follow-up text to a worker with `pane_ctl.py deliver` — never with a
 bare `cmux send`. The underlying trap: `cmux send --help` documents `\n` and `\r` as Enter, but a
@@ -775,7 +784,9 @@ Close a run after the final `advance` gate (or after a HITL issue is fully verif
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/<run-id> --message "chain complete, issue done 10/10"
 ```
 
-Render role prompts. `--pass` is required and determines both handoff paths. The prompt's harness variant
+Render role prompts. `--pass` is required and determines the prompt, report, and artifact paths. The
+artifact directory always derives from `--run-dir`, role, and pass, even with custom prompt/report paths.
+The prompt's harness variant
 comes from the prepared stage snapshot for that role and pass (`init` prepares `implement-1`, `prepare` every
 later stage), so rendering before preparation fails; the prompt header records `Harness:` and `Stage snapshot:`.
 Implement and test prompts are identical across harnesses; simplify and review switch between Claude Code's

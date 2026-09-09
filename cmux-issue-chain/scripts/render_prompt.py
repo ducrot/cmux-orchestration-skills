@@ -174,6 +174,7 @@ def main() -> int:
         tracker_decisions(tracker),
         harness=harness,
         snapshot_id=snapshot["snapshot_id"],
+        artifact_path=run_dir / "artifacts" / stem,
     )
     out.write_text(prompt, encoding="utf-8")
     print(out)
@@ -193,12 +194,14 @@ def render(
     decisions: str = "",
     harness: str = CLAUDE_CODE,
     snapshot_id: str | None = None,
+    artifact_path: Path | None = None,
 ) -> str:
     context_files = context_files or []
     context = render_context(context_files)
     review_contract = render_review_contract(harness) if role == "review" else ""
     prompt_path_text = str(prompt_path) if prompt_path else "(not provided)"
     report_path_text = str(report_path) if report_path else "(not provided)"
+    artifact_path_text = str(artifact_path) if artifact_path else "(not provided)"
     ground_rules_block = f"\n## Tracker Ground Rules\n\nThese rules bind every worker on this tracker:\n\n{ground_rules}\n" if ground_rules else ""
     decisions_block = (
         "\n## Tracker Decisions\n\nThe human already rejected or deferred these items in earlier triage. "
@@ -221,14 +224,21 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 
 - Prompt file: `{prompt_path_text}`
 - Final report handoff path: `{report_path_text}`
+- Worker artifact directory: `{artifact_path_text}`
 
 ## Orchestrator Contract
 
-- Report results only. Do not write `.scratch/orchestrator/**` except the exact final report handoff path
-  above.
+- Do not write `.scratch/orchestrator/**` except the exact final report handoff path and your worker
+  artifact directory above.
 - You MUST write the final report body to the exact final report handoff path before returning it in the
   console. That one report file is the only orchestration lifecycle file you may write; do not edit state,
-  events, prompts, snapshots, gates, or any other run file.
+  events, prompts, snapshots, gates, or other lifecycle state.
+- Create your artifact directory as needed and use it for task-specific helper scripts, report drafts,
+  logs, snapshots, and raw evidence. Do not create ad-hoc `.scratch/issue-*` directories. Reusable tests
+  belong in the repository's normal test locations, subject to your role's editing permissions.
+- You may read earlier workers' artifacts; write your own artifacts only in your assigned artifact directory.
+  Reference relevant artifacts in your final report. Keep artifacts after the stage and run finish;
+  the human deletes run directories manually. Do not perform automatic end-of-run cleanup.
 - If you find a blocker, include `BLOCKER` and stop after documenting the minimum evidence.
 - If the issue plan is stale or wrong, include `PLAN DRIFT` with the smallest accurate correction.
 - Finish with the Worker Report Contract below.
@@ -286,8 +296,8 @@ Formatting rules the gate parser enforces:
   or drift and stops the chain. Explanations, caveats, and methodology belong in `## Notes`.
 - Real findings/blockers/drift go in their section with file/line evidence; do not soften them into Notes.
 
-Before returning, self-validate: write your draft report to a temporary file of your own (not the handoff
-path) and run
+Before returning, self-validate: write your draft report inside your worker artifact directory (not the
+handoff path) and run
 
 ```bash
 python3 {parser_path()} <your-draft-file>
