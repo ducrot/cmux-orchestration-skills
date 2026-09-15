@@ -209,6 +209,63 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         wave = self.read_wave("migrated-v1")
         self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-astra-medium")
 
+    def test_init_creates_drafts_and_reinit_restores_directory(self):
+        initialized = self.init_for("drafts")
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        draft_dir = self.run_dir("drafts") / "drafts"
+        self.assertTrue(draft_dir.is_dir())
+        draft_dir.rmdir()
+        reinitialized = self.init_for("drafts")
+        self.assertEqual(reinitialized.returncode, 0, reinitialized.stderr)
+        self.assertTrue(draft_dir.is_dir())
+
+    def test_round_cli_draft_validation_and_handoff(self):
+        initialized = self.init_for("draft-flow")
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        run_dir = self.run_dir("draft-flow")
+
+        def render(*args):
+            return subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "render_prompt.py"), *args],
+                cwd=self.repo, capture_output=True, text=True, timeout=30,
+            )
+
+        session = render("session", "--run-dir", str(run_dir), "--lane", "codebase2")
+        self.assertEqual(session.returncode, 0, session.stderr)
+        args = ("round", "--run-dir", str(run_dir), "--lane", "codebase2",
+                "--round", "1", "--question", "What exists?")
+        report = run_dir / "reports" / "round-1-codebase2.md"
+        prompt_path = run_dir / "prompts" / "round-1-codebase2.md"
+        state_before = (run_dir / "state.json").read_bytes()
+        for invalid in (report, self.root / "outside.md", run_dir / "state.json",
+                        run_dir / "reports" / "round-1-docs.md"):
+            rejected = render(*args, "--draft-path", str(invalid))
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(prompt_path.exists())
+        self.assertEqual((run_dir / "state.json").read_bytes(), state_before)
+
+        for override in (None, run_dir / "drafts" / "custom draft.md"):
+            with self.subTest(override=override):
+                rendered = render(*args, *(('--draft-path', str(override)) if override else ()))
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                draft = override or run_dir / "drafts" / "round-1-codebase2.md"
+                prompt = prompt_path.read_text(encoding="utf-8")
+                command = shlex.split(prompt.split("```bash\n", 1)[1].splitlines()[0])
+                self.assertEqual(command[-1], str(draft))
+                draft.write_text(
+                    "## Result\nNO ANSWER\n\n## Answer\nThe fixture has no product code.\n"
+                    "\n## Sources\n- None\n\n## Method\n- Read the fixture task file.\n"
+                    "\n## Blockers\n- None\n\n## Plan Drift\n- None\n",
+                    encoding="utf-8",
+                )
+                validated = subprocess.run(
+                    command, cwd=self.repo, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+                self.assertIn("gate=advance", validated.stdout)
+                report.write_bytes(draft.read_bytes())
+                self.assertEqual(report.read_bytes(), draft.read_bytes())
+
     def test_default_identity_and_slug_override(self):
         result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace")
         self.assertEqual(result.returncode, 0, result.stderr)

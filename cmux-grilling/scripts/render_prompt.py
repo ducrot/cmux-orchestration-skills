@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 
 from orchestrator_lib import read_run_state
@@ -82,6 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Report handoff path. Defaults to run-dir/reports/round-<N>-<lane>.md",
     )
 
+    round_cmd.add_argument(
+        "--draft-path",
+        help=(
+            "Self-validation draft path; must resolve inside run-dir/drafts/. "
+            "Defaults to run-dir/drafts/round-<N>-<lane>.md"
+        ),
+    )
+
     return parser
 
 
@@ -108,8 +117,15 @@ def main() -> int:
         stem = f"round-{args.round_number}-{args.lane}"
         out = Path(args.out) if args.out else run_dir / "prompts" / f"{stem}.md"
         report_path = Path(args.report_path) if args.report_path else run_dir / "reports" / f"{stem}.md"
+        draft_path = Path(args.draft_path) if args.draft_path else run_dir / "drafts" / f"{stem}.md"
+        try:
+            prompt = render_round(
+                args.lane, state, run_dir, args.round_number, question, report_path, draft_path
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        prompt = render_round(args.lane, state, run_dir, args.round_number, question, report_path)
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(prompt, encoding="utf-8")
     print(out)
@@ -144,9 +160,10 @@ Max questions: {state["max_questions"]}
 
 - Read-only research: never create, edit, or delete repository files, and never run
   state-changing commands.
-- The only file you may write is the report handoff path named in each round prompt
-  (report capture is explicitly delegated to you). Do not write any other orchestration
-  lifecycle state.
+- You may write exactly two files per round: the draft path and the report handoff path
+  named in each round prompt (draft validation and report capture are explicitly delegated
+  to you). The default draft template is `{run_dir}/drafts/round-<N>-{lane}.md`;
+  `<N>` is the round number. Do not write any other orchestration lifecycle state.
 - If a question cannot be answered from this lane's sources, return `NO ANSWER` and explain
   why under `## Answer` — that is a valid, expected outcome, not a failure.
 - If your environment is broken (repo unreadable, tools unavailable), report `BLOCKER`.
@@ -162,7 +179,20 @@ Max questions: {state["max_questions"]}
 {contract_block()}"""
 
 
-def render_round(lane: str, state: dict, run_dir: Path, round_number: int, question: str, report_path: Path) -> str:
+def render_round(
+    lane: str, state: dict, run_dir: Path, round_number: int, question: str,
+    report_path: Path, draft_path: Path | None = None,
+) -> str:
+    if draft_path is None:
+        draft_path = run_dir / "drafts" / f"round-{round_number}-{lane}.md"
+    resolved_draft = draft_path.resolve()
+    if resolved_draft == report_path.resolve():
+        raise ValueError("Draft path must differ from the report handoff path")
+    if run_dir.resolve() not in resolved_draft.parents:
+        raise ValueError("Draft path must be inside the run directory")
+    # Keeps an override off run state, prompts, and other lanes' reports.
+    if (run_dir / "drafts").resolve() not in resolved_draft.parents:
+        raise ValueError("Draft path must be inside the run-local drafts directory")
     session_prompt = run_dir / "prompts" / f"session-{lane}.md"
     return f"""# Round {round_number} Question — lane {lane}
 
@@ -178,6 +208,7 @@ Created: {utc_now()}
 
 ## Handoff
 
+- Draft path: `{draft_path}`
 - Report handoff path: `{report_path}`
 - Standing session contract: `{session_prompt}`
 
@@ -185,7 +216,7 @@ Answer per your standing session contract, then write your final report to the h
 Before writing it, self-validate your draft with
 
 ```bash
-python3 {parser_path()} <your-draft-file>
+python3 {shlex.quote(parser_path())} {shlex.quote(str(draft_path))}
 ```
 
 A well-formed report prints `gate=advance` (or `blocked`/`hitl` if you are genuinely
@@ -233,11 +264,11 @@ Formatting rules the gate parser enforces:
 - `NO ANSWER` requires an explanation under `## Answer` and allows `## Sources: - None`.
 - `## Method` must list what you actually searched or read, even when the result is `NO ANSWER`.
 
-Before returning, self-validate: write your draft report to a temporary file of your own (not the handoff
-path) and run
+Before returning, self-validate: write your draft report to the draft path named in each round prompt
+and run
 
 ```bash
-python3 {parser_path()} <your-draft-file>
+python3 {shlex.quote(parser_path())} <draft-path-named-in-round-prompt>
 ```
 
 A clean report must print `gate=advance`. If you are genuinely reporting a blocker or plan drift,

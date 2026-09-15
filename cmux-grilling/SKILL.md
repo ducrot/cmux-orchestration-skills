@@ -152,9 +152,11 @@ matters and attacks the open decisions behind them instead.
   gate decisions, snapshots, synthesis files, and the final artifact pair in the output
   directory (`<tracker>/grilling/` by default, see Artifact Location).
 - Research lanes are strictly read-only towards the repository: no file edits, no
-  state-changing commands. The single file a lane may write is its own report handoff path
-  under the run directory — report capture is explicitly delegated to the lanes because four
-  reports arrive in parallel each round.
+  state-changing commands. A lane may write exactly two files per round: its named draft
+  path and its report handoff path. Drafts default to
+  `<run-dir>/drafts/round-<N>-<lane>.md`; reports default to
+  `<run-dir>/reports/round-<N>-<lane>.md`. Draft validation and report capture are explicitly
+  delegated to the lanes because four reports arrive in parallel each round.
 - Lanes must not write any other orchestration lifecycle state.
 - Start lanes visibly in CMUX panes. Do not substitute hidden subagents, background shells,
   or non-CMUX subprocesses for live research lanes. If CMUX cannot launch a lane, stop and
@@ -581,7 +583,7 @@ codebase2, and docs accept Claude Code or Codex; web remains Claude Code-only be
 is the existing tested network policy. The Codex flags are fixed lane policy; do not ask the
 human for startup options at session start. Each flag earns its place:
 
-- `-s workspace-write` lets a Codex lane write its report handoff file without a per-write
+- `-s workspace-write` lets a Codex lane write its draft and report handoff files without a per-write
   confirmation (in the first pilot, a lane stuck at that prompt cost most of a round).
 - `--ask-for-approval on-request` pins the escalation policy explicitly: the lane runs
   sandboxed and requests approval only when the sandbox blocks something.
@@ -856,9 +858,13 @@ Research-specific gate requirements:
 - `## Method` must be substantive in every report, including `NO ANSWER` — what was searched
   and found nothing is evidence too.
 
-Rendered prompts instruct lanes to self-validate their draft with
-`parse_research_report.py` before writing the handoff file, so format failures die at the
-source instead of at the gate.
+Lanes may write exactly two files per round: the draft path and the report handoff path
+named in the round prompt. `init` creates `drafts/` alongside `prompts/`, `reports/`, and
+`synthesis/`. Rendered prompts name `<run-dir>/drafts/round-<N>-<lane>.md` and instruct lanes
+to self-validate that exact file with `parse_research_report.py` before writing the handoff
+file. `render_prompt.py round --draft-path <path>` overrides the draft location; it must
+resolve strictly inside the run-local `drafts/` directory (never run state, prompts,
+synthesis, or any lane's report) and differ from the report handoff path.
 
 Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, and `slug` (at most 30
 characters; override with `init --slug <value>` using lowercase words separated by hyphens).

@@ -298,7 +298,7 @@ def init_run(args: argparse.Namespace) -> int:
                 "inputs require a new grilling run"
             )
         ensure_runs_root_ignored(runs_root)
-        for name in ("prompts", "reports", "synthesis"):
+        for name in ("prompts", "reports", "drafts", "synthesis"):
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
@@ -321,7 +321,7 @@ def init_run(args: argparse.Namespace) -> int:
     # passed local preflight. A failure above leaves no launchable state for pane_ctl.py.
     ensure_runs_root_ignored(runs_root)
     run_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("prompts", "reports", "synthesis"):
+    for name in ("prompts", "reports", "drafts", "synthesis"):
         (run_dir / name).mkdir(exist_ok=True)
     (run_dir / "task.md").write_text(task_text + "\n", encoding="utf-8")
     launch_wave_pointer = persist_launch_wave(run_dir, launch_wave)
