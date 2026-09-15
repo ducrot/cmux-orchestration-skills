@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from orchestrator_lib import read_run_state
 from orchestrator_lib import LANES, read_json, read_text, utc_now
 
 
@@ -94,7 +95,7 @@ def positive_int(value: str) -> int:
 def main() -> int:
     args = build_parser().parse_args()
     run_dir = Path(args.run_dir)
-    state = read_json(run_dir / "state.json")
+    state = read_run_state(run_dir)
     if args.command == "session":
         out = Path(args.out) if args.out else run_dir / "prompts" / f"session-{args.lane}.md"
         prompt = render_session(args.lane, state, run_dir)

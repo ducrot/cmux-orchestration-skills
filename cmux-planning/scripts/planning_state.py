@@ -26,6 +26,7 @@ from artifact_manifest import (
     gate_violation,
     next_attempt,
     record_artifact,
+    require_current_format,
     reviewed_candidate_kind,
     tree_snapshot_path,
     verify_entry,
@@ -35,6 +36,7 @@ from agents_config import (
     ConfigError,
     add_override_options,
     add_probe_options,
+    durable_publish,
     atomic_initialize,
     config_path,
     git_root,
@@ -60,6 +62,8 @@ from orchestrator_lib import (
     checkout_identity,
     integrity_boundary,
     read_json,
+    run_identifier,
+    slugify,
     read_planning_state,
     sha256_bytes,
     sha256_file,
@@ -146,7 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--grilling-markdown")
     init.add_argument("--repo", default=".")
     init.add_argument("--run-id")
-    init.add_argument("--runs-root", default=".scratch/orchestrator/planning-runs")
+    init.add_argument("--slug", help="Frozen tracker slug: lowercase words separated by hyphens, at most 30 characters")
+    init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument("--config")
     init.add_argument(
         "--accept-config",
@@ -274,13 +279,13 @@ def task_input(args: argparse.Namespace) -> tuple[bytes, str]:
     return payload, source
 
 
-def ensure_runs_ignored(runs_root: Path) -> None:
+def ensure_runs_root_ignored(runs_root: Path) -> None:
+    """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
     runs_root.mkdir(parents=True, exist_ok=True)
     ignore = runs_root / ".gitignore"
-    # is_file, not exists: anything else at that path leaves every run directory git-visible,
-    # which is the outcome this helper exists to prevent.
+    # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
-        atomic_write(ignore, b"*\n")
+        durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
 
 
 def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, dict[str, Any], bool]:
@@ -623,7 +628,7 @@ def checked_run_id(value: str) -> str:
     """One directory name under the ignored runs root, never a path.
 
     An unchecked `--run-id` of `..` or an absolute path puts the run outside the runs root,
-    where `ensure_runs_ignored` does not reach and the integrity detector sees the
+    where `ensure_runs_root_ignored` does not reach and the integrity detector sees the
     orchestrator's own writes as unauthorized worker changes."""
     if value in {"", ".", ".."} or value != RUN_ID_RE.sub("-", value).strip("-"):
         raise ConfigError(
@@ -704,17 +709,27 @@ def init_run(args: argparse.Namespace) -> int:
     task_bytes, task_source = task_input(args)
     runs_root = Path(args.runs_root)
     now = utc_now()
-    seed = task_bytes.decode("utf-8").strip().splitlines()[0][:48]
+    slug = args.slug if args.slug is not None else slugify(task_bytes.decode("utf-8").strip().splitlines()[0])
+    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise ConfigError("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
+    if any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
+           for path in (runs_root.resolve(), *runs_root.resolve().parents)):
+        raise ConfigError(
+            "unsupported legacy layout .scratch/orchestrator/planning-runs/; inspect read-only, "
+            "then obtain a human decision to restart the run or use a separately reviewed "
+            "migration procedure. New runs belong under .scratch/orchestrator/runs/"
+        )
     run_id = (
         checked_run_id(args.run_id)
         if args.run_id
-        else RUN_ID_RE.sub("-", f"plan-{seed}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+        else run_identifier("plan", slug, now)
     )
     run_dir = runs_root / run_id
     # Like the sibling workflows, a persisted state makes init idempotent. This only returns
     # the existing run; advancing it still requires the normal resume and integrity checks.
     if (run_dir / "state.json").is_file():
         existing = read_planning_state(run_dir / "state.json")
+        require_current_format(existing, source=run_dir / "state.json")
         if Path(existing["repository"]).resolve() != repository:
             raise ConfigError(f"planning run belongs to another repository: {run_dir}")
         if supplied_configuration_inputs(args, workflow=WORKFLOW) or args.accept_config:
@@ -722,7 +737,7 @@ def init_run(args: argparse.Namespace) -> int:
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
                 "inputs belong to planning_state.py prepare, not to re-initialization"
             )
-        ensure_runs_ignored(runs_root)
+        ensure_runs_root_ignored(runs_root)
         for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
@@ -782,7 +797,7 @@ def init_run(args: argparse.Namespace) -> int:
             config_source=str(configuration_source),
         )
 
-    ensure_runs_ignored(runs_root)
+    ensure_runs_root_ignored(runs_root)
     for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)
     task_path = run_dir / "task.md"
@@ -820,6 +835,10 @@ def init_run(args: argparse.Namespace) -> int:
         "attempt_history": [],
         "artifact_audit": {"unexpected": [], "stale": [], "checked_at": now},
         "run_id": run_id,
+        "workflow": "planning",
+        "layout_version": 1,
+        "deliverables": {},
+        "tracker_slug": slug,
         "created_at": now,
         "repository": str(repository),
         "checkout_at_init": checkout_identity(repository),
@@ -2223,6 +2242,7 @@ def publish_tracker(run_dir: Path) -> int:
             "artifacts": published["artifacts"],
             "recovered": True,
         }
+        state["deliverables"] = {"tracker": str(target)}
         state["current_stage"] = "complete"
         state["updated_at"] = now
         write_json(state_path, state)
@@ -2230,7 +2250,7 @@ def publish_tracker(run_dir: Path) -> int:
             run_dir,
             "tracker.publication_recovered",
             "verified an already moved tracker and completed interrupted publication state",
-            state["published_tracker"],
+            {**state["published_tracker"], "deliverables": state["deliverables"]},
         )
         print(json.dumps(state["published_tracker"], sort_keys=True))
         return 0
@@ -2258,6 +2278,7 @@ def publish_tracker(run_dir: Path) -> int:
         "ready_frontier": published["ready_frontier"],
         "artifacts": published["artifacts"],
     }
+    state["deliverables"] = {"tracker": str(target)}
     state["current_stage"] = "complete"
     state["updated_at"] = now
     write_json(state_path, state)
@@ -2265,7 +2286,7 @@ def publish_tracker(run_dir: Path) -> int:
         run_dir,
         "tracker.published",
         "atomically published the complete native tracker",
-        state["published_tracker"],
+        {**state["published_tracker"], "deliverables": state["deliverables"]},
     )
     print(json.dumps(state["published_tracker"], sort_keys=True))
     return 0
@@ -2446,6 +2467,9 @@ def resume_run(args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.command not in {"init", "status", "context"}:
+        state_path = Path(args.run_dir) / "state.json"
+        require_current_format(read_planning_state(state_path), source=state_path)
     if args.command == "init":
         return init_run(args)
     if args.command == "show-revalidation":

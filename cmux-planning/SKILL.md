@@ -139,7 +139,7 @@ both names is accepted only when their boolean values match; conflicting values 
 error that requires the operator to make them agree before the run can continue.
 
 That configuration-field compatibility does not authorize legacy run-artifact trust. A run created
-before run-state schema 2 / artifact-manifest version 1 remains inspectable through `status` and
+before run-state schema 3 / artifact-manifest version 1 remains inspectable through `status` and
 `context`, but every state-changing command and worker launch refuses it with guidance to obtain a
 human decision to restart or to use a separately reviewed migration procedure. No automatic migration
 or digest baseline is inferred from files already present in such a run.
@@ -529,7 +529,14 @@ overwrite anything.
 
 ## Artifact locations and failure policy
 
-Runs live under `.scratch/orchestrator/planning-runs/<run-id>/` by default. `task.md`, optional `inputs/`,
+Each run records `workflow: planning`, `layout_version: 1`, and an initially empty `deliverables` object.
+Publication records `deliverables.tracker` alongside `published_tracker`. The frozen `tracker_slug`
+is derived from the task (at most 30 characters); `init --slug <value>` overrides it with lowercase
+words separated by hyphens. Default ids are `plan-<tracker_slug>-<YYYY-MM-DD>-<HHMM>` (UTC).
+Legacy runs under `.scratch/orchestrator/planning-runs/` cannot continue; inspect read-only and obtain
+a human decision to restart or use a separately reviewed migration procedure.
+
+Runs live under `.scratch/orchestrator/runs/<run-id>/` by default. `task.md`, optional `inputs/`,
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
 `state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
 `spec.md`, `map.md`, `decisions.md`, and `issues/` at the explicit target. That target is immediately

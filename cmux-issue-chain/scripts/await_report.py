@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from orchestrator_lib import read_run_state
 from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_json, utc_now
 
 EXIT_REPORT = 0     # report file exists — parse it next; NOT an advance verdict
@@ -56,7 +57,7 @@ def pinned_workspace(run_dir: Path) -> str | None:
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         return None
-    return read_json(state_path).get("workspace_id") or None
+    return read_run_state(run_dir).get("workspace_id") or None
 
 
 def health_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
@@ -121,6 +122,7 @@ def waiting_event(run_dir: Path, message: str, data: dict) -> None:
 
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     report = report_path(run_dir, args.role, args.pass_num)
     deadline_minutes = (

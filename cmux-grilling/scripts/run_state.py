@@ -16,6 +16,7 @@ from agents_config import (
     ConfigError,
     add_override_options,
     add_probe_options,
+    durable_publish,
     parse_overrides,
     probe_options,
     resolve_config_source,
@@ -33,14 +34,14 @@ from orchestrator_lib import (
     append_jsonl,
     first_line,
     read_json,
+    read_run_state,
     read_text,
+    run_identifier,
     slugify,
     utc_now,
     write_json,
 )
 
-
-RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 # Must stay in sync with parse_research_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
@@ -76,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_source = init.add_mutually_exclusive_group(required=True)
     task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
+    init.add_argument("--slug", help="Artifact slug: lowercase words separated by hyphens, at most 30 characters")
     init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=f"{TRACKER_ROOT}/orchestrator/runs")
     init.add_argument("--max-questions", type=int, default=10)
@@ -117,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     complete = subparsers.add_parser("complete", help="Close a run: set current_stage=done")
     complete.add_argument("--run-dir", required=True)
+    complete.add_argument("--markdown", required=True, help="Final Markdown path under output_dir")
+    complete.add_argument("--json", required=True, help="Final JSON path under output_dir")
     complete.add_argument("--message", default="grilling session complete")
     complete.add_argument("--data", help="Optional JSON object, e.g. artifact paths and stop reason")
 
@@ -137,10 +141,23 @@ def build_parser() -> argparse.ArgumentParser:
     pending.add_argument("--tracker", help="Tracker directory. Autodetected when omitted")
     pending.add_argument("--output-dir", help="Override the directory to look in")
 
+    status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
+    status.add_argument("--run-dir", required=True)
+
     return parser
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command == "status":
+        run_dir = Path(args.run_dir)
+        state = read_json(run_dir / "state.json")
+        try:
+            read_run_state(run_dir)
+            diagnostic = None
+        except SystemExit as error:
+            diagnostic = str(error)
+        print(json.dumps({"state": state, "unsupported_layout": diagnostic}, indent=2))
+        return 0
     if args.command == "init":
         return init_run(args)
     if args.command == "event":
@@ -173,10 +190,11 @@ def main() -> int:
 
 def ensure_runs_root_ignored(runs_root: Path) -> None:
     """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
+    runs_root.mkdir(parents=True, exist_ok=True)
     ignore = runs_root / ".gitignore"
+    # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
-        runs_root.mkdir(parents=True, exist_ok=True)
-        ignore.write_text("*\n", encoding="utf-8")
+        durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
 
 
 def resolve_workspace_id(args: argparse.Namespace) -> str | None:
@@ -260,15 +278,18 @@ def init_run(args: argparse.Namespace) -> int:
     task_text = task_text.strip()
     if not task_text:
         raise SystemExit("Task text is empty")
-    slug = slugify(first_line(task_text))
+    slug = args.slug if args.slug is not None else slugify(first_line(task_text))
+    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise SystemExit("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
     now = utc_now()
     # grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC): readable, sortable, never reused across runs.
-    run_id = args.run_id or RUN_ID_RE.sub("-", f"grill-{slug}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+    run_id = args.run_id or run_identifier("grill", slug, now)
     runs_root = Path(args.runs_root)
     run_dir = runs_root / run_id
     overrides = parse_overrides(args, workflow=WORKFLOW)
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
+        read_run_state(run_dir)
         # A grilling run has one immutable wave. Accepting these inputs here would pretend
         # to apply them while retaining the old cohort, so require a new run instead.
         if supplied_configuration_inputs(args, workflow=WORKFLOW):
@@ -306,6 +327,9 @@ def init_run(args: argparse.Namespace) -> int:
     launch_wave_pointer = persist_launch_wave(run_dir, launch_wave)
     state = {
         "run_id": run_id,
+        "workflow": "grilling",
+        "layout_version": 1,
+        "deliverables": {},
         "created_at": now,
         "workspace_id": workspace_id,
         "task_file": "task.md",
@@ -350,6 +374,7 @@ def init_run(args: argparse.Namespace) -> int:
 
 
 def append_event(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
@@ -361,6 +386,7 @@ def append_event(args: argparse.Namespace) -> int:
 
 
 def append_gate(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     event = {
         "time": utc_now(),
@@ -375,7 +401,7 @@ def append_gate(args: argparse.Namespace) -> int:
     # Keep state.json current; a reader must not see a stage the run left long ago.
     state_path = run_dir / "state.json"
     if state_path.is_file():
-        state = read_json(state_path)
+        state = read_run_state(run_dir)
         state.setdefault("gate_decisions", []).append(event)
         state["current_stage"] = args.next_stage or args.stage
         state["updated_at"] = event["time"]
@@ -384,6 +410,7 @@ def append_gate(args: argparse.Namespace) -> int:
 
 
 def append_snapshot(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     def git(*argv: str) -> bytes:
         # Diffs can contain non-UTF-8 bytes; replacement decoding loses fingerprint input.
         result = subprocess.run(["git", *argv], capture_output=True)
@@ -413,11 +440,17 @@ def append_snapshot(args: argparse.Namespace) -> int:
 def complete_run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     now = utc_now()
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
+    output_dir = Path(state["output_dir"]).resolve()
+    deliverables = {"markdown": str(Path(args.markdown).resolve()), "json": str(Path(args.json).resolve())}
+    if any(not Path(path).is_relative_to(output_dir) or Path(path) == output_dir for path in deliverables.values()):
+        raise SystemExit("--markdown and --json must resolve under the run output_dir")
+    state["deliverables"] = deliverables
+    data["deliverables"] = deliverables
     state["current_stage"] = "done"
     state["updated_at"] = now
     write_json(state_path, state)
@@ -434,6 +467,7 @@ def record_decision(args: argparse.Namespace) -> int:
     The artifact pair is written before the walkthrough, so this edits a finished file:
     id must exist, and the entry must still validate afterwards.
     """
+    read_run_state(Path(args.run_dir))
     artifact_path = Path(args.artifact)
     artifact = read_json(artifact_path)
     decisions = artifact.get("open_decisions")

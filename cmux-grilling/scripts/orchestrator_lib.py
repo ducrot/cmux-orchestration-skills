@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any
 
 
-SLUG_RE = re.compile(r"[^a-z0-9]+")
-
 # The four research lanes. Persistent panes for the whole session; the orchestrator
 # never substitutes hidden subagents for them.
 LANES = {
@@ -50,10 +48,6 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def slugify(text: str, max_length: int = 48) -> str:
-    slug = SLUG_RE.sub("-", text.lower()).strip("-")
-    return slug[:max_length].rstrip("-") or "grill"
-
 
 def first_line(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "")
@@ -76,3 +70,28 @@ def append_jsonl(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(data, sort_keys=True) + "\n")
+
+
+RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def slugify(text: str, max_length: int = 30) -> str:
+    """Normalize a task key, retaining whole words within the cap when possible."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    if len(slug) > max_length:
+        boundary = slug.rfind("-", 0, max_length + 1)
+        slug = slug[:boundary if boundary > 0 else max_length]
+    return slug.rstrip("-") or "task"
+
+
+def run_identifier(workflow: str, key: str, now: str) -> str:
+    """Build a readable UTC minute identity using the shared run-id grammar."""
+    return RUN_ID_RE.sub("-", f"{workflow}-{key}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+
+
+def read_run_state(run_dir: Path) -> dict[str, Any]:
+    """Load a current run before any continuation or lifecycle write."""
+    state = read_json(run_dir / "state.json")
+    if not isinstance(state, dict) or state.get("workflow") != "grilling" or state.get("layout_version") != 1:
+        raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
+    return state

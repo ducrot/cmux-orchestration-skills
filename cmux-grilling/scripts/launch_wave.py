@@ -26,6 +26,7 @@ from agents_config import (
     valid_executable_syntax,
     valid_probe_record,
 )
+from orchestrator_lib import read_run_state
 from orchestrator_lib import read_json, utc_now, write_json
 
 
@@ -207,7 +208,7 @@ def load_launchable_lane(run_dir: Path, lane: str) -> tuple[dict[str, Any], dict
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise LaunchWaveError(f"No state.json under {run_dir} — run run_state.py init first")
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     pointer = state.get("launch_wave")
     if not isinstance(pointer, dict):
         raise LaunchWaveError("no prepared launch wave is active; start a new grilling run")

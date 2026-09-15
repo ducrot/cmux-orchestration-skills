@@ -8,9 +8,11 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -46,6 +48,49 @@ def make_tracker(root: Path, name: str) -> Path:
 
 
 class OutputPathDerivation(unittest.TestCase):
+    def test_slug_stops_at_word_boundary_and_uses_shared_fallback(self):
+        from orchestrator_lib import slugify
+        self.assertEqual(
+            slugify("Task: Static teaser website for cmux Orchestration skills"),
+            "task-static-teaser-website-for",
+        )
+        self.assertEqual(slugify("!!!"), "task")
+        self.assertEqual(slugify("A" * 40), "a" * 30)
+        self.assertEqual(slugify("abc defghi", 5), "abc")
+        self.assertEqual(slugify("ABC---123"), "abc-123")
+
+    def test_run_identifier_cleans_keys_and_formats_utc_minute(self):
+        from orchestrator_lib import run_identifier, slugify
+        now = "2026-09-15T09:47:19+00:00"
+        self.assertEqual(run_identifier("chain", slugify("ISSUE-001"), now), "chain-issue-001-2026-09-15-0947")
+        self.assertEqual(run_identifier("plan", "A key?!", now), "plan-A-key--2026-09-15-0947")
+
+    def test_ignore_bootstrap_publishes_complete_bytes_and_preserves_existing_file(self):
+        from run_state import ensure_runs_root_ignored
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "runs"
+            ignore = root / ".gitignore"
+            replace = os.replace
+            observed = []
+            def publish(source, target):
+                observed.append(Path(source).read_bytes())
+                self.assertFalse(ignore.exists())
+                replace(source, target)
+            with patch("run_state.os.replace", side_effect=publish):
+                ensure_runs_root_ignored(root)
+            self.assertEqual(observed, [b"*\n"])
+            self.assertEqual(ignore.read_bytes(), b"*\n")
+            ignore.write_text("existing rules\n")
+            before = ignore.stat().st_mtime_ns
+            ensure_runs_root_ignored(root)
+            self.assertEqual(ignore.read_text(), "existing rules\n")
+            self.assertEqual(ignore.stat().st_mtime_ns, before)
+            ignore.unlink()
+            ignore.mkdir()
+            with self.assertRaises(OSError):
+                ensure_runs_root_ignored(root)
+            self.assertTrue(ignore.is_dir())
+
     def test_explicit_tracker_wins_over_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -98,6 +143,71 @@ class OutputPathDerivation(unittest.TestCase):
             (root / ".scratch" / "orchestrator" / "runs").mkdir(parents=True)
             make_tracker(root, "t12")
             self.assertEqual(detect_tracker(root), root / ".scratch/t12")
+
+
+class CompletionMapping(unittest.TestCase):
+    def test_complete_cli_requires_paths_and_preserves_output_mapping(self):
+        from test_launch_wave import PreparedLaunchWaveCli
+        # Reuse the real CLI fixture with local fake harness executables.
+        fixture = PreparedLaunchWaveCli()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        for mode, extra in (
+            ("default", []),
+            ("custom-id", ["--run-id", "custom-run"]),
+            ("custom-root", ["--runs-root", str(fixture.repo / "custom-runs"), "--slug", "custom-artifact"]),
+        ):
+            with self.subTest(mode=mode):
+                result = fixture.run_state("init", "--task", "Completion " + mode, "--no-workspace", *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run_dir = fixture.repo / result.stdout.strip()
+                state_path = run_dir / "state.json"
+                state = json.loads(state_path.read_text())
+                output = fixture.repo / state["output_dir"]
+                output.mkdir(parents=True, exist_ok=True)
+                md = output / (state["slug"] + ".md")
+                artifact = output / (state["slug"] + ".json")
+                md.write_text("# Complete\n")
+                artifact.write_text(json.dumps({"run_id": state["run_id"], "open_decisions": [valid_decision()]}))
+                before = state_path.read_bytes()
+                missing = fixture.run_state("complete", "--run-dir", str(run_dir), "--json", str(artifact))
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertIn("--markdown", missing.stderr)
+                for paths in ((fixture.repo / "outside.md", artifact), (md, fixture.repo / "outside.json")):
+                    outside = fixture.run_state("complete", "--run-dir", str(run_dir), "--markdown", str(paths[0]), "--json", str(paths[1]))
+                    self.assertNotEqual(outside.returncode, 0)
+                    self.assertIn("output_dir", outside.stderr)
+                    self.assertEqual(before, state_path.read_bytes())
+                finished = fixture.run_state("complete", "--run-dir", str(run_dir), "--markdown", str(md), "--json", str(artifact), "--data", '{"stop_reason":"done"}')
+                self.assertEqual(finished.returncode, 0, finished.stderr)
+                final = json.loads(state_path.read_text())
+                self.assertEqual(final["current_stage"], "done")
+                self.assertEqual(final["output_dir"], state["output_dir"])
+                self.assertEqual(final["tracker"], state["tracker"])
+                self.assertEqual(final["deliverables"], {"markdown": str(md.resolve()), "json": str(artifact.resolve())})
+                event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
+                self.assertEqual(event["data"]["stop_reason"], "done")
+                pending = fixture.run_state("pending-decisions", "--output-dir", str(output))
+                self.assertEqual(pending.returncode, 0, pending.stderr)
+                self.assertIn("D1", pending.stdout)
+                reopened = fixture.run_state("decision", "--run-dir", str(run_dir), "--artifact", str(artifact), "--id", "D1", "--status", "decided", "--decision", "Accepted")
+                self.assertEqual(reopened.returncode, 0, reopened.stderr)
+
+    def test_legacy_lifecycle_refuses_before_any_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            state = run_dir / "state.json"
+            state.write_text('{"current_stage":"research"}')
+            script = Path(__file__).with_name("run_state.py")
+            for argv in (("event", "--type", "x", "--message", "x"),
+                         ("gate", "--stage", "research", "--decision", "advance", "--reason", "x"),
+                         ("snapshot", "--label", "x"),
+                         ("complete", "--markdown", "x.md", "--json", "x.json")):
+                result = subprocess.run([sys.executable, str(script), argv[0], "--run-dir", tmp, *argv[1:]], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsupported legacy layout", result.stderr)
+                self.assertEqual(state.read_text(), '{"current_stage":"research"}')
+                self.assertEqual(list(run_dir.iterdir()), [state])
 
 
 def valid_decision(**overrides) -> dict:
@@ -161,6 +271,7 @@ class RecordDecision(unittest.TestCase):
         )
         self.run_dir = self.root / "run"
         self.run_dir.mkdir()
+        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
 
     def tearDown(self):
         self.tmp.cleanup()

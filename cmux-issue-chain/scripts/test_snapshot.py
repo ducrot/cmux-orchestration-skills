@@ -23,6 +23,8 @@ class SnapshotCli(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.run_dir = self.root / "run"
+        self.run_dir.mkdir()
+        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
         self.env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         self.env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         self.git("init", "-q")

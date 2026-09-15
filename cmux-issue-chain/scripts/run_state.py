@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +15,7 @@ from agents_config import (
     ConfigError,
     add_override_options,
     add_probe_options,
+    durable_publish,
     supplied_configuration_inputs,
 )
 from orchestrator_lib import (
@@ -25,6 +25,9 @@ from orchestrator_lib import (
     issue_ready,
     load_issues,
     read_json,
+    run_identifier,
+    slugify,
+    read_run_state,
     utc_now,
     write_json,
 )
@@ -37,8 +40,6 @@ from worker_snapshot import (
 )
 
 
-RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
-
 # Must stay in sync with parse_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
 
@@ -50,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     init = subparsers.add_parser("init", help="Create run directory and initial state")
     init.add_argument("--tracker", required=True, help="Tracker directory, e.g. .scratch/<tracker>")
     init.add_argument("--issue", required=True)
-    init.add_argument("--run-id", help="Stable run id. Defaults to <issue-id>-<YYYY-MM-DD>-<HHMM> (UTC)")
+    init.add_argument("--run-id", help="Stable run id. Defaults to chain-issue-NNN-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument(
         "--config",
@@ -100,10 +101,23 @@ def build_parser() -> argparse.ArgumentParser:
     complete.add_argument("--run-dir", required=True)
     complete.add_argument("--message", default="chain complete")
 
+    status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
+    status.add_argument("--run-dir", required=True)
+
     return parser
 
 
 def run_command(args: argparse.Namespace) -> int:
+    if args.command == "status":
+        run_dir = Path(args.run_dir)
+        state = read_json(run_dir / "state.json")
+        try:
+            read_run_state(run_dir)
+            diagnostic = None
+        except SystemExit as error:
+            diagnostic = str(error)
+        print(json.dumps({"state": state, "unsupported_layout": diagnostic}, indent=2))
+        return 0
     if args.command == "init":
         return init_run(args)
     if args.command == "prepare":
@@ -133,10 +147,11 @@ def main() -> int:
 
 def ensure_runs_root_ignored(runs_root: Path) -> None:
     """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
+    runs_root.mkdir(parents=True, exist_ok=True)
     ignore = runs_root / ".gitignore"
+    # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
-        runs_root.mkdir(parents=True, exist_ok=True)
-        ignore.write_text("*\n", encoding="utf-8")
+        durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
 
 
 def resolve_workspace_id(args: argparse.Namespace) -> str | None:
@@ -165,13 +180,13 @@ def init_run(args: argparse.Namespace) -> int:
         raise SystemExit(f"Unknown issue: {args.issue}")
     issue = issues[args.issue]
     now = utc_now()
-    # Issue first so runs group per issue in a sorted listing; minute granularity
-    # keeps ids unique across re-runs without the mangled-timezone noise.
-    run_id = args.run_id or RUN_ID_RE.sub("-", f"{issue.id}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+    # Workflow and issue key group execution runs in the shared flat root.
+    run_id = args.run_id or run_identifier("chain", slugify(issue.id), now)
     runs_root = Path(args.runs_root)
     run_dir = runs_root / run_id
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
+        read_run_state(run_dir)
         # It also re-prepares nothing, so configuration inputs would be silently dropped.
         if supplied_configuration_inputs(args, workflow=WORKFLOW):
             raise SnapshotError(
@@ -205,6 +220,9 @@ def init_run(args: argparse.Namespace) -> int:
     prepared_pointer = persist_snapshot(run_dir, prepared_snapshot) if prepared_snapshot else None
     state = {
         "run_id": run_id,
+        "workflow": "issue-chain",
+        "layout_version": 1,
+        "deliverables": {"tracker": str(tracker), "issue": issue.path},
         "created_at": now,
         "workspace_id": workspace_id,
         "tracker": str(tracker),
@@ -262,11 +280,12 @@ def append_prepared_event(run_dir: Path, pointer: dict, snapshot: dict) -> None:
 
 
 def prepare_stage(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise SnapshotError(f"No state.json under {run_dir} — run run_state.py init first")
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     if state.get("current_stage") != args.stage:
         raise SnapshotError(
             f"cannot prepare {args.stage}: run current_stage is {state.get('current_stage')!r}"
@@ -296,7 +315,7 @@ def prepare_stage(args: argparse.Namespace) -> int:
     # Preflight spans minutes of external probes, so re-read instead of writing the dict this
     # command started from: a gate recorded meanwhile must not be erased, and a stage the run has
     # already left must not become launchable.
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     if state.get("current_stage") != args.stage:
         raise SnapshotError(
             f"run moved to {state.get('current_stage')!r} while {args.stage} was being prepared; "
@@ -311,6 +330,7 @@ def prepare_stage(args: argparse.Namespace) -> int:
 
 
 def append_event(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
@@ -322,6 +342,7 @@ def append_event(args: argparse.Namespace) -> int:
 
 
 def append_gate(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     event = {
         "time": utc_now(),
@@ -336,7 +357,7 @@ def append_gate(args: argparse.Namespace) -> int:
     # Keep state.json current; a reader must not see a stage the run left long ago.
     state_path = run_dir / "state.json"
     if state_path.is_file():
-        state = read_json(state_path)
+        state = read_run_state(run_dir)
         state.setdefault("gate_decisions", []).append(event)
         state["current_stage"] = args.next_stage or args.stage
         state["updated_at"] = event["time"]
@@ -345,6 +366,7 @@ def append_gate(args: argparse.Namespace) -> int:
 
 
 def append_snapshot(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
     def git(*argv: str) -> bytes:
         # Diffs can contain non-UTF-8 bytes; replacement decoding loses fingerprint input.
         result = subprocess.run(["git", *argv], capture_output=True)
@@ -374,7 +396,7 @@ def append_snapshot(args: argparse.Namespace) -> int:
 def complete_run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     now = utc_now()
     # Refresh the issue snapshot; state.json must not keep claiming todo/0-of-n forever.
     issues = load_issues(Path(state["tracker"]))

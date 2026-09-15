@@ -30,6 +30,7 @@ from agents_config import (
     valid_executable_syntax,
     valid_probe_record,
 )
+from orchestrator_lib import read_run_state
 from orchestrator_lib import read_json, utc_now, write_json
 
 
@@ -188,7 +189,7 @@ def load_launchable_snapshot(run_dir: Path, role: str, pass_num: int) -> dict[st
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise SnapshotError(f"No state.json under {run_dir} — run run_state.py init first")
-    state = read_json(state_path)
+    state = read_run_state(run_dir)
     pointer = state.get("prepared_stage")
     if not isinstance(pointer, dict):
         raise SnapshotError("no prepared stage snapshot is active; run run_state.py prepare first")

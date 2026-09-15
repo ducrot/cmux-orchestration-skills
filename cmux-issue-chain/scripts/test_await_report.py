@@ -114,6 +114,9 @@ class Cli(unittest.TestCase):
     script = str(Path(__file__).parent / "await_report.py")
 
     def run_cli(self, run_dir: str, *extra: str) -> subprocess.CompletedProcess:
+        state = Path(run_dir) / "state.json"
+        if not state.exists():
+            state.write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
         argv = [
             sys.executable, self.script,
             "--run-dir", run_dir, "--role", "review", "--pass", "1",
@@ -130,6 +133,7 @@ class Cli(unittest.TestCase):
 
     def test_existing_report_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             self.write_report(tmp)
             proc = self.run_cli(tmp)
         self.assertEqual(proc.returncode, EXIT_REPORT)
@@ -138,12 +142,14 @@ class Cli(unittest.TestCase):
 
     def test_file_only_mode_hits_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             proc = self.run_cli(tmp, "--deadline-minutes", "0.005")
         self.assertEqual(proc.returncode, EXIT_DEADLINE)
         self.assertIn("outcome=deadline", proc.stdout)
 
     def test_report_written_mid_wait_exits_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             timer = threading.Timer(0.3, self.write_report, args=(tmp,))
             timer.start()
             try:
@@ -155,6 +161,7 @@ class Cli(unittest.TestCase):
     def test_dead_pane_exits_seven(self):
         stub = f'{sys.executable} -c "print(\'surface:999 running\')"'
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             proc = self.run_cli(
                 tmp, "--surface", "surface:465", "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.5",
@@ -165,6 +172,7 @@ class Cli(unittest.TestCase):
     def test_erroring_health_cmd_does_not_end_wait(self):
         stub = f'{sys.executable} -c "raise SystemExit(1)"'
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             proc = self.run_cli(
                 tmp, "--surface", "surface:465", "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.01",
@@ -173,6 +181,7 @@ class Cli(unittest.TestCase):
 
     def test_waiting_events_have_run_state_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             self.run_cli(tmp, "--deadline-minutes", "0.01")
             lines = (Path(tmp) / "events.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertTrue(lines)
@@ -193,6 +202,7 @@ class Cli(unittest.TestCase):
     def test_surface_without_resolvable_workspace_is_usage_error(self):
         """No env fallback: --surface without pinned or explicit workspace must refuse."""
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             proc = self.run_cli(tmp, "--surface", "surface:465", "--deadline-minutes", "0.01")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("workspace", proc.stderr)
@@ -207,8 +217,9 @@ class WorkspaceResolution(unittest.TestCase):
 
     def test_health_command_uses_pinned_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             (Path(tmp) / "state.json").write_text(
-                json.dumps({"workspace_id": "WS-UUID"}), encoding="utf-8"
+                json.dumps({"workflow": "issue-chain", "layout_version": 1, "workspace_id": "WS-UUID"}), encoding="utf-8"
             )
             parser, args = self.make_args(tmp)
             cmd = health_command(args, parser)
@@ -221,8 +232,9 @@ class WorkspaceResolution(unittest.TestCase):
 
     def test_explicit_workspace_flag_beats_state(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             (Path(tmp) / "state.json").write_text(
-                json.dumps({"workspace_id": "WS-UUID"}), encoding="utf-8"
+                json.dumps({"workflow": "issue-chain", "layout_version": 1, "workspace_id": "WS-UUID"}), encoding="utf-8"
             )
             parser, args = self.make_args(tmp, "--workspace", "OVERRIDE")
             cmd = health_command(args, parser)
@@ -232,8 +244,9 @@ class WorkspaceResolution(unittest.TestCase):
     def test_null_pinned_workspace_is_usage_error(self):
         """A --no-workspace run has workspace_id null; health checks must refuse, not unscope."""
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1}))
             (Path(tmp) / "state.json").write_text(
-                json.dumps({"workspace_id": None}), encoding="utf-8"
+                json.dumps({"workflow": "issue-chain", "layout_version": 1, "workspace_id": None}), encoding="utf-8"
             )
             parser, args = self.make_args(tmp)
             with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()):

@@ -28,6 +28,7 @@ import sys
 import time
 from pathlib import Path
 
+from orchestrator_lib import read_run_state
 from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, utc_now
 from worker_snapshot import (
     SnapshotError,
@@ -97,7 +98,7 @@ def pinned_workspace(run_dir: Path) -> str:
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         raise SystemExit(f"No state.json under {run_dir} — run run_state.py init first")
-    workspace_id = read_json(state_path).get("workspace_id")
+    workspace_id = read_run_state(run_dir).get("workspace_id")
     if not workspace_id:
         raise SystemExit(
             f"{state_path} has no pinned workspace_id — re-init the run from a cmux pane "
@@ -165,7 +166,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # configuration/preflight state can never create an empty worker pane.
     load_launchable_snapshot(run_dir, args.role, args.pass_num)
     workspace_id = pinned_workspace(run_dir)
-    state = read_json(run_dir / "state.json")
+    state = read_run_state(run_dir)
     issue_id = (state.get("issue") or {}).get("id", "unknown-issue")
     split = run_cmux(
         args,

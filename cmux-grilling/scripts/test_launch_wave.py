@@ -209,6 +209,46 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         wave = self.read_wave("migrated-v1")
         self.assertEqual(wave["resolved_profiles"]["docs"]["profile"], "codex-astra-medium")
 
+    def test_default_identity_and_slug_override(self):
+        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.repo / result.stdout.strip()
+        self.assertRegex(run_dir.name, r"^grill-task-static-teaser-website-for-\d{4}-\d{2}-\d{2}-\d{4}$")
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["slug"], "task-static-teaser-website-for")
+        self.assertLessEqual(len(state["slug"]), 30)
+        self.assertEqual(state["workflow"], "grilling")
+        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["deliverables"], {})
+        override = self.init_for("custom", "--slug", "chosen-slug")
+        self.assertEqual(override.returncode, 0, override.stderr)
+        self.assertEqual(self.read_state("custom")["slug"], "chosen-slug")
+        for slug in ("", "Upper", "a--b", "../x", "x" * 31):
+            invalid = self.init_for("invalid", "--slug", slug)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("--slug", invalid.stderr)
+            self.assertFalse(self.run_dir("invalid").exists())
+
+    def test_legacy_run_is_inspectable_but_cannot_continue_or_launch(self):
+        self.assertEqual(self.init_for("legacy").returncode, 0)
+        run_dir = self.run_dir("legacy")
+        state = self.read_state("legacy")
+        del state["workflow"]
+        del state["layout_version"]
+        (run_dir / "state.json").write_text(json.dumps(state))
+        before = {str(p.relative_to(run_dir)): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
+        calls = [self.init_for("legacy"),
+                 self.run_state("event", "--run-dir", str(run_dir), "--type", "test", "--message", "test"),
+                 self.pane("launch", "--run-dir", str(run_dir), "--lane", "web", "--anchor", "ANCHOR")]
+        for result in calls:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported legacy layout", result.stderr)
+        inspected = self.run_state("status", "--run-dir", str(run_dir))
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertIn("unsupported legacy layout", inspected.stdout)
+        self.assertEqual(before, {str(p.relative_to(run_dir)): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()})
+        self.assertFalse(self.cmux_log.exists())
+
     def test_init_uses_config_and_audits_all_four_lanes_in_one_wave(self):
         proc = self.init_for("wave")
 

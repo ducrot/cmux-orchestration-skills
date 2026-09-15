@@ -274,6 +274,35 @@ class PreparedStageCli(unittest.TestCase):
         snapshot = json.loads((self.runs_root / "migrated-v1" / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
         self.assertEqual(snapshot["selected_worker"]["profile"], "codex-astra-medium")
 
+    def test_default_run_identity_and_deliverables(self):
+        result = self.run_state("init", "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--no-workspace")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.repo / result.stdout.strip()
+        self.assertRegex(run_dir.name, r"^chain-issue-001-\d{4}-\d{2}-\d{2}-\d{4}$")
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["workflow"], "issue-chain")
+        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["deliverables"], {"tracker": ".scratch/tracker", "issue": ".scratch/tracker/issues/ISSUE-001-prepared.md"})
+
+    def test_legacy_run_refuses_preparation_and_lifecycle_without_writes(self):
+        self.assertEqual(self.init().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        del state["workflow"]
+        del state["layout_version"]
+        state_path.write_text(json.dumps(state))
+        before = {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+        for result in (self.init(), self.prepare("implement"),
+                       self.run_state("complete", "--run-dir", str(self.run_dir)),
+                       self.pane("launch", "--run-dir", str(self.run_dir), "--role", "implement", "--pass", "1", "--anchor", "ANCHOR")):
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported legacy layout", result.stderr)
+        inspected = self.run_state("status", "--run-dir", str(self.run_dir))
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertIn("unsupported legacy layout", inspected.stdout)
+        self.assertEqual(before, {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()})
+        self.assertFalse(self.cmux_log.exists())
+
     def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):
         proc = self.init()
 

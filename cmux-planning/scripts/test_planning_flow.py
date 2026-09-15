@@ -95,7 +95,7 @@ class PlanningFlow(unittest.TestCase):
         self.config = self.repo / ".scratch" / "orchestrator" / "agents.json"
         initialized = self.cli(AGENTS, "init", "--config", str(self.config))
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
-        self.runs = self.repo / ".scratch" / "orchestrator" / "planning-runs"
+        self.runs = self.repo / ".scratch" / "orchestrator" / "runs"
         self.run_dir = self.runs / "plan-test"
 
     def tearDown(self):
@@ -142,10 +142,79 @@ class PlanningFlow(unittest.TestCase):
             str(self.config),
         )
 
+    def test_shared_identity_slug_override_and_sibling_discovery(self):
+        sibling = self.runs / "grill-sibling"
+        sibling.mkdir(parents=True)
+        (sibling / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1, "slug": "sibling"}))
+        result = self.cli(STATE, "init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.repo / result.stdout.strip().splitlines()[-1]
+        self.assertEqual(run_dir.parent, self.runs)
+        self.assertRegex(run_dir.name, r"^plan-task-static-teaser-website-for-\d{4}-\d{2}-\d{2}-\d{4}$")
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["tracker_slug"], "task-static-teaser-website-for")
+        self.assertEqual(state["workflow"], "planning")
+        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["schema_version"], 3)
+        self.assertEqual(state["deliverables"], {})
+        offered = self.cli(STATE, "init", "--task", "Another task", "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(json.loads(offered.stdout)["unfinished_run"]["run_id"], run_dir.name)
+        override = self.cli(STATE, "init", "--task", "Another task", "--slug", "frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(override.returncode, 0, override.stderr)
+        overridden = self.repo / override.stdout.strip().splitlines()[-1]
+        self.assertTrue(overridden.name.startswith("plan-frozen-name-"))
+        self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
+        reinit = self.cli(STATE, "init", "--task", "Changed task", "--run-id", overridden.name, "--slug", "different-name", "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(reinit.returncode, 0, reinit.stderr)
+        self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
+        for slug in ("", "Upper", "a--b", "../x", "x" * 31):
+            invalid = self.cli(STATE, "init", "--task", "Task", "--run-id", "invalid", "--slug", slug, "--new-run", "--workspace-id", "WORKSPACE-1")
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("--slug", invalid.stderr)
+            self.assertFalse((self.runs / "invalid").exists())
+
+    def test_schema_two_and_legacy_root_are_read_only(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        original = json.loads(state_path.read_text())
+        for change in ({"schema_version": 2}, {"workflow": "grilling"}, {"layout_version": 0}):
+            state_path.write_text(json.dumps({**original, **change}))
+            before = {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+            for command in ("publish", "resume"):
+                refused = self.cli(STATE, command, "--run-dir", str(self.run_dir))
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("legacy layout", refused.stderr)
+                self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
+                self.assertIn("reviewed migration", refused.stderr)
+            refused_close = self.cli(PANE, "--cmux-cmd", str(self.cmux), "close", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1", "--surface", "SURFACE-1")
+            self.assertNotEqual(refused_close.returncode, 0)
+            self.assertIn("legacy layout", refused_close.stderr)
+            self.assertFalse(self.cmux_log.exists())
+            for command in ("status", "context"):
+                options = ["--cmux-cmd", str(self.cmux)] if command == "status" else []
+                inspected = self.cli(STATE, command, "--run-dir", str(self.run_dir), *options)
+                self.assertEqual(inspected.returncode, 0, inspected.stderr)
+            self.cmux_log.unlink(missing_ok=True)
+            self.assertEqual(before, {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()})
+        state_path.write_text(json.dumps(original))
+        legacy_dir = self.repo / ".scratch/orchestrator/planning-runs" / self.run_dir.name
+        legacy_dir.parent.mkdir(parents=True)
+        self.run_dir.rename(legacy_dir)
+        refused = self.cli(STATE, "prepare", "--run-dir", str(legacy_dir), "--stage", "spec", "--pass", "1")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
+        before = {str(p.relative_to(legacy_dir)): p.read_bytes() for p in legacy_dir.rglob("*") if p.is_file()}
+        reinit = self.cli(STATE, "init", "--task", "Task", "--run-id", legacy_dir.name, "--runs-root", str(legacy_dir.parent), "--workspace-id", "WORKSPACE-1")
+        self.assertNotEqual(reinit.returncode, 0)
+        self.assertIn("legacy layout", reinit.stderr)
+        self.assertIn("human decision to restart", reinit.stderr)
+        self.assertIn("reviewed migration", reinit.stderr)
+        self.assertEqual(before, {str(p.relative_to(legacy_dir)): p.read_bytes() for p in legacy_dir.rglob("*") if p.is_file()})
+
     def test_initialization_supports_default_relative_and_absolute_roots(self):
         for mode, root_args in (
             ("default", []),
-            ("relative", ["--runs-root", ".scratch/orchestrator/planning-runs"]),
+            ("relative", ["--runs-root", ".scratch/orchestrator/runs"]),
             ("absolute", ["--runs-root", str(self.runs)]),
         ):
             with self.subTest(mode=mode):
@@ -268,6 +337,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertTrue((target / "issues").is_dir())
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "complete")
+        self.assertEqual(state["deliverables"]["tracker"], state["published_tracker"]["path"])
         self.assertEqual(state["artifact_audit"]["unexpected"], [])
         self.assertNotIn("artifact_integrity_violation", state)
 
@@ -1430,6 +1500,9 @@ sha256 {resulting_digest or digest}
         self.assertTrue((target / "issues").is_dir())
         final = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(final["current_stage"], "complete")
+        self.assertEqual(final["deliverables"], {"tracker": final["published_tracker"]["path"]})
+        event = json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(event["data"]["deliverables"], final["deliverables"])
         self.assertEqual(final["published_tracker"]["ready_frontier"], ["ISSUE-001"])
 
         duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
@@ -3229,6 +3302,9 @@ Option?
         self.assertTrue(json.loads(recovered.stdout)["recovered"])
         final = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(final["current_stage"], "complete")
+        self.assertEqual(final["deliverables"], {"tracker": final["published_tracker"]["path"]})
+        event = json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(event["data"]["deliverables"], final["deliverables"])
         duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
         self.assertNotEqual(duplicate.returncode, 0)
         self.assertIn("already published", duplicate.stderr)

@@ -18,7 +18,7 @@ from orchestrator_lib import (
 
 
 MANIFEST_VERSION = 1
-RUN_STATE_SCHEMA_VERSION = 2
+RUN_STATE_SCHEMA_VERSION = 3
 
 # One binding between a worker handoff role and its manifest kind, shared by the producers that
 # record handoffs and by the verifier that pins each kind to its role-specific location.
@@ -367,15 +367,21 @@ def _verify_role_location(state: dict[str, Any], run_dir: Path, entry: dict[str,
 
 def require_current_format(state: dict[str, Any], *, source: Path) -> None:
     if (
-        state.get("schema_version") != RUN_STATE_SCHEMA_VERSION
+        state.get("workflow") != "planning"
+        or state.get("layout_version") != 1
+        or any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
+               for path in source.resolve().parents)
+        or state.get("schema_version") != RUN_STATE_SCHEMA_VERSION
         or state.get("artifact_manifest_version") != MANIFEST_VERSION
         or not isinstance(state.get("artifact_manifest"), dict)
         or not isinstance(state.get("artifact_attempt_counters"), dict)
     ):
         raise ArtifactIntegrityError(
-            f"planning run {source.parent} predates artifact-manifest format {MANIFEST_VERSION}; "
+            f"planning run {source.parent} uses an unsupported legacy layout or predates artifact-manifest format {MANIFEST_VERSION}; "
             "do not trust or resume it silently. Inspect it read-only, then obtain a human decision "
-            "to restart the run or use a separately reviewed migration procedure"
+            "to restart the run or use a separately reviewed migration procedure. "
+            "The legacy root .scratch/orchestrator/planning-runs/ cannot be continued; "
+            "new runs belong under .scratch/orchestrator/runs/"
         )
 
 

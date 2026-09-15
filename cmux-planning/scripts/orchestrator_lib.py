@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -266,3 +267,20 @@ def checkout_identity(repository: Path) -> dict[str, str]:
 
 def delivery_text(prompt_path: str) -> str:
     return PROMPT_DELIVERY_TEMPLATE.format(prompt_path=prompt_path)
+
+
+RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def slugify(text: str, max_length: int = 30) -> str:
+    """Normalize a task key, retaining whole words within the cap when possible."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    if len(slug) > max_length:
+        boundary = slug.rfind("-", 0, max_length + 1)
+        slug = slug[:boundary if boundary > 0 else max_length]
+    return slug.rstrip("-") or "task"
+
+
+def run_identifier(workflow: str, key: str, now: str) -> str:
+    """Build a readable UTC minute identity using the shared run-id grammar."""
+    return RUN_ID_RE.sub("-", f"{workflow}-{key}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")

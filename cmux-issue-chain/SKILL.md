@@ -949,3 +949,9 @@ Code, `simplify pass` elsewhere):
 ## Change Summary
 - None, or concise list of behavior-preserving refactorings applied.
 ```
+
+Runs use the shared `.scratch/orchestrator/runs/` root and default UTC id
+`chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`. Each `state.json` records `workflow: issue-chain`,
+`layout_version: 1`, and `deliverables` with the tracker and issue paths. Inspect an existing run
+read-only with `run_state.py status --run-dir <run-dir>`; an unsupported legacy layout must be
+restarted before recovery, preparation, launch, or lifecycle writes.

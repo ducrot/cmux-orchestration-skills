@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import ast
 from functools import lru_cache
 from pathlib import Path
 
@@ -35,6 +36,29 @@ def notice(text: str) -> str:
 
 
 class CoordinatedUpgradeDocumentation(unittest.TestCase):
+    def test_vendored_run_helpers_are_byte_identical(self):
+        if len(SIBLINGS) != 3:
+            self.skipTest("sibling skills are absent in this independent installation")
+        for name in ("slugify", "run_identifier", "ensure_runs_root_ignored"):
+            sources = []
+            for guide in SIBLINGS:
+                filename = "orchestrator_lib.py" if name != "ensure_runs_root_ignored" else ("planning_state.py" if guide == PLANNING else "run_state.py")
+                source = (guide.parent / "scripts" / filename).read_text()
+                function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == name)
+                sources.append(ast.get_source_segment(source, function))
+            self.assertEqual(sources, [sources[0]] * 3, name)
+
+    def test_shared_root_and_legacy_documentation(self):
+        if not README.is_file():
+            self.skipTest("repository README is absent")
+        for guide in (README, PLANNING):
+            text = guide.read_text()
+            self.assertIn(".scratch/orchestrator/runs/<run-id>/", text)
+            self.assertIn("deliverables", text)
+            for line in text.splitlines():
+                if "planning-runs" in line:
+                    self.assertIn("legacy", line.lower())
+
     def test_every_shipped_guide_requires_a_coordinated_schema_v2_upgrade(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")
@@ -94,7 +118,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "`-attempt-n` suffix",
             "unexpected files",
             "never attached implicitly",
-            "before run-state schema 2",
+            "before run-state schema 3",
             "human decision to restart",
             "separately reviewed migration procedure",
         ):

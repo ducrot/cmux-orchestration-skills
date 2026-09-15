@@ -19,6 +19,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from orchestrator_lib import read_run_state
 from orchestrator_lib import LANE_WAIT_MINUTES, LANES, append_jsonl, read_json, utc_now
 
 EXIT_REPORTS = 0    # every lane report exists — parse them next; NOT an advance verdict
@@ -92,7 +93,7 @@ def pinned_workspace(run_dir: Path) -> str | None:
     state_path = run_dir / "state.json"
     if not state_path.is_file():
         return None
-    return read_json(state_path).get("workspace_id") or None
+    return read_run_state(run_dir).get("workspace_id") or None
 
 
 def health_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
@@ -163,6 +164,7 @@ def join(lanes: list[str]) -> str:
 
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     lanes = parse_lanes(args)
     surfaces = parse_lane_surfaces(args.lane_surface, lanes)

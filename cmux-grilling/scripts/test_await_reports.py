@@ -136,6 +136,9 @@ class Cli(unittest.TestCase):
     script = str(Path(__file__).parent / "await_reports.py")
 
     def run_cli(self, run_dir: str, *extra: str) -> subprocess.CompletedProcess:
+        state = Path(run_dir) / "state.json"
+        if not state.exists():
+            state.write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
         argv = [
             sys.executable, self.script,
             "--run-dir", run_dir, "--round", "1",
@@ -156,6 +159,7 @@ class Cli(unittest.TestCase):
 
     def test_all_reports_present_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             self.write_all(tmp)
             proc = self.run_cli(tmp)
         self.assertEqual(proc.returncode, EXIT_REPORTS)
@@ -165,6 +169,7 @@ class Cli(unittest.TestCase):
 
     def test_partial_reports_keep_waiting_until_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             self.write_report(tmp, "codebase")
             proc = self.run_cli(tmp, "--deadline-minutes", "0.005")
         self.assertEqual(proc.returncode, EXIT_DEADLINE)
@@ -174,6 +179,7 @@ class Cli(unittest.TestCase):
 
     def test_last_report_written_mid_wait_exits_zero(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             for lane in ("codebase", "codebase2", "docs"):
                 self.write_report(tmp, lane)
             timer = threading.Timer(0.3, self.write_report, args=(tmp, "web"))
@@ -187,6 +193,7 @@ class Cli(unittest.TestCase):
     def test_dead_pane_of_pending_lane_exits_seven(self):
         stub = f'{sys.executable} -c "print(\'surface:465 type=terminal in_window=true\')"'
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = self.run_cli(
                 tmp, "--lanes", "codebase,web",
                 "--lane-surface", "codebase=surface:465", "--lane-surface", "web=surface:999",
@@ -201,6 +208,7 @@ class Cli(unittest.TestCase):
         """The core round-watcher trap: a lane pane may exit right after writing its report."""
         stub = f'{sys.executable} -c "print(\'surface:465 type=terminal in_window=true\')"'
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             self.write_report(tmp, "web")  # web's surface:999 is gone from the listing
             proc = self.run_cli(
                 tmp, "--lanes", "codebase,web",
@@ -214,6 +222,7 @@ class Cli(unittest.TestCase):
     def test_erroring_health_cmd_does_not_end_wait(self):
         stub = f'{sys.executable} -c "raise SystemExit(1)"'
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = self.run_cli(
                 tmp, "--lane-surface", "codebase=surface:465", "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.01",
@@ -222,6 +231,7 @@ class Cli(unittest.TestCase):
 
     def test_waiting_events_have_run_state_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             self.run_cli(tmp, "--deadline-minutes", "0.01")
             lines = (Path(tmp) / "events.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertTrue(lines)
@@ -235,18 +245,21 @@ class Cli(unittest.TestCase):
 
     def test_unknown_lane_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = self.run_cli(tmp, "--lanes", "codebase,frontend")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("unknown lanes: frontend", proc.stderr)
 
     def test_malformed_lane_surface_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = self.run_cli(tmp, "--lane-surface", "surface:465")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("LANE=SURFACE", proc.stderr)
 
     def test_lane_surface_for_unawaited_lane_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = self.run_cli(tmp, "--lanes", "codebase", "--lane-surface", "web=surface:465")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not being awaited", proc.stderr)
@@ -265,6 +278,7 @@ class WorkspaceResolution(unittest.TestCase):
     def test_surface_without_resolvable_workspace_is_usage_error(self):
         """No env fallback: lane surfaces without pinned or explicit workspace must refuse."""
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             proc = subprocess.run(
                 [
                     sys.executable, self.script,
@@ -281,8 +295,9 @@ class WorkspaceResolution(unittest.TestCase):
         from await_reports import build_parser, health_command
 
         with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
             (Path(tmp) / "state.json").write_text(
-                json.dumps({"workspace_id": "WS-UUID"}), encoding="utf-8"
+                json.dumps({"workflow": "grilling", "layout_version": 1, "workspace_id": "WS-UUID"}), encoding="utf-8"
             )
             parser = build_parser()
             args = parser.parse_args(["--run-dir", tmp, "--round", "1"])

@@ -445,7 +445,7 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
    checks every `open_decisions` entry against the schema here, so a thin entry is repaired
    while the rounds are still in context.
 5. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
-   `run_state.py complete --data '{"stop_reason": ..., "markdown": ..., "json": ...}'`.
+   `run_state.py complete --run-dir <run-dir> --markdown <artifact.md> --json <artifact.json> --data '{"stop_reason": ...}'`.
 6. Close the four lane panes after their last reports and the gates are documented; record
    `pane.closed` per lane.
 
@@ -766,7 +766,7 @@ Record events, snapshots, gates; close the run:
 python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 question" --data '{"round":1,"question":"..."}'
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "reports-captured round-1"
 python3 scripts/run_state.py gate --run-dir <run-dir> --stage round-1-web --decision advance --reason "well-formed ANSWERED, sources cited"
-python3 scripts/run_state.py complete --run-dir <run-dir> --message "grilling complete" --data '{"stop_reason":"griller-done"}'
+python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <output-dir>/<slug>.md --json <output-dir>/<slug>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
 ```
 
 Control lane panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints
@@ -804,7 +804,7 @@ python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/smok
 python3 scripts/parse_research_report.py references/sample-research-report.md --json
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-grill --label "smoke snapshot"
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-grill --stage round-1-web --decision advance --reason "smoke test"
-python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-grill --message "smoke complete" --data '{"stop_reason":"smoke"}'
+python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-grill --markdown .scratch/grilling/smoke.md --json .scratch/grilling/smoke.json --message "smoke complete" --data '{"stop_reason":"smoke"}'
 
 # The watcher without reports must hit its deadline (exit 8), file-only, in ~1 second:
 python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/smoke-grill --round 1 --deadline-minutes 0.01 --poll-seconds 0.2; [ $? -eq 8 ]
@@ -859,3 +859,10 @@ Research-specific gate requirements:
 Rendered prompts instruct lanes to self-validate their draft with
 `parse_research_report.py` before writing the handoff file, so format failures die at the
 source instead of at the gate.
+
+Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, and `slug` (at most 30
+characters; override with `init --slug <value>` using lowercase words separated by hyphens).
+`complete` requires `--markdown` and `--json` paths resolving under the recorded `output_dir` and
+records them in `deliverables`. Artifact JSON and `pending-decisions` discovery remain unchanged.
+Before continuing an existing run, inspect it with `run_state.py status --run-dir <run-dir>`.
+An unsupported legacy layout must be restarted; never infer its identity or continue it.

@@ -995,6 +995,9 @@ def unfinished_runs(runs_root: Path, repository: Path) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for state_path in runs_root.glob("*/state.json"):
         try:
+            raw = read_json(state_path)
+            if not isinstance(raw, dict) or raw.get("workflow") != "planning":
+                continue
             state = read_planning_state(state_path)
         # PlanningStateCompatibilityError subclasses ValueError; an unreadable durable run must
         # surface here instead of silently disappearing from the recovery listing.

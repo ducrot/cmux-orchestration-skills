@@ -182,3 +182,11 @@ All paths inside the skills are relative to each skill's own directory, so any i
 ## License
 
 [MIT](LICENSE)
+
+All three workflows share the flat `.scratch/orchestrator/runs/<run-id>/` root. Default UTC ids are
+`grill-<slug>-<YYYY-MM-DD>-<HHMM>`, `plan-<slug>-<YYYY-MM-DD>-<HHMM>`, and
+`chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`; task slugs contain at most 30 characters and can be overridden
+with `--slug` in grilling and planning. Each state records its `workflow`, `layout_version: 1`, and
+`deliverables`: the grilling Markdown/JSON pair, published planning tracker, or chain tracker/issue.
+Legacy runs (including `.scratch/orchestrator/planning-runs/`) stay inspectable read-only and must be
+restarted or, for planning, handled through a separately reviewed migration procedure.

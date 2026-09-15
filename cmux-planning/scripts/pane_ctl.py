@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from artifact_manifest import ArtifactIntegrityError, current_attempt, verify_or_gate
+from artifact_manifest import ArtifactIntegrityError, current_attempt, require_current_format, verify_or_gate
 from orchestrator_lib import (
     ROLE_LABELS,
     STAGES,
@@ -94,7 +94,10 @@ def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dic
 
 def run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
-    if args.command != "close":
+    if args.command == "close":
+        state_path = run_dir / "state.json"
+        require_current_format(read_planning_state(state_path), source=state_path)
+    else:
         state = verify_or_gate(run_dir, stage=args.stage)
         attempt = current_attempt(state, args.stage, args.pass_num)
     if args.command == "launch":
