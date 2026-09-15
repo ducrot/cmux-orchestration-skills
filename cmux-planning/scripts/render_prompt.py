@@ -356,7 +356,8 @@ exception only when intermediate migration batches cannot remain green independe
 NATIVE_TRACKER_POLICY = """The machine proposal uses schema version 1 with exactly four top-level keys:
 `schema_version`, `source_spec`, `tracker`, and `tickets`. `source_spec` contains exact `path` and
 `sha256`. `tracker` contains lowercase kebab-case `slug`, non-empty `title`, `working_branch`, and a
-non-empty list of exact runnable `canonical_check_commands`. Every ticket contains exactly `id` in
+non-empty list of exact runnable `canonical_check_commands`. `tracker.slug` must equal the
+Tracker slug (fixed) value under Inputs and Identity. Every ticket contains exactly `id` in
 ISSUE-NNN form, `title`, `delivered_behavior`, non-empty `acceptance_criteria`, `blocked_by`,
 `merge_split_rationale`, `slice_type`, non-empty `technical_layers`, and `wide_refactor`. A normal ticket
 uses `slice_type: vertical` and `wide_refactor: null`. A wide-refactor ticket uses
@@ -386,6 +387,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 - Persisted task: `{task_path}` (sha256 `{state['task']['sha256']}`)
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
+- Tracker slug (fixed): `{state["tracker_slug"]}`
 - Repository: `{state['repository']}`
 
 ### Approved Specification
@@ -468,12 +470,12 @@ Use `BLOCKED` only for a real blocker, and then state it under Blockers. Self-va
 
 ```bash
 python3 {tracker_contract_path()} proposal {paths['proposal']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
 python3 {tracker_contract_path()} render-summary \\
   --proposal {paths['proposal']} --out {paths['summary']}
 python3 {tracker_contract_path()} author-report {paths['report']} \\
   --proposal {paths['proposal']} --summary {paths['summary']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
 ```
 """
 
@@ -510,7 +512,8 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
     )
     paths = snapshot["allowed_worker_writes"]
     validate_proposal(
-        proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest
+        proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest,
+        expected_tracker_slug=state["tracker_slug"],
     )
     return f"""# Planning Worker Prompt: independent ticket review (pass {pass_num})
 
@@ -526,6 +529,7 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 
 - Task: `{task_path}` (sha256 `{state['task']['sha256']}`)
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
+- Tracker slug (fixed): `{state["tracker_slug"]}`
 - Machine proposal: `{proposal}` (sha256 `{author['proposal_sha256']}`)
 - Human summary: `{summary}` (sha256 `{author['summary_sha256']}`)
 - Author report: `{report}` (sha256 `{sha256_file(report)}`)
@@ -615,7 +619,7 @@ Self-validate before handoff (the candidate may be absent for `pass` or `blocked
 python3 {tracker_contract_path()} review-report {paths['report']} \\
   --input {proposal} --candidate {paths['candidate']} \\
   --input-sha256 {author['proposal_sha256']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
 ```
 """
 

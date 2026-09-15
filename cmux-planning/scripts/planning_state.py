@@ -1377,6 +1377,7 @@ def accept_tickets_author(
         summary,
         expected_spec=Path(approved["path"]),
         expected_spec_sha256=approved["sha256"],
+        expected_tracker_slug=state["tracker_slug"],
     )
     state = read_planning_state(run_dir / "state.json")
     result["report"] = str(report)
@@ -1517,6 +1518,7 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
         expected_input_sha256=author["proposal_sha256"],
         expected_spec=Path(approved["path"]),
         expected_spec_sha256=approved["sha256"],
+        expected_tracker_slug=state["tracker_slug"],
     )
     state = read_planning_state(run_dir / "state.json")
     result["input_manifest_id"] = author["proposal_manifest_id"]
@@ -1837,11 +1839,14 @@ def approval(args: argparse.Namespace) -> int:
     return preparation_exit_code(pointer)
 
 
-def bound_proposal(approved_spec: dict, path: Path, digest: str, mismatch: str) -> dict:
+def bound_proposal(
+    approved_spec: dict, path: Path, digest: str, mismatch: str, *, expected_tracker_slug: str
+) -> dict:
     proposal = validate_proposal(
         path,
         expected_spec=Path(approved_spec["path"]),
         expected_spec_sha256=approved_spec["sha256"],
+        expected_tracker_slug=expected_tracker_slug,
     )
     if proposal["sha256"] != digest:
         raise ContractError(mismatch)
@@ -1866,7 +1871,8 @@ def ticket_approval_view(run_dir: Path) -> int:
         expected_path=candidate,
     )
     proposal = bound_proposal(
-        approved, candidate, reviewed["candidate_sha256"], "reviewed ticket candidate changed after review"
+        approved, candidate, reviewed["candidate_sha256"], "reviewed ticket candidate changed after review",
+        expected_tracker_slug=state["tracker_slug"],
     )
     author_proposal = Path(author["proposal"])
     verify_entry(
@@ -2045,6 +2051,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
             Path(approved_tickets["path"]),
             approved_tickets["sha256"],
             "recorded ticket approval is stale because its digest-bound proposal changed",
+            expected_tracker_slug=state["tracker_slug"],
         )
         if args.target:
             repeated_target = (Path(args.target) if Path(args.target).is_absolute() else Path(state["repository"]) / args.target).resolve()
@@ -2096,6 +2103,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         candidate,
         reviewed["candidate_sha256"],
         "reviewed ticket candidate changed after review",
+        expected_tracker_slug=state["tracker_slug"],
     )
     target = checked_publication_target(
         Path(state["repository"]), args.target, proposal["tracker"]["slug"]
@@ -2213,6 +2221,7 @@ def publish_tracker(run_dir: Path) -> int:
         Path(approved_tickets["path"]),
         approved_tickets["sha256"],
         "approved ticket proposal identity changed before publication",
+        expected_tracker_slug=state["tracker_slug"],
     )
     target = checked_publication_target(
         Path(state["repository"]),

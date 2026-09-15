@@ -223,6 +223,28 @@ sha256 {self.spec_digest}
         with self.assertRaisesRegex(ContractError, "expand, bounded migrate, and contract"):
             validate_proposal(self.proposal_path)
 
+    def test_proposal_enforces_frozen_tracker_slug(self):
+        self.write_proposal()
+        for expected in (None, "planned-feature"):
+            self.assertEqual(
+                validate_proposal(self.proposal_path, expected_tracker_slug=expected)["tracker"]["slug"],
+                "planned-feature",
+            )
+        with self.assertRaisesRegex(ContractError, "tracker.slug.*frozen"):
+            validate_proposal(self.proposal_path, expected_tracker_slug="fixed-name")
+
+    def test_proposal_cli_checks_frozen_slug(self):
+        self.write_proposal()
+        for expected in ("planned-feature", "different-slug"):
+            result = subprocess.run([
+                sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), "proposal",
+                str(self.proposal_path), "--spec", str(self.spec),
+                "--spec-sha256", self.spec_digest, "--tracker-slug", expected,
+            ], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0 if expected == "planned-feature" else 1, result.stderr)
+            if expected != "planned-feature":
+                self.assertIn("tracker.slug must equal frozen", result.stderr)
+
     def test_all_review_verdicts_bind_digests_and_safe_fixes_need_no_second_review(self):
         original = self.write_proposal()
         digest = original["sha256"]
@@ -287,6 +309,25 @@ sha256 {resulting}
             expected_spec_sha256=self.spec_digest,
         )
         self.assertEqual(fixed["gate"], "advance")
+        for expected in ("planned-feature", "renamed-tracker"):
+            command = [
+                sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), "review-report",
+                str(review), "--input", str(self.proposal_path), "--candidate", str(candidate),
+                "--input-sha256", digest, "--spec", str(self.spec),
+                "--spec-sha256", self.spec_digest, "--tracker-slug", expected,
+            ]
+            checked = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0 if expected == "planned-feature" else 1, checked.stderr)
+            if expected != "planned-feature":
+                self.assertIn("tracker.slug must equal frozen", checked.stderr)
+        corrected["tracker"]["slug"] = "renamed-tracker"
+        candidate.write_text(json.dumps(corrected), encoding="utf-8")
+        with self.assertRaisesRegex(ContractError, "tracker.slug.*frozen"):
+            validate_ticket_review_report(
+                review, self.proposal_path, candidate,
+                expected_input_sha256=digest, expected_spec=self.spec,
+                expected_spec_sha256=self.spec_digest, expected_tracker_slug="planned-feature",
+            )
         candidate.unlink()
 
         review.write_text(

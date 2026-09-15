@@ -141,6 +141,7 @@ def validate_proposal(
     *,
     expected_spec: Path | None = None,
     expected_spec_sha256: str | None = None,
+    expected_tracker_slug: str | None = None,
 ) -> dict[str, Any]:
     raw, data = _load_json(path, "ticket proposal")
     if set(data) != {"schema_version", "source_spec", "tracker", "tickets"}:
@@ -170,6 +171,8 @@ def validate_proposal(
             "tracker keys must be exactly slug, title, working_branch, and canonical_check_commands"
         )
     slug = _safe_slug(tracker["slug"])
+    if expected_tracker_slug is not None and slug != expected_tracker_slug:
+        raise ContractError(f"tracker.slug must equal frozen tracker slug {expected_tracker_slug!r}")
     title = _text(tracker["title"], "tracker.title")
     branch = _text(tracker["working_branch"], "tracker.working_branch")
     if any(character in branch for character in "\r\n`"):
@@ -361,6 +364,7 @@ def validate_ticket_author_report(
     *,
     expected_spec: Path,
     expected_spec_sha256: str,
+    expected_tracker_slug: str | None = None,
 ) -> dict[str, Any]:
     if not report_path.is_file():
         raise ContractError(f"tickets author report is missing: {report_path}")
@@ -386,6 +390,7 @@ def validate_ticket_author_report(
         proposal_path,
         expected_spec=expected_spec,
         expected_spec_sha256=expected_spec_sha256,
+        expected_tracker_slug=expected_tracker_slug,
     )
     summary_sha256 = validate_summary(summary_path, proposal)
     counts = re.findall(r"\b\d+\b", parsed["Ticket Count"])
@@ -415,6 +420,7 @@ def validate_ticket_review_report(
     expected_input_sha256: str,
     expected_spec: Path,
     expected_spec_sha256: str,
+    expected_tracker_slug: str | None = None,
 ) -> dict[str, Any]:
     if not report_path.is_file():
         raise ContractError(f"tickets review report is missing: {report_path}")
@@ -454,6 +460,7 @@ def validate_ticket_review_report(
         candidate,
         expected_spec=expected_spec,
         expected_spec_sha256=expected_spec_sha256,
+        expected_tracker_slug=expected_tracker_slug,
     )
     candidate_digest = candidate_proposal["sha256"]
     if one_digest(parsed["Resulting Candidate Identity"], "Resulting Candidate Identity") != candidate_digest:
@@ -683,6 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
     proposal.add_argument("path")
     proposal.add_argument("--spec", required=True)
     proposal.add_argument("--spec-sha256", required=True)
+    proposal.add_argument("--tracker-slug")
     summary = subparsers.add_parser("summary")
     summary.add_argument("path")
     summary.add_argument("--proposal", required=True)
@@ -695,6 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
     author.add_argument("--summary", required=True)
     author.add_argument("--spec", required=True)
     author.add_argument("--spec-sha256", required=True)
+    author.add_argument("--tracker-slug")
     review = subparsers.add_parser("review-report")
     review.add_argument("report")
     review.add_argument("--input", required=True)
@@ -702,6 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--input-sha256", required=True)
     review.add_argument("--spec", required=True)
     review.add_argument("--spec-sha256", required=True)
+    review.add_argument("--tracker-slug")
     native = subparsers.add_parser("native-tracker")
     native.add_argument("path")
     native.add_argument("--spec-sha256")
@@ -716,6 +726,7 @@ def main() -> int:
                 Path(args.path),
                 expected_spec=Path(args.spec),
                 expected_spec_sha256=args.spec_sha256,
+                expected_tracker_slug=args.tracker_slug,
             )
         elif args.command == "summary":
             proposal = validate_proposal(Path(args.proposal))
@@ -732,6 +743,7 @@ def main() -> int:
                 Path(args.summary),
                 expected_spec=Path(args.spec),
                 expected_spec_sha256=args.spec_sha256,
+                expected_tracker_slug=args.tracker_slug,
             )
         elif args.command == "review-report":
             result = validate_ticket_review_report(
@@ -741,6 +753,7 @@ def main() -> int:
                 expected_input_sha256=args.input_sha256,
                 expected_spec=Path(args.spec),
                 expected_spec_sha256=args.spec_sha256,
+                expected_tracker_slug=args.tracker_slug,
             )
         else:
             result = validate_native_tracker(

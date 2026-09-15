@@ -132,6 +132,8 @@ class PlanningFlow(unittest.TestCase):
             "init",
             "--task",
             "Bitte sichere Planung erstellen.",
+            "--slug",
+            "planned-feature",
             "--repo",
             str(self.repo),
             "--run-id",
@@ -393,6 +395,12 @@ class PlanningFlow(unittest.TestCase):
         selected = run_dir or self.run_dir
         rendered = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        if stage in {"tickets", "tickets-review"}:
+            state = json.loads((selected / "state.json").read_text())
+            prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+            self.assertIn(f'Tracker slug (fixed): `{state["tracker_slug"]}`', prompt)
+            self.assertIn(f'--tracker-slug {state["tracker_slug"]}', prompt)
+            self.assertIn("`tracker.slug` must equal", prompt)
         baseline = self.cli(TREE, "baseline", "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
 
@@ -1562,6 +1570,62 @@ sha256 {resulting_digest or digest}
         )
         premature = self.ticket_approval("approve", "too soon", target=self.repo / ".scratch" / "planned-feature")
         self.assertNotEqual(premature.returncode, 0)
+
+        self.render_and_baseline("tickets", 2)
+        self.write_tickets_handoff(2)
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review", 2)
+        self.write_tickets_review()
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        target = self.repo / ".scratch" / state["tracker_slug"]
+        approved = self.ticket_approval("approve", "Accept revised tickets", target=target)
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertTrue((target / "README.md").is_file())
+
+    def test_ticket_revision_rejects_renamed_frozen_slug(self):
+        self.reach_ticket_approval()
+        revised = self.ticket_approval("revise", "Clarify acceptance criteria")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.render_and_baseline("tickets", 2)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        data = tracker_proposal(Path(state["approved_spec"]["path"]), slug="renamed-tracker")
+        self.write_tickets_handoff(2, data=data)
+        rejected = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
+        self.assertIn("tracker.slug", rejected.stderr)
+        self.assertIn("frozen", rejected.stderr)
+
+    def test_ticket_approval_and_publication_enforce_frozen_slug(self):
+        self.reach_ticket_approval()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        frozen = state["tracker_slug"]
+        target = self.repo / ".scratch" / frozen
+        # Model a digest-valid candidate that disagrees with the run's fixed identity.
+        state["tracker_slug"] = "different-fixed-slug"
+        state_path.write_text(json.dumps(state))
+        rejected = self.ticket_approval("approve", "Approve tickets", target=target)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("tracker.slug must equal frozen", rejected.stderr)
+        self.assertFalse(target.exists())
+        state["tracker_slug"] = frozen
+        state_path.write_text(json.dumps(state))
+        approved = self.ticket_approval("approve", "Approve tickets", target=target)
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads(state_path.read_text())
+        state["tracker_slug"] = "different-fixed-slug"
+        state_path.write_text(json.dumps(state))
+        for result in (
+            self.ticket_approval("approve", "Repeat approval", target=target),
+            self.cli(STATE, "publish", "--run-dir", str(self.run_dir)),
+        ):
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tracker.slug must equal frozen", result.stderr)
+        self.assertFalse(target.exists())
 
     def test_blocked_ticket_review_can_roll_back_approved_spec_and_invalidates_proposal(self):
         self.approve_spec_to_tickets()
