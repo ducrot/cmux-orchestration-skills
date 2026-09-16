@@ -236,7 +236,7 @@ def plan_scaffolds(tracker: Path, check_commands: list[str], branch: str | None)
         )
     decisions = tracker / "decisions.md"
     if not decisions.exists():
-        scaffolds.append((decisions, "# Decisions\n\nRejected and deferred recommendations, one line each: item, verdict, reason.\n"))
+        scaffolds.append((decisions, "# Decisions\n\nApproved, rejected, and deferred recommendations, one line each: item, verdict, reason.\n"))
     return scaffolds
 
 

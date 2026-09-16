@@ -65,7 +65,29 @@ class Adoption(unittest.TestCase):
             self.assertEqual(issues["ISSUE-001"].status, "todo")
             self.assertEqual((issues["ISSUE-001"].acceptance_done, issues["ISSUE-001"].acceptance_total), (1, 2))
             self.assertIn("pnpm test", (tracker / "README.md").read_text())
-            self.assertTrue((tracker / "decisions.md").exists())
+            self.assertEqual(
+                (tracker / "decisions.md").read_text(encoding="utf-8"),
+                "# Decisions\n\nApproved, rejected, and deferred recommendations, "
+                "one line each: item, verdict, reason.\n",
+            )
+
+    def test_adoption_preserves_existing_human_decisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = make_tracker(Path(tmp), {"01-first.md": ticket("01", "First")})
+            ledger = tracker / "decisions.md"
+            original = (
+                "# Decisions\r\n\r\nRejected and deferred recommendations, "
+                "one line each: item, verdict, reason.\r\n"
+                "- API rename: rejected — preserve compatibility.\r\n"
+                "- Parser cleanup: deferred — separate scope.\r\n"
+                "- Test addition: approved — regression evidence.\r\n"
+            ).encode("utf-8")
+            ledger.write_bytes(original)
+            for invocation in ("first adoption", "repeat adoption"):
+                with self.subTest(invocation=invocation):
+                    proc = adopt(tracker)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(ledger.read_bytes(), original)
 
     def test_acceptance_criteria_stay_out_of_the_blocked_by_section(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -295,10 +295,10 @@ Look for:
 - new public API, hooks, or test seams added to production paths for the worker's own convenience;
 - at the review gate, compare the review diff against the simplify report's `## Not Applied` list
   and documented kept choices in reports of the current pass and relevant prior passes of the same run.
-  Include prior-pass `## Not Applied` lists in this comparison. Check any claimed supersession against recorded human approval identifying the decision and the
-  authorized replacement or scope. A reverted item without that approval or an `ask-user` finding gates
-  `stop`. Record the reverted item in the `orchestrator.verified` event and relay it to the human verbatim
-  as a finding, not a recommendation.
+  Include prior-pass `## Not Applied` lists in this comparison. Check any claimed supersession against
+  recorded human approval identifying the decision and the authorized replacement or scope. A reverted
+  item without that approval or an `ask-user` finding gates `stop`. Record the reverted item in the
+  `orchestrator.verified` event and relay it to the human verbatim as a finding, not a recommendation.
   Correcting a regression while preserving documented intended behavior is not a decision reversion
   and does not trigger this stop rule; changing that intended behavior still requires ask-user.
 
@@ -449,10 +449,10 @@ dropped and why. Also append approved, rejected, and deferred items to the track
 (one line each: item, verdict, reason). For explicit human supersession approvals, identify the earlier
 decision and the authorized replacement or scope. An approved follow-up issue does not by itself
 authorize changing a protected decision in the current issue. `render_prompt.py` embeds that file into
-every worker prompt, so later reviewers and simplifiers see the human verdicts, honor explicit supersessions within their authorized scope, and
-do not re-report or re-apply rejected or deferred items unless the code presents a
-materially different problem. Triage never blocks the next issue chain: present it and continue; the
-decision may stay open until the human responds.
+every worker prompt, so later reviewers and simplifiers see the human verdicts, honor explicit
+supersessions within their authorized scope, and do not re-report or re-apply rejected or deferred items
+unless the code presents a materially different problem. Triage never blocks the next issue chain:
+present it and continue; the decision may stay open until the human responds.
 
 ## HITL Issues
 

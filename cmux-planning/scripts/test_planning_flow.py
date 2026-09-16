@@ -648,6 +648,23 @@ sha256 {resulting_digest or digest}
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
         return proposal_result
 
+    def test_all_four_prompts_disclose_unreadable_untracked_directory_exclusion(self):
+        self.reach_ticket_approval()
+        expected_boundary = (
+            "The detector covers tracked changes, staged changes, untracked paths and their content "
+            "(regular files up to the 8 MiB size cap and symlink target bytes), and commits "
+            "(HEAD movement). It excludes ignored files and skipped untracked content "
+            "(files above the size cap or unsupported types). It also excludes contents of "
+            "unreadable untracked directories that Git omits with a warning. Git-ignored run "
+            "handoff artifacts are gated by digest instead."
+        )
+        for stage in ("spec", "spec-review", "tickets", "tickets-review"):
+            with self.subTest(stage=stage):
+                prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(expected_boundary, " ".join(prompt.split()))
+
     def test_direct_task_runs_end_to_end_through_review_and_explicit_approval(self):
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)

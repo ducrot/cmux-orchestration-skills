@@ -379,12 +379,21 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                     self.assertIn(required, text)
 
     def test_frozen_slug_gates_and_optional_contract_flags_are_documented(self):
+        frozen_slug = "`tracker.slug` must equal the frozen `tracker_slug`"
         for path in (PLANNING, PLANNING.parent / "references/spec-contract.md"):
-            text = normalized(path)
             with self.subTest(path=path):
-                self.assertIn("`tracker.slug` must equal the frozen `tracker_slug`", text)
-                for gate in ("author", "review", "approval", "publication"):
-                    self.assertIn(gate, text)
+                paragraphs = [
+                    paragraph
+                    for paragraph in (
+                        " ".join(raw.split()).lower()
+                        for raw in path.read_text(encoding="utf-8").split("\n\n")
+                    )
+                    if frozen_slug in paragraph
+                ]
+                self.assertEqual(len(paragraphs), 1, "expected one frozen-slug paragraph")
+                text = paragraphs[0]
+                self.assertIn(frozen_slug, text)
+                self.assertIn("at author, review, approval, and publication gates", text)
                 for command in ("proposal", "author-report", "review-report"):
                     self.assertIn(f"`{command}`", text)
                 self.assertIn("optional `--tracker-slug`", text)

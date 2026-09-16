@@ -29,7 +29,8 @@ from tracker_contract import validate_proposal
 
 DETECTOR_BOUNDARY = """The detector covers tracked changes, staged changes, untracked paths and their content (regular files
 up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
-files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+files and skipped untracked content (files above the size cap or unsupported types). It also excludes
+contents of unreadable untracked directories that Git omits with a warning. Git-ignored run
 handoff artifacts are gated by digest instead."""
 
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'

@@ -378,7 +378,8 @@ def review_contract_lines(harness: str) -> str:
         "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
         "reverting one requires a finding with "
         "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
-        "such an item without that approval, restore it before running the baseline suite and report the proposal as ask-user.\n"
+        "such an item without that approval, restore it before running the baseline suite and report "
+        "the proposal as ask-user.\n"
         "- Reports from unrelated runs are outside this same-run protection.\n"
         "- Protection of Not Applied items and documented intended behavior persists until recorded "
         "human approval explicitly supersedes the earlier decision. The approval must identify the "
@@ -424,7 +425,7 @@ def indent_block(text: str, prefix: str = "  ") -> str:
 
 
 def tracker_decisions(tracker: Path) -> str:
-    """Read the tracker's triage ledger of human-rejected or deferred items."""
+    """Read the tracker's triage ledger of human verdicts (approved, rejected, deferred)."""
     decisions = tracker / "decisions.md"
     if not decisions.is_file():
         return ""
