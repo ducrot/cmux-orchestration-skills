@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -409,6 +410,66 @@ def append_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
+
+
+def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
+    """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
+
+    Vendored identically across the three independently installed skills.
+    Rename/copy source tokens are paths, never independent status entries.
+    """
+    tokens = raw.split(b"\0")
+    entries = []
+    states = {}
+    hashed = []
+    index = 0
+    while index < len(tokens) and tokens[index]:
+        token = tokens[index]
+        if len(token) < 4 or token[2:3] != b" ":
+            raise ValueError("git status returned an unparseable porcelain entry")
+        code = token[:2].decode("ascii")
+        path_bytes = token[3:]
+        path = os.fsdecode(path_bytes)
+        entries.append((code, path))
+        index += 1
+        if "R" in code or "C" in code:
+            if index >= len(tokens) or not tokens[index]:
+                raise ValueError("git status rename/copy entry is incomplete")
+            entries.append((code, os.fsdecode(tokens[index])))
+            index += 1
+        if code != "??":
+            continue
+        absolute = os.path.join(os.fsencode(repository), path_bytes)
+        # Fail closed: an unreadable or vanished path is never silently treated as skipped.
+        try:
+            info = os.lstat(absolute)
+            if stat.S_ISLNK(info.st_mode):
+                content = os.readlink(absolute)
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_size > UNTRACKED_HASH_LIMIT_BYTES:
+                    states[path] = {"skipped": "size exceeds 8 MiB limit"}
+                    continue
+                with open(absolute, "rb") as stream:
+                    content = stream.read(UNTRACKED_HASH_LIMIT_BYTES + 1)
+                if len(content) > UNTRACKED_HASH_LIMIT_BYTES:
+                    states[path] = {"skipped": "size exceeds 8 MiB limit"}
+                    continue
+            else:
+                states[path] = {"skipped": "unsupported file type"}
+                continue
+        except OSError as error:
+            raise ValueError(
+                f"cannot hash untracked path {path!r}: {error.strerror or error}; integrity capture is "
+                "incomplete, so restore read access or remove the path and retry"
+            ) from error
+        digest = hashlib.sha256(content).hexdigest()
+        states[path] = {"content_sha256": digest}
+        hashed.append((path_bytes, digest.encode("ascii")))
+    block = b"".join(path + b"\0" + digest + b"\n" for path, digest in sorted(hashed))
+    return raw, entries, states, block
+
+
 def append_snapshot(args: argparse.Namespace) -> int:
     read_run_state(Path(args.run_dir))
     def git(*argv: str) -> bytes:
@@ -420,15 +481,29 @@ def append_snapshot(args: argparse.Namespace) -> int:
         return result.stdout
 
     head = git("rev-parse", "HEAD").decode("ascii").strip()
-    status = git("status", "--porcelain")
-    # Covers tracked-file changes plus the untracked-file listing; untracked *content* is not hashed.
-    diff = git("diff") + git("diff", "--cached")
-    fingerprint = hashlib.sha256(status + diff).hexdigest()[:16]
+    repository = Path(os.fsdecode(git("rev-parse", "--show-toplevel").removesuffix(b"\n")))
+    status = git("-C", str(repository), "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    try:
+        status, entries, untracked, untracked_block = untracked_content(repository, status)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    # Raw binary diffs and bounded untracked content cover Git-visible tree changes.
+    diff = git("diff", "--binary", "--no-ext-diff")
+    cached_diff = git("diff", "--cached", "--binary", "--no-ext-diff")
+    fingerprint = hashlib.sha256(status + diff + cached_diff + untracked_block).hexdigest()[:16]
 
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
-    data.update({"head": head, "fingerprint": fingerprint, "dirty_paths": len(status.splitlines())})
+    data.update({
+        "head": head, "fingerprint": fingerprint,
+        "dirty_paths": len({path for _, path in entries}),
+        "untracked_hashed": sum("content_sha256" in value for value in untracked.values()),
+        "untracked_skipped": [
+            {"path": path, "reason": value["skipped"]}
+            for path, value in sorted(untracked.items()) if "skipped" in value
+        ],
+    })
     append_jsonl(
         Path(args.run_dir) / "events.jsonl",
         {"time": utc_now(), "type": "tree.snapshot", "message": args.label, "data": data},

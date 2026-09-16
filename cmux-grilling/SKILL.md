@@ -764,7 +764,10 @@ Parse lane reports. Exit code carries the gate; a missing report is `pending` (e
 python3 scripts/parse_research_report.py .scratch/orchestrator/runs/<run-id>/reports/round-1-web.md --json
 ```
 
-Record events, snapshots, gates; close the run:
+Record events, snapshots, gates; close the run. An unreadable or vanished untracked path fails the snapshot
+with a diagnostic naming it and records no event; restore access or remove the path and retry. Git only
+warns about an unreadable untracked directory, so its contents stay invisible rather than failing capture.
+Then:
 
 ```bash
 python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 question" --data '{"round":1,"question":"..."}'

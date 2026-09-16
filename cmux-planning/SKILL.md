@@ -37,8 +37,9 @@ input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
   report, compare path and diff content. Any unauthorized Git-visible delta gates HITL regardless
   of report content; never silently revert it.
 - Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, staged
-  changes, newly listed untracked paths, and HEAD movement. It does not cover ignored product files
-  or content changes to product files already untracked in the baseline. Separately, every trusted
+  changes, untracked paths and their content (regular files up to the 8 MiB size cap and symlink
+  target bytes), and HEAD movement. It does not cover ignored product files or skipped untracked
+  content (files above the size cap or unsupported types). Separately, every trusted
   file in the Git-ignored run directory is finalized in `state.json`'s artifact manifest with its
   canonical run-relative path, kind, stage, pass, attempt, byte size, SHA-256, producer event, and
   immutable status. A baseline arms one pass and is never recaptured against different product-tree
@@ -334,6 +335,9 @@ python3 scripts/planning_state.py resume --run-dir <run-dir>
 python3 scripts/planning_state.py context --run-dir <run-dir>
 ```
 
+The product-tree integrity boundary includes untracked content (regular files up to 8 MiB and
+symlink target bytes); ignored files and skipped untracked content remain outside coverage.
+
 The status JSON reports the run and repository, task/source digest, copied and normalized grilling
 identities, revalidation progress, exact stage/mode/pass, prepared snapshot validity, live or last-known
 pane, pending report, latest review verdict and candidate digest, both digest-bound approvals, staging
@@ -556,7 +560,10 @@ all fail before consumption. Finalized identities are never rewritten or adopted
 Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and integrity
 violations as evidence for human resolution. Never infer approval from prose, edit product code from
 the planning orchestrator, silently repair the working tree, or claim detection coverage for ignored
-files or contents of baseline-untracked files. Canonical persisted artifacts are English, literal
+files or skipped untracked content (files above the 8 MiB size cap or unsupported types). An unreadable
+or vanished untracked path fails capture with a diagnostic naming it instead of being skipped; restore
+access or remove the path and retry. Git only warns about an unreadable untracked directory, so its
+contents stay invisible rather than failing capture. Canonical persisted artifacts are English, literal
 product copy keeps its actual language, and human questions and walkthroughs use the user's language.
 
 ## Verification

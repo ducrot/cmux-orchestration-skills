@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from run_state import untracked_content
 
 
 RUN_STATE = Path(__file__).resolve().with_name("run_state.py")
@@ -56,6 +64,88 @@ class SnapshotCli(unittest.TestCase):
         self.assertIn(event["data"]["fingerprint"], result.stdout)
         return event["data"]
 
+    def failed_snapshot(self, env=None):
+        result = subprocess.run(
+            [sys.executable, str(RUN_STATE), "snapshot", "--run-dir", str(self.run_dir),
+             "--label", "incomplete-capture"],
+            cwd=self.repo, env=env or self.env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse((self.run_dir / "events.jsonl").exists())
+        return result.stderr
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads mode-000 files")
+    def test_unreadable_untracked_path_fails_closed_then_recovers(self):
+        blocked = self.repo / "blocked"
+        blocked.write_bytes(b"secret")
+        blocked.chmod(0)
+        self.addCleanup(blocked.chmod, 0o644)
+        stderr = self.failed_snapshot()
+        self.assertIn("cannot hash untracked path 'blocked'", stderr)
+        self.assertIn("integrity capture is incomplete", stderr)
+        self.assertIn("Permission denied", stderr)
+        blocked.chmod(0o644)
+        self.assertEqual(self.snapshot()["untracked_hashed"], 1)
+
+    def test_vanished_untracked_path_fails_closed_then_recovers(self):
+        # A status shim reports a path that no longer exists, as when it vanishes before hashing.
+        real_git = shutil.which("git")
+        shim_dir = self.root / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "if 'status' in sys.argv[1:]:\n"
+            "    sys.stdout.buffer.write(b'?? vanished\\0')\n"
+            "    sys.exit(0)\n"
+            f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
+        )
+        shim.chmod(0o755)
+        stderr = self.failed_snapshot(dict(self.env, PATH=str(shim_dir) + os.pathsep + self.env["PATH"]))
+        self.assertIn("cannot hash untracked path 'vanished'", stderr)
+        self.assertIn("integrity capture is incomplete", stderr)
+        self.assertIn("No such file or directory", stderr)
+        self.assertEqual(self.snapshot()["untracked_hashed"], 0)
+
+    def test_status_failure_and_malformed_output_have_cli_diagnostics(self):
+        # Exercise the real snapshot CLI with only git status replaced by a shim.
+        import shutil
+        real_git = shutil.which("git")
+        shim_dir = self.root / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        for mode in ("failure", "malformed", "rename"):
+            with self.subTest(mode=mode):
+                shim.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, sys\n"
+                    "if 'status' in sys.argv[1:]:\n"
+                    + ({
+                        "failure": "    sys.stderr.write('status unavailable\\n')\n    sys.exit(128)\n",
+                        "malformed": "    sys.stdout.buffer.write(b'x\\0')\n    sys.exit(0)\n",
+                        "rename": "    sys.stdout.buffer.write(b'R  destination\\0')\n    sys.exit(0)\n",
+                    }[mode])
+                    + f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
+                )
+                shim.chmod(0o755)
+                env = dict(self.env, PATH=str(shim_dir) + os.pathsep + self.env["PATH"])
+                result = subprocess.run(
+                    [sys.executable, str(RUN_STATE), "snapshot", "--run-dir", str(self.run_dir),
+                     "--label", "failure-regression"],
+                    cwd=self.repo, env=env, capture_output=True, text=True, timeout=30,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Traceback", result.stderr)
+                expected = {"failure": "failed: status unavailable",
+                            "malformed": "git status returned an unparseable porcelain entry",
+                            "rename": "git status rename/copy entry is incomplete"}[mode]
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse((self.run_dir / "events.jsonl").exists())
+
     def test_conflicted_non_utf8_contents_have_distinct_fingerprints(self):
         # A combined diff has a zero worktree OID, so its headers cannot compensate
         # for collapsing different invalid bytes into the same replacement character.
@@ -88,6 +178,85 @@ class SnapshotCli(unittest.TestCase):
                 self.assertEqual(event["dirty_paths"], 1)
                 self.assertEqual(self.git("status", "--porcelain"), before)
                 self.assertEqual(self.file.read_bytes(), b"descriptor: \xec\n")
+
+    def test_untracked_content_and_byte_paths_change_fingerprint(self):
+        path = self.repo / "new\nname-é"
+        path.write_bytes(b"\xff\x00before")
+        first = self.snapshot()
+        path.write_bytes(b"\xfe\x00after")
+        second = self.snapshot()
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(second["untracked_hashed"], 1)
+        self.assertEqual(second["dirty_paths"], 1)
+        self.assertEqual(second["untracked_skipped"], [])
+        self.assertEqual(second, self.snapshot())
+
+    def test_untracked_limit_is_recorded(self):
+        path = self.repo / "large"
+        path.write_bytes(b"a" * (8 * 1024 * 1024 + 1))
+        first = self.snapshot()
+        path.write_bytes(b"b" * (8 * 1024 * 1024 + 1))
+        self.assertEqual(first, self.snapshot())
+        self.assertEqual(first["untracked_hashed"], 0)
+        self.assertEqual(first["untracked_skipped"], [
+            {"path": "large", "reason": "size exceeds 8 MiB limit"},
+        ])
+        path.write_bytes(b"a" * (8 * 1024 * 1024))
+        self.assertEqual(self.snapshot()["untracked_hashed"], 1)
+
+    def test_non_utf8_path_bytes_and_unsupported_status_entry(self):
+        # APFS rejects raw non-UTF-8 names, and Git normally omits special files.
+        raw = b"?? raw-\xff\n\0?? pipe\0"
+        with patch("run_state.os.lstat", side_effect=[
+                 SimpleNamespace(st_mode=stat.S_IFREG, st_size=2),
+                 SimpleNamespace(st_mode=stat.S_IFIFO, st_size=0),
+             ]), patch("builtins.open", return_value=io.BytesIO(b"\xff\x00")) as opened:
+            _, entries, states, block = untracked_content(self.repo, raw)
+        opened.assert_called_once_with(os.fsencode(self.repo) + b"/raw-\xff\n", "rb")
+        path = os.fsdecode(b"raw-\xff\n")
+        digest = hashlib.sha256(b"\xff\x00").hexdigest()
+        self.assertEqual(entries, [("??", path), ("??", "pipe")])
+        self.assertEqual(states[path], {"content_sha256": digest})
+        self.assertEqual(states["pipe"], {"skipped": "unsupported file type"})
+        self.assertEqual(block, b"raw-\xff\n\0" + digest.encode() + b"\n")
+
+    def test_symlinks_hash_target_bytes_without_following(self):
+        link = self.repo / "link"
+        target = self.root / "external"
+        target.write_text("before")
+        link.symlink_to(target)
+        first = self.snapshot()
+        target.write_text("after")
+        self.assertEqual(first, self.snapshot())
+        link.unlink()
+        os.symlink(b"missing-\xff", os.fsencode(link))
+        second = self.snapshot()
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(second["untracked_hashed"], 1)
+
+    def test_binary_changes_are_distinct_working_and_cached(self):
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                self.file.write_bytes(b"\x00before")
+                if staged:
+                    self.git("add", "tracked.txt")
+                first = self.snapshot()
+                self.file.write_bytes(b"\x00after")
+                if staged:
+                    self.git("add", "tracked.txt")
+                self.assertNotEqual(first["fingerprint"], self.snapshot()["fingerprint"])
+
+    def test_rename_source_and_ignored_paths(self):
+        self.git("mv", "tracked.txt", "renamed\nfile")
+        self.file.write_bytes(b"new untracked source")
+        first = self.snapshot()
+        self.assertEqual(first["untracked_hashed"], 1)
+        self.file.write_bytes(b"changed untracked source")
+        self.assertNotEqual(first["fingerprint"], self.snapshot()["fingerprint"])
+        (self.repo / ".git" / "info" / "exclude").write_text("ignored\n")
+        first = self.snapshot()
+        (self.repo / "ignored").write_bytes(b"ignored")
+        self.assertEqual(first, self.snapshot())
 
     def test_unchanged_tree_is_stable_and_ascii_edit_changes_fingerprint(self):
         clean = self.snapshot()

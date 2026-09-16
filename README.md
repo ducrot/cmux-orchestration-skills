@@ -66,8 +66,10 @@ automatic model re-review. Product, scope, architecture, ticket-boundary, or dep
 for human input.
 
 Strict report and digest validation plus complete before/after Git-visible working-tree inspection
-prevent a clean report from hiding tracked changes or newly listed untracked paths. That boundary does
-not claim coverage for ignored files or content changes to baseline-untracked files. Likewise,
+prevent a clean report from hiding tracked changes, staged changes, untracked paths and their content
+(regular files up to the 8 MiB size cap and symlink target bytes), or commits (HEAD movement). That
+boundary excludes ignored files and skipped untracked content (files above the size cap or unsupported
+types). Likewise,
 structural and digest checks on optional grilling input prove integrity, not freshness; explicit human
 revalidation is the freshness policy.
 

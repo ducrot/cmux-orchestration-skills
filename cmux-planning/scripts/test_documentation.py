@@ -48,6 +48,19 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 sources.append(ast.get_source_segment(source, function))
             self.assertEqual(sources, [sources[0]] * 3, name)
 
+    def test_vendored_untracked_hashing_is_byte_identical(self):
+        if len(SIBLINGS) != 3:
+            self.skipTest("sibling skills are absent in this independent installation")
+        sources = []
+        for guide in SIBLINGS:
+            filename = "tree_integrity.py" if guide == PLANNING else "run_state.py"
+            source = (guide.parent / "scripts" / filename).read_text()
+            nodes = ast.parse(source).body
+            function = next(node for node in nodes if isinstance(node, ast.FunctionDef) and node.name == "untracked_content")
+            limit = next(node for node in nodes if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "UNTRACKED_HASH_LIMIT_BYTES" for target in node.targets))
+            sources.append((ast.get_source_segment(source, function), ast.get_source_segment(source, limit)))
+        self.assertEqual(sources, [sources[0]] * 3)
+
     def test_shared_root_and_legacy_documentation(self):
         if not README.is_file():
             self.skipTest("repository README is absent")
@@ -109,7 +122,8 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         for required in (
             "two explicit integrity boundaries",
             "ignored product files",
-            "content changes to product files already untracked",
+            "skipped untracked content",
+            "unreadable or vanished untracked path fails capture",
             "artifact manifest",
             "canonical run-relative path",
             "byte size",
@@ -205,7 +219,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "pass_with_fixes",
             "digest-bound",
             "already moved but not recorded",
-            "baseline-untracked",
+            "symlink target bytes",
             "contact no model provider",
             "cmux-issue-chain",
             "`configuration_created_and_accepted`",

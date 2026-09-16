@@ -395,9 +395,13 @@ class PlanningFlow(unittest.TestCase):
         selected = run_dir or self.run_dir
         rendered = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        state = json.loads((selected / "state.json").read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertIn("untracked paths and their content", prompt)
+        self.assertIn("8 MiB size cap and symlink target bytes", prompt)
+        self.assertIn("skipped untracked content", prompt)
+        self.assertNotIn("files already untracked in the baseline", prompt)
         if stage in {"tickets", "tickets-review"}:
-            state = json.loads((selected / "state.json").read_text())
-            prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
             self.assertIn(f'Tracker slug (fixed): `{state["tracker_slug"]}`', prompt)
             self.assertIn(f'--tracker-slug {state["tracker_slug"]}', prompt)
             self.assertIn("`tracker.slug` must equal", prompt)
@@ -2238,7 +2242,25 @@ sha256 {resulting_digest or digest}
         self.assertEqual(recovered["current_stage"], "spec")
         self.assertEqual(recovered["spec_pass"], 2)
 
-    def test_detector_boundary_excludes_ignored_and_baseline_untracked_content(self):
+    def test_baseline_untracked_edit_gates_cli_but_ignored_and_handoff_writes_pass(self):
+        loose = self.repo / "loose.txt"
+        loose.write_text("before")
+        (self.repo / ".git" / "info" / "exclude").write_text("ignored.txt\n")
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.write_author_handoff()
+        (self.repo / "ignored.txt").write_text("ignored")
+        # The report and draft are permitted artifacts; ignored content stays excluded.
+        baseline = json.loads((self.run_dir / "tree-snapshots" / "spec-1-before.json").read_text())
+        self.assertTrue(compare_tree(baseline, capture_tree(self.repo), allowed_paths=[])["ok"])
+        loose.write_text("worker changed baseline-untracked content")
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 2, accepted.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "integrity-violation")
+        self.assertEqual(state["gate_decisions"][-1]["unauthorized_paths"], ["loose.txt"])
+
+    def test_detector_covers_baseline_untracked_content_and_excludes_ignored(self):
         (self.repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(self.repo), "add", ".gitignore"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "ignore"], check=True)
@@ -2248,10 +2270,13 @@ sha256 {resulting_digest or digest}
         (self.repo / "ignored.txt").write_text("ignored\n", encoding="utf-8")
         after = capture_tree(self.repo)
         result = compare_tree(before, after, allowed_paths=[])
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["unauthorized_paths"], ["loose.txt"])
+        allowed = compare_tree(before, after, allowed_paths=[str(self.repo / "loose.txt")])
+        self.assertTrue(allowed["ok"])
         (self.repo / "new.txt").write_text("new path\n", encoding="utf-8")
         changed = compare_tree(before, capture_tree(self.repo), allowed_paths=[])
-        self.assertEqual(changed["unauthorized_paths"], ["new.txt"])
+        self.assertEqual(changed["unauthorized_paths"], ["loose.txt", "new.txt"])
 
     def test_first_use_checkpoint_creates_config_but_no_run_without_acceptance(self):
         fresh_config = self.repo / "other" / "agents.json"

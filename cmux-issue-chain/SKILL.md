@@ -766,7 +766,10 @@ python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-i
 Pane lifecycle events (`pane.launched`, `pane.labeled`, `worker.launch_sent`, `worker.prompt_sent`, `pane.closed`) are written
 by `pane_ctl.py` (see CMUX Control); do not hand-write them in parallel.
 
-Record a working-tree fingerprint (at every report capture, and before any `report.integrity` claim):
+Record a working-tree fingerprint (at every report capture, and before any `report.integrity` claim). An
+unreadable or vanished untracked path fails the snapshot with a diagnostic naming it and records no event;
+restore access or remove the path and retry. Git only warns about an unreadable untracked directory, so its
+contents stay invisible rather than failing capture. Then:
 
 ```bash
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/<run-id> --label "report-captured review-1" --data '{"role":"review","pass":1}'

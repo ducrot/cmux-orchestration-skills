@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -57,38 +60,74 @@ def git_text(repository: Path, *args: str) -> str:
     return raw.decode("utf-8", "surrogateescape")
 
 
-def status_paths(raw: bytes) -> list[tuple[str, str]]:
+UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
+
+
+def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
+    """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
+
+    Vendored identically across the three independently installed skills.
+    Rename/copy source tokens are paths, never independent status entries.
+    """
     tokens = raw.split(b"\0")
-    entries: list[tuple[str, str]] = []
+    entries = []
+    states = {}
+    hashed = []
     index = 0
     while index < len(tokens) and tokens[index]:
-        token = tokens[index].decode("utf-8", "surrogateescape")
-        if len(token) < 4:
-            raise IntegrityError("git status returned an unparseable porcelain entry")
-        code, path = token[:2], token[3:]
+        token = tokens[index]
+        if len(token) < 4 or token[2:3] != b" ":
+            raise ValueError("git status returned an unparseable porcelain entry")
+        code = token[:2].decode("ascii")
+        path_bytes = token[3:]
+        path = os.fsdecode(path_bytes)
         entries.append((code, path))
         index += 1
         if "R" in code or "C" in code:
             if index >= len(tokens) or not tokens[index]:
-                raise IntegrityError("git status rename/copy entry is incomplete")
-            other = tokens[index].decode("utf-8", "surrogateescape")
-            entries.append((code, other))
+                raise ValueError("git status rename/copy entry is incomplete")
+            entries.append((code, os.fsdecode(tokens[index])))
             index += 1
-    return entries
+        if code != "??":
+            continue
+        absolute = os.path.join(os.fsencode(repository), path_bytes)
+        # Fail closed: an unreadable or vanished path is never silently treated as skipped.
+        try:
+            info = os.lstat(absolute)
+            if stat.S_ISLNK(info.st_mode):
+                content = os.readlink(absolute)
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_size > UNTRACKED_HASH_LIMIT_BYTES:
+                    states[path] = {"skipped": "size exceeds 8 MiB limit"}
+                    continue
+                with open(absolute, "rb") as stream:
+                    content = stream.read(UNTRACKED_HASH_LIMIT_BYTES + 1)
+                if len(content) > UNTRACKED_HASH_LIMIT_BYTES:
+                    states[path] = {"skipped": "size exceeds 8 MiB limit"}
+                    continue
+            else:
+                states[path] = {"skipped": "unsupported file type"}
+                continue
+        except OSError as error:
+            raise ValueError(
+                f"cannot hash untracked path {path!r}: {error.strerror or error}; integrity capture is "
+                "incomplete, so restore read access or remove the path and retry"
+            ) from error
+        digest = hashlib.sha256(content).hexdigest()
+        states[path] = {"content_sha256": digest}
+        hashed.append((path_bytes, digest.encode("ascii")))
+    block = b"".join(path + b"\0" + digest + b"\n" for path, digest in sorted(hashed))
+    return raw, entries, states, block
 
 
 def capture_tree(repository: Path) -> dict[str, Any]:
     repository = repository.resolve()
-    raw_status = git(
-        repository,
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-        text=False,
-    )
+    raw_status = git(repository, "status", "--porcelain=v1", "-z", "--untracked-files=all", text=False)
     assert isinstance(raw_status, bytes)
-    entries = status_paths(raw_status)
+    try:
+        raw_status, entries, untracked, _ = untracked_content(repository, raw_status)
+    except ValueError as error:
+        raise IntegrityError(str(error)) from error
     # Git reports one path under several codes (a rename source that is also untracked, a
     # staged deletion whose file is back on disk). Keeping only the last would let `??` mask a
     # tracked delta, so every code a path carries is preserved.
@@ -100,8 +139,7 @@ def capture_tree(repository: Path) -> dict[str, Any]:
         codes = sorted(set(codes_by_path[path]))
         status = " ".join(codes)
         if codes == ["??"]:
-            # Deliberate boundary: presence is visible; baseline-untracked content is not hashed.
-            path_states[path] = {"status": status, "content": "untracked-content-not-covered"}
+            path_states[path] = {"status": status, **untracked[path]}
             continue
         # `:(literal)` because a filename containing *, ? or [ is a wildmatch pathspec that
         # would pull unrelated siblings' diffs into this path's state.
@@ -109,6 +147,8 @@ def capture_tree(repository: Path) -> dict[str, Any]:
         working = git_text(repository, "diff", "--no-ext-diff", "--binary", "--", spec)
         staged = git_text(repository, "diff", "--cached", "--no-ext-diff", "--binary", "--", spec)
         path_states[path] = {"status": status, "working_diff": working, "staged_diff": staged}
+        if "??" in codes:
+            path_states[path].update(untracked[path])
     tracked_diff = git_text(repository, "diff", "--no-ext-diff", "--binary")
     staged_diff = git_text(repository, "diff", "--cached", "--no-ext-diff", "--binary")
     head = git_text(repository, "rev-parse", "HEAD")

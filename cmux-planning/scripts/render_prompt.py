@@ -180,9 +180,10 @@ You may inspect the repository read-only. Physically write only these exact file
 
 Do not edit product code, configuration, lifecycle state, prompts, snapshots, or any other path. The
 orchestrator compares complete Git status plus tracked and staged diffs before and after your stage.
-That detector covers tracked changes and newly listed untracked paths; it does not claim coverage for
-ignored files, for content changes to files already untracked in the baseline, or for the Git-ignored
-run directory, whose handoff artifacts are gated by digest instead.
+The detector covers tracked changes, staged changes, untracked paths and their content (regular files
+up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
+files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+handoff artifacts are gated by digest instead.
 
 ## Report Contract
 
@@ -300,7 +301,11 @@ You may physically write only:
 
 Do not edit the author draft, product code, lifecycle state, or any other path. The author draft is
 digest-bound to its own gate, so rewriting it in place fails the review outright, and the mandatory
-Git-visible before/after inspection gates every delta outside the run directory.
+Git-visible before/after inspection gates unauthorized deltas outside the run directory.
+The detector covers tracked changes, staged changes, untracked paths and their content (regular files
+up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
+files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+handoff artifacts are gated by digest instead.
 
 ## Review Report Contract
 
@@ -443,8 +448,11 @@ You may physically write only these exact files:
 - Structured report: `{paths['report']}`
 
 Do not edit the approved spec, product code, configuration, lifecycle state, or any other path. Mandatory
-before/after Git-visible inspection gates every other tracked delta or newly listed untracked path within
-the documented detector boundary.
+before/after Git-visible inspection gates every other delta within the documented detector boundary.
+The detector covers tracked changes, staged changes, untracked paths and their content (regular files
+up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
+files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+handoff artifacts are gated by digest instead.
 
 ## Report Contract
 
@@ -591,7 +599,12 @@ You may physically write only:
 - Review report: `{paths['report']}`
 - Complete corrected machine proposal only for `pass_with_fixes`: `{paths['candidate']}`
 
-Mandatory before/after Git-visible inspection gates every other delta. Never edit the author proposal,
+Mandatory before/after Git-visible inspection gates every other covered delta.
+The detector covers tracked changes, staged changes, untracked paths and their content (regular files
+up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
+files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+handoff artifacts are gated by digest instead.
+Never edit the author proposal,
 approved spec, product code, lifecycle state, or human summary.
 
 ## Review Report Contract
