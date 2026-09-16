@@ -8,6 +8,7 @@ from pathlib import Path
 
 from spec_contract import (
     ContractError,
+    SPEC_SECTIONS,
     validate_author_report,
     validate_review_report,
     validate_spec,
@@ -57,12 +58,20 @@ Users cannot plan safely.
 """
 
 
-def review_report(verdict: str, input_digest: str, result_digest: str, *, corrections: str = "- None", blockers: str = "- None") -> str:
+def checked_evidence(references) -> str:
+    return "\n".join(f"- `{reference}`: checked consistency with repository evidence: no discrepancy found" for reference in references)
+
+
+def review_report(verdict: str, input_digest: str, result_digest: str, *, corrections: str = "- None", blockers: str = "- None", checked: str | None = None) -> str:
+    evidence = checked_evidence(SPEC_SECTIONS) if checked is None else checked
     return f"""## Verdict
 {verdict}
 
 ## Findings
 - None
+
+## Checked
+{evidence}
 
 ## Methods
 - `src/` and prior tests inspected independently
@@ -189,6 +198,92 @@ BLOCKED
                 encoding="utf-8",
             )
             self.assertEqual(validate_review_report(self.report, self.draft, self.candidate)["gate"], "blocked")
+
+    def test_checked_requires_complete_structured_evidence(self):
+        digest = validate_spec(self.draft)["sha256"]
+        complete = review_report("pass", digest, digest)
+        evidence = checked_evidence(SPEC_SECTIONS)
+        self.report.write_text(complete, encoding="utf-8")
+        self.assertEqual(validate_review_report(self.report, self.draft, self.candidate)["gate"], "advance")
+        invalid = {
+            "missing": complete.replace("## Checked\n" + evidence + "\n\n", ""),
+            "empty": complete.replace(evidence, ""),
+            "none": complete.replace(evidence, "- None"),
+            "prose_only": complete.replace(evidence, evidence.replace("- ", "")),
+            "reference_only": complete.replace(evidence, "\n".join(f"- `{name}`" for name in SPEC_SECTIONS)),
+            "missing_section": complete.replace(evidence, checked_evidence(SPEC_SECTIONS[:-1])),
+            "unquoted_bullet": complete.replace(evidence, evidence.replace("`", "")),
+            "extra_unquoted_bullet": complete.replace(evidence, evidence + "\n- checked other concerns: clean"),
+            "missing_check": complete.replace(evidence, evidence.replace("checked consistency with repository evidence", "")),
+            "missing_outcome": complete.replace(evidence, evidence.replace("no discrepancy found", "")),
+        }
+        for name, report in invalid.items():
+            with self.subTest(name=name):
+                self.report.write_text(report, encoding="utf-8")
+                with self.assertRaisesRegex(ContractError, "Checked"):
+                    validate_review_report(self.report, self.draft, self.candidate)
+
+    def test_checked_accepts_colon_bearing_and_multiple_quoted_references(self):
+        digest = validate_spec(self.draft)["sha256"]
+        evidence = checked_evidence(SPEC_SECTIONS)
+        extra = "- `src/cli.py:42`, `tests/test_cli.py:7`: read handler and its test: match the draft"
+        self.report.write_text(
+            review_report("pass", digest, digest, checked=f"{evidence}\n{extra}"), encoding="utf-8"
+        )
+        self.assertEqual(validate_review_report(self.report, self.draft, self.candidate)["gate"], "advance")
+        unterminated = "- `src/cli.py:42: read handler: matches the draft"
+        self.report.write_text(
+            review_report("pass", digest, digest, checked=f"{evidence}\n{unterminated}"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractError, "Checked bullets must use"):
+            validate_review_report(self.report, self.draft, self.candidate)
+
+    def test_blocked_review_keeps_evidence_shape_without_full_coverage(self):
+        digest = validate_spec(self.draft)["sha256"]
+        partial = checked_evidence(SPEC_SECTIONS[:2])
+        blocker = "- Product must choose whether the new behavior is opt-in."
+        self.report.write_text(
+            review_report("blocked", digest, digest, blockers=blocker, checked=partial),
+            encoding="utf-8",
+        )
+        self.assertEqual(validate_review_report(self.report, self.draft, self.candidate)["gate"], "blocked")
+        with self.subTest(name="passing_verdict_keeps_full_coverage"):
+            self.report.write_text(
+                review_report("pass", digest, digest, checked=partial), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContractError, "Checked is missing references"):
+                validate_review_report(self.report, self.draft, self.candidate)
+        malformed = {
+            "empty": "",
+            "none": "- None",
+            "prose_only": partial.replace("- ", ""),
+            "unquoted": partial.replace("`", ""),
+            "reference_only": "- `Problem Statement`",
+        }
+        for name, checked in malformed.items():
+            with self.subTest(name=name):
+                self.report.write_text(
+                    review_report("blocked", digest, digest, blockers=blocker, checked=checked),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ContractError, "Checked"):
+                    validate_review_report(self.report, self.draft, self.candidate)
+        with self.subTest(name="substantive_blocker_still_required"):
+            self.report.write_text(
+                review_report("blocked", digest, digest, checked=partial), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ContractError, "blocked review must state"):
+                validate_review_report(self.report, self.draft, self.candidate)
+        with self.subTest(name="approval_candidate_still_refused"):
+            self.candidate.write_text(spec(), encoding="utf-8")
+            self.report.write_text(
+                review_report("blocked", digest, digest, blockers=blocker, checked=partial),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ContractError, "must not supply an approval candidate"):
+                validate_review_report(self.report, self.draft, self.candidate)
+            self.candidate.unlink()
 
     def test_open_decision_blocks_passing_review(self):
         self.draft.write_text(

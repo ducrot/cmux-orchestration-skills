@@ -304,12 +304,21 @@ Git-visible before/after inspection gates every delta outside the run directory.
 
 ## Review Report Contract
 
+`## Checked` must cover all input sections by their exact section names, with backtick-quoted
+references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.
+A quoted reference may contain colons, so `src/cli.py:42` is one reference. A `blocked` verdict is
+the only exception to coverage: it still needs at least one structurally valid evidence bullet and
+a substantive blocker, but only for what the review actually reached.
+
 ```markdown
 ## Verdict
 pass
 
 ## Findings
 - None
+
+## Checked
+- `<reference>`: <what was checked>: <outcome>
 
 ## Methods
 - repository source/test/history checked independently
@@ -587,12 +596,21 @@ approved spec, product code, lifecycle state, or human summary.
 
 ## Review Report Contract
 
+`## Checked` must cover all input ticket ids from the author proposal, with backtick-quoted
+references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.
+A quoted reference may contain colons, so `src/cli.py:42` is one reference. A `blocked` verdict is
+the only exception to coverage: it still needs at least one structurally valid evidence bullet and
+a substantive blocker, but only for the ticket ids the review actually reached.
+
 ```markdown
 ## Verdict
 pass
 
 ## Findings
 - None
+
+## Checked
+- `<reference>`: <what was checked>: <outcome>
 
 ## Methods
 - repository source/test/history checked independently

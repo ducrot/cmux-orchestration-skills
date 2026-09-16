@@ -24,6 +24,7 @@ from spec_contract import (
     one_digest,
     require_sections,
     sections,
+    validate_checked,
 )
 
 
@@ -436,6 +437,13 @@ def validate_ticket_review_report(
         raise ContractError("tickets review Input Identity is not bound to the author proposal")
     if bullet_count(parsed["Methods"]) < 1:
         raise ContractError("tickets review is ungrounded: Methods has no concrete entry")
+    input_data = validate_proposal(input_proposal)
+    validate_checked(
+        parsed,
+        input_data["ticket_ids"],
+        "tickets review report",
+        require_full_coverage=verdict != "blocked",
+    )
     if verdict == "blocked":
         if is_none(parsed["Blockers"]):
             raise ContractError("blocked tickets review must state the substantive decision required")

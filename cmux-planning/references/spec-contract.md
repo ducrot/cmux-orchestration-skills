@@ -31,6 +31,25 @@ The fresh Codex reviewer returns exactly one verdict:
 - `blocked`: records the missing product, scope, behavior, priority, or architecture decision and
   writes no approval candidate.
 
+Every spec and tickets review report requires `## Checked` between `## Findings` and `## Methods`.
+Use evidence bullets of the form:
+
+```markdown
+- `<reference>`: <what was checked>: <outcome>
+```
+
+Backtick-quoted references must collectively cover all nine input specification section names listed
+above, or every ticket id in the input proposal for a tickets review. Every bullet must name at least
+one reference and state both a check and its outcome. A reference is delimited by its backticks, so
+`src/cli.py:42` is one reference and its colon is not a field separator. Missing or empty `Checked`
+is malformed; `- None`, prose-only evidence, unquoted references, and reference-only bullets are
+rejected for every verdict. A clean findings list alone is not evidence of a complete review.
+
+Complete coverage is required for `pass` and `pass_with_fixes`. A `blocked` review stops at the
+decision it cannot make, so it may cover only what it reached, but it must still carry a present,
+non-empty `Checked` section with at least one structurally valid bullet alongside its substantive
+blocker. Identity binding and the prohibition on an approval candidate are unchanged.
+
 Any current-scope open decision blocks a passing review. A deferred decision is non-blocking only
 after the candidate explicitly moves it outside current scope. A passing review is still not human
 approval. `pass_with_fixes` goes through deterministic validation and a human-visible diff; it does

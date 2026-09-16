@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from orchestrator_lib import sha256_file  # noqa: E402
+from test_spec_contract import checked_evidence, review_report
 from spec_contract import ContractError  # noqa: E402
 from tracker_contract import (  # noqa: E402
     render_summary,
@@ -258,6 +259,9 @@ sha256 {self.spec_digest}
 ## Findings
 - None
 
+## Checked
+{checked_evidence(["ISSUE-001", "ISSUE-002"])}
+
 ## Methods
 - `src/cli.py`: independently inspected
 
@@ -347,6 +351,59 @@ sha256 {resulting}
             expected_spec_sha256=self.spec_digest,
         )
         self.assertEqual(blocked["gate"], "blocked")
+
+    def test_checked_covers_every_input_ticket(self):
+        original = self.write_proposal()
+        digest = original["sha256"]
+        review = self.root / "review.md"
+        candidate = self.root / "candidate.json"
+        from spec_contract import SPEC_SECTIONS
+        complete = review_report("pass", digest, digest).replace(
+            checked_evidence(SPEC_SECTIONS), checked_evidence(["ISSUE-001", "ISSUE-002"])
+        )
+        review.write_text(complete, encoding="utf-8")
+        kwargs = dict(expected_input_sha256=digest, expected_spec=self.spec,
+                      expected_spec_sha256=self.spec_digest)
+        self.assertEqual(validate_ticket_review_report(
+            review, self.proposal_path, candidate, **kwargs)["gate"], "advance")
+        review.write_text(complete.replace(
+            checked_evidence(["ISSUE-002"]), ""), encoding="utf-8")
+        with self.assertRaisesRegex(ContractError, "Checked.*ISSUE-002"):
+            validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
+
+    def test_blocked_tickets_review_keeps_evidence_shape_without_full_coverage(self):
+        digest = self.write_proposal()["sha256"]
+        review = self.root / "review.md"
+        candidate = self.root / "candidate.json"
+        partial = checked_evidence(["ISSUE-001"])
+        blocker = "- The approved specification leaves the rollout decision unresolved."
+        kwargs = dict(
+            expected_input_sha256=digest,
+            expected_spec=self.spec,
+            expected_spec_sha256=self.spec_digest,
+        )
+        review.write_text(
+            review_report("blocked", digest, digest, blockers=blocker, checked=partial),
+            encoding="utf-8",
+        )
+        blocked = validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
+        self.assertEqual(blocked["gate"], "blocked")
+        review.write_text(
+            review_report("pass", digest, digest, checked=partial), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ContractError, "Checked is missing references: ISSUE-002"):
+            validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
+        review.write_text(
+            review_report("blocked", digest, digest, blockers=blocker, checked="- None"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ContractError, "Checked must contain evidence bullets"):
+            validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
+        review.write_text(
+            review_report("blocked", digest, digest, checked=partial), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ContractError, "blocked tickets review must state"):
+            validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
 
     def test_staged_output_is_native_and_independently_accepted_by_issue_chain(self):
         result = self.write_proposal()

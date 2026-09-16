@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import orchestrator_lib  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
-from test_spec_contract import review_report, spec  # noqa: E402
+from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
 from test_tracker_contract import proposal as tracker_proposal  # noqa: E402
 from tracker_contract import render_summary, validate_proposal  # noqa: E402
 from tree_integrity import capture_tree, compare_tree  # noqa: E402
@@ -442,6 +442,10 @@ PASS
             self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir)).returncode, 0
         )
         self.render_and_baseline("spec-review")
+        reviewer_prompt = (self.run_dir / "prompts" / "spec-review-1.md").read_text()
+        self.assertIn("## Checked\n- `<reference>`: <what was checked>: <outcome>", reviewer_prompt)
+        self.assertIn("must cover all input sections", reviewer_prompt)
+        self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
         digest = validate_spec(draft)["sha256"]
         (self.run_dir / "reports" / "spec-review-1.md").write_text(
             review_report("pass", digest, digest), encoding="utf-8"
@@ -524,15 +528,24 @@ sha256 {state['approved_spec']['sha256']}
         resulting_digest: str | None = None,
         corrections: str = "- None",
         blockers: str = "- None",
+        checked: str | None = None,
     ) -> None:
         state = json.loads((self.run_dir / "state.json").read_text())
         digest = state["author_tickets"]["proposal_sha256"]
+        ticket_ids = [
+            ticket["id"]
+            for ticket in json.loads(Path(state["author_tickets"]["proposal"]).read_text())["tickets"]
+        ]
+        evidence = checked_evidence(ticket_ids) if checked is None else checked
         Path(state["current_attempt"]["paths"]["report"]).write_text(
             f"""## Verdict
 {verdict}
 
 ## Findings
 - None
+
+## Checked
+{evidence}
 
 ## Methods
 - `product.txt`: independently inspected implementation and tests
@@ -608,6 +621,9 @@ sha256 {resulting_digest or digest}
         self.assertIn(state["author_tickets"]["proposal_sha256"], reviewer_prompt)
         self.assertIn(state["author_tickets"]["summary_sha256"], reviewer_prompt)
         self.assertIn("Do not invent scope", reviewer_prompt)
+        self.assertIn("## Checked\n- `<reference>`: <what was checked>: <outcome>", reviewer_prompt)
+        self.assertIn("must cover all input ticket ids", reviewer_prompt)
+        self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets-review")
         self.write_tickets_review()
@@ -1638,6 +1654,7 @@ sha256 {resulting_digest or digest}
         self.write_tickets_review(
             "blocked",
             blockers="- The approved specification leaves the rollout behavior undecided.",
+            checked=checked_evidence(["ISSUE-001"]),
         )
         blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(blocked.returncode, 2, blocked.stderr)
@@ -3417,6 +3434,9 @@ Option?
                 digest,
                 digest,
                 blockers="- Human must decide the rollout policy.",
+                # A blocked review stops before it reaches every section, so partial evidence
+                # must still carry the real lifecycle transition.
+                checked=checked_evidence(["Problem Statement", "Solution"]),
             ),
             encoding="utf-8",
         )

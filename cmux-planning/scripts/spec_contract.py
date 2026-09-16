@@ -35,6 +35,7 @@ AUTHOR_REPORT_SECTIONS = (
 REVIEW_REPORT_SECTIONS = (
     "Verdict",
     "Findings",
+    "Checked",
     "Methods",
     "Input Identity",
     "Resulting Candidate Identity",
@@ -92,6 +93,56 @@ def is_none(body: str) -> bool:
 
 def bullet_count(body: str) -> int:
     return len(re.findall(r"^[-*]\s+\S", body, re.MULTILINE))
+
+
+def split_checked_fields(bullet: str) -> list[str]:
+    """Split on the first two colons outside backtick spans, so a quoted reference such as
+    `src/cli.py:42` stays one field instead of being cut at its own colon. An unterminated
+    backtick swallows the rest of the bullet, which the caller then rejects as malformed."""
+    fields: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for char in bullet:
+        if char == "`":
+            quoted = not quoted
+        elif char == ":" and not quoted and len(fields) < 2:
+            fields.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    fields.append("".join(current))
+    return fields
+
+
+def validate_checked(
+    parsed: dict[str, str],
+    references,
+    label: str,
+    *,
+    require_full_coverage: bool = True,
+) -> None:
+    """Require explicit reference, check, and outcome fields for review evidence. A blocked
+    review stops before it can reach every input, so it keeps the bullet shape but not the
+    coverage requirement; passing verdicts must still account for every reference."""
+    require_sections(parsed, ("Checked",), label)
+    body = mask_fences(parsed["Checked"])
+    bullets = re.findall(r"^\s*[-*]\s+(.+)$", body, re.MULTILINE)
+    if not bullets or is_none(parsed["Checked"]):
+        raise ContractError(f"{label} Checked must contain evidence bullets, not prose or - None")
+    covered: set[str] = set()
+    for bullet in bullets:
+        fields = split_checked_fields(bullet)
+        quoted = re.findall(r"`([^`]+)`", fields[0])
+        if len(fields) != 3 or not quoted or not all(field.strip() for field in fields[1:]):
+            raise ContractError(
+                f"{label} Checked bullets must use `<reference>`: <what was checked>: <outcome>"
+            )
+        covered.update(quoted)
+    if not require_full_coverage:
+        return
+    missing = [reference for reference in references if reference not in covered]
+    if missing:
+        raise ContractError(f"{label} Checked is missing references: {', '.join(missing)}")
 
 
 def validate_spec(path: Path, *, require_closed_decisions: bool = False) -> dict[str, Any]:
@@ -165,6 +216,9 @@ def validate_review_report(
     verdict = parsed["Verdict"]
     if verdict not in {"pass", "pass_with_fixes", "blocked"}:
         raise ContractError("review Verdict must be pass, pass_with_fixes, or blocked")
+    validate_checked(
+        parsed, SPEC_SECTIONS, "review report", require_full_coverage=verdict != "blocked"
+    )
     input_digest = sha256_file(input_spec)
     # Against the digest the author gate recorded, not just against itself: the draft lives in
     # the run directory, where the Git-visible detector cannot see a reviewer rewriting it.
