@@ -112,6 +112,39 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 with self.subTest(guide=guide, phrase=phrase):
                     self.assertIn(phrase, text)
 
+    def test_issue_chain_relays_reverted_simplify_decisions_as_findings(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        start = "### diff inspection at code-changing gates"
+        end = "## canonical check commands"
+        self.assertIn(start, text)
+        self.assertIn(end, text)
+        inspection = text.split(start, 1)[1].split(end, 1)[0]
+        for phrase in (
+            "at the review gate, compare the review diff against the simplify report's `## not applied` list",
+            "documented kept choices", "without an `ask-user` finding gates `stop`",
+            "record the reverted item in the `orchestrator.verified` event",
+            "relay it to the human verbatim as a finding, not a recommendation",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, inspection)
+        policy = text.split("## review self-fix policy", 1)[1].split("## gate rule", 1)[0]
+        self.assertIn("earlier-stage decision", policy)
+        self.assertIn("`## not applied`", policy)
+        self.assertIn("`## change summary` or `## notes`", policy)
+        self.assertIn(
+            "correcting a regression introduced by an earlier refactoring remains a must-fix "
+            "when the correction preserves the documented intended behavior; changing that "
+            "intended behavior still requires ask-user.", policy,
+        )
+        self.assertIn(
+            "correcting a regression while preserving documented intended behavior is not a "
+            "decision reversion and does not trigger this stop rule", inspection,
+        )
+        self.assertIn("\n## Not Applied\n- None", guide.read_text())
+
     def test_vendored_run_helpers_are_byte_identical(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")

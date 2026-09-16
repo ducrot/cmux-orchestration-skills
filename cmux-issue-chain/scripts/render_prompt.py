@@ -198,7 +198,12 @@ def render(
 ) -> str:
     context_files = context_files or []
     context = render_context(context_files)
-    review_contract = render_review_contract(harness) if role == "review" else ""
+    if role == "review":
+        report_contract = render_review_contract(harness)
+    elif role == "simplify":
+        report_contract = render_simplify_contract()
+    else:
+        report_contract = ""
     prompt_path_text = str(prompt_path) if prompt_path else "(not provided)"
     report_path_text = str(report_path) if report_path else "(not provided)"
     artifact_path_text = str(artifact_path) if artifact_path else "(not provided)"
@@ -310,7 +315,7 @@ drift, `stop`/`blocked`/`hitl` is expected — anything else means your report i
 never the substance. After validation, write that exact validated report body to `{report_path_text}`, run
 the parser once more against that handoff path, and only then return the same report body in the console.
 Do not delete or replace the handoff report with a summary.
-{review_contract}
+{report_contract}
 """
 
 
@@ -361,6 +366,14 @@ def review_contract_lines(harness: str) -> str:
         "`Recommendation: ask-user` is for findings that challenge a documented issue decision (What to build, "
         "acceptance criteria, recorded plan changes): never apply a fix that undoes such a decision, even a safe "
         "one — report it verbatim for the human.\n"
+        "- Decisions recorded in earlier reports of this pass are documented decisions: every item "
+        "under a `## Not Applied` section and every behavior-preserving choice explained under "
+        "`## Change Summary` or `## Notes`. Reverting one requires a finding with "
+        "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
+        "such an item, restore it before running the baseline suite and report the proposal as ask-user.\n"
+        "- Correcting a regression introduced by an earlier refactoring remains a must-fix "
+        "when the correction preserves the documented intended behavior; changing that "
+        "intended behavior still requires ask-user.\n"
         "- Put only unresolved `Recommendation: must-fix` and `Recommendation: ask-user` items in `## Findings`.\n"
         "- Put low-risk cleanup, speculative edge cases, broader hardening, and nice-to-have items in `## Recommendations`.\n"
         "- Do not hand findings back to the implementer for an automatic fix loop.\n"
@@ -386,6 +399,8 @@ def simplify_contract_lines(harness: str) -> str:
         )
     return head + (
         "- Include a `## Change Summary` section listing changed files and the behavior-preserving refactorings applied.\n"
+        "- Include a `## Not Applied` section with one bullet per considered-but-not-applied refactoring "
+        "and a one-line reason, or `- None`.\n"
         "- Preserve behavior. If simplification would require design, acceptance, or scope changes, report it instead of editing."
     )
 
@@ -454,12 +469,31 @@ and stops the chain as HITL. Add these sections and this stricter findings triag
 `- None` line entirely, each with:
 
 - Severity: critical|high|medium|low
-- Recommendation: must-fix|ask-user — ask-user when the finding challenges a documented issue decision; the reviewer must not fix those
+- Recommendation: must-fix|ask-user — ask-user when the finding challenges a documented issue or earlier-stage decision; the reviewer must not fix those
 - Scope: acceptance|regression|security|data-safety|other
 - Evidence: file/line and observed behavior
 - Suggested fix: concrete action
 
 `## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose.
+"""
+
+
+def render_simplify_contract() -> str:
+    return """
+
+Simplify workers **extend** the contract above; they do not replace it. Keep every section listed there.
+Add these sections:
+
+```markdown
+## Change Summary
+- None, or concise list of behavior-preserving refactorings applied.
+
+## Not Applied
+- None
+```
+
+Replace `- None` under `## Not Applied` with one bullet per considered-but-not-applied refactoring
+and a one-line reason when applicable. `## Not Applied` is not gate-parsed by `parse_report.py`.
 """
 
 

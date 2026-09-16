@@ -17,6 +17,11 @@ from test_stage_preparation import AGENTS_CONFIG, FAKE_HARNESS, ISSUE, RUN_STATE
 SCRIPT_DIR = Path(__file__).resolve().parent
 RENDER_PROMPT = SCRIPT_DIR / "render_prompt.py"
 CLAUDE_MARKERS = ("/code-review medium --fix", "/simplify", "in Claude Code")
+REGRESSION_CLARIFICATION = (
+    "Correcting a regression introduced by an earlier refactoring remains a must-fix "
+    "when the correction preserves the documented intended behavior; changing that "
+    "intended behavior still requires ask-user."
+)
 
 
 class RenderFunction(unittest.TestCase):
@@ -51,6 +56,32 @@ class RenderFunction(unittest.TestCase):
             self.assertNotIn(marker, simplify)
         self.assertIn("Run a simplify pass yourself", simplify)
         self.assertIn("## Change Summary", simplify)
+
+    def test_review_preserves_earlier_report_decisions_for_both_harnesses(self):
+        rule = (
+            "Decisions recorded in earlier reports of this pass are documented decisions: every item "
+            "under a `## Not Applied` section and every behavior-preserving choice explained under "
+            "`## Change Summary` or `## Notes`. Reverting one requires a finding with "
+            "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
+            "such an item, restore it before running the baseline suite and report the proposal as ask-user."
+        )
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                self.assertIn(rule, self.render("review", harness))
+
+    def test_review_allows_regression_correction_preserving_intent_for_both_harnesses(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                self.assertIn(REGRESSION_CLARIFICATION, self.render("review", harness))
+
+    def test_simplify_records_not_applied_for_both_harnesses(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                text = self.render("simplify", harness)
+                self.assertIn("Include a `## Not Applied` section", text)
+                self.assertIn("one bullet per considered-but-not-applied refactoring and a one-line reason, or `- None`", text)
+                self.assertIn("\n## Not Applied\n- None", text)
+                self.assertIn("`## Not Applied` is not gate-parsed", text)
 
     def test_every_role_forbids_index_changes(self):
         for role in ("implement", "simplify", "review", "test"):
@@ -153,6 +184,38 @@ class RenderCli(unittest.TestCase):
                     expected = self.run_dir / "artifacts" / f"implement-{pass_num}"
                     text = out.read_text(encoding="utf-8")
                     self.assertIn(f"Worker artifact directory: `{expected}`", text)
+
+    def test_cli_renders_decision_contracts_for_both_harnesses(self):
+        initialized = self.init()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        previous_role = "implement"
+        for role in ("simplify", "review"):
+            gate = self.run_script(
+                RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", previous_role,
+                "--decision", "advance", "--reason", "test", "--next-stage", role,
+            )
+            self.assertEqual(gate.returncode, 0, gate.stderr)
+            previous_role = role
+            for pass_num, harness in enumerate(("claude-code", "codex"), start=1):
+                with self.subTest(role=role, harness=harness):
+                    prepared = self.run_script(
+                        RUN_STATE, "prepare", "--run-dir", str(self.run_dir),
+                        "--stage", role, "--pass", str(pass_num),
+                        "--harness", f"{role}={harness}",
+                        "--executable", f"{role}={'claude' if harness == 'claude-code' else 'codex'}",
+                    )
+                    self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                    rendered = self.render(role, pass_num)
+                    self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                    text = (self.run_dir / "prompts" / f"{role}-{pass_num}.md").read_text(encoding="utf-8")
+                    self.assertIn(f"Harness: {harness}", text)
+                    self.assertIn("## Not Applied", text)
+                    if role == "review":
+                        self.assertIn("restore it before running the baseline suite", text)
+                        self.assertIn("Recommendation: ask-user", text)
+                        self.assertIn(REGRESSION_CLARIFICATION, text)
+                    else:
+                        self.assertIn("\n## Not Applied\n- None", text)
 
     def test_renders_the_snapshot_harness_variant(self):
         self.assertEqual(self.init("--harness", "implement=claude-code").returncode, 0)

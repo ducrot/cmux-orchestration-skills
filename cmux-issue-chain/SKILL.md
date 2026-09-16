@@ -189,11 +189,19 @@ Review is an editing role, not a passive reviewer. If the review pass finds fixa
 Run review as a self-fix pass (`/code-review medium --fix` on Claude Code, the inline three-axis pass elsewhere). The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
 
 Self-fix has an intent boundary. A finding that challenges a documented issue decision — the issue's
-"What to build", its acceptance criteria, or a recorded plan change — is `Recommendation: ask-user`, not
+"What to build", its acceptance criteria, or a recorded plan change — or an earlier-stage decision
+recorded in this pass is `Recommendation: ask-user`, not
 must-fix: the review worker must not fix it even when a safe mechanical fix exists, because the fix would
 silently undo a deliberate decision. It stays in `## Findings` and the orchestrator relays it to the human
 verbatim — file and description unparaphrased, never pre-judged. Routine correctness, reliability, and
-security fixes stay self-fixable even when the smallest fix re-adds a little previously deleted logic.
+security fixes stay self-fixable even when the smallest fix re-adds a little previously deleted logic,
+provided they preserve documented decisions. Earlier-stage decisions include every item under
+`## Not Applied` and every behavior-preserving kept choice explained under `## Change Summary` or `## Notes`.
+Reverting one requires an ask-user finding and a reason. If the fix pass reverted such an item, restore
+it before running the baseline suite and report the proposal as ask-user.
+
+Correcting a regression introduced by an earlier refactoring remains a must-fix when the correction
+preserves the documented intended behavior; changing that intended behavior still requires ask-user.
 
 Do not route code-review findings back to the implementer for an automatic fix loop. The old review-driven `Implement -> Simplify -> Test -> Review` loop is disabled.
 
@@ -275,7 +283,13 @@ Look for:
 
 - files touched outside the issue's stated scope;
 - product code changed where the issue only called for tests, docs, or config;
-- new public API, hooks, or test seams added to production paths for the worker's own convenience.
+- new public API, hooks, or test seams added to production paths for the worker's own convenience;
+- at the review gate, compare the review diff against the simplify report's `## Not Applied` list
+  and documented kept choices in earlier reports of this pass. A reverted item without an `ask-user`
+  finding gates `stop`. Record the reverted item in the `orchestrator.verified` event and relay it to
+  the human verbatim as a finding, not a recommendation.
+  Correcting a regression while preserving documented intended behavior is not a decision reversion
+  and does not trigger this stop rule; changing that intended behavior still requires ask-user.
 
 Record the inspection as an `orchestrator.verified` event with the commands used and a one-line verdict.
 This is diff-reading only and distinct from the orchestrator quick-check, which re-runs the test suite
@@ -957,7 +971,7 @@ NO FINDINGS
 
 `## Findings` follows the bare-`None` rule; remaining must-fix and ask-user findings after the self-fix pass replace
 the `- None` line entirely, each with Severity (critical|high|medium|low), `Recommendation: must-fix` or
-`Recommendation: ask-user` (ask-user when the finding challenges a documented issue decision — the
+`Recommendation: ask-user` (ask-user when the finding challenges a documented issue or earlier-stage decision — the
 reviewer must not fix those), Scope (acceptance|regression|security|data-safety|other), file/line
 Evidence, and a concrete suggested fix.
 `## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose.
@@ -972,7 +986,14 @@ Code, `simplify pass` elsewhere):
 
 ## Change Summary
 - None, or concise list of behavior-preserving refactorings applied.
+
+## Not Applied
+- None
 ```
+
+Require one bullet per considered-but-not-applied refactoring and a one-line reason under
+`## Not Applied`, or `- None`. This section is not gate-parsed by `parse_report.py`; it records
+decisions for the review worker and the orchestrator's review-gate diff inspection.
 
 Runs use the shared `.scratch/orchestrator/runs/` root and default UTC id
 `chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`. Each `state.json` records `workflow: issue-chain`,
