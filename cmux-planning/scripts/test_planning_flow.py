@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -70,12 +71,21 @@ else:
 '''
 
 
+def file_contents(root: Path) -> dict[Path, bytes]:
+    return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
 class PlanningFlow(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        environment = patch.dict(os.environ, git_env, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
@@ -181,7 +191,7 @@ class PlanningFlow(unittest.TestCase):
         original = json.loads(state_path.read_text())
         for change in ({"schema_version": 2}, {"workflow": "grilling"}, {"layout_version": 0}):
             state_path.write_text(json.dumps({**original, **change}))
-            before = {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+            before = file_contents(self.run_dir)
             for command in ("publish", "resume"):
                 refused = self.cli(STATE, command, "--run-dir", str(self.run_dir))
                 self.assertNotEqual(refused.returncode, 0)
@@ -197,7 +207,7 @@ class PlanningFlow(unittest.TestCase):
                 inspected = self.cli(STATE, command, "--run-dir", str(self.run_dir), *options)
                 self.assertEqual(inspected.returncode, 0, inspected.stderr)
             self.cmux_log.unlink(missing_ok=True)
-            self.assertEqual(before, {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()})
+            self.assertEqual(before, file_contents(self.run_dir))
         state_path.write_text(json.dumps(original))
         legacy_dir = self.repo / ".scratch/orchestrator/planning-runs" / self.run_dir.name
         legacy_dir.parent.mkdir(parents=True)
@@ -205,13 +215,13 @@ class PlanningFlow(unittest.TestCase):
         refused = self.cli(STATE, "prepare", "--run-dir", str(legacy_dir), "--stage", "spec", "--pass", "1")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
-        before = {str(p.relative_to(legacy_dir)): p.read_bytes() for p in legacy_dir.rglob("*") if p.is_file()}
+        before = file_contents(legacy_dir)
         reinit = self.cli(STATE, "init", "--task", "Task", "--run-id", legacy_dir.name, "--runs-root", str(legacy_dir.parent), "--workspace-id", "WORKSPACE-1")
         self.assertNotEqual(reinit.returncode, 0)
         self.assertIn("legacy layout", reinit.stderr)
         self.assertIn("human decision to restart", reinit.stderr)
         self.assertIn("reviewed migration", reinit.stderr)
-        self.assertEqual(before, {str(p.relative_to(legacy_dir)): p.read_bytes() for p in legacy_dir.rglob("*") if p.is_file()})
+        self.assertEqual(before, file_contents(legacy_dir))
 
     def test_initialization_supports_default_relative_and_absolute_roots(self):
         for mode, root_args in (
@@ -259,7 +269,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(self.init_direct().returncode, 0)
         self.render_and_baseline("spec")
         self.write_author_handoff()
-        before = {p.relative_to(self.run_dir): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+        before = file_contents(self.run_dir)
         self.config.write_text("invalid configuration: must not be reloaded\n")
 
         for extra in ([], ["--new-run"]):
@@ -270,7 +280,7 @@ class PlanningFlow(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), str(self.run_dir.relative_to(self.repo)))
-                after = {p.relative_to(self.run_dir): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+                after = file_contents(self.run_dir)
                 self.assertEqual(after, before)
 
     def test_reinitialization_refuses_configuration_inputs_without_changing_run(self):
@@ -402,6 +412,8 @@ class PlanningFlow(unittest.TestCase):
         self.assertIn("8 MiB size cap and symlink target bytes", prompt)
         self.assertIn("skipped untracked content", prompt)
         self.assertNotIn("files already untracked in the baseline", prompt)
+        if stage in {"spec-review", "tickets-review"}:
+            self.assertIn("`Checked` cannot be `- None`, including for `blocked`.", prompt)
         if stage in {"tickets", "tickets-review"}:
             self.assertIn(f'Tracker slug (fixed): `{state["tracker_slug"]}`', prompt)
             self.assertIn(f'--tracker-slug {state["tracker_slug"]}', prompt)

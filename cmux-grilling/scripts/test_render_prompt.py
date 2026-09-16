@@ -9,6 +9,9 @@ import unittest
 import render_prompt
 
 
+EXPECTED_INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+
+
 class RenderFunction(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -33,7 +36,8 @@ class RenderFunction(unittest.TestCase):
                     prompt = self.render(lane, number)
                     self.assertIn(f"- Draft path: `{draft}`", prompt)
                     self.assertIn(f"- Report handoff path: `{report}`", prompt)
-                    self.assertIn(f"python3 {render_prompt.parser_path()} {draft}\n", prompt)
+                    command = prompt.split("```bash\n", 1)[1].splitlines()[0]
+                    self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft)])
                     self.assertNotEqual(draft, report)
 
     def test_session_limits_writes_to_draft_and_handoff(self):
@@ -51,8 +55,8 @@ class RenderFunction(unittest.TestCase):
         for lane in render_prompt.LANES:
             with self.subTest(lane=lane):
                 session = render_prompt.render_session(lane, self.state, self.run_dir)
-                self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', session.split("## Boundaries", 1)[1])
-                self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', self.render(lane))
+                self.assertIn(EXPECTED_INDEX_HEAD_PROHIBITION, session.split("## Boundaries", 1)[1])
+                self.assertIn(EXPECTED_INDEX_HEAD_PROHIBITION, self.render(lane))
 
     def test_explicit_draft_path_and_shell_quoting(self):
         draft = self.run_dir / "drafts" / "custom draft.md"

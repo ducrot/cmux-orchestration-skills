@@ -16,8 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from orchestrator_lib import read_run_state
-from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_json, utc_now
+from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_json, read_run_state, utc_now
 
 EXIT_REPORT = 0     # report file exists — parse it next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # surface affirmatively gone/dead per surface-health
@@ -122,8 +121,8 @@ def waiting_event(run_dir: Path, message: str, data: dict) -> None:
 
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
+    read_run_state(run_dir)
     report = report_path(run_dir, args.role, args.pass_num)
     deadline_minutes = (
         args.deadline_minutes if args.deadline_minutes is not None else MINIMUM_WAIT_MINUTES[args.role]

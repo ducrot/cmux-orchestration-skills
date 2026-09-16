@@ -111,6 +111,10 @@ else:
 from test_support import FAKE_CMUX
 
 
+def file_contents(root: Path) -> dict[Path, bytes]:
+    return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
 class PreparedStageCli(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -291,7 +295,7 @@ class PreparedStageCli(unittest.TestCase):
         del state["workflow"]
         del state["layout_version"]
         state_path.write_text(json.dumps(state))
-        before = {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()}
+        before = file_contents(self.run_dir)
         for result in (self.init(), self.prepare("implement"),
                        self.run_state("complete", "--run-dir", str(self.run_dir)),
                        self.pane("launch", "--run-dir", str(self.run_dir), "--role", "implement", "--pass", "1", "--anchor", "ANCHOR")):
@@ -300,7 +304,7 @@ class PreparedStageCli(unittest.TestCase):
         inspected = self.run_state("status", "--run-dir", str(self.run_dir))
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         self.assertIn("unsupported legacy layout", inspected.stdout)
-        self.assertEqual(before, {str(p.relative_to(self.run_dir)): p.read_bytes() for p in self.run_dir.rglob("*") if p.is_file()})
+        self.assertEqual(before, file_contents(self.run_dir))
         self.assertFalse(self.cmux_log.exists())
 
     def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):

@@ -31,7 +31,8 @@ The fresh Codex reviewer returns exactly one verdict:
 - `blocked`: records the missing product, scope, behavior, priority, or architecture decision and
   writes no approval candidate.
 
-Every spec and tickets review report requires `## Checked` between `## Findings` and `## Methods`.
+Every spec and tickets review report requires `## Checked`. The recommended template order places
+it between `## Findings` and `## Methods`; parsing is order-independent.
 Use evidence bullets of the form:
 
 ```markdown
@@ -61,6 +62,11 @@ Ticket authoring starts only from the immutable digest of an explicitly approved
 same planning run. Its schema-version-one JSON proposal contains the source spec identity, tracker slug,
 title, branch and canonical checks, plus a complete ordered ticket list. The accompanying Markdown is a
 deterministic numbered rendering of that JSON, never an independent source of truth.
+
+`tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication
+gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept
+optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen
+value at its gates. This does not authorize ticket revision after approval.
 
 Every ticket states user-observable delivered behavior, stable acceptance criteria, genuine blockers,
 technical context, and explicit merge/split rationale. Prefer a small number of cohesive tracer-bullet

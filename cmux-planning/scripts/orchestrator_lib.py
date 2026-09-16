@@ -38,7 +38,11 @@ INTEGRITY_BOUNDARY = {
         "untracked paths and their content (regular files up to the size cap and symlink target bytes)",
         "commits (HEAD movement)",
     ],
-    "not_covered": ["ignored files", "skipped untracked content (files above the size cap or unsupported types)"],
+    "not_covered": [
+        "ignored files",
+        "skipped untracked content (files above the size cap or unsupported types)",
+        "contents of unreadable untracked directories that Git omits with a warning",
+    ],
 }
 PROMPT_DELIVERY_TEMPLATE = (
     "Your task assignment is in {prompt_path}. It is not a document to read back or summarize. "

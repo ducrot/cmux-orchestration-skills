@@ -30,8 +30,7 @@ class UntrackedContent(unittest.TestCase):
         with patch("tree_integrity.os.lstat", side_effect=[regular, fifo, link]), \
              patch("builtins.open", return_value=io.BytesIO(b"\xff\x00")) as opened, \
              patch("tree_integrity.os.readlink", return_value=b"missing-\xfe"):
-            status, entries, states, block = untracked_content(Path("/repo"), raw)
-        self.assertEqual(status, raw)
+            entries, states, block = untracked_content(Path("/repo"), raw)
         self.assertEqual(entries[:4], [("R ", "renamed\npath"), ("R ", "?? not-an-entry"),
                                        ("C ", "copied"), ("C ", "source")])
         opened.assert_called_once_with(b"/repo/raw-\xff\n", "rb")
@@ -47,6 +46,11 @@ class PlanningTree(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
+        git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        environment = patch.dict(os.environ, git_env, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.git("init", "-q")
         self.git("config", "user.name", "Integrity Test")
         self.git("config", "user.email", "integrity@example.invalid")
@@ -57,6 +61,12 @@ class PlanningTree(unittest.TestCase):
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.repo), *args],
                               check=True, capture_output=True).stdout
+
+    def test_boundary_discloses_unreadable_directory_visibility_limit(self):
+        self.assertIn(
+            "contents of unreadable untracked directories that Git omits with a warning",
+            capture_tree(self.repo)["boundary"]["not_covered"],
+        )
 
     def test_status_failure_preserves_integrity_error_and_stderr(self):
         failed = subprocess.CompletedProcess([], 128, stdout=b"", stderr=b"status unavailable\xff\n")

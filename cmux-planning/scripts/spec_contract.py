@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +117,7 @@ def split_checked_fields(bullet: str) -> list[str]:
 
 def validate_checked(
     parsed: dict[str, str],
-    references,
+    references: Sequence[str],
     label: str,
     *,
     require_full_coverage: bool = True,

@@ -84,7 +84,7 @@ class RenderFunction(unittest.TestCase):
                 self.assertIn("`## Not Applied` is not gate-parsed", text)
 
     def test_every_role_forbids_index_changes(self):
-        for role in ("implement", "simplify", "review", "test"):
+        for role in render_prompt.ROLES:
             for harness in ("claude-code", "codex"):
                 with self.subTest(role=role, harness=harness):
                     contract = self.render(role, harness).split("## Orchestrator Contract", 1)[1]

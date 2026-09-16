@@ -63,7 +63,7 @@ def git_text(repository: Path, *args: str) -> str:
 UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
 
 
-def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
+def untracked_content(repository: Path, raw: bytes) -> tuple[list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
     """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
 
     Vendored identically across the three independently installed skills.
@@ -117,7 +117,7 @@ def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[s
         states[path] = {"content_sha256": digest}
         hashed.append((path_bytes, digest.encode("ascii")))
     block = b"".join(path + b"\0" + digest + b"\n" for path, digest in sorted(hashed))
-    return raw, entries, states, block
+    return entries, states, block
 
 
 def capture_tree(repository: Path) -> dict[str, Any]:
@@ -125,7 +125,7 @@ def capture_tree(repository: Path) -> dict[str, Any]:
     raw_status = git(repository, "status", "--porcelain=v1", "-z", "--untracked-files=all", text=False)
     assert isinstance(raw_status, bytes)
     try:
-        raw_status, entries, untracked, _ = untracked_content(repository, raw_status)
+        entries, untracked, _ = untracked_content(repository, raw_status)
     except ValueError as error:
         raise IntegrityError(str(error)) from error
     # Git reports one path under several codes (a rename source that is also untracked, a
@@ -138,17 +138,16 @@ def capture_tree(repository: Path) -> dict[str, Any]:
     for path in sorted(codes_by_path):
         codes = sorted(set(codes_by_path[path]))
         status = " ".join(codes)
-        if codes == ["??"]:
-            path_states[path] = {"status": status, **untracked[path]}
-            continue
-        # `:(literal)` because a filename containing *, ? or [ is a wildmatch pathspec that
-        # would pull unrelated siblings' diffs into this path's state.
-        spec = f":(literal){path}"
-        working = git_text(repository, "diff", "--no-ext-diff", "--binary", "--", spec)
-        staged = git_text(repository, "diff", "--cached", "--no-ext-diff", "--binary", "--", spec)
-        path_states[path] = {"status": status, "working_diff": working, "staged_diff": staged}
+        path_state = {"status": status}
+        if codes != ["??"]:
+            # `:(literal)` because a filename containing *, ? or [ is a wildmatch pathspec that
+            # would pull unrelated siblings' diffs into this path's state.
+            spec = f":(literal){path}"
+            path_state["working_diff"] = git_text(repository, "diff", "--no-ext-diff", "--binary", "--", spec)
+            path_state["staged_diff"] = git_text(repository, "diff", "--cached", "--no-ext-diff", "--binary", "--", spec)
         if "??" in codes:
-            path_states[path].update(untracked[path])
+            path_state.update(untracked[path])
+        path_states[path] = path_state
     tracked_diff = git_text(repository, "diff", "--no-ext-diff", "--binary")
     staged_diff = git_text(repository, "diff", "--cached", "--no-ext-diff", "--binary")
     head = git_text(repository, "rev-parse", "HEAD")

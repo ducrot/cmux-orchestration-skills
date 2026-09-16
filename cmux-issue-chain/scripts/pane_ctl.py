@@ -28,8 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator_lib import read_run_state
-from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, utc_now
+from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, read_run_state, utc_now
 from worker_snapshot import (
     SnapshotError,
     load_launchable_snapshot,

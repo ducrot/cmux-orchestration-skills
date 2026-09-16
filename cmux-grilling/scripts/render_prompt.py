@@ -11,8 +11,9 @@ import argparse
 import shlex
 from pathlib import Path
 
-from orchestrator_lib import read_run_state
-from orchestrator_lib import LANES, read_json, read_text, utc_now
+from orchestrator_lib import LANES, read_json, read_run_state, read_text, utc_now
+
+INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
 
 
 LANE_RULES = {
@@ -82,7 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-path",
         help="Report handoff path. Defaults to run-dir/reports/round-<N>-<lane>.md",
     )
-
     round_cmd.add_argument(
         "--draft-path",
         help=(
@@ -158,7 +158,7 @@ Max questions: {state["max_questions"]}
 
 ## Boundaries
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 - Read-only research: never create, edit, or delete repository files, and never run
   state-changing commands.
@@ -210,7 +210,7 @@ Created: {utc_now()}
 
 ## Handoff
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 - Draft path: `{draft_path}`
 - Report handoff path: `{report_path}`

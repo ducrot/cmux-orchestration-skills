@@ -26,15 +26,14 @@ from agents_config import (
     valid_executable_syntax,
     valid_probe_record,
 )
-from orchestrator_lib import read_run_state
-from orchestrator_lib import read_json, utc_now, write_json
+from orchestrator_lib import read_json, read_run_state, utc_now, write_json
 
 
 WORKFLOW = "grilling"
 GRILLING_LANES = WORKFLOW_WORKERS[WORKFLOW]
 SNAPSHOT_VERSION = 1
 
-# Fixed grilling policy. Every Codex lane must be able to write its report handoff, while only
+# Fixed grilling policy. Every Codex lane must be able to write its draft and report handoff, while only
 # web-enabled lanes receive network access. No grilling lane receives ddev's writable root
 # because these workers do not run project containers.
 CODEX_SANDBOX_ARGUMENTS = [

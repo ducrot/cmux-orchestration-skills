@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 
 from spec_contract import (
@@ -58,7 +59,7 @@ Users cannot plan safely.
 """
 
 
-def checked_evidence(references) -> str:
+def checked_evidence(references: Sequence[str]) -> str:
     return "\n".join(f"- `{reference}`: checked consistency with repository evidence: no discrepancy found" for reference in references)
 
 
@@ -207,15 +208,15 @@ BLOCKED
         self.assertEqual(validate_review_report(self.report, self.draft, self.candidate)["gate"], "advance")
         invalid = {
             "missing": complete.replace("## Checked\n" + evidence + "\n\n", ""),
-            "empty": complete.replace(evidence, ""),
-            "none": complete.replace(evidence, "- None"),
-            "prose_only": complete.replace(evidence, evidence.replace("- ", "")),
-            "reference_only": complete.replace(evidence, "\n".join(f"- `{name}`" for name in SPEC_SECTIONS)),
-            "missing_section": complete.replace(evidence, checked_evidence(SPEC_SECTIONS[:-1])),
-            "unquoted_bullet": complete.replace(evidence, evidence.replace("`", "")),
-            "extra_unquoted_bullet": complete.replace(evidence, evidence + "\n- checked other concerns: clean"),
-            "missing_check": complete.replace(evidence, evidence.replace("checked consistency with repository evidence", "")),
-            "missing_outcome": complete.replace(evidence, evidence.replace("no discrepancy found", "")),
+            "empty": review_report("pass", digest, digest, checked=""),
+            "none": review_report("pass", digest, digest, checked="- None"),
+            "prose_only": review_report("pass", digest, digest, checked=evidence.replace("- ", "")),
+            "reference_only": review_report("pass", digest, digest, checked="\n".join(f"- `{name}`" for name in SPEC_SECTIONS)),
+            "missing_section": review_report("pass", digest, digest, checked=checked_evidence(SPEC_SECTIONS[:-1])),
+            "unquoted_bullet": review_report("pass", digest, digest, checked=evidence.replace("`", "")),
+            "extra_unquoted_bullet": review_report("pass", digest, digest, checked=evidence + "\n- checked other concerns: clean"),
+            "missing_check": review_report("pass", digest, digest, checked=evidence.replace("checked consistency with repository evidence", "")),
+            "missing_outcome": review_report("pass", digest, digest, checked=evidence.replace("no discrepancy found", "")),
         }
         for name, report in invalid.items():
             with self.subTest(name=name):

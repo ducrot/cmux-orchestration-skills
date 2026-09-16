@@ -42,9 +42,7 @@ before publishing a launch wave.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
-protocol. An existing valid schema-v2 file needs no start confirmation either; the start question
-belongs only to a newly created default (accepted with the **Yes, start now** answer).
-Never offer profile overrides the human did not ask for.
+protocol. Never offer profile overrides the human did not ask for.
 
 1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,
@@ -52,16 +50,20 @@ Never offer profile overrides the human did not ask for.
    the displayed fallback profile name, harness, model, and effort without inferring relative quality.
    Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
    On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
-   argument included, then validate and continue. A schema-v2 file needs no migration question.
-2. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
+   argument included, then validate and continue.
+2. If the file already exists and is valid schema v2, continue with its assignments.
+   A schema-v2 file needs no migration question.
+   An existing valid schema-v2 file needs no start confirmation either; the start question
+   belongs only to a newly created default (accepted with the **Yes, start now** answer).
+3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
    `show-resolved`. Do not call `run_state.py init` yet.
-3. Present the created path and all three workflows' resolved assignments, because the file is shared.
+4. Present the created path and all three workflows' resolved assignments, because the file is shared.
    Ask one single-select question in the human's language: whether to start the current run with
    these assignments. The choices mean **Yes, start now** and **No, I will edit the file**.
-4. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
+5. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
    Code or `request_user_input` in Codex. Do not assume Codex exposes it in the current mode; when
    no native tool is available, ask the same question in chat and end the turn for the answer.
-5. On yes, reload and validate the current bytes before starting the run. On no, perform no more
+6. On yes, reload and validate the current bytes before starting the run. On no, perform no more
    tool calls, tell the human to edit the file and reply when it is ready, and end the turn. When
    they return, validate and show the resolved assignments again; start only after validation
    succeeds. Report validation errors and remain stopped when it fails.

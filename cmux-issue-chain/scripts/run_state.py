@@ -26,9 +26,9 @@ from orchestrator_lib import (
     issue_ready,
     load_issues,
     read_json,
+    read_run_state,
     run_identifier,
     slugify,
-    read_run_state,
     utc_now,
     write_json,
 )
@@ -369,7 +369,7 @@ def append_gate(args: argparse.Namespace) -> int:
 UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
 
 
-def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
+def untracked_content(repository: Path, raw: bytes) -> tuple[list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
     """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
 
     Vendored identically across the three independently installed skills.
@@ -423,7 +423,7 @@ def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[s
         states[path] = {"content_sha256": digest}
         hashed.append((path_bytes, digest.encode("ascii")))
     block = b"".join(path + b"\0" + digest + b"\n" for path, digest in sorted(hashed))
-    return raw, entries, states, block
+    return entries, states, block
 
 
 def append_snapshot(args: argparse.Namespace) -> int:
@@ -440,13 +440,16 @@ def append_snapshot(args: argparse.Namespace) -> int:
     repository = Path(os.fsdecode(git("rev-parse", "--show-toplevel").removesuffix(b"\n")))
     status = git("-C", str(repository), "status", "--porcelain=v1", "-z", "--untracked-files=all")
     try:
-        status, entries, untracked, untracked_block = untracked_content(repository, status)
+        entries, untracked, untracked_block = untracked_content(repository, status)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     # Raw binary diffs and bounded untracked content cover Git-visible tree changes.
     diff = git("diff", "--binary", "--no-ext-diff")
     cached_diff = git("diff", "--cached", "--binary", "--no-ext-diff")
-    fingerprint = hashlib.sha256(status + diff + cached_diff + untracked_block).hexdigest()[:16]
+    digest = hashlib.sha256()
+    for block in (status, diff, cached_diff, untracked_block):
+        digest.update(block)
+    fingerprint = digest.hexdigest()[:16]
 
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):

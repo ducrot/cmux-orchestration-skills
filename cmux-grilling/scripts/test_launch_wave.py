@@ -77,6 +77,10 @@ else:
 from test_support import FAKE_CMUX
 
 
+def file_contents(root: Path) -> dict[Path, bytes]:
+    return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
 class PreparedLaunchWaveCli(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -219,7 +223,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertEqual(reinitialized.returncode, 0, reinitialized.stderr)
         self.assertTrue(draft_dir.is_dir())
 
-    def test_round_cli_draft_validation_and_handoff(self):
+    def test_round_cli_prompt_rendering_and_parser_validation(self):
         initialized = self.init_for("draft-flow")
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         run_dir = self.run_dir("draft-flow")
@@ -263,8 +267,6 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 )
                 self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
                 self.assertIn("gate=advance", validated.stdout)
-                report.write_bytes(draft.read_bytes())
-                self.assertEqual(report.read_bytes(), draft.read_bytes())
 
     def test_default_identity_and_slug_override(self):
         result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace")
@@ -293,7 +295,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         del state["workflow"]
         del state["layout_version"]
         (run_dir / "state.json").write_text(json.dumps(state))
-        before = {str(p.relative_to(run_dir)): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
+        before = file_contents(run_dir)
         calls = [self.init_for("legacy"),
                  self.run_state("event", "--run-dir", str(run_dir), "--type", "test", "--message", "test"),
                  self.pane("launch", "--run-dir", str(run_dir), "--lane", "web", "--anchor", "ANCHOR")]
@@ -303,7 +305,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         inspected = self.run_state("status", "--run-dir", str(run_dir))
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         self.assertIn("unsupported legacy layout", inspected.stdout)
-        self.assertEqual(before, {str(p.relative_to(run_dir)): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()})
+        self.assertEqual(before, file_contents(run_dir))
         self.assertFalse(self.cmux_log.exists())
 
     def test_init_uses_config_and_audits_all_four_lanes_in_one_wave(self):

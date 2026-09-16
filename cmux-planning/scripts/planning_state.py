@@ -56,6 +56,7 @@ from grilling_input import (
 )
 from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
+    RUN_ID_RE,
     STAGES,
     append_event,
     atomic_write,
@@ -112,7 +113,6 @@ from tracker_contract import (
 )
 
 
-RUN_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 DIVERSITY_GATED_EXIT = 2
 
 

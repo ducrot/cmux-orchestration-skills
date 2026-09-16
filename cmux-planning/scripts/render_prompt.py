@@ -27,6 +27,13 @@ from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
 from tracker_contract import validate_proposal
 
+DETECTOR_BOUNDARY = """The detector covers tracked changes, staged changes, untracked paths and their content (regular files
+up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
+files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
+handoff artifacts are gated by digest instead."""
+
+INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+
 
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
 SPEC_CONTRACT = f"""The draft must be English and contain substantive `##` sections named exactly:
@@ -173,7 +180,7 @@ prefer observable behavior over implementation details, and justify any new seam
 
 ## Write Boundary
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 You may inspect the repository read-only. Physically write only these exact files:
 
@@ -182,10 +189,7 @@ You may inspect the repository read-only. Physically write only these exact file
 
 Do not edit product code, configuration, lifecycle state, prompts, snapshots, or any other path. The
 orchestrator compares complete Git status plus tracked and staged diffs before and after your stage.
-The detector covers tracked changes, staged changes, untracked paths and their content (regular files
-up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
-files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
-handoff artifacts are gated by digest instead.
+{DETECTOR_BOUNDARY}
 
 ## Report Contract
 
@@ -296,7 +300,7 @@ Return exactly one verdict:
 
 ## Write Boundary
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 You may physically write only:
 
@@ -306,15 +310,13 @@ You may physically write only:
 Do not edit the author draft, product code, lifecycle state, or any other path. The author draft is
 digest-bound to its own gate, so rewriting it in place fails the review outright, and the mandatory
 Git-visible before/after inspection gates unauthorized deltas outside the run directory.
-The detector covers tracked changes, staged changes, untracked paths and their content (regular files
-up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
-files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
-handoff artifacts are gated by digest instead.
+{DETECTOR_BOUNDARY}
 
 ## Review Report Contract
 
 `## Checked` must cover all input sections by their exact section names, with backtick-quoted
 references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.
+`Checked` cannot be `- None`, including for `blocked`.
 A quoted reference may contain colons, so `src/cli.py:42` is one reference. A `blocked` verdict is
 the only exception to coverage: it still needs at least one structurally valid evidence bullet and
 a substantive blocker, but only for what the review actually reached.
@@ -389,6 +391,7 @@ def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) ->
     approved_spec, spec_digest = approved_spec_from_state(state, run_dir=run_dir)
     task_path = (run_dir / state["task"]["path"]).resolve()
     paths = snapshot["allowed_worker_writes"]
+    tracker_slug = state["tracker_slug"]
     feedback = state.get("ticket_revision_feedback") or "None recorded for this tickets pass."
     return f"""# Planning Worker Prompt: tickets author (pass {pass_num})
 
@@ -405,7 +408,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 - Persisted task: `{task_path}` (sha256 `{state['task']['sha256']}`)
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
-- Tracker slug (fixed): `{state["tracker_slug"]}`
+- Tracker slug (fixed): `{tracker_slug}`
 - Repository: `{state['repository']}`
 
 ### Approved Specification
@@ -445,7 +448,7 @@ criteria, blockers, and merge/split rationale.
 
 ## Write Boundary
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 You may physically write only these exact files:
 
@@ -455,10 +458,7 @@ You may physically write only these exact files:
 
 Do not edit the approved spec, product code, configuration, lifecycle state, or any other path. Mandatory
 before/after Git-visible inspection gates every other delta within the documented detector boundary.
-The detector covers tracked changes, staged changes, untracked paths and their content (regular files
-up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
-files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
-handoff artifacts are gated by digest instead.
+{DETECTOR_BOUNDARY}
 
 ## Report Contract
 
@@ -493,12 +493,12 @@ Use `BLOCKED` only for a real blocker, and then state it under Blockers. Self-va
 
 ```bash
 python3 {tracker_contract_path()} proposal {paths['proposal']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}
 python3 {tracker_contract_path()} render-summary \\
   --proposal {paths['proposal']} --out {paths['summary']}
 python3 {tracker_contract_path()} author-report {paths['report']} \\
   --proposal {paths['proposal']} --summary {paths['summary']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}
 ```
 """
 
@@ -534,9 +534,12 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
         expected_path=report,
     )
     paths = snapshot["allowed_worker_writes"]
+    tracker_slug = state["tracker_slug"]
     validate_proposal(
-        proposal, expected_spec=approved_spec, expected_spec_sha256=spec_digest,
-        expected_tracker_slug=state["tracker_slug"],
+        proposal,
+        expected_spec=approved_spec,
+        expected_spec_sha256=spec_digest,
+        expected_tracker_slug=tracker_slug,
     )
     return f"""# Planning Worker Prompt: independent ticket review (pass {pass_num})
 
@@ -552,7 +555,7 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 
 - Task: `{task_path}` (sha256 `{state['task']['sha256']}`)
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
-- Tracker slug (fixed): `{state["tracker_slug"]}`
+- Tracker slug (fixed): `{tracker_slug}`
 - Machine proposal: `{proposal}` (sha256 `{author['proposal_sha256']}`)
 - Human summary: `{summary}` (sha256 `{author['summary_sha256']}`)
 - Author report: `{report}` (sha256 `{sha256_file(report)}`)
@@ -600,7 +603,7 @@ Return exactly one verdict:
 
 ## Write Boundary
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 You may physically write only:
 
@@ -608,10 +611,7 @@ You may physically write only:
 - Complete corrected machine proposal only for `pass_with_fixes`: `{paths['candidate']}`
 
 Mandatory before/after Git-visible inspection gates every other covered delta.
-The detector covers tracked changes, staged changes, untracked paths and their content (regular files
-up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
-files and skipped untracked content (files above the size cap or unsupported types). Git-ignored run
-handoff artifacts are gated by digest instead.
+{DETECTOR_BOUNDARY}
 Never edit the author proposal,
 approved spec, product code, lifecycle state, or human summary.
 
@@ -619,6 +619,7 @@ approved spec, product code, lifecycle state, or human summary.
 
 `## Checked` must cover all input ticket ids from the author proposal, with backtick-quoted
 references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.
+`Checked` cannot be `- None`, including for `blocked`.
 A quoted reference may contain colons, so `src/cli.py:42` is one reference. A `blocked` verdict is
 the only exception to coverage: it still needs at least one structurally valid evidence bullet and
 a substantive blocker, but only for the ticket ids the review actually reached.
@@ -658,7 +659,7 @@ Self-validate before handoff (the candidate may be absent for `pass` or `blocked
 python3 {tracker_contract_path()} review-report {paths['report']} \\
   --input {proposal} --candidate {paths['candidate']} \\
   --input-sha256 {author['proposal_sha256']} \\
-  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {state["tracker_slug"]}
+  --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}
 ```
 """
 

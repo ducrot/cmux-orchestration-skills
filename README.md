@@ -69,8 +69,8 @@ Strict report and digest validation plus complete before/after Git-visible worki
 prevent a clean report from hiding tracked changes, staged changes, untracked paths and their content
 (regular files up to the 8 MiB size cap and symlink target bytes), or commits (HEAD movement). That
 boundary excludes ignored files and skipped untracked content (files above the size cap or unsupported
-types). Likewise,
-structural and digest checks on optional grilling input prove integrity, not freshness; explicit human
+types). Git may omit contents of unreadable untracked directories while returning success with a
+warning; those contents are also outside the boundary. Likewise, structural and digest checks on optional grilling input prove integrity, not freshness; explicit human
 revalidation is the freshness policy.
 
 After ticket approval, planning stages and validates a native tracker and publishes it with one
@@ -120,6 +120,8 @@ human's language and asks for explicit confirmation. On approval it invokes the 
 starting. Refusal or interruption leaves the file and run state untouched.
 `planning_state.py --accept-config` remains only the acceptance mechanism for a newly created
 schema-v2 default; it never authorizes schema migration.
+A schema-v2 file needs no migration question. An existing valid schema-v2 file needs no start
+confirmation. Never offer profile overrides the human did not ask for.
 Claude Code and Codex use their native structured-input tool when available and fall back to a
 normal chat question otherwise. A negative answer ends the turn without a run or worker snapshot;
 after the human returns, the current file is validated before work starts. Direct calls to

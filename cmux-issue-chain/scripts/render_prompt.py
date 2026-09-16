@@ -11,6 +11,8 @@ from pathlib import Path
 from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
 from worker_snapshot import SnapshotError, load_launchable_snapshot
 
+INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+
 
 ROLES = ("implement", "simplify", "review", "test")
 CLAUDE_CODE = "claude-code"
@@ -233,7 +235,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 
 ## Orchestrator Contract
 
-Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+{INDEX_HEAD_PROHIBITION}
 
 - Do not write `.scratch/orchestrator/**` except the exact final report handoff path and your worker
   artifact directory above.

@@ -19,8 +19,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from orchestrator_lib import read_run_state
-from orchestrator_lib import LANE_WAIT_MINUTES, LANES, append_jsonl, read_json, utc_now
+from orchestrator_lib import LANES, LANE_WAIT_MINUTES, append_jsonl, read_json, read_run_state, utc_now
 
 EXIT_REPORTS = 0    # every lane report exists — parse them next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # a lane surface with a pending report is gone per surface-health
@@ -164,8 +163,8 @@ def join(lanes: list[str]) -> str:
 
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
+    read_run_state(run_dir)
     lanes = parse_lanes(args)
     surfaces = parse_lane_surfaces(args.lane_surface, lanes)
     reports = {lane: report_path(run_dir, args.round_number, lane) for lane in lanes}

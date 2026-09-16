@@ -70,6 +70,9 @@ DECISION_REQUIRED_FIELDS = (
 )
 
 
+RUN_SUBDIRS = ("prompts", "reports", "drafts", "synthesis")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -299,7 +302,7 @@ def init_run(args: argparse.Namespace) -> int:
                 "inputs require a new grilling run"
             )
         ensure_runs_root_ignored(runs_root)
-        for name in ("prompts", "reports", "drafts", "synthesis"):
+        for name in RUN_SUBDIRS:
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
@@ -322,7 +325,7 @@ def init_run(args: argparse.Namespace) -> int:
     # passed local preflight. A failure above leaves no launchable state for pane_ctl.py.
     ensure_runs_root_ignored(runs_root)
     run_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("prompts", "reports", "drafts", "synthesis"):
+    for name in RUN_SUBDIRS:
         (run_dir / name).mkdir(exist_ok=True)
     (run_dir / "task.md").write_text(task_text + "\n", encoding="utf-8")
     launch_wave_pointer = persist_launch_wave(run_dir, launch_wave)
@@ -413,7 +416,7 @@ def append_gate(args: argparse.Namespace) -> int:
 UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
 
 
-def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
+def untracked_content(repository: Path, raw: bytes) -> tuple[list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
     """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
 
     Vendored identically across the three independently installed skills.
@@ -467,7 +470,7 @@ def untracked_content(repository: Path, raw: bytes) -> tuple[bytes, list[tuple[s
         states[path] = {"content_sha256": digest}
         hashed.append((path_bytes, digest.encode("ascii")))
     block = b"".join(path + b"\0" + digest + b"\n" for path, digest in sorted(hashed))
-    return raw, entries, states, block
+    return entries, states, block
 
 
 def append_snapshot(args: argparse.Namespace) -> int:
@@ -484,13 +487,16 @@ def append_snapshot(args: argparse.Namespace) -> int:
     repository = Path(os.fsdecode(git("rev-parse", "--show-toplevel").removesuffix(b"\n")))
     status = git("-C", str(repository), "status", "--porcelain=v1", "-z", "--untracked-files=all")
     try:
-        status, entries, untracked, untracked_block = untracked_content(repository, status)
+        entries, untracked, untracked_block = untracked_content(repository, status)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     # Raw binary diffs and bounded untracked content cover Git-visible tree changes.
     diff = git("diff", "--binary", "--no-ext-diff")
     cached_diff = git("diff", "--cached", "--binary", "--no-ext-diff")
-    fingerprint = hashlib.sha256(status + diff + cached_diff + untracked_block).hexdigest()[:16]
+    digest = hashlib.sha256()
+    for block in (status, diff, cached_diff, untracked_block):
+        digest.update(block)
+    fingerprint = digest.hexdigest()[:16]
 
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):

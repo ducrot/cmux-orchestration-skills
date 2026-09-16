@@ -40,9 +40,12 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         guide = REPOSITORY / "cmux-grilling" / "SKILL.md"
         if not guide.is_file():
             self.skipTest("grilling skill is absent in this independent installation")
-        procedure = normalized(guide).split("session start:", 1)[1].split(
-            "lane panes stay open across rounds", 1
-        )[0]
+        text = normalized(guide)
+        start = "session start:"
+        end = "lane panes stay open across rounds"
+        self.assertIn(start, text, "grilling guide is missing the session-start delimiter")
+        self.assertIn(end, text, "grilling guide is missing the session-start end delimiter")
+        procedure = text.split(start, 1)[1].split(end, 1)[0]
         for phrase in (
             'before sending any session prompt, capture',
             'run_state.py snapshot --label "launched session"',
@@ -143,16 +146,24 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             "correcting a regression while preserving documented intended behavior is not a "
             "decision reversion and does not trigger this stop rule", inspection,
         )
-        self.assertIn("\n## Not Applied\n- None", guide.read_text())
+        self.assertIn("\n## Not Applied\n- None", guide.read_text(encoding="utf-8"))
 
     def test_vendored_run_helpers_are_byte_identical(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")
-        for name in ("slugify", "run_identifier", "ensure_runs_root_ignored"):
+        helper_files = {
+            "slugify": {guide: "orchestrator_lib.py" for guide in SIBLINGS},
+            "run_identifier": {guide: "orchestrator_lib.py" for guide in SIBLINGS},
+            "ensure_runs_root_ignored": {
+                guide: "planning_state.py" if guide == PLANNING else "run_state.py"
+                for guide in SIBLINGS
+            },
+        }
+        for name, files in helper_files.items():
             sources = []
             for guide in SIBLINGS:
-                filename = "orchestrator_lib.py" if name != "ensure_runs_root_ignored" else ("planning_state.py" if guide == PLANNING else "run_state.py")
-                source = (guide.parent / "scripts" / filename).read_text()
+                filename = files[guide]
+                source = (guide.parent / "scripts" / filename).read_text(encoding="utf-8")
                 function = next(node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == name)
                 sources.append(ast.get_source_segment(source, function))
             self.assertEqual(sources, [sources[0]] * 3, name)
@@ -163,7 +174,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         sources = []
         for guide in SIBLINGS:
             filename = "tree_integrity.py" if guide == PLANNING else "run_state.py"
-            source = (guide.parent / "scripts" / filename).read_text()
+            source = (guide.parent / "scripts" / filename).read_text(encoding="utf-8")
             nodes = ast.parse(source).body
             function = next(node for node in nodes if isinstance(node, ast.FunctionDef) and node.name == "untracked_content")
             limit = next(node for node in nodes if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "UNTRACKED_HASH_LIMIT_BYTES" for target in node.targets))
@@ -174,7 +185,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         if not README.is_file():
             self.skipTest("repository README is absent")
         for guide in (README, PLANNING):
-            text = guide.read_text()
+            text = guide.read_text(encoding="utf-8")
             self.assertIn(".scratch/orchestrator/runs/<run-id>/", text)
             self.assertIn("deliverables", text)
             for line in text.splitlines():
@@ -284,14 +295,31 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             self.assertIn(required, text)
 
     def test_valid_schema_v2_configuration_needs_no_question(self):
-        for guide in SIBLINGS:
+        for guide in ((README, *SIBLINGS) if README.is_file() else SIBLINGS):
+            text = normalized(guide)
             for required in (
                 "a schema-v2 file needs no migration question",
                 "needs no start confirmation",
                 "never offer profile overrides the human did not ask for",
             ):
                 with self.subTest(guide=guide.relative_to(REPOSITORY), required=required):
-                    self.assertIn(required, normalized(guide))
+                    self.assertIn(required, text)
+
+    def test_frozen_slug_gates_and_optional_contract_flags_are_documented(self):
+        for path in (PLANNING, PLANNING.parent / "references/spec-contract.md"):
+            text = normalized(path)
+            with self.subTest(path=path):
+                self.assertIn("`tracker.slug` must equal the frozen `tracker_slug`", text)
+                for gate in ("author", "review", "approval", "publication"):
+                    self.assertIn(gate, text)
+                for command in ("proposal", "author-report", "review-report"):
+                    self.assertIn(f"`{command}`", text)
+                self.assertIn("optional `--tracker-slug`", text)
+
+    def test_untracked_upgrade_and_visibility_limits_are_documented(self):
+        self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(PLANNING))
+        if README.is_file():
+            self.assertIn("git may omit contents of unreadable untracked directories", normalized(README))
 
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated

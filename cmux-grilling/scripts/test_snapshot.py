@@ -112,22 +112,25 @@ class SnapshotCli(unittest.TestCase):
 
     def test_status_failure_and_malformed_output_have_cli_diagnostics(self):
         # Exercise the real snapshot CLI with only git status replaced by a shim.
-        import shutil
         real_git = shutil.which("git")
         shim_dir = self.root / "bin"
         shim_dir.mkdir()
         shim = shim_dir / "git"
-        for mode in ("failure", "malformed", "rename"):
+        cases = (
+            ("failure", "    sys.stderr.write('status unavailable\\n')\n    sys.exit(128)\n",
+             "failed: status unavailable"),
+            ("malformed", "    sys.stdout.buffer.write(b'x\\0')\n    sys.exit(0)\n",
+             "git status returned an unparseable porcelain entry"),
+            ("rename", "    sys.stdout.buffer.write(b'R  destination\\0')\n    sys.exit(0)\n",
+             "git status rename/copy entry is incomplete"),
+        )
+        for mode, body, expected in cases:
             with self.subTest(mode=mode):
                 shim.write_text(
                     f"#!{sys.executable}\n"
                     "import os, sys\n"
                     "if 'status' in sys.argv[1:]:\n"
-                    + ({
-                        "failure": "    sys.stderr.write('status unavailable\\n')\n    sys.exit(128)\n",
-                        "malformed": "    sys.stdout.buffer.write(b'x\\0')\n    sys.exit(0)\n",
-                        "rename": "    sys.stdout.buffer.write(b'R  destination\\0')\n    sys.exit(0)\n",
-                    }[mode])
+                    + body
                     + f"os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n"
                 )
                 shim.chmod(0o755)
@@ -139,9 +142,6 @@ class SnapshotCli(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("Traceback", result.stderr)
-                expected = {"failure": "failed: status unavailable",
-                            "malformed": "git status returned an unparseable porcelain entry",
-                            "rename": "git status rename/copy entry is incomplete"}[mode]
                 self.assertIn(expected, result.stderr)
                 self.assertEqual(result.stdout, "")
                 self.assertFalse((self.run_dir / "events.jsonl").exists())
@@ -222,9 +222,11 @@ class SnapshotCli(unittest.TestCase):
 
     def test_untracked_limit_is_recorded(self):
         path = self.repo / "large"
-        path.write_bytes(b"a" * (8 * 1024 * 1024 + 1))
+        with path.open("wb") as stream:
+            stream.truncate(8 * 1024 * 1024 + 1)
         first = self.snapshot()
-        path.write_bytes(b"b" * (8 * 1024 * 1024 + 1))
+        with path.open("r+b") as stream:
+            stream.write(b"b")
         self.assertEqual(first, self.snapshot())
         self.assertEqual(first["untracked_hashed"], 0)
         self.assertEqual(first["untracked_skipped"], [
@@ -240,7 +242,7 @@ class SnapshotCli(unittest.TestCase):
                  SimpleNamespace(st_mode=stat.S_IFREG, st_size=2),
                  SimpleNamespace(st_mode=stat.S_IFIFO, st_size=0),
              ]), patch("builtins.open", return_value=io.BytesIO(b"\xff\x00")) as opened:
-            _, entries, states, block = untracked_content(self.repo, raw)
+            entries, states, block = untracked_content(self.repo, raw)
         opened.assert_called_once_with(os.fsencode(self.repo) + b"/raw-\xff\n", "rb")
         path = os.fsdecode(b"raw-\xff\n")
         digest = hashlib.sha256(b"\xff\x00").hexdigest()

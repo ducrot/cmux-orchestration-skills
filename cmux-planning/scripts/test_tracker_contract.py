@@ -12,8 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from orchestrator_lib import sha256_file  # noqa: E402
-from test_spec_contract import checked_evidence, review_report
 from spec_contract import ContractError  # noqa: E402
+from test_spec_contract import checked_evidence, review_report  # noqa: E402
 from tracker_contract import (  # noqa: E402
     render_summary,
     stage_native_tracker,
@@ -226,25 +226,71 @@ sha256 {self.spec_digest}
 
     def test_proposal_enforces_frozen_tracker_slug(self):
         self.write_proposal()
-        for expected in (None, "planned-feature"):
-            self.assertEqual(
-                validate_proposal(self.proposal_path, expected_tracker_slug=expected)["tracker"]["slug"],
-                "planned-feature",
-            )
+        for case, expected in (("optional", None), ("equal", "planned-feature")):
+            with self.subTest(case=case):
+                self.assertEqual(
+                    validate_proposal(self.proposal_path, expected_tracker_slug=expected)["tracker"]["slug"],
+                    "planned-feature",
+                )
         with self.assertRaisesRegex(ContractError, "tracker.slug.*frozen"):
             validate_proposal(self.proposal_path, expected_tracker_slug="fixed-name")
 
     def test_proposal_cli_checks_frozen_slug(self):
         self.write_proposal()
-        for expected in ("planned-feature", "different-slug"):
-            result = subprocess.run([
-                sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), "proposal",
-                str(self.proposal_path), "--spec", str(self.spec),
-                "--spec-sha256", self.spec_digest, "--tracker-slug", expected,
-            ], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0 if expected == "planned-feature" else 1, result.stderr)
-            if expected != "planned-feature":
-                self.assertIn("tracker.slug must equal frozen", result.stderr)
+        for case, expected, returncode in (
+            ("optional", None, 0), ("equal", "planned-feature", 0), ("different", "different-slug", 1),
+        ):
+            with self.subTest(case=case):
+                result = self.contract_cli(
+                    "proposal", str(self.proposal_path), "--spec", str(self.spec),
+                    "--spec-sha256", self.spec_digest,
+                    *(("--tracker-slug", expected) if expected else ()),
+                )
+                self.assertEqual(result.returncode, returncode, result.stderr)
+                if returncode:
+                    self.assertIn("tracker.slug must equal frozen", result.stderr)
+
+    def contract_cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), *args],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def test_review_report_cli_checks_frozen_slug_and_rejects_renamed_candidate(self):
+        digest = self.write_proposal()["sha256"]
+        review = self.root / "review.md"
+        candidate = self.root / "candidate.json"
+        corrected = proposal(self.spec)
+        corrected["tickets"][0]["delivered_behavior"] = "The clarified first behavior works"
+        candidate.write_text(json.dumps(corrected), encoding="utf-8")
+        review.write_text(
+            review_report(
+                "pass_with_fixes", digest, validate_proposal(candidate)["sha256"],
+                corrections="- Clarified wording already established by the approved specification.",
+                checked=checked_evidence(["ISSUE-001", "ISSUE-002"]),
+            ), encoding="utf-8",
+        )
+        for case, expected, returncode in (
+            ("optional", None, 0), ("equal", "planned-feature", 0), ("different", "renamed-tracker", 1),
+        ):
+            with self.subTest(case=case):
+                result = self.contract_cli(
+                    "review-report", str(review), "--input", str(self.proposal_path),
+                    "--candidate", str(candidate), "--input-sha256", digest,
+                    "--spec", str(self.spec), "--spec-sha256", self.spec_digest,
+                    *(("--tracker-slug", expected) if expected else ()),
+                )
+                self.assertEqual(result.returncode, returncode, result.stderr)
+                if returncode:
+                    self.assertIn("tracker.slug must equal frozen", result.stderr)
+        corrected["tracker"]["slug"] = "renamed-tracker"
+        candidate.write_text(json.dumps(corrected), encoding="utf-8")
+        with self.assertRaisesRegex(ContractError, "tracker.slug.*frozen"):
+            validate_ticket_review_report(
+                review, self.proposal_path, candidate,
+                expected_input_sha256=digest, expected_spec=self.spec,
+                expected_spec_sha256=self.spec_digest, expected_tracker_slug="planned-feature",
+            )
 
     def test_all_review_verdicts_bind_digests_and_safe_fixes_need_no_second_review(self):
         original = self.write_proposal()
@@ -313,25 +359,6 @@ sha256 {resulting}
             expected_spec_sha256=self.spec_digest,
         )
         self.assertEqual(fixed["gate"], "advance")
-        for expected in ("planned-feature", "renamed-tracker"):
-            command = [
-                sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), "review-report",
-                str(review), "--input", str(self.proposal_path), "--candidate", str(candidate),
-                "--input-sha256", digest, "--spec", str(self.spec),
-                "--spec-sha256", self.spec_digest, "--tracker-slug", expected,
-            ]
-            checked = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual(checked.returncode, 0 if expected == "planned-feature" else 1, checked.stderr)
-            if expected != "planned-feature":
-                self.assertIn("tracker.slug must equal frozen", checked.stderr)
-        corrected["tracker"]["slug"] = "renamed-tracker"
-        candidate.write_text(json.dumps(corrected), encoding="utf-8")
-        with self.assertRaisesRegex(ContractError, "tracker.slug.*frozen"):
-            validate_ticket_review_report(
-                review, self.proposal_path, candidate,
-                expected_input_sha256=digest, expected_spec=self.spec,
-                expected_spec_sha256=self.spec_digest, expected_tracker_slug="planned-feature",
-            )
         candidate.unlink()
 
         review.write_text(
@@ -357,17 +384,18 @@ sha256 {resulting}
         digest = original["sha256"]
         review = self.root / "review.md"
         candidate = self.root / "candidate.json"
-        from spec_contract import SPEC_SECTIONS
-        complete = review_report("pass", digest, digest).replace(
-            checked_evidence(SPEC_SECTIONS), checked_evidence(["ISSUE-001", "ISSUE-002"])
+        complete = review_report(
+            "pass", digest, digest, checked=checked_evidence(["ISSUE-001", "ISSUE-002"])
         )
         review.write_text(complete, encoding="utf-8")
         kwargs = dict(expected_input_sha256=digest, expected_spec=self.spec,
                       expected_spec_sha256=self.spec_digest)
         self.assertEqual(validate_ticket_review_report(
             review, self.proposal_path, candidate, **kwargs)["gate"], "advance")
-        review.write_text(complete.replace(
-            checked_evidence(["ISSUE-002"]), ""), encoding="utf-8")
+        review.write_text(
+            review_report("pass", digest, digest, checked=checked_evidence(["ISSUE-001"])),
+            encoding="utf-8",
+        )
         with self.assertRaisesRegex(ContractError, "Checked.*ISSUE-002"):
             validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
 
