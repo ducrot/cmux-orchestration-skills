@@ -201,8 +201,11 @@ def compare_tree(
     # No planning worker may commit. Without this the status view is clean on both sides and a
     # worker that commits its product edit passes the gate it exists to fail.
     head_moved = before.get("head") != after.get("head")
+    # Artifact write permission never authorizes changing the index.
+    staged_diff_changed = before.get("staged_diff") != after.get("staged_diff")
     return {
-        "ok": not unauthorized and not head_moved,
+        "ok": not unauthorized and not head_moved and not staged_diff_changed,
+        "staged_diff_changed": staged_diff_changed,
         "changed_paths": changed_paths,
         "allowed_changed_paths": [path for path in changed_paths if path in allowed],
         "unauthorized_paths": unauthorized,

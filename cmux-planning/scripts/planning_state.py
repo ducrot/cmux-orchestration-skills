@@ -1157,6 +1157,7 @@ def integrity_gate(run_dir: Path, stage: str, pass_num: int) -> bool:
         "unauthorized Git-visible worker delta",
         unauthorized_paths=result["unauthorized_paths"],
         head_moved=result["head_moved"],
+        staged_diff_changed=result["staged_diff_changed"],
         head_before=result["head_before"],
         head_after=result["head_after"],
         attempt=attempt["attempt"],

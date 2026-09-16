@@ -260,6 +260,17 @@ changed against the issue's "What to build" and acceptance criteria. A clean rep
 undocumented scope expansion gates `stop`, undocumented drift gates `hitl`, even when the report says
 `NO FINDINGS`.
 
+For every role (implement, simplify, review, and test), compare `staged_paths` and
+`staged_diff_sha256` in the launch snapshot (`launched <role>-<pass>`) against the capture
+snapshot (`report-captured <role>-<pass>`) before recording its gate. A difference in either
+field is an unauthorized delta: gate `hitl` even with a clean report, with the sorted union
+of both snapshots' staged path lists in the gate reason (including when only the digest
+changed). Also compare `head` between the same two snapshots: any HEAD change is an
+unauthorized delta that gates `hitl` even with a clean report, with the before and after HEAD
+values in the gate reason. The orchestrator never unstages on the worker's behalf. An unchanged
+pre-staged human baseline is permitted. This index and HEAD check applies to test as well as
+code-changing roles.
+
 Look for:
 
 - files touched outside the issue's stated scope;
@@ -572,11 +583,17 @@ Use this pane layout for the default chain:
 
 Do not open simplify, review, or test as down splits from the orchestrator pane just because the orchestrator pane is active after gate processing.
 
+For every role (implement, simplify, review, and test), including the initial implement launch,
+record `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
+Preserve that baseline until its report-capture comparison is complete; never replace it to
+adopt an unchecked delta.
+
 Close completed worker panes promptly:
 
 1. Confirm the worker wrote its final report to the rendered report handoff path.
 2. Record a working-tree fingerprint for the capture: `run_state.py snapshot --label "report-captured <role>-<pass>"`.
-3. Parse the report and record the gate/event state.
+3. Compare the launch/capture staged fields and HEAD under Diff inspection at code-changing gates for every
+   role, including test; then parse the report and record the gate/event state.
 4. If the chain continues, run `run_state.py prepare --stage <next-role> --pass <n>`. This reloads and
    validates live configuration and publishes the only snapshot that `pane_ctl.py` may launch. A failed
    preparation stops before CMUX creates a pane. Render the next prompt only after this step:
@@ -590,7 +607,9 @@ Close completed worker panes promptly:
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
 7. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
-   screen (TUI up? trust prompt pending?), then send the prompt with `pane_ctl.py deliver --prompt` and
+   screen (TUI up? trust prompt pending?), then record
+   `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
+   Send the prompt with `pane_ctl.py deliver --prompt` and
    confirm the worker started (see the send/Enter rule below).
 8. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
    and gate decisions are documented.

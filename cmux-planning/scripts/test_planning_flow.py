@@ -397,6 +397,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         state = json.loads((selected / "state.json").read_text())
         prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', prompt.split("## Write Boundary", 1)[1])
         self.assertIn("untracked paths and their content", prompt)
         self.assertIn("8 MiB size cap and symlink target bytes", prompt)
         self.assertIn("skipped untracked content", prompt)
@@ -2183,6 +2184,57 @@ sha256 {resulting_digest or digest}
             ],
             "integrity-violation",
         )
+
+    def staged_worker_case(self, target=None, prestaged=False):
+        # Expose Markdown artifacts in a custom run root while keeping lifecycle JSON ignored.
+        self.runs = self.repo / "custom-runs"
+        self.runs.mkdir()
+        (self.runs / ".gitignore").write_text("**\n!*/\n!*.md\n")
+        self.run_dir = self.runs / "plan-test"
+        initialized = self.cli(
+            STATE, "init", "--task", "Plan a feature", "--slug", "planned-feature",
+            "--repo", str(self.repo), "--run-id", "plan-test", "--runs-root", str(self.runs),
+            "--workspace-id", "WORKSPACE-1", "--config", str(self.config),
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        product = self.repo / "product.txt"
+        product.write_text("existing human edit\n")
+        if prestaged:
+            subprocess.run(["git", "-C", str(self.repo), "add", str(product)], check=True)
+        self.render_and_baseline("spec")
+        self.write_author_handoff()
+        paths = json.loads((self.run_dir / "state.json").read_text())["current_attempt"]["paths"]
+        path = {"product": product, "report": Path(paths["report"]),
+                "draft": Path(paths["draft"])}.get(target)
+        if path:
+            self.assertNotEqual(subprocess.run(
+                ["git", "-C", str(self.repo), "check-ignore", str(path)],
+                capture_output=True).returncode, 0)
+            subprocess.run(["git", "-C", str(self.repo), "add", str(path)], check=True)
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        state = json.loads((self.run_dir / "state.json").read_text())
+        if target:
+            self.assertEqual(accepted.returncode, 2, accepted.stderr)
+            self.assertEqual(state["current_stage"], "integrity-violation")
+            self.assertTrue(state["gate_decisions"][-1]["staged_diff_changed"])
+        else:
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertNotEqual(state["current_stage"], "integrity-violation")
+
+    def test_staging_product_gates_integrity_violation(self):
+        self.staged_worker_case("product")
+
+    def test_staging_allowed_report_gates_integrity_violation(self):
+        self.staged_worker_case("report")
+
+    def test_staging_allowed_draft_gates_integrity_violation(self):
+        self.staged_worker_case("draft")
+
+    def test_allowed_artifact_writes_in_custom_root_pass(self):
+        self.staged_worker_case()
+
+    def test_unchanged_prestaged_baseline_with_allowed_writes_passes(self):
+        self.staged_worker_case(prestaged=True)
 
     def test_unauthorized_tracked_write_gates_hitl_even_with_clean_report(self):
         self.assertEqual(self.init_direct().returncode, 0)

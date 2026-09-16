@@ -228,6 +228,8 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 
 ## Orchestrator Contract
 
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+
 - Do not write `.scratch/orchestrator/**` except the exact final report handoff path and your worker
   artifact directory above.
 - You MUST write the final report body to the exact final report handoff path before returning it in the

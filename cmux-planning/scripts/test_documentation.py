@@ -36,6 +36,82 @@ def notice(text: str) -> str:
 
 
 class CoordinatedUpgradeDocumentation(unittest.TestCase):
+    def test_grilling_session_start_captures_and_compares_delivery_baseline(self):
+        guide = REPOSITORY / "cmux-grilling" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("grilling skill is absent in this independent installation")
+        procedure = normalized(guide).split("session start:", 1)[1].split(
+            "lane panes stay open across rounds", 1
+        )[0]
+        for phrase in (
+            'before sending any session prompt, capture',
+            'run_state.py snapshot --label "launched session"',
+            'delivery baselines and staged deltas',
+            'after all lanes adopt their session contracts, capture',
+            'run_state.py snapshot --label "adopted session"',
+            'compare it with the session baseline before arming the first round',
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, procedure)
+        self.assertLess(procedure.index('snapshot --label "launched session"'),
+                        procedure.index('pane_ctl.py deliver'))
+        self.assertLess(procedure.index('pane_ctl.py deliver'),
+                        procedure.index('snapshot --label "adopted session"'))
+
+    def test_sibling_guides_gate_staged_deltas_at_every_delivery_boundary(self):
+        if len(SIBLINGS) != 3:
+            self.skipTest("sibling skills are absent in this independent installation")
+        chain = normalized(REPOSITORY / "cmux-issue-chain" / "SKILL.md")
+        grilling = normalized(REPOSITORY / "cmux-grilling" / "SKILL.md")
+        for phrase in (
+            'every role (implement, simplify, review, and test)',
+            'run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery',
+            'launch snapshot (`launched <role>-<pass>`) against the capture snapshot (`report-captured <role>-<pass>`)',
+            '`staged_paths`', '`staged_diff_sha256`', 'gate `hitl` even with a clean report',
+            "staged path lists in the gate reason", "never unstages on the worker's behalf",
+            'index and head check applies to test',
+        ):
+            with self.subTest(guide="issue-chain", phrase=phrase):
+                self.assertIn(phrase, chain)
+        for phrase in (
+            'baseline snapshot before initial lane delivery', 'after all lanes adopt',
+            'compare the session baseline before arming the first round',
+            'before each round delivery', '`reports-captured round-<n>` snapshot',
+            'never replace a baseline before checking the interval it covers',
+            '`staged_paths`', '`staged_diff_sha256`', 'gate `hitl` even with clean reports',
+            'staged path lists in the gate reason', 'attribution-first',
+            'before accusing a lane', "never unstage on a lane's behalf",
+        ):
+            with self.subTest(guide="grilling", phrase=phrase):
+                self.assertIn(phrase, grilling)
+        for phrase in ('whole before/after `staged_diff` independently of the allowed-write list',
+                       'any difference gates `integrity-violation`',
+                       'unchanged pre-staged human baseline remain allowed'):
+            self.assertIn(phrase, normalized(PLANNING))
+
+    def test_sibling_guides_gate_head_changes_at_every_delivery_boundary(self):
+        if len(SIBLINGS) != 3:
+            self.skipTest("sibling skills are absent in this independent installation")
+        chain = normalized(REPOSITORY / "cmux-issue-chain" / "SKILL.md")
+        grilling = normalized(REPOSITORY / "cmux-grilling" / "SKILL.md")
+        for guide, text, phrases in (
+            ("issue-chain", chain, (
+                'also compare `head` between the same two snapshots',
+                'any head change is an unauthorized delta that gates `hitl` even with a clean report',
+                'before and after head values in the gate reason',
+                'compare the launch/capture staged fields and head',
+            )),
+            ("grilling", grilling, (
+                'also compare `head` for each interval',
+                'any head change prevents advance and gates `hitl` even with clean reports',
+                'before and after head values in the gate reason',
+                'compare the staged fields and head against the round delivery baseline',
+            )),
+        ):
+            for phrase in phrases:
+                with self.subTest(guide=guide, phrase=phrase):
+                    self.assertIn(phrase, text)
+
     def test_vendored_run_helpers_are_byte_identical(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")

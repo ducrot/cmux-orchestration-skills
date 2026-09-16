@@ -47,6 +47,13 @@ class RenderFunction(unittest.TestCase):
                 self.assertIn(f"{self.run_dir}/drafts/round-<N>-{lane}.md", boundaries)
                 self.assertIn("report handoff path", boundaries)
 
+    def test_session_and_round_forbid_index_changes(self):
+        for lane in render_prompt.LANES:
+            with self.subTest(lane=lane):
+                session = render_prompt.render_session(lane, self.state, self.run_dir)
+                self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', session.split("## Boundaries", 1)[1])
+                self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', self.render(lane))
+
     def test_explicit_draft_path_and_shell_quoting(self):
         draft = self.run_dir / "drafts" / "custom draft.md"
         prompt = self.render(draft_path=draft)

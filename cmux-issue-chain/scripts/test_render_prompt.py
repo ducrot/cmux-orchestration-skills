@@ -52,6 +52,13 @@ class RenderFunction(unittest.TestCase):
         self.assertIn("Run a simplify pass yourself", simplify)
         self.assertIn("## Change Summary", simplify)
 
+    def test_every_role_forbids_index_changes(self):
+        for role in ("implement", "simplify", "review", "test"):
+            for harness in ("claude-code", "codex"):
+                with self.subTest(role=role, harness=harness):
+                    contract = self.render(role, harness).split("## Orchestrator Contract", 1)[1]
+                    self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', contract)
+
     def test_implement_and_test_are_identical_across_harnesses(self):
         for role in ("implement", "test"):
             claude = self.render(role, "claude-code").replace("Harness: claude-code", "Harness: X")

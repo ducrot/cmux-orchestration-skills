@@ -165,6 +165,35 @@ class SnapshotCli(unittest.TestCase):
         self.assertEqual(second["dirty_paths"], 1)
         self.assertNotEqual(first["fingerprint"], second["fingerprint"])
 
+    def test_staged_paths_and_raw_digest_track_index_only(self):
+        for content in (b"text change\n", b"\x00binary change\xff"):
+            with self.subTest(content=content):
+                self.file.write_bytes(content)
+                before = self.snapshot()
+                self.git("add", "tracked.txt")
+                staged = self.snapshot()
+                self.assertEqual(self.file.read_bytes(), content)
+                self.assertEqual(staged["staged_paths"], ["tracked.txt"])
+                self.assertNotEqual(before["staged_diff_sha256"], staged["staged_diff_sha256"])
+                self.assertEqual(staged["staged_diff_sha256"], hashlib.sha256(
+                    self.git("diff", "--cached", "--binary", "--no-ext-diff")).hexdigest())
+                unchanged = self.snapshot()
+                self.assertEqual(staged["staged_paths"], unchanged["staged_paths"])
+                self.assertEqual(staged["staged_diff_sha256"], unchanged["staged_diff_sha256"])
+                self.file.write_bytes(content + b"restaged")
+                self.git("add", "tracked.txt")
+                restaged = self.snapshot()
+                self.assertEqual(staged["staged_paths"], restaged["staged_paths"])
+                self.assertNotEqual(staged["staged_diff_sha256"], restaged["staged_diff_sha256"])
+
+    def test_staged_paths_exclude_untracked_and_worktree_only_changes(self):
+        self.file.write_text("worktree only")
+        (self.repo / "loose").write_text("untracked")
+        before = self.snapshot()
+        self.assertEqual(before["staged_paths"], [])
+        self.git("add", "tracked.txt", "loose")
+        self.assertEqual(self.snapshot()["staged_paths"], ["loose", "tracked.txt"])
+
     def test_non_utf8_diff_can_be_snapshotted_unstaged_and_staged(self):
         self.file.write_bytes(b"descriptor: \xec\n")
         for staged in (False, True):

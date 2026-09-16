@@ -193,13 +193,33 @@ This deliberately deviates from the sibling skill's "at most orchestrator plus o
 pane" rule: a grilling session keeps the orchestrator pane plus all four lane panes open
 until the session ends.
 
+## Delivery baselines and staged deltas
+
+Capture a baseline snapshot before initial lane delivery:
+`run_state.py snapshot --label "launched session"`. After all lanes adopt their session
+contracts, capture `run_state.py snapshot --label "adopted session"` and compare the session
+baseline before arming the first round. Before each round delivery, capture
+`run_state.py snapshot --label "launched round-<N>"`; compare that round baseline with its
+`reports-captured round-<N>` snapshot before any advance gate. Never replace a baseline
+before checking the interval it covers, including on re-delivery.
+
+Compare `staged_paths` and `staged_diff_sha256` for each interval. Any staged-path or
+staged-digest change prevents advance: gate `hitl` even with clean reports, recording the
+sorted union of the baseline and capture staged path lists in the gate reason. Also compare
+`head` for each interval: any HEAD change prevents advance and gates `hitl` even with clean
+reports, recording the before and after HEAD values in the gate reason. An unchanged
+pre-staged human baseline is permitted. Preserve attribution-first handling: investigate
+who changed the index before accusing a lane; retract a mistaken accusation explicitly with
+`report.integrity.retracted`. Never unstage on a lane's behalf.
+
 ## Round Loop
 
 For each round `N` (1-based), in order:
 
 1. Formulate the question and record it: `run_state.py event --type grill.question`
    with `{"round": N, "question": "..."}`.
-2. Render the four round prompts with `render_prompt.py round` (one per lane) and send each
+2. Render the four round prompts with `render_prompt.py round` (one per lane), capture the
+   delivery baseline under Delivery baselines and staged deltas, and send each
    lane its prompt with `pane_ctl.py deliver --lane <lane> --kind round --prompt <path>`
    (send + Enter + screen echo). Judge the echoed screen per lane before treating the round as
    started; a lane that answers with a summary of the prompt and goes idle has not started (see
@@ -208,7 +228,8 @@ For each round `N` (1-based), in order:
    ending the turn. Reports land at
    `.scratch/orchestrator/runs/<run-id>/reports/round-<N>-<lane>.md`.
 4. When all four reports exist, record one tree snapshot:
-   `run_state.py snapshot --label "reports-captured round-<N>"`.
+   `run_state.py snapshot --label "reports-captured round-<N>"`. Compare the staged fields
+   and HEAD against the round delivery baseline before parsing advance gates.
 5. Parse each report with `parse_research_report.py` and record one gate per lane with
    `--stage round-<N>-<lane>`. Record `worker.finished` per lane with
    `{"lane": ..., "round": N, "surface_id": ...}`.
@@ -668,10 +689,15 @@ Session start:
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
 4. Start each lane's agent with `pane_ctl.py start-agent --lane <lane>`; judge the echoed
    screen (TUI up? trust prompt pending?) before sending it any text.
-5. Send each lane its session prompt with `pane_ctl.py deliver --lane <lane> --kind session
+5. Before sending any session prompt, capture
+   `run_state.py snapshot --label "launched session"` under Delivery baselines and staged deltas.
+   Send each lane its session prompt with `pane_ctl.py deliver --lane <lane> --kind session
    --prompt .scratch/orchestrator/runs/<run-id>/prompts/session-<lane>.md`. Judge the echoed
    screen, then record `worker.started`. A lane that confirms in one line and goes idle here is
    correct — the session prompt is a contract, not work.
+   After all lanes adopt their session contracts, capture
+   `run_state.py snapshot --label "adopted session"` and compare it with the session baseline
+   before arming the first round, following Delivery baselines and staged deltas.
 
 Lane panes stay open across rounds; they are closed only at session end, HITL stop, blocker
 stop, or run abort — after their reports and gate decisions are documented (`pane_ctl.py

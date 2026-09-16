@@ -173,6 +173,8 @@ prefer observable behavior over implementation details, and justify any new seam
 
 ## Write Boundary
 
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+
 You may inspect the repository read-only. Physically write only these exact files:
 
 - Complete draft: `{paths['draft']}`
@@ -293,6 +295,8 @@ Return exactly one verdict:
   decision. State the decision needed and do not fabricate or write a candidate.
 
 ## Write Boundary
+
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
 
 You may physically write only:
 
@@ -440,6 +444,8 @@ vendored contract command. The summary contains every ticket's title, delivered 
 criteria, blockers, and merge/split rationale.
 
 ## Write Boundary
+
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
 
 You may physically write only these exact files:
 
@@ -593,6 +599,8 @@ Return exactly one verdict:
   spec review, spec approval, ticket author, and ticket review sequence again.
 
 ## Write Boundary
+
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
 
 You may physically write only:
 

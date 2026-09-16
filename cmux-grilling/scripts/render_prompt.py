@@ -158,6 +158,8 @@ Max questions: {state["max_questions"]}
 
 ## Boundaries
 
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
+
 - Read-only research: never create, edit, or delete repository files, and never run
   state-changing commands.
 - You may write exactly two files per round: the draft path and the report handoff path
@@ -207,6 +209,8 @@ Created: {utc_now()}
 {question}
 
 ## Handoff
+
+Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.
 
 - Draft path: `{draft_path}`
 - Report handoff path: `{report_path}`

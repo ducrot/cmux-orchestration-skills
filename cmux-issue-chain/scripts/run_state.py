@@ -454,6 +454,8 @@ def append_snapshot(args: argparse.Namespace) -> int:
     data.update({
         "head": head, "fingerprint": fingerprint,
         "dirty_paths": len({path for _, path in entries}),
+        "staged_paths": sorted({path for code, path in entries if code[0] not in " ?"}),
+        "staged_diff_sha256": hashlib.sha256(cached_diff).hexdigest(),
         "untracked_hashed": sum("content_sha256" in value for value in untracked.values()),
         "untracked_skipped": [
             {"path": path, "reason": value["skipped"]}

@@ -335,6 +335,12 @@ python3 scripts/planning_state.py resume --run-dir <run-dir>
 python3 scripts/planning_state.py context --run-dir <run-dir>
 ```
 
+Workers must never change the Git index or HEAD; staging and committing belong to the human
+after the run. `compare_tree` compares the whole before/after `staged_diff` independently of
+the allowed-write list. Any difference gates `integrity-violation`, including staging an
+allowed report or candidate path in a non-ignored custom run root. Ordinary permitted artifact
+content writes and an unchanged pre-staged human baseline remain allowed.
+
 The product-tree integrity boundary includes untracked content (regular files up to 8 MiB and
 symlink target bytes); ignored files and skipped untracked content remain outside coverage.
 
