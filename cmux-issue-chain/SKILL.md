@@ -192,15 +192,22 @@ Run review as a self-fix pass (`/code-review medium --fix` on Claude Code, the i
 
 Self-fix has an intent boundary. A finding that challenges a documented issue decision — the issue's
 "What to build", its acceptance criteria, or a recorded plan change — or an earlier-stage decision
-recorded in this pass is `Recommendation: ask-user`, not
+recorded in this run, including prior passes of the same run, is `Recommendation: ask-user`, not
 must-fix: the review worker must not fix it even when a safe mechanical fix exists, because the fix would
 silently undo a deliberate decision. It stays in `## Findings` and the orchestrator relays it to the human
 verbatim — file and description unparaphrased, never pre-judged. Routine correctness, reliability, and
 security fixes stay self-fixable even when the smallest fix re-adds a little previously deleted logic,
 provided they preserve documented decisions. Earlier-stage decisions include every item under
 `## Not Applied` and every behavior-preserving kept choice explained under `## Change Summary` or `## Notes`.
-Reverting one requires an ask-user finding and a reason. If the fix pass reverted such an item, restore
-it before running the baseline suite and report the proposal as ask-user.
+Unless explicitly superseded by recorded human approval, reverting one requires an ask-user finding
+and a reason. If the fix pass reverted such an item without that approval, restore it before running
+the baseline suite and report the proposal as ask-user.
+
+Reports from unrelated runs are outside this same-run protection. Protection of Not Applied items and
+documented intended behavior persists until recorded human approval explicitly supersedes the earlier
+decision. The approval must identify the decision and the authorized replacement or scope. An agent
+proposal, a later report, or an unapproved recommendation alone does not supersede it. Report unresolved
+scope or precedence ambiguity as `Recommendation: ask-user`; do not apply the disputed change.
 
 Correcting a regression introduced by an earlier refactoring remains a must-fix when the correction
 preserves the documented intended behavior; changing that intended behavior still requires ask-user.
@@ -287,9 +294,11 @@ Look for:
 - product code changed where the issue only called for tests, docs, or config;
 - new public API, hooks, or test seams added to production paths for the worker's own convenience;
 - at the review gate, compare the review diff against the simplify report's `## Not Applied` list
-  and documented kept choices in earlier reports of this pass. A reverted item without an `ask-user`
-  finding gates `stop`. Record the reverted item in the `orchestrator.verified` event and relay it to
-  the human verbatim as a finding, not a recommendation.
+  and documented kept choices in reports of the current pass and relevant prior passes of the same run.
+  Include prior-pass `## Not Applied` lists in this comparison. Check any claimed supersession against recorded human approval identifying the decision and the
+  authorized replacement or scope. A reverted item without that approval or an `ask-user` finding gates
+  `stop`. Record the reverted item in the `orchestrator.verified` event and relay it to the human verbatim
+  as a finding, not a recommendation.
   Correcting a regression while preserving documented intended behavior is not a decision reversion
   and does not trigger this stop rule; changing that intended behavior still requires ask-user.
 
@@ -436,9 +445,12 @@ human for triage. For each accepted item, draft a new issue file in the tracker 
 status `todo`, frontmatter per the tracker's convention) — creating an issue is a scope decision, so never
 add one without explicit human acceptance. Record the outcome per item as a `recommendations.triaged`
 event, including a one-line reason for rejected or deferred items, so the next retro can see what was
-dropped and why. Also append rejected and deferred items to the tracker's `decisions.md` (one line each:
-item, verdict, reason). `render_prompt.py` embeds that file into every worker prompt, so later reviewers
-and simplifiers see what the human already declined and do not re-report it unless the code presents a
+dropped and why. Also append approved, rejected, and deferred items to the tracker's `decisions.md`
+(one line each: item, verdict, reason). For explicit human supersession approvals, identify the earlier
+decision and the authorized replacement or scope. An approved follow-up issue does not by itself
+authorize changing a protected decision in the current issue. `render_prompt.py` embeds that file into
+every worker prompt, so later reviewers and simplifiers see the human verdicts, honor explicit supersessions within their authorized scope, and
+do not re-report or re-apply rejected or deferred items unless the code presents a
 materially different problem. Triage never blocks the next issue chain: present it and continue; the
 decision may stay open until the human responds.
 
@@ -647,7 +659,17 @@ Before launching a worker, choose these paths deterministically and render them 
 - Context files: every earlier report of the current pass, passed with `--context-file` — simplify
   receives the implement report; review receives implement and simplify; the final test receives all
   three. Prior reports carry the decisions, trade-offs, and drift notes of earlier stages; passing them
-  forward is what lets a reviewer tell a deliberate decision from a mistake.
+  forward is what lets a reviewer tell a deliberate decision from a mistake. For later reviewers,
+  also pass relevant prior-pass reports from the same run with `--context-file`, including protected
+  Not Applied items, documented intended behavior, and recorded human approvals that supersede them.
+  Relevant prior reports are those carrying protected decisions or explicit human supersession records.
+  Unrelated or decision-free historical reports are not required by default.
+  `decisions.md` is embedded automatically with approved, rejected, and deferred records distinguished;
+  supply approval records held elsewhere with `--context-file`.
+  Keep the earlier decision and any explicit supersession together with their source paths and pass
+  identities. Do not treat a later worker opinion as approval or infer supersession from report order.
+  Verify the rendered review prompt includes this decision context before delivery. If relevant context
+  is missing or scope/precedence is unresolved, ask the human before authorizing a disputed change.
 
 Send the visible CMUX worker the prompt file path and require it to write the final report to the exact
 rendered report handoff path before returning the same report body in the console. That exact report file
@@ -833,12 +855,17 @@ Implement and test prompts are identical across harnesses; simplify and review s
 bundled skills and the inline passes. The tracker README's
 ground-rules section (any `##` heading containing "ground rules") and the tracker's `decisions.md` triage
 ledger (when present) are embedded into every prompt automatically. Pass every earlier report of the
-current pass with `--context-file` (repeatable), per the context-files rule in CMUX Control:
+current pass with `--context-file` (repeatable), plus relevant prior-pass decision reports and human
+approval records for later reviewers, per the context-files rule in CMUX Control:
 
 ```bash
 python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/<run-id>
 python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 1 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md
+python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/review-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-2.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-2.md
 ```
+
+The pass-2 example assumes the pass-1 implement, simplify, and review reports carry protected decisions
+or explicit human supersession records. Select prior reports by the relevance rule above.
 
 Parse worker reports. Exit code carries the gate; a missing report is `pending` (exit 6), never a crash:
 

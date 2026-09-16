@@ -23,6 +23,15 @@ REGRESSION_CLARIFICATION = (
     "intended behavior still requires ask-user."
 )
 
+SAME_RUN_BOUNDARY = "Reports from unrelated runs are outside this same-run protection."
+SUPERSESSION_RULE = (
+    "Protection of Not Applied items and documented intended behavior persists until recorded "
+    "human approval explicitly supersedes the earlier decision. The approval must identify the "
+    "decision and the authorized replacement or scope. An agent proposal, a later report, or an "
+    "unapproved recommendation alone does not supersede it. Report unresolved scope or precedence "
+    "ambiguity as `Recommendation: ask-user`; do not apply the disputed change."
+)
+
 
 class RenderFunction(unittest.TestCase):
     def render(self, role: str, harness: str) -> str:
@@ -59,15 +68,25 @@ class RenderFunction(unittest.TestCase):
 
     def test_review_preserves_earlier_report_decisions_for_both_harnesses(self):
         rule = (
-            "Decisions recorded in earlier reports of this pass are documented decisions: every item "
+            "Relevant earlier-stage decisions recorded in reports of the same run, including prior passes, "
+            "are documented decisions: every item "
             "under a `## Not Applied` section and every behavior-preserving choice explained under "
-            "`## Change Summary` or `## Notes`. Reverting one requires a finding with "
+            "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
+            "reverting one requires a finding with "
             "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
-            "such an item, restore it before running the baseline suite and report the proposal as ask-user."
+            "such an item without that approval, restore it before running the baseline suite and report the proposal as ask-user."
         )
         for harness in ("claude-code", "codex"):
             with self.subTest(harness=harness):
                 self.assertIn(rule, self.render("review", harness))
+
+    def test_review_requires_human_supersession_with_same_run_boundary(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                text = self.render("review", harness)
+                self.assertIn(SAME_RUN_BOUNDARY, text)
+                self.assertIn(SUPERSESSION_RULE, text)
+                self.assertNotIn("earlier reports of this pass", text)
 
     def test_review_allows_regression_correction_preserving_intent_for_both_harnesses(self):
         for harness in ("claude-code", "codex"):
@@ -216,6 +235,93 @@ class RenderCli(unittest.TestCase):
                         self.assertIn(REGRESSION_CLARIFICATION, text)
                     else:
                         self.assertIn("\n## Not Applied\n- None", text)
+
+    def test_prior_pass_context_and_supersession_contract_through_cli(self):
+        """Verify delivered evidence and instructions, not a live model's decisions."""
+        initialized = self.init()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        gate = self.run_script(
+            RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "implement",
+            "--decision", "advance", "--reason", "test", "--next-stage", "review",
+        )
+        self.assertEqual(gate.returncode, 0, gate.stderr)
+        prior = self.run_dir / "reports" / "simplify-1.md"
+        prior_body = (
+            "## Not Applied\n- Keep separate input validators: preserve field diagnostics.\n"
+            "## Notes\n- Intended behavior: invalid inputs retain field-specific errors.\n"
+        )
+        prior.write_text(prior_body, encoding="utf-8")
+        scenarios = (
+            ("unapproved-reversion", "Worker proposes merging validators and removing field diagnostics.",
+             "- No human approval recorded.", SUPERSESSION_RULE),
+            ("approved-supersession", "Worker proposes merging validators and removing field diagnostics.",
+             "- Human approved superseding simplify-1's separate-validator decision and field-specific "
+             "error behavior with a shared validator and one generic input error for this issue.",
+             "Unless explicitly superseded by recorded human approval"),
+            ("regression-correction", "Restore field-specific errors accidentally removed by refactoring.",
+             "- No human approval to change intended behavior.", REGRESSION_CLARIFICATION),
+        )
+        pass_num = 1
+        for harness in ("claude-code", "codex"):
+            for name, proposal, decision, expected_rule in scenarios:
+                pass_num += 1
+                with self.subTest(harness=harness, scenario=name):
+                    current = self.run_dir / "reports" / f"implement-{pass_num}.md"
+                    current.write_text(f"## Notes\n- {proposal}\n", encoding="utf-8")
+                    ledger = self.repo / ".scratch" / "tracker" / "decisions.md"
+                    ledger.write_text(
+                        f"# Decisions\n{decision}\n"
+                        "- Rejected: rename public fields; preserve compatibility.\n"
+                        "- Deferred: consolidate parsing; await a separate scope decision.\n",
+                        encoding="utf-8",
+                    )
+                    prepared = self.run_script(
+                        RUN_STATE, "prepare", "--run-dir", str(self.run_dir),
+                        "--stage", "review", "--pass", str(pass_num),
+                        "--harness", f"review={harness}",
+                        "--executable", f"review={'claude' if harness == 'claude-code' else 'codex'}",
+                    )
+                    self.assertEqual(prepared.returncode, 0, prepared.stderr)
+                    rendered = self.run_script(
+                        RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+                        "--role", "review", "--pass", str(pass_num), "--run-dir", str(self.run_dir),
+                        "--context-file", str(prior), "--context-file", str(current),
+                    )
+                    self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                    text = (self.run_dir / "prompts" / f"review-{pass_num}.md").read_text(encoding="utf-8")
+                    self.assertIn(f"Harness: {harness}", text)
+                    self.assertIn(f"### {prior}", text)
+                    self.assertIn(prior_body.rstrip(), text)
+                    self.assertIn(f"### {current}", text)
+                    self.assertIn(proposal, text)
+                    decisions_block = text.split("## Tracker Decisions\n", 1)[1].split(
+                        "## Blocker Status", 1
+                    )[0]
+                    self.assertIn(decision, decisions_block)
+                    self.assertIn("approved, rejected, or deferred", decisions_block)
+                    self.assertIn(
+                        "Do not re-report or re-apply rejected or deferred items unless the code "
+                        "now presents a materially different problem.", decisions_block,
+                    )
+                    self.assertIn(
+                        "Only explicit recorded human approval identifying the earlier decision and "
+                        "the authorized replacement or scope supersedes a protected decision; "
+                        "apply that approval only within its authorized scope.", decisions_block,
+                    )
+                    self.assertIn("Rejected: rename public fields", decisions_block)
+                    self.assertIn("Deferred: consolidate parsing", decisions_block)
+                    self.assertNotIn("The human already rejected or deferred these items", decisions_block)
+                    if name == "approved-supersession":
+                        self.assertIn("Human approved superseding simplify-1", decisions_block)
+                        self.assertNotIn("No human approval", decisions_block)
+                    else:
+                        self.assertIn("No human approval", decisions_block)
+                        self.assertNotIn("Human approved superseding", decisions_block)
+                    self.assertIn(expected_rule, text)
+                    self.assertIn(SAME_RUN_BOUNDARY, text)
+                    self.assertIn(SUPERSESSION_RULE, text)
+                    self.assertIn(REGRESSION_CLARIFICATION, text)
+                    self.assertNotIn("earlier reports of this pass", text)
 
     def test_renders_the_snapshot_harness_variant(self):
         self.assertEqual(self.init("--harness", "implement=claude-code").returncode, 0)

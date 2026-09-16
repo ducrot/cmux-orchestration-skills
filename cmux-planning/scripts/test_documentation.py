@@ -127,7 +127,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         inspection = text.split(start, 1)[1].split(end, 1)[0]
         for phrase in (
             "at the review gate, compare the review diff against the simplify report's `## not applied` list",
-            "documented kept choices", "without an `ask-user` finding gates `stop`",
+            "documented kept choices", "without that approval or an `ask-user` finding gates `stop`",
             "record the reverted item in the `orchestrator.verified` event",
             "relay it to the human verbatim as a finding, not a recommendation",
         ):
@@ -147,6 +147,79 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             "decision reversion and does not trigger this stop rule", inspection,
         )
         self.assertIn("\n## Not Applied\n- None", guide.read_text(encoding="utf-8"))
+
+    def test_issue_chain_protects_same_run_decisions_across_passes(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        for start, end, phrases in (
+            ("## review self-fix policy", "## gate rule", (
+                "including prior passes of the same run",
+                "reports from unrelated runs are outside this same-run protection",
+                "until recorded human approval explicitly supersedes the earlier decision",
+                "identify the decision and the authorized replacement or scope",
+                "an agent proposal, a later report, or an unapproved recommendation alone",
+                "unresolved scope or precedence ambiguity as `recommendation: ask-user`",
+            )),
+            ("### diff inspection at code-changing gates", "## canonical check commands", (
+                "current pass and relevant prior passes of the same run",
+                "include prior-pass `## not applied` lists in this comparison",
+                "check any claimed supersession against recorded human approval",
+                "without that approval or an `ask-user` finding gates `stop`",
+                "record the reverted item in the `orchestrator.verified` event",
+                "relay it to the human verbatim as a finding, not a recommendation",
+            )),
+        ):
+            self.assertIn(start, text)
+            self.assertIn(end, text)
+            section = text.split(start, 1)[1].split(end, 1)[0]
+            for phrase in phrases:
+                with self.subTest(section=start, phrase=phrase):
+                    self.assertIn(phrase, section)
+        context = text.split("- context files:", 1)[1].split("send the visible cmux worker", 1)[0]
+        for phrase in (
+            "relevant prior-pass reports from the same run with `--context-file`",
+            "recorded human approvals that supersede them",
+            "`decisions.md` is embedded automatically",
+            "verify the rendered review prompt includes",
+        ):
+            with self.subTest(context=phrase):
+                self.assertIn(phrase, context)
+
+    def test_issue_chain_ledger_distinguishes_approved_supersessions(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        self.assertIn("## recommendations triage", text)
+        self.assertIn("## hitl issues", text)
+        triage = text.split("## recommendations triage", 1)[1].split("## hitl issues", 1)[0]
+        self.assertIn("approved, rejected, and deferred", triage)
+        self.assertIn("explicit human supersession approvals", triage)
+        self.assertIn("identify the earlier decision and the authorized replacement or scope", triage)
+
+    def test_issue_chain_relevant_prior_pass_context_and_example(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        self.assertIn("- context files:", text)
+        self.assertIn("send the visible cmux worker", text)
+        context = text.split("- context files:", 1)[1].split("send the visible cmux worker", 1)[0]
+        self.assertIn(
+            "relevant prior reports are those carrying protected decisions or explicit human supersession records",
+            context,
+        )
+        self.assertIn("unrelated or decision-free historical reports are not required by default", context)
+        lines = guide.read_text(encoding="utf-8").splitlines()
+        example = next(line for line in lines if line.startswith("python3 scripts/render_prompt.py ")
+                       and "--role review --pass 2 " in line)
+        for report in ("implement-1", "simplify-1", "review-1", "implement-2", "simplify-2"):
+            with self.subTest(report=report):
+                self.assertIn(
+                    f"--context-file .scratch/orchestrator/runs/<run-id>/reports/{report}.md", example,
+                )
 
     def test_vendored_run_helpers_are_byte_identical(self):
         if len(SIBLINGS) != 3:
