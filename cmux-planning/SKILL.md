@@ -69,6 +69,9 @@ It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Author
 `validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
+A schema-v2 file needs no migration question.
+An existing valid schema-v2 file needs no start confirmation either; the start question belongs only to a newly created default (accepted with `--accept-config`). Never offer profile overrides the human did not ask for.
+
 `planning_state.py init` creates a missing config or detects a valid schema-v1 file, then displays
 every resolved workflow. For schema v1 it strictly validates and previews the complete schema-v2
 candidate without changing the original bytes, emits the compatibility warning above, and exits

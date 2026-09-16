@@ -37,7 +37,9 @@ preparation do the same before publishing launchable state.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
-protocol:
+protocol. An existing valid schema-v2 file needs no start confirmation either; the start question
+belongs only to a newly created default (accepted with the **Yes, start now** answer).
+Never offer profile overrides the human did not ask for.
 
 1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,

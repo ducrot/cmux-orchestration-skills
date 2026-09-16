@@ -160,6 +160,16 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         ):
             self.assertIn(required, text)
 
+    def test_valid_schema_v2_configuration_needs_no_question(self):
+        for guide in SIBLINGS:
+            for required in (
+                "a schema-v2 file needs no migration question",
+                "needs no start confirmation",
+                "never offer profile overrides the human did not ask for",
+            ):
+                with self.subTest(guide=guide.relative_to(REPOSITORY), required=required):
+                    self.assertIn(required, normalized(guide))
+
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated
         # cmux-* skills still checks every guide that ships this contract.
