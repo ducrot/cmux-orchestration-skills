@@ -463,6 +463,10 @@ PASS
         self.assertIn("## Checked\n- `<reference>`: <what was checked>: <outcome>", reviewer_prompt)
         self.assertIn("must cover all input sections", reviewer_prompt)
         self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
+        self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
+        self.assertIn("Put explanatory context in Methods", reviewer_prompt)
+        self.assertIn("rerun until it exits 0", reviewer_prompt)
+        self.assertIn("exact bytes handed off", reviewer_prompt)
         digest = validate_spec(draft)["sha256"]
         (self.run_dir / "reports" / "spec-review-1.md").write_text(
             review_report("pass", digest, digest), encoding="utf-8"
@@ -651,6 +655,10 @@ sha256 {resulting_digest or digest}
         self.assertIn("## Checked\n- `<reference>`: <what was checked>: <outcome>", reviewer_prompt)
         self.assertIn("must cover all input ticket ids", reviewer_prompt)
         self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
+        self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
+        self.assertIn("Put explanatory context in Methods", reviewer_prompt)
+        self.assertIn("rerun until it exits 0", reviewer_prompt)
+        self.assertIn("exact bytes handed off", reviewer_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets-review")
         self.write_tickets_review()

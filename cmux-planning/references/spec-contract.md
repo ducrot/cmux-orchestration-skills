@@ -31,6 +31,14 @@ The fresh Codex reviewer returns exactly one verdict:
 - `blocked`: records the missing product, scope, behavior, priority, or architecture decision and
   writes no approval candidate.
 
+Empty report sections use exactly `- None` as their entire body, without punctuation or appended
+explanation. For `pass`, Findings, Corrections, Blockers, and Plan Drift must have this exact body;
+for `pass_with_fixes`, Blockers and Plan Drift must. Put explanatory context in Methods. Reviewers
+run the rendered self-validation command on the final saved files, inspect its exit code and output,
+and repair report-format errors before handoff. After any further edit, rerun validation; only exit
+code 0 for the handed-off bytes supports a claim of successful self-validation. Preserve substantive
+findings and blockers rather than replacing them with an empty sentinel to satisfy the gate.
+
 Every spec and tickets review report requires `## Checked`. The recommended template order places
 it between `## Findings` and `## Methods`; parsing is order-independent.
 Use evidence bullets of the form:

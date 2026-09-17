@@ -36,6 +36,20 @@ handoff artifacts are gated by digest instead."""
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
 
 
+REVIEW_HANDOFF_CONTRACT = """Empty sections are machine-readable sentinels: their entire body must be
+exactly `- None`, with no period, explanation, second bullet, or trailing paragraph. For `pass`,
+this applies to Findings, Corrections, Blockers, and Plan Drift; for `pass_with_fixes`, Blockers and
+Plan Drift must remain exactly `- None`. Put explanatory context in Methods, not after a sentinel.
+For example, `- None. The proposal remains unchanged.` is invalid.
+
+Run the self-validation command below on the final saved report and inspect its exit code and output.
+If it fails, fix the report within your write boundary and rerun until it exits 0. Never remove a real
+finding, blocker, or drift merely to pass validation; use the appropriate verdict. Any subsequent
+report or candidate edit invalidates that check and requires another run. Claim successful
+self-validation only after exit code 0 for the exact bytes handed off. If validation cannot complete,
+report the failure honestly instead of claiming a validated handoff."""
+
+
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
 SPEC_CONTRACT = f"""The draft must be English and contain substantive `##` sections named exactly:
 {", ".join(SPEC_SECTIONS[:-1])}, and {SPEC_SECTIONS[-1]}. Preserve literal product copy and
@@ -314,6 +328,8 @@ Git-visible before/after inspection gates unauthorized deltas outside the run di
 {DETECTOR_BOUNDARY}
 
 ## Review Report Contract
+
+{REVIEW_HANDOFF_CONTRACT}
 
 `## Checked` must cover all input sections by their exact section names, with backtick-quoted
 references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.
@@ -617,6 +633,8 @@ Never edit the author proposal,
 approved spec, product code, lifecycle state, or human summary.
 
 ## Review Report Contract
+
+{REVIEW_HANDOFF_CONTRACT}
 
 `## Checked` must cover all input ticket ids from the author proposal, with backtick-quoted
 references and a stated check and outcome in every bullet. Missing or empty evidence is malformed.

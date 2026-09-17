@@ -292,6 +292,37 @@ sha256 {self.spec_digest}
                 expected_spec_sha256=self.spec_digest, expected_tracker_slug="planned-feature",
             )
 
+    def test_pass_report_rejects_explanatory_empty_sections_until_moved_to_methods(self):
+        digest = self.write_proposal()["sha256"]
+        review = self.root / "review.md"
+        candidate = self.root / "candidate.json"
+        clean = review_report(
+            "pass", digest, digest,
+            checked=checked_evidence(["ISSUE-001", "ISSUE-002"]),
+        )
+        explanation = "The proposal and approved specification remain unchanged."
+        for section in ("Findings", "Corrections", "Blockers", "Plan Drift"):
+            for suffix in (". " + explanation, "\n\n" + explanation):
+                with self.subTest(section=section, suffix=suffix):
+                    review.write_text(clean.replace(
+                        f"## {section}\n- None", f"## {section}\n- None{suffix}"
+                    ), encoding="utf-8")
+                    result = self.contract_cli(
+                        "review-report", str(review), "--input", str(self.proposal_path),
+                        "--candidate", str(candidate), "--input-sha256", digest,
+                        "--spec", str(self.spec), "--spec-sha256", self.spec_digest,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+        review.write_text(clean.replace(
+            "## Methods\n", f"## Methods\n- {explanation}\n"
+        ), encoding="utf-8")
+        result = self.contract_cli(
+            "review-report", str(review), "--input", str(self.proposal_path),
+            "--candidate", str(candidate), "--input-sha256", digest,
+            "--spec", str(self.spec), "--spec-sha256", self.spec_digest,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_all_review_verdicts_bind_digests_and_safe_fixes_need_no_second_review(self):
         original = self.write_proposal()
         digest = original["sha256"]
