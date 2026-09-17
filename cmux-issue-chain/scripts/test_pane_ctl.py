@@ -305,7 +305,7 @@ class StartAgent(PaneCtlCase):
         self.assertIn("network_access=true", command)
 
         events = self.events()
-        self.assertEqual([event["type"] for event in events], ["worker.launch_sent"])
+        self.assertEqual([event["type"] for event in events], ["worker.starting", "worker.launch_sent"])
         self.assertEqual(events[0]["data"]["command"], command)
 
     def test_claude_role_gets_the_marker_too(self):
@@ -353,9 +353,29 @@ class StartAgent(PaneCtlCase):
 
 
 class Deliver(PaneCtlCase):
+    def ready(self, worker):
+        selector = ["--role", worker, "--pass", "1"] if hasattr(self, "prepare_snapshot") else ["--lane", worker]
+        if hasattr(self, "prepare_snapshot"):
+            self.prepare_snapshot(worker)
+        common = ["--run-dir", str(self.run_dir), "--surface", "SURF-UUID", *selector]
+        started = self.run_ctl("start-agent", *common, "--settle-seconds", "0")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        observed = self.run_ctl("observe", *common)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        observation = json.loads(observed.stdout)["observation_id"]
+        assessed = self.run_ctl("assess", *common, "--observation", observation,
+                                "--state", "ready", "--reason", "fixture agent is idle")
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        self.log.unlink()
+        self.delivery_event_offset = len(super().events())
+
+    def events(self):
+        return super().events()[getattr(self, "delivery_event_offset", 0):]
+
     FOLLOW_UP = "re-emit the report per the Worker Report Contract; fix the format, not the substance"
 
     def test_send_enter_readscreen_in_order(self):
+        self.ready("review")
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
             "--surface", "SURF-UUID", "--text", self.FOLLOW_UP,
@@ -365,8 +385,8 @@ class Deliver(PaneCtlCase):
         self.assertIn("PANE SCREEN", proc.stdout)
 
         verbs = [call[0] for call in self.cmux_calls()]
-        self.assertEqual(verbs, ["send", "send-key", "read-screen"])
-        send, send_key, read_screen = self.cmux_calls()
+        self.assertEqual(verbs, ["read-screen", "send", "send-key", "read-screen"])
+        _, send, send_key, read_screen = self.cmux_calls()
         self.assertEqual(send[-1], self.FOLLOW_UP)
         self.assertEqual(send_key[-1], "enter")
         for call in (send, send_key, read_screen):
@@ -374,11 +394,12 @@ class Deliver(PaneCtlCase):
             self.assertIn("SURF-UUID", call)
 
         events = self.events()
-        self.assertEqual([event["type"] for event in events], ["worker.prompt_sent"])
-        self.assertEqual(events[0]["data"]["text"], self.FOLLOW_UP)
-        self.assertIsNone(events[0]["data"]["prompt_path"])
+        self.assertEqual([event["type"] for event in events], ["worker.readiness_consumed", "worker.delivery_attempted", "worker.prompt_sent"])
+        self.assertEqual(events[-1]["data"]["text"], self.FOLLOW_UP)
+        self.assertIsNone(events[-1]["data"]["prompt_path"])
 
     def test_prompt_mode_sends_the_skills_own_task_framing(self):
+        self.ready("review")
         prompt_path = "prompts/review-1.md"
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
@@ -388,10 +409,10 @@ class Deliver(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
         expected = delivery_text(prompt_path)
-        self.assertEqual(self.cmux_calls()[0][-1], expected)
+        self.assertEqual(self.cmux_calls()[1][-1], expected)
         events = self.events()
-        self.assertEqual(events[0]["data"]["text"], expected)
-        self.assertEqual(events[0]["data"]["prompt_path"], prompt_path)
+        self.assertEqual(events[-1]["data"]["text"], expected)
+        self.assertEqual(events[-1]["data"]["prompt_path"], prompt_path)
 
     def test_delivery_text_frames_the_prompt_as_work_not_reading(self):
         text = delivery_text("prompts/simplify-1.md")

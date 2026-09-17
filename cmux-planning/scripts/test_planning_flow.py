@@ -585,6 +585,15 @@ sha256 {resulting_digest or digest}
             encoding="utf-8",
         )
 
+    def confirm_ready(self, stage="spec", pass_num=1, surface="SURF-1"):
+        common = ["--run-dir", str(self.run_dir), "--stage", stage, "--pass", str(pass_num), "--surface", surface]
+        observed = self.cli(PANE, "--cmux-cmd", str(self.cmux), "observe", *common)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        assessed = self.cli(PANE, "--cmux-cmd", str(self.cmux), "assess", *common,
+                            "--observation", json.loads(observed.stdout)["observation_id"],
+                            "--state", "ready", "--reason", "fixture agent is fully loaded and idle")
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+
     def launch_prepared_stage(self, stage: str, pass_num: int = 1) -> None:
         def pane(verb: str, *tail: str) -> subprocess.CompletedProcess[str]:
             result = self.cli(
@@ -597,6 +606,7 @@ sha256 {resulting_digest or digest}
 
         surface = json.loads(pane("launch", "--anchor", "CALLER").stdout)["surface_id"]
         pane("start-agent", "--surface", surface, "--settle-seconds", "0")
+        self.confirm_ready(stage, pass_num, surface)
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
         pane(
             "deliver",
@@ -2920,6 +2930,43 @@ Option?
         self.assertEqual(resumed_input.returncode, 0, resumed_input.stderr)
         self.assertEqual(json.loads(resumed_input.stdout)["classification"], "spec-authoring")
 
+    def test_interrupted_start_and_delivery_recovery_never_recommends_blind_input(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        common = ["--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"]
+        def pane(verb, *tail):
+            return self.cli(PANE, "--cmux-cmd", str(self.cmux), verb, *common, *tail)
+        self.assertEqual(pane("launch", "--anchor", "CALLER").returncode, 0)
+        # Simulate an Enter failure after text was accepted by CMUX.
+        original = self.cmux.read_text()
+        failing = original.replace('elif "read-screen" in sys.argv:',
+                                   'elif "send-key" in sys.argv: raise SystemExit(1)\nelif "read-screen" in sys.argv:')
+        self.cmux.write_text(failing)
+        started = pane("start-agent", "--surface", "SURF-1", "--settle-seconds", "0")
+        self.assertNotEqual(started.returncode, 0)
+        def status():
+            result = self.cli(STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        interrupted = status()
+        self.assertIn("HITL", interrupted["recommended_next"]["action"])
+        self.assertIn("read-screen", interrupted["recommended_next"]["command"])
+        self.assertIn("--workspace WORKSPACE-1", interrupted["recommended_next"]["command"])
+        self.assertNotIn("start-agent", interrupted["recommended_next"]["command"])
+        # A fresh pane has its own startup history, then a partial delivery also stops.
+        self.cmux.write_text(original)
+        self.assertEqual(pane("launch", "--anchor", "CALLER").returncode, 0)
+        self.assertEqual(pane("start-agent", "--surface", "SURF-1", "--settle-seconds", "0").returncode, 0)
+        self.confirm_ready()
+        self.cmux.write_text(failing)
+        delivered = pane("deliver", "--surface", "SURF-1", "--prompt",
+                         str(self.run_dir / "prompts/spec-1.md"), "--settle-seconds", "0")
+        self.assertNotEqual(delivered.returncode, 0)
+        interrupted = status()
+        self.assertIn("HITL", interrupted["recommended_next"]["action"])
+        self.assertIn("read-screen", interrupted["recommended_next"]["command"])
+        self.assertFalse(interrupted["pane"]["prompt_sent"])
+
     def test_live_worker_is_rejoined_never_started_work_is_redelivered_and_dead_worker_needs_fresh_pass(self):
         self.assertEqual(self.init_direct().returncode, 0)
         self.render_and_baseline("spec")
@@ -2959,7 +3006,8 @@ Option?
         )
         self.assertTrue(status["pane"]["agent_launch_sent"])
         self.assertFalse(status["pane"]["prompt_sent"])
-        self.assertIn("deliver", status["recommended_next"]["command"])
+        self.assertIn("observe", status["recommended_next"]["command"])
+        self.confirm_ready()
 
         delivered = pane(
             "deliver",
@@ -2981,6 +3029,7 @@ Option?
 
         # The visible pane showed the known summarized-and-waiting case, so the same immutable
         # prompt may be re-delivered without creating a new worker or pass.
+        self.confirm_ready()
         redelivered = pane(
             "deliver",
             "--surface",

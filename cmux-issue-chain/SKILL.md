@@ -469,6 +469,14 @@ The orchestrator may still assist the human:
   an `action_required` entry and tracked to closure before `run_state.py complete`. A probe that leaves a
   live side effect behind is an unresolved blocker, not a passed check.
 
+## Worker input readiness
+
+Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
+After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
+startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
+start and task delivery. The gate applies to Codex and Claude Code, all roles/lanes, and follow-ups.
+`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+
 ## CMUX Control
 
 Prefer current CLI syntax discovered from `cmux --help` before launching workers. Workers must be visible in CMUX
@@ -517,11 +525,14 @@ goes through `pane_ctl.py`, which reads the pinned `workspace_id` from `state.js
 pinned ID is a stop, not a fallback: the human may be looking at a different workspace than the one the
 run owns, and cmux resolves unscoped commands against the focused one.
 
-Three lifecycle verbs cover the error-prone multi-step sequences and record their events themselves:
+The lifecycle verbs cover the error-prone multi-step sequences and record their events themselves:
 
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --anchor <prev-worker-surface-id>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
+# Read each result; ready is a judgment, not an unconditional startup command.
+python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --role review --pass 1
+python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --role review --pass 1 --observation <observation-id> --state ready --reason "<screen evidence>"
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --role review --pass 1 --prompt <prompt-path>
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
@@ -534,7 +545,7 @@ python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --r
   when panes close.
 - `start-agent` revalidates the same snapshot, safely shell-quotes its argument vector, sends that exact
   launch command without reading live configuration, records `worker.launch_sent`, and echoes the screen.
-- `deliver` sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
+- `deliver` requires a fresh, screen-bound readiness assessment, consumes it, then sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
   and echoes the pane screen after a short settle. Judging that screen — worker started, or sitting at an
   approval prompt — stays the orchestrator's call; record `worker.started` only after that judgment.
   Hand over a rendered prompt with `--prompt <prompt-path>`, never with hand-written `--text`: the
@@ -635,7 +646,7 @@ Close completed worker panes promptly:
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
 7. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
-   screen (TUI up? trust prompt pending?), then record
+   screen, then follow the observe/assess/dialog protocol before recording
    `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
    Send the prompt with `pane_ctl.py deliver --prompt` and
    confirm the worker started (see the send/Enter rule below).
@@ -683,12 +694,14 @@ and waits there unsent. `deliver` therefore always sends the text and an explici
 commands, then echoes the pane screen:
 
 ```bash
+# Read each result; ready is a judgment, not an unconditional startup command.
+python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --role test --pass 1
+python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --role test --pass 1 --observation <observation-id> --state ready --reason "<screen evidence>"
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> \
   --role test --pass 1 --prompt .scratch/orchestrator/runs/<run-id>/prompts/test-1.md
 ```
 
-`--role`/`--pass` are what make the `worker.prompt_sent` event attributable; leaving them off records
-`role: null`. `--prompt` builds the delivery line from `orchestrator_lib.delivery_text()` — do not write
+`--role`/`--pass` are required: they bind readiness and the `worker.prompt_sent` event to the worker. `--prompt` builds the delivery line from `orchestrator_lib.delivery_text()` — do not write
 that line by hand. A framing like "Read `<path>` and report back" is what a Claude worker answers with a
 summary of the prompt, which is why the wording lives in the skill and not in the turn.
 
@@ -892,6 +905,7 @@ Run the regression tests after touching `parse_report.py`, `await_report.py`, `p
 python3 scripts/test_parse_report.py
 python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_worker_readiness.py
 python3 scripts/test_stage_preparation.py
 python3 scripts/test_agents_config.py
 ```
@@ -907,6 +921,7 @@ the whole block must be safe to run twice in a row:
 python3 scripts/test_parse_report.py
 python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_worker_readiness.py
 python3 scripts/test_issue_state.py
 python3 scripts/test_adopt_tracker.py
 python3 scripts/test_agents_config.py

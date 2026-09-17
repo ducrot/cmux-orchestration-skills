@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+from worker_readiness import Gate, VERBS, add_commands, begin_start
+
 from artifact_manifest import ArtifactIntegrityError, current_attempt, require_current_format, verify_or_gate
 from orchestrator_lib import (
     ROLE_LABELS,
@@ -52,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--settle-seconds", type=float, default=3)
     subparsers.add_parser("mark-started", parents=[launched_pane])
     subparsers.add_parser("close", parents=[launched_pane])
+    add_commands(subparsers, parents=[launched_pane])
     return parser
 
 
@@ -84,6 +87,10 @@ def event(run_dir: Path, kind: str, message: str, data: dict) -> None:
 def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dict) -> None:
     run_dir = Path(args.run_dir)
     target = ["--workspace", workspace(run_dir), "--surface", surface]
+    if kind == "worker.launch_sent":
+        data = begin_start(args, event, data)
+    if kind == "worker.prompt_sent":
+        event(run_dir, "worker.delivery_attempted", "task input about to be sent", data)
     cmux(args, ["send", *target, text])
     cmux(args, ["send-key", *target, "enter"])
     event(run_dir, kind, "sent and submitted text to stable planning pane", data)
@@ -153,6 +160,9 @@ def run(args: argparse.Namespace) -> int:
     surface = validate_recorded_surface(
         events, args.stage, args.pass_num, args.surface, any_launch=args.command == "close"
     )
+    if args.command in VERBS:
+        load_prepared_snapshot(run_dir, args.stage, args.pass_num)
+        return Gate(args, workspace(run_dir), cmux, event).run()
     if args.command == "start-agent":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
         send(
@@ -170,6 +180,7 @@ def run(args: argparse.Namespace) -> int:
         verified = read_planning_state(run_dir / "state.json")["tree_baseline"]["prompt_path"]
         if Path(args.prompt).resolve() != Path(verified).resolve():
             raise SnapshotError(f"--prompt is not the baseline-verified prompt: {verified}")
+        Gate(args, workspace(run_dir), cmux, event).consume()
         send(
             args,
             surface,
@@ -183,6 +194,8 @@ def run(args: argparse.Namespace) -> int:
         already_recorded = surface_event_recorded(
             events, "worker.started", args.stage, args.pass_num, surface
         )
+        if not surface_event_recorded(events, "worker.prompt_sent", args.stage, args.pass_num, surface):
+            raise SnapshotError("cannot mark-started before the assignment was delivered")
         if not already_recorded:
             event(
                 run_dir,

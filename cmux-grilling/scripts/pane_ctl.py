@@ -9,12 +9,13 @@ focused workspace or an environment fallback. Verbs:
   cmux       generic passthrough that injects --workspace into any cmux command
   launch      launch-wave check + new-split + deterministic label + pane lifecycle events
   start-agent send the lane's prepared launch-wave command + worker.launch_sent event
-  deliver     send + send-key enter + read-screen echo + worker.prompt_sent event
+  observe/assess/respond  screen-bound readiness and individually assessed dialog keys
+  deliver     consume readiness + send + send-key enter + screen + worker.prompt_sent
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
   close       close-surface + pane.closed event
 
-`launch`/`start-agent`/`deliver`/`close` are mechanical lifecycle verbs only. Judging what a
+The readiness gate enforces observation and assessment before input. Judging what a
 lane's screen means (started? stuck at a prompt?) stays with the orchestrator.
 """
 
@@ -27,6 +28,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+from worker_readiness import Gate, ReadinessError, add_commands, begin_start
 
 from launch_wave import (
     LaunchWaveError,
@@ -88,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="round",
         help="Which prompt --prompt hands over: a standing session contract or a round task",
     )
-    deliver.add_argument("--lane", choices=sorted(LANES))
+    deliver.add_argument("--lane", choices=sorted(LANES), required=True)
     deliver.add_argument("--settle-seconds", type=float, default=3.0, help="Wait before read-screen")
     deliver.add_argument("--read-lines", type=int, default=40)
 
@@ -97,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--surface", required=True)
     close.add_argument("--lane", required=True, choices=sorted(LANES))
 
+    add_commands(subparsers, selector="lane")
     return parser
 
 
@@ -218,6 +222,10 @@ def send_submit_echo(
 ) -> None:
     run_dir = Path(args.run_dir)
     target = ["--workspace", pinned_workspace(run_dir), "--surface", args.surface]
+    if event_type == "worker.launch_sent":
+        data = begin_start(args, record_event, data)
+    if event_type == "worker.prompt_sent":
+        record_event(run_dir, "worker.delivery_attempted", "task input about to be sent", data)
     run_cmux(args, ["send", *target, text])
     # A trailing \n does not submit in the Codex/Claude TUIs; Enter must be its own key event.
     run_cmux(args, ["send-key", *target, "enter"])
@@ -245,7 +253,12 @@ def cmd_start_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_readiness(args: argparse.Namespace) -> int:
+    return Gate(args, pinned_workspace(Path(args.run_dir)), run_cmux, record_event).run()
+
+
 def cmd_deliver(args: argparse.Namespace) -> int:
+    Gate(args, pinned_workspace(Path(args.run_dir)), run_cmux, record_event).consume()
     text = delivery_text(args.kind, args.prompt) if args.prompt else args.text
     send_submit_echo(
         args,
@@ -277,6 +290,9 @@ def cmd_close(args: argparse.Namespace) -> int:
 
 
 COMMANDS = {
+    "observe": cmd_readiness,
+    "assess": cmd_readiness,
+    "respond": cmd_readiness,
     "workspace": cmd_workspace,
     "cmux": cmd_cmux,
     "launch": cmd_launch,
@@ -290,7 +306,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         return COMMANDS[args.command](args)
-    except LaunchWaveError as error:
+    except (LaunchWaveError, ReadinessError) as error:
         print(error, file=sys.stderr)
         return 1
 

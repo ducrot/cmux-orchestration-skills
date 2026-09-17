@@ -269,6 +269,14 @@ a snapshot even when the resolved combination changed meanwhile and is now diver
 reason are recorded, the guidance is printed, and launching that stage takes a later explicit `prepare`.
 A genuinely diverse resolution prepares normally with no warning or extra prompt.
 
+## Worker input readiness
+
+Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
+After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
+startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
+start and task delivery. The gate applies to Codex and Claude Code, all roles/lanes, and follow-ups.
+`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+
 ## Run one stage
 
 For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the corresponding current pass number
@@ -281,6 +289,12 @@ python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n
   --anchor <caller-surface>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <launch-surface-id>
+# Read the start output; run observe and assess separately before delivery.
+python3 scripts/pane_ctl.py observe --run-dir <run-dir> --stage <stage> --pass <n> \
+  --surface <launch-surface-id>
+python3 scripts/pane_ctl.py assess --run-dir <run-dir> --stage <stage> --pass <n> \
+  --surface <launch-surface-id> --observation <observation-id> --state ready \
+  --reason "<evidence that the expected agent is fully loaded and idle>"
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <launch-surface-id> --prompt <rendered-prompt>
 python3 scripts/pane_ctl.py mark-started --run-dir <run-dir> --stage <stage> --pass <n> \
@@ -376,7 +390,8 @@ Follow the status command exactly for active work:
 - A live pane whose deterministic prompt was sent and whose report is pending is rejoined with the
   armed `await_report.py` command. Never launch a duplicate worker.
 - A recorded pane in which the worker or prompt was never started uses the reported `start-agent` or
-  `deliver` command and the same baseline-bound prompt. After delivery, inspect the visible screen:
+  readiness protocol and the same baseline-bound prompt. Always observe again on recovery before input.
+  After delivery, inspect the visible screen:
   re-deliver only for the known summarized-and-waiting case, otherwise record `mark-started` before
   arming the watcher. A stage with no pane uses the launch command.
 - A non-empty handoff is gated or inspected and never overwritten as an uncertain retry.
@@ -595,6 +610,7 @@ The dependency-free end-to-end smoke path is:
 
 ```bash
 python3 scripts/test_planning_flow.py -v -k offline_smoke
+python3 scripts/test_worker_readiness.py
 ```
 
 It uses fake workers and fake CMUX to cover a direct task, both author/reviewer stages, a safe

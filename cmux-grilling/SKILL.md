@@ -556,6 +556,14 @@ explicitly which decisions are being committed unresolved (`open` or `deferred`)
 human sees what is still outstanding. The human reviews, commits, and pushes. Never run
 `git push`.
 
+## Worker input readiness
+
+Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
+After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
+startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
+start and task delivery. The gate applies to Codex and Claude Code, all roles/lanes, and follow-ups.
+`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+
 ## CMUX Control
 
 Prefer current CLI syntax discovered from `cmux --help` before launching lanes. Lanes must
@@ -646,6 +654,9 @@ against the focused one.
 ```bash
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --lane codebase --anchor <surface-id>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --lane codebase
+# Read each result; ready is a judgment, not an unconditional startup command.
+python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --lane codebase
+python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --lane codebase --observation <observation-id> --state ready --reason "<screen evidence>"
 python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --lane codebase --kind round --prompt <prompt-path>
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --lane codebase
 python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <surface-id> --lines 40
@@ -656,7 +667,7 @@ python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <s
 every later command; positional refs like `surface:465` shift when panes close. `start-agent`
 revalidates that same wave and sends only the requested lane's prepared launch command
 (configuration is never re-read), records `worker.launch_sent`, and echoes the screen.
-`deliver`
+`deliver` requires a fresh, screen-bound readiness assessment, consumes it, then
 sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
 in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
 echoes the pane screen. Hand over a rendered prompt with `--prompt <path>` plus `--kind
@@ -690,7 +701,7 @@ Session start:
    pills via `set-status` through the injector (not pane colors): Codebase `#0a84ff`,
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
 4. Start each lane's agent with `pane_ctl.py start-agent --lane <lane>`; judge the echoed
-   screen (TUI up? trust prompt pending?) before sending it any text.
+   screen, then complete the observe/assess/dialog protocol before sending it any text.
 5. Before sending any session prompt, capture
    `run_state.py snapshot --label "launched session"` under Delivery baselines and staged deltas.
    Send each lane its session prompt with `pane_ctl.py deliver --lane <lane> --kind session
@@ -815,6 +826,7 @@ Run the regression tests after touching `parse_research_report.py`, `await_repor
 python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_worker_readiness.py
 python3 scripts/test_run_state.py
 python3 scripts/test_agents_config.py
 python3 scripts/test_launch_wave.py
@@ -829,6 +841,7 @@ whole block must be safe to run twice in a row (`init` is idempotent):
 python3 scripts/test_parse_research_report.py
 python3 scripts/test_await_reports.py
 python3 scripts/test_pane_ctl.py
+python3 scripts/test_worker_readiness.py
 python3 scripts/test_run_state.py
 python3 scripts/test_agents_config.py
 python3 scripts/test_launch_wave.py

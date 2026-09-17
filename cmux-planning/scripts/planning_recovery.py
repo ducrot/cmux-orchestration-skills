@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from worker_readiness import readiness_status
+
 from artifact_manifest import (
     ArtifactIntegrityError,
     current_attempt,
@@ -191,6 +193,9 @@ def pane_status(
         "surface_id": surface,
         "surface_ref": data.get("surface_ref"),
         "pane_id": data.get("pane_id"),
+        "startup_state": readiness_status(events, {"stage": stage, "pass": pass_num}, surface),
+        "launch_attempted": surface_event_recorded(relevant, "worker.starting", stage, pass_num, surface),
+        "delivery_attempted": surface_event_recorded(relevant, "worker.delivery_attempted", stage, pass_num, surface),
         "agent_launch_sent": agent_launch_sent,
         "assignment_start_confirmed": assignment_start_confirmed,
         "prompt_sent": prompt_sent,
@@ -631,12 +636,27 @@ def recommended_next(
                     [*pane_base, "launch", *common, "--anchor", "<caller-surface>"]
                 ),
             }
+        interrupted_start = pane.get("launch_attempted") and not pane.get("agent_launch_sent")
+        interrupted_delivery = pane.get("delivery_attempted") and not pane.get("prompt_sent")
+        if interrupted_start or interrupted_delivery:
+            return {
+                "action": "HITL: inspect interrupted input; do not blindly restart or redeliver",
+                "command": shell_join([
+                    *shlex.split(cmux_cmd), "read-screen", "--workspace", state["workspace_id"],
+                    "--surface", str(surface), "--lines", "80",
+                ]),
+            }
         if not pane.get("agent_launch_sent"):
             return {
                 "action": "start the configured worker in the existing pane",
                 "command": shell_join(
                     [*pane_base, "start-agent", *common, "--surface", str(surface)]
                 ),
+            }
+        if not pane.get("prompt_sent") and pane.get("startup_state") != "ready":
+            return {
+                "action": "observe startup and assess the current screen before delivering; resolve any dialog first",
+                "command": shell_join([*pane_base, "observe", *common, "--surface", str(surface)]),
             }
         if not pane.get("prompt_sent"):
             return {

@@ -233,7 +233,7 @@ class StartAgent(PaneCtlCase):
         self.assertIn("--model gpt-6-astra", command)
 
         events = self.events()
-        self.assertEqual([event["type"] for event in events], ["worker.launch_sent"])
+        self.assertEqual([event["type"] for event in events], ["worker.starting", "worker.launch_sent"])
         self.assertEqual(events[0]["data"]["command"], command)
 
     def test_claude_lane_gets_the_marker_too(self):
@@ -250,9 +250,29 @@ class StartAgent(PaneCtlCase):
 
 
 class Deliver(PaneCtlCase):
+    def ready(self, worker):
+        selector = ["--role", worker, "--pass", "1"] if hasattr(self, "prepare_snapshot") else ["--lane", worker]
+        if hasattr(self, "prepare_snapshot"):
+            self.prepare_snapshot(worker)
+        common = ["--run-dir", str(self.run_dir), "--surface", "SURF-UUID", *selector]
+        started = self.run_ctl("start-agent", *common, "--settle-seconds", "0")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        observed = self.run_ctl("observe", *common)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        observation = json.loads(observed.stdout)["observation_id"]
+        assessed = self.run_ctl("assess", *common, "--observation", observation,
+                                "--state", "ready", "--reason", "fixture agent is idle")
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        self.log.unlink()
+        self.delivery_event_offset = len(super().events())
+
+    def events(self):
+        return super().events()[getattr(self, "delivery_event_offset", 0):]
+
     FOLLOW_UP = "re-emit the report per the Research Report Contract; fix the format, not the substance"
 
     def test_send_enter_readscreen_in_order(self):
+        self.ready("web")
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
             "--surface", "SURF-UUID", "--text", self.FOLLOW_UP,
@@ -262,18 +282,19 @@ class Deliver(PaneCtlCase):
         self.assertIn("PANE SCREEN", proc.stdout)
 
         verbs = [call[0] for call in self.cmux_calls()]
-        self.assertEqual(verbs, ["send", "send-key", "read-screen"])
-        send, send_key, _ = self.cmux_calls()
+        self.assertEqual(verbs, ["read-screen", "send", "send-key", "read-screen"])
+        _, send, send_key, _ = self.cmux_calls()
         self.assertEqual(send[-1], self.FOLLOW_UP)
         self.assertEqual(send_key[-1], "enter")
 
         events = self.events()
-        self.assertEqual([event["type"] for event in events], ["worker.prompt_sent"])
-        self.assertEqual(events[0]["data"]["lane"], "web")
-        self.assertIsNone(events[0]["data"]["prompt_path"])
-        self.assertIsNone(events[0]["data"]["kind"])
+        self.assertEqual([event["type"] for event in events], ["worker.readiness_consumed", "worker.delivery_attempted", "worker.prompt_sent"])
+        self.assertEqual(events[-1]["data"]["lane"], "web")
+        self.assertIsNone(events[-1]["data"]["prompt_path"])
+        self.assertIsNone(events[-1]["data"]["kind"])
 
     def test_round_prompt_sends_the_skills_own_task_framing(self):
+        self.ready("web")
         prompt_path = "prompts/round-1-web.md"
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
@@ -283,20 +304,21 @@ class Deliver(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
         expected = delivery_text("round", prompt_path)
-        self.assertEqual(self.cmux_calls()[0][-1], expected)
+        self.assertEqual(self.cmux_calls()[1][-1], expected)
         events = self.events()
-        self.assertEqual(events[0]["data"]["text"], expected)
-        self.assertEqual(events[0]["data"]["prompt_path"], prompt_path)
-        self.assertEqual(events[0]["data"]["kind"], "round")
+        self.assertEqual(events[-1]["data"]["text"], expected)
+        self.assertEqual(events[-1]["data"]["prompt_path"], prompt_path)
+        self.assertEqual(events[-1]["data"]["kind"], "round")
 
     def test_round_is_the_default_kind(self):
+        self.ready("docs")
         proc = self.run_ctl(
             "deliver", "--run-dir", str(self.run_dir),
             "--surface", "SURF-UUID", "--prompt", "prompts/round-1-docs.md",
             "--lane", "docs", "--settle-seconds", "0",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.events()[0]["data"]["kind"], "round")
+        self.assertEqual(self.events()[-1]["data"]["kind"], "round")
 
     def test_session_and_round_pull_in_opposite_directions(self):
         session = delivery_text("session", "prompts/session-codebase.md")

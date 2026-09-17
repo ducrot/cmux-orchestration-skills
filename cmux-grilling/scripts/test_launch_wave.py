@@ -653,6 +653,13 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             "--lane", "codebase2", "--settle-seconds", "0",
         )
         self.assertEqual(started.returncode, 0, started.stderr)
+        common = ["--run-dir", str(run_dir), "--surface", "persistent-surface", "--lane", "codebase2"]
+        observed = self.pane("observe", *common)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        assessed = self.pane("assess", *common,
+                             "--observation", json.loads(observed.stdout)["observation_id"],
+                             "--state", "ready", "--reason", "persistent lane is idle for the next round")
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
         delivered = self.pane(
             "deliver", "--run-dir", str(run_dir), "--surface", "persistent-surface",
             "--lane", "codebase2", "--text", "round two", "--settle-seconds", "0",
