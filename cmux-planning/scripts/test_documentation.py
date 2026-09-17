@@ -310,6 +310,26 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
+        text = PLANNING.read_text(encoding="utf-8")
+        start = "- Two explicit integrity boundaries apply."
+        end = "\n- Every worker emission"
+        self.assertIn(start, text)
+        self.assertIn(end, text)
+        summary = " ".join(text.split(start, 1)[1].split(end, 1)[0].split())
+        self.assertIn(
+            "The product-tree detector covers tracked changes, staged changes, untracked paths "
+            "and their content (regular files up to the 8 MiB size cap and symlink target bytes), "
+            "and HEAD movement.",
+            summary,
+        )
+        self.assertIn(
+            "It does not cover ignored product files or skipped untracked content "
+            "(files above the size cap or unsupported types), or contents of unreadable "
+            "untracked directories omitted by Git with a warning.",
+            summary,
+        )
+
     def test_run_artifact_and_product_tree_integrity_boundaries_are_documented(self):
         text = normalized(PLANNING)
         for required in (

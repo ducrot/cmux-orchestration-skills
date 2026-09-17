@@ -39,11 +39,12 @@ input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
 - Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, staged
   changes, untracked paths and their content (regular files up to the 8 MiB size cap and symlink
   target bytes), and HEAD movement. It does not cover ignored product files or skipped untracked
-  content (files above the size cap or unsupported types). Separately, every trusted
-  file in the Git-ignored run directory is finalized in `state.json`'s artifact manifest with its
-  canonical run-relative path, kind, stage, pass, attempt, byte size, SHA-256, producer event, and
-  immutable status. A baseline arms one pass and is never recaptured against different product-tree
-  bytes, so a relaunch cannot adopt an unauthorized delta as its new "before".
+  content (files above the size cap or unsupported types), or contents of unreadable untracked
+  directories omitted by Git with a warning. Separately, every trusted file in the Git-ignored run
+  directory is finalized in `state.json`'s artifact manifest with its canonical run-relative path,
+  kind, stage, pass, attempt, byte size, SHA-256, producer event, and immutable status. A baseline
+  arms one pass and is never recaptured against different product-tree bytes, so a relaunch cannot
+  adopt an unauthorized delta as its new "before".
 - Every worker emission has an immutable attempt identity. The first attempt retains the concise
   stage/pass filenames; every later same-pass attempt uses an `-attempt-N` suffix for its prompt,
   report, draft/proposal, optional corrected candidate, stage snapshot, and tree snapshots. Preparing
