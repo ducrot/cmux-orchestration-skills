@@ -1,196 +1,144 @@
 # cmux Orchestration Skills
 
-Three [Agent Skills](https://agentskills.io) that turn an AI coding agent into an orchestrator for multi-agent workflows running in visible [cmux](https://github.com/manaflow-ai/cmux) terminal panes:
+Three agent skills for researching, planning, and implementing changes through AI workers in visible [cmux](https://github.com/manaflow-ai/cmux) terminal panes. The orchestrating agent coordinates the work, checks reports and changes, and brings decisions back to you. Workers do the research and edit product code.
 
-- **`cmux-grilling`**: autonomously stress-tests a plan by asking decision-level questions and answering them through four parallel research lanes, producing reviewed assumptions instead of guesses.
-- **`cmux-planning`**: turns a task or optional human-revalidated grilling result into an approved repository-grounded specification and an independently reviewed native issue tracker.
-- **`cmux-issue-chain`**: runs issues from a local Markdown issue tracker through a gated implement → simplify → review → test worker chain, fully AFK.
-
-All three skills follow the same philosophy: the orchestrating agent coordinates and judges, but never edits product code itself and never hides work in background subagents. Every worker runs in a visible cmux pane you can watch and intervene in.
+| Start with | When you need | What you get |
+|---|---|---|
+| **[cmux-grilling](cmux-grilling/SKILL.md)** | To stress-test a plan or resolve uncertainty | Assumptions, sources, and open decisions in Markdown + JSON |
+| **[cmux-planning](cmux-planning/SKILL.md)** | To turn a task into an executable plan | An approved specification and reviewed local issue tracker |
+| **[cmux-issue-chain](cmux-issue-chain/SKILL.md)** | To implement an issue from an existing tracker | Implemented, simplified, reviewed, and tested changes |
 
 They form an optional progression, not a mandatory pipeline:
 
 ```text
-optional decision research       planning synthesis and review       issue execution
-cmux-grilling               ->   cmux-planning                  ->   cmux-issue-chain
+cmux-grilling  →  cmux-planning  →  cmux-issue-chain
 ```
 
-Start at planning when the task is already clear, execute an existing tracker without planning, or use
-grilling alone when only the decision stress-test is needed. No workflow automatically invokes another.
+Use any skill on its own. No workflow automatically invokes another. Research and execution can run unattended between checkpoints; initial setup, approvals, blockers, and changes to agreed decisions may need your input.
 
-## Requirements
+## Install
 
-These skills are only useful if you have the full stack below. Check this list first.
-
-- **[cmux](https://github.com/manaflow-ai/cmux)**: an open-source, Ghostty-based macOS terminal built for AI coding agents. The skills drive it via its CLI/socket interface to launch and monitor worker panes. macOS only.
-- **[Claude Code](https://claude.com/claude-code)**: runs the orchestrator and several worker roles. The built-in `/simplify` and `/code-review` commands are used by `cmux-issue-chain`, and skill support is needed to load the skills themselves.
-- **[Codex CLI](https://developers.openai.com/codex/cli)**: runs the implementer/tester roles (`cmux-issue-chain`), the second-opinion research lane (`cmux-grilling`), and the mandatory independent reviewer (`cmux-planning`).
-- **Python 3**: the bundled orchestration scripts (prompt rendering, report parsing, gate watching, run state) use only the standard library; no packages to install.
-
-**A note on billing:** as of publication, both CLIs are covered by their regular subscriptions: Claude Code by Claude Pro/Max and Codex CLI by ChatGPT Plus/Pro. Agentic CLI usage of this kind is included in those plans, so no API key and no per-token billing is required.
-
-## The Skills
-
-### cmux-grilling
-
-An autonomous version of "grill me about this plan before I build it". You hand it a plan, a task plus its already-fixed constraints, and it runs rounds of questioning without asking you anything:
-
-1. A **griller** step formulates one decision-level question per round: a question whose answer changes what would be built.
-2. Four persistent **research lanes** answer it in parallel, each in its own visible pane: repo research with Claude Code, independent second-opinion repo research with Codex, official-docs research, and web research.
-3. A **synthesizer** consolidates the four gate-parsed reports into an answer with confidence and sources.
-4. After the question budget is spent, the session distills everything into **defined assumptions**, written as a Markdown + JSON artifact pair for human review.
-
-The result is a reviewed set of assumptions grounded in your actual repository and current documentation, produced while you were away, with every research step visible and auditable. The grilling prompt is based on [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me) by Matt Pocock. For interactive grilling where a human answers the questions, use a separate interactive grilling skill; it is not bundled here.
-
-### cmux-issue-chain
-
-An orchestrator for working through a local Markdown issue tracker while you are AFK. You point it at an issue; it runs a gated chain of fresh worker panes:
-
-1. **Implement** (Codex by default): builds the change, anchored by regression tests that fail without it and an end-to-end run of the changed path.
-2. **Simplify** (Claude Code, `/simplify`): applies behavior-preserving refactorings to the diff.
-3. **Orchestrator check**: re-runs the tracker's canonical check commands itself; a red suite stops the chain regardless of what reports claim.
-4. **Review** (Claude Code, `/code-review medium --fix`): reviews the full diff and fixes must-fix findings itself, within a strict intent boundary: findings that challenge documented issue decisions are relayed to the human instead of silently "fixed".
-5. **Final test** (Codex by default): the only check after the last code-changing stage; reviewers never accept their own fixes.
-
-Between stages, structured worker reports are parsed and gated: blockers, plan drift, and human-in-the-loop issues stop the chain instead of being papered over. All lifecycle state (run logs, gate decisions, snapshots, prompts, reports) is written to an auditable run directory. The orchestrator itself never touches product code.
-
-### cmux-planning
-
-The planning bridge between optional grilling and issue execution. It persists one task, imports and
-explicitly revalidates an optional grilling JSON/Markdown pair, and runs a fresh specification author
-followed by an independent Codex review. After explicit spec approval, a fresh tickets author creates a
-small set of cohesive qualitative fresh-context vertical slices and another fresh Codex reviewer checks
-them. Workers synthesize persisted context and inspect the repository; they do not interview the user.
-Safe `pass_with_fixes` corrections go through deterministic validation and a human-visible diff, not an
-automatic model re-review. Product, scope, architecture, ticket-boundary, or dependency decisions block
-for human input.
-
-Strict report and digest validation plus complete before/after Git-visible working-tree inspection
-prevent a clean report from hiding tracked changes, staged changes, untracked paths and their content
-(regular files up to the 8 MiB size cap and symlink target bytes), or commits (HEAD movement). That
-boundary excludes ignored files and skipped untracked content (files above the size cap or unsupported
-types). Git may omit contents of unreadable untracked directories while returning success with a
-warning; those contents are also outside the boundary. Likewise, structural and digest checks on optional grilling input prove integrity, not freshness; explicit human
-revalidation is the freshness policy.
-
-After ticket approval, planning stages and validates a native tracker and publishes it with one
-collision-safe atomic move. Public status, context, and resume commands recover interrupted grilling,
-author, reviewer, approval, and publication stages without duplicating workers, decisions, or targets.
-Recorded approvals remain bound to artifact digests, and completed runs never block a new planning
-session.
-
-## Deterministic Worker Profiles
-
-> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
-
-Each skill independently ships the same dependency-free `scripts/agents_config.py` CLI and
-default profile contract; installing only one skill does not depend on the sibling directory or
-repository-only Python modules. From a target Git repository, `init` atomically creates
-`.scratch/orchestrator/agents.json` once, `validate` performs strict local validation, and
-`show-resolved` displays the effective profiles and assignments. An explicit `--config <path>`
-works outside Git, while `--repo <path>` anchors default discovery to that repository's Git root.
-Create-only `init` never overwrites an existing file. `validate`, `show-resolved`, and orchestration
-preparation are read-only: a schema-v1 file makes them stop with the exact preview and acceptance
-commands instead of migrating as a side effect. Run `agents_config.py migrate [--config <path>]` to
-display the coordinated-upgrade warning, the validated complete schema-v2 candidate, all resolved
-workflow assignments, and the candidate digest without changing the file. After explicit human
-approval, `agents_config.py migrate --accept [--config <path>]` is the only shared-CLI mutation path.
-The displayed acceptance command carries that candidate's digest as `--expect-sha256`, so a file edited
-between preview and acceptance is refused instead of migrated to a candidate nobody approved.
-The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
-guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
-For a schema-v1 refusal, planning initialization leaves stdout empty and writes one complete actionable
-guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
-
-Accepted migration preserves existing profiles and assignments, deterministically selects planning
-authors, requires a Codex reviewer (adding a collision-safe default only when necessary), validates the
-complete candidate before atomic replacement, and leaves original bytes untouched on failure. If
-`claude-fable-high` is unavailable, the preview identifies that fact and shows the lexicographically
-first compatible fallback's profile name, harness, model, and effort without inferring relative quality.
-A target with no write bit or more than one hard link is refused even when its parent is writable.
-Symlink paths remain symlinks: migration resolves the intended target and applies the same write-bit and
-hard-link guards there.
-
-Configuration creation is a first-use human checkpoint, not part of run initialization. When the
-selected file is missing, the interactive orchestrator creates it with `agents_config.py init`,
-shows all three workflows' resolved assignments, and asks whether to start with them or pause for edits.
-When any workflow checkpoint finds schema v1, it presents the shared CLI's read-only preview in the
-human's language and asks for explicit confirmation. On approval it invokes the same
-`agents_config.py migrate --accept` operation, then reloads and validates the current bytes before
-starting. Refusal or interruption leaves the file and run state untouched.
-`planning_state.py --accept-config` remains only the acceptance mechanism for a newly created
-schema-v2 default; it never authorizes schema migration.
-A schema-v2 file needs no migration question. An existing valid schema-v2 file needs no start
-confirmation. Never offer profile overrides the human did not ask for.
-Claude Code and Codex use their native structured-input tool when available and fall back to a
-normal chat question otherwise. A negative answer ends the turn without a run or worker snapshot;
-after the human returns, the current file is validated before work starts. Direct calls to
-`run_state.py init` require an existing configuration and never silently bootstrap one.
-
-The ten default profiles provide Claude Fable at high and medium effort, Opus at high, medium,
-and xhigh effort, Sonnet/medium, Codex GPT-6 Astra at high, medium, and xhigh effort, and
-GPT-5.6 Luna/medium. Issue-chain assigns Astra/xhigh to `implement`, Opus/high to `simplify`
-and `review`, and Astra/high to `test`. Grilling assigns Opus/high, Astra/high, Luna/medium,
-and Sonnet/medium to `codebase`, `codebase2`, `docs`, and `web`. Planning assigns Fable/high
-to `spec` and `tickets` and Astra/high to its mandatory Codex `reviewer`. Claude's `fable`,
-`opus`, and `sonnet` names are moving provider aliases; selecting an alias does not pin the
-provider's underlying model version. Syntax-validating a local model string does not prove that
-the authenticated provider account is entitled to use it. Pi and Hermes are explicitly unsupported;
-their registry entries mark the code-owned adapter boundary for future support.
-
-Every interactive Claude worker is launched with `--permission-mode auto`, including roles switched
-to Claude through typed overrides. The tool-disabled live provider probe remains isolated in `plan`
-mode and the version, help, and authentication preflight calls remain non-interactive diagnostics.
-
-All workflows accept repeatable typed `--profile`, `--harness`, `--model`, `--effort`, and
-`--executable` overrides. Precedence is file assignment, then profile override, then direct field
-overrides. Issue-chain reloads and fully revalidates the pinned source for each fresh stage;
-grilling freezes all four persistent lanes in one immutable launch wave, and planning reloads the
-pinned source for each fresh author or review stage. Before any pane exists,
-mandatory local preflight checks executable discovery, version, CLI capabilities, and local auth.
-
-Live provider verification is opt-in: pass `--probe-profiles` to issue-chain or planning stage
-preparation, or grilling `init`, optionally with the CLI-only `--probe-timeout <seconds>` (default 120). Each unique
-assigned and resolved profile receives one minimal request; duplicate assignments are deduplicated
-and unused profiles are skipped. The probe disables Claude tools or gives Codex a read-only sandbox,
-requires an exact fixed sentinel, and fails before pane creation on provider errors, timeouts,
-malformed output, or a missing sentinel. Snapshots audit configuration source/hash, typed overrides,
-resolved profiles, executable/version/preflight data, final argv, entitlement, and probe outcome and
-timing; provider output, credentials, and ambient environment values are not stored. Without probes,
-entitlement remains `unverified`; successful probes record `verified`.
-
-Safety policy is code-owned. Configuration cannot add free-form arguments, environment values,
-capabilities, sandbox/approval/network/writable-root settings, or other runtime safety overrides.
-
-## Installation
-
-Install with the [skills CLI](https://vercel.com/docs/agent-resources/skills), which supports Claude Code, Codex, and many other agents:
+Install all three with the [skills CLI](https://vercel.com/docs/agent-resources/skills):
 
 ```bash
 npx skills add ducrot/cmux-orchestration-skills
 ```
 
-To install a single skill:
+Or install just one:
 
 ```bash
 npx skills add ducrot/cmux-orchestration-skills --skill cmux-issue-chain
 ```
 
-A single-skill installation remains supported, but a partial upgrade beside older sibling copies is
-not: upgrade every installed sibling together before allowing any of them to migrate the shared file.
+Each skill includes its own runtime helpers and works without the sibling directories. For a manual installation, copy or symlink complete skill directories into your agent's skills directory, such as `~/.claude/skills/` or `~/.codex/skills/`.
 
-Manual alternative: clone the repo and copy or symlink the three skill directories into your agent's skills directory (e.g. `~/.claude/skills/` for Claude Code, `~/.codex/skills/` for Codex, or a project-level `.claude/skills/`).
+### Requirements
 
-All paths inside the skills are relative to each skill's own directory, so any install location works.
+- **cmux** for visible worker panes, with its CLI available to the orchestrator.
+- **Git and Python 3** in the target repository. The bundled Python helpers use only the standard library.
+- **An orchestrating agent** that can load skills and operate cmux, such as Claude Code or Codex.
+- **Authenticated Claude Code and Codex CLIs** for the shipped worker defaults. The configured models must be available to your account.
+
+Worker assignments are configurable. Issue-chain supports either CLI for every role; planning requires a Codex reviewer; grilling requires Claude Code for its web lane. The other roles accept either CLI.
+
+For Claude Code issue-chain workers, make sure `/simplify` and `/code-review medium --fix` are available in that installation. These commands are not supplied by this repository. On Codex, the skill provides the corresponding simplify and review instructions directly in the worker prompt.
+
+## First run
+
+Open the target repository in cmux and ask your agent to use the relevant skill. For example:
+
+> Use cmux-grilling to stress-test adding full-text search to this repository. Keep the existing database and deployment setup. Research up to five decision-level questions.
+
+> Use cmux-planning to plan CSV export for the orders list. Ground the specification in this repository and prepare a local issue tracker for my approval.
+
+> Use cmux-issue-chain to implement ISSUE-001 from .scratch/orders-export. Follow the tracker's acceptance criteria and canonical check commands.
+
+On first use, the orchestrator creates `.scratch/orchestrator/agents.json`, shows the assignments for all three workflows, and asks whether to start or pause for edits. An existing valid schema-v2 file needs no start confirmation. Worker startup checks the configured executables, CLI capabilities, and local authentication.
+
+Issue-chain needs a compatible local Markdown tracker with issue metadata, dependencies, and canonical check commands. Planning produces this format. Existing `to-tickets` trackers can be converted with the [tracker adoption helper](cmux-issue-chain/SKILL.md#adopting-a-to-tickets-tracker).
+
+## How the workflows work
+
+### cmux-grilling: research decisions
+
+Give it a task or plan and any constraints already settled. The orchestrator asks one decision-level question per round. Four persistent workers research it in parallel: repository analysis, a second repository opinion, official documentation, and web research. The orchestrator checks their reports and synthesizes an answer with confidence and sources.
+
+The research ends when the question budget is spent or no relevant open question remains. It produces a Markdown + JSON pair containing assumptions and open decisions. You then review the assumptions and walk through the open decisions; the artifacts are updated with those outcomes. Research is autonomous, while the closing review involves you.
+
+[Workflow and artifact details](cmux-grilling/SKILL.md). A separate interactive grilling skill, where you answer every research question, is not bundled here.
+
+### cmux-planning: approve a specification and tracker
+
+Start with a task, optionally accompanied by a grilling artifact pair that you explicitly revalidate.
+
+1. A fresh author inspects the repository and writes a specification.
+2. A fresh Codex reviewer checks it and records what was checked and the outcome. Safe corrections are validated and shown to you.
+3. **You approve the specification** or request revisions.
+4. A fresh author creates cohesive implementation tickets, followed by another fresh Codex review.
+5. **You approve the tickets**, then the complete native tracker is published with a collision-safe atomic move.
+
+Changes to scope, architecture, or other substantive decisions return to you. If an author and reviewer resolve to the same CLI and model, preparation pauses for explicit confirmation. Approvals are bound to the reviewed artifacts; changed content requires a new approval.
+
+[Workflow and approval details](cmux-planning/SKILL.md) · [Resume an interrupted run](cmux-planning/SKILL.md#status-and-context-recovery)
+
+### cmux-issue-chain: implement and verify
+
+Point it at a ready issue in a local tracker. Each worker stage starts fresh:
+
+1. **Implement:** build the change, prove it with regression tests and an end-to-end run of the changed path.
+2. **Simplify:** apply behavior-preserving refactorings.
+3. **Orchestrator check:** rerun the tracker's canonical checks; a failing suite stops advancement.
+4. **Review:** inspect the full diff and apply safe fixes within the issue's intent.
+5. **Final test:** independently verify the result after the last code-changing stage. The tester does not edit product code.
+
+Reviewers must respect documented decisions from earlier stages and passes of the same run, including refactorings deliberately left unapplied. Replacing those decisions requires recorded human approval. Fixing a regression while preserving the intended behavior remains allowed.
+
+Blockers, plan drift, and unresolved review findings stop the chain for human input. Successful completion leaves checked changes and a commit proposal; committing, pushing, opening a PR, and CI remain subsequent human steps.
+
+[Workflow, gates, and report contract](cmux-issue-chain/SKILL.md)
+
+## Worker configuration
+
+The shared configuration lives at `.scratch/orchestrator/agents.json`. These are the shipped assignments:
+
+| Workflow | Role | Model / effort |
+|---|---|---|
+| Grilling | Repository research | Claude Opus / high |
+| Grilling | Second repository opinion | GPT-6 Astra / high |
+| Grilling | Official documentation | GPT-5.6 Luna / medium |
+| Grilling | Web research | Claude Sonnet / medium |
+| Planning | Specification and ticket authors | Claude Fable / high |
+| Planning | Reviewer | GPT-6 Astra / high |
+| Issue-chain | Implementer | GPT-6 Astra / xhigh |
+| Issue-chain | Simplifier and reviewer | Claude Opus / high |
+| Issue-chain | Final tester | GPT-6 Astra / high |
+
+Claude model names are provider aliases. These assignments describe the shipped configuration, not guaranteed model access. Optional `--probe-profiles` checks make a minimal live provider request before workers launch.
+
+Use the installed skill's `scripts/agents_config.py validate` and `show-resolved` commands to inspect configuration. Typed profile, CLI, model, effort, and executable overrides are supported; runtime safety policies remain code-owned. See the [configuration reference](cmux-issue-chain/SKILL.md#worker-profile-configuration) for commands, precedence, profiles, and probes.
+
+### Upgrading an existing configuration
+
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+
+Upgrade all installed siblings together. Schema-v1 migration requires a read-only preview and explicit human approval before running the displayed `agents_config.py migrate --accept` command. Validation never migrates configuration as a side effect. A schema-v2 file needs no migration question.
+
+[Migration procedure and safeguards](cmux-issue-chain/SKILL.md#worker-profile-configuration)
+
+## Visibility, checks, and run artifacts
+
+Workers run in visible cmux panes. Before sending each task, the orchestrator inspects the worker's screen and confirms that it is ready for input. A running process alone is insufficient; the delivery helper requires a fresh readiness assessment. See the [worker readiness protocol](cmux-planning/references/worker-readiness.md).
+
+Structured reports gate advancement, and Git snapshots support checks for unauthorized changes, including staged changes and commits. Coverage has limits, including ignored files and some untracked content; see the [integrity boundaries](cmux-planning/SKILL.md#ground-rules) for the exact scope. A clean report alone does not establish that a stage is safe to advance.
+
+All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Grilling results live beside the selected tracker or in `.scratch/grilling/`; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
+
+Legacy run layouts remain inspectable read-only. Follow the relevant skill's recovery guidance before continuing an older run.
+
+## Acknowledgments
+
+These skills build in part on [Matt Pocock’s skills](https://github.com/mattpocock/skills). In particular, `cmux-grilling` adapts the questioning approach from [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me) into an autonomous research workflow with visible workers and a human decision review.
 
 ## License
 
 [MIT](LICENSE)
-
-All three workflows share the flat `.scratch/orchestrator/runs/<run-id>/` root. Default UTC ids are
-`grill-<slug>-<YYYY-MM-DD>-<HHMM>`, `plan-<slug>-<YYYY-MM-DD>-<HHMM>`, and
-`chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`; task slugs contain at most 30 characters and can be overridden
-with `--slug` in grilling and planning. Each state records its `workflow`, `layout_version: 1`, and
-`deliverables`: the grilling Markdown/JSON pair, published planning tracker, or chain tracker/issue.
-Legacy runs (including `.scratch/orchestrator/planning-runs/`) stay inspectable read-only and must be
-restarted or, for planning, handled through a separately reviewed migration procedure.

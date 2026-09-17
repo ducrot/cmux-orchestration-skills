@@ -285,9 +285,9 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 self.assertEqual(canonical, notice(guide.read_text(encoding="utf-8")))
 
     def test_every_shipped_guide_documents_explicit_read_only_migration(self):
-        if not README.is_file():
-            self.skipTest("repository README is not present in this independent installation")
-        for guide in (README, *GUIDES):
+        # Detailed operator contracts belong in the standalone skill guides; the README
+        # introduces the workflows and links to those references.
+        for guide in GUIDES:
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
                 text = normalized(guide)
                 for required in (
@@ -388,7 +388,13 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             self.assertIn(required, text)
 
     def test_valid_schema_v2_configuration_needs_no_question(self):
-        for guide in ((README, *SIBLINGS) if README.is_file() else SIBLINGS):
+        if README.is_file():
+            for required in (
+                "a schema-v2 file needs no migration question",
+                "needs no start confirmation",
+            ):
+                self.assertIn(required, normalized(README))
+        for guide in SIBLINGS:
             text = normalized(guide)
             for required in (
                 "a schema-v2 file needs no migration question",
@@ -420,13 +426,12 @@ class PlanningOperatorDocumentation(unittest.TestCase):
 
     def test_untracked_upgrade_and_visibility_limits_are_documented(self):
         self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(PLANNING))
-        if README.is_file():
-            self.assertIn("git may omit contents of unreadable untracked directories", normalized(README))
+        self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(PLANNING))
 
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated
         # cmux-* skills still checks every guide that ships this contract.
-        for guide in ((README, *SIBLINGS) if README.is_file() else SIBLINGS):
+        for guide in SIBLINGS:
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
                 text = normalized(guide)
                 self.assertIn("complete migration guidance once on stdout", text)
