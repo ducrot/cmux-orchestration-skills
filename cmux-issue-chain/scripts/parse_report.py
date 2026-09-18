@@ -28,6 +28,11 @@ REQUIRED_SECTIONS = ("result", "blockers", "plan drift")
 
 NONEISH = {"", "none", "none.", "n/a", "no", "not run"}
 
+FINDING_BULLET_RE = re.compile(r"^[-*]\s+", re.MULTILINE)
+RECOMMENDATION_RE = re.compile(r"Recommendation:\s*`?(must-fix|ask-user)\b", re.IGNORECASE)
+SCOPE_RE = re.compile(r"Scope:\s*`?([a-z][a-z-]*)", re.IGNORECASE)
+QUALITY_ONLY_REASON = "quality-only ask-user findings: request re-emission under Recommendations"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -59,6 +64,7 @@ def pending_payload(path: Path) -> dict:
         "result": "PENDING",
         "has_tests": False,
         "has_findings": False,
+        "quality_only_findings": False,
         "has_blockers": False,
         "has_plan_drift": False,
         "missing_sections": list(REQUIRED_SECTIONS),
@@ -82,6 +88,7 @@ def parse_report(text: str) -> dict:
     result = classify_result(result_text)
     has_tests = has_substantive_list(tests_text)
     has_findings = not is_noneish(findings_text)
+    quality_only = has_findings and quality_only_findings(findings_text)
     has_blockers = result == "BLOCKER" or not is_noneish(blockers_text)
     has_plan_drift = "PLAN DRIFT" in result_text.upper() or not is_noneish(drift_text)
 
@@ -100,6 +107,9 @@ def parse_report(text: str) -> dict:
     if has_findings:
         candidates.append(STOP)
         reasons.append("findings present")
+        if quality_only:
+            # Still `stop`: the orchestrator resolves it through re-emission, never by overriding the gate.
+            reasons.append(QUALITY_ONLY_REASON)
     if has_plan_drift:
         candidates.append(HITL)
         reasons.append("plan drift present")
@@ -111,6 +121,7 @@ def parse_report(text: str) -> dict:
         "result": result,
         "has_tests": has_tests,
         "has_findings": has_findings,
+        "quality_only_findings": quality_only,
         "has_blockers": has_blockers,
         "has_plan_drift": has_plan_drift,
         "missing_sections": missing,
@@ -146,6 +157,26 @@ def classify_result(text: str) -> str:
         if upper.startswith(label):
             return label
     return "UNKNOWN"
+
+
+def quality_only_findings(text: str) -> bool:
+    """True when every finding is `ask-user` with `Scope: other`.
+
+    Such a finding names no acceptance, regression, security, or data-safety concern, so it is
+    a recommendation filed in the wrong section. Anything unclassified counts as a real finding.
+    """
+    starts = [match.start() for match in FINDING_BULLET_RE.finditer(text)]
+    if not starts or text[: starts[0]].strip():
+        return False
+    entries = [text[start:end] for start, end in zip(starts, starts[1:] + [len(text)])]
+    for entry in entries:
+        recommendation = RECOMMENDATION_RE.search(entry)
+        scope = SCOPE_RE.search(entry)
+        if not recommendation or not scope:
+            return False
+        if recommendation.group(1).lower() != "ask-user" or scope.group(1).lower() != "other":
+            return False
+    return True
 
 
 def has_substantive_list(text: str) -> bool:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parse_report import EXIT_CODES, classify_result, is_noneish, parse_report  # noqa: E402
+from parse_report import EXIT_CODES, QUALITY_ONLY_REASON, classify_result, is_noneish, parse_report  # noqa: E402
 
 
 CLEAN = """## Result
@@ -115,6 +115,46 @@ class RecommendationsDoNotBlock(unittest.TestCase):
         """SKILL.md: review reports advance when Findings is None, whatever Recommendations says."""
         text = report(Findings="- None") + "\n## Recommendations\n- Nice-to-have: extract helper\n"
         self.assertEqual(parse_report(text)["gate"], "advance")
+
+
+def finding(recommendation: str, scope: str, title: str = "Memoization re-applied") -> str:
+    return (
+        f"- {title}\n  - Severity: low\n  - Recommendation: {recommendation}\n"
+        f"  - Scope: {scope}\n  - Evidence: `a.tsx:19`\n  - Suggested fix: the human decides"
+    )
+
+
+class QualityOnlyFindings(unittest.TestCase):
+    """A quality-only ask-user finding still stops, but carries its own re-emission reason."""
+
+    def parse(self, findings: str) -> dict:
+        return parse_report(report(Result="FINDINGS", Findings=findings))
+
+    def test_ask_user_with_scope_other_is_flagged_and_still_stops(self):
+        result = self.parse(finding("ask-user", "other"))
+        self.assertEqual(result["gate"], "stop")
+        self.assertTrue(result["quality_only_findings"])
+        self.assertIn(QUALITY_ONLY_REASON, result["reasons"])
+
+    def test_unindented_fields_are_recognized(self):
+        text = "- Severity: low\n  Recommendation: ask-user\n  Scope: other\n  Evidence: `a.ts:1`"
+        self.assertTrue(self.parse(text)["quality_only_findings"])
+
+    def test_mixed_findings_are_a_plain_stop(self):
+        result = self.parse(finding("ask-user", "other") + "\n" + finding("ask-user", "acceptance", "AC gap"))
+        self.assertEqual(result["gate"], "stop")
+        self.assertFalse(result["quality_only_findings"])
+        self.assertNotIn(QUALITY_ONLY_REASON, result["reasons"])
+
+    def test_must_fix_with_scope_other_is_a_plain_stop(self):
+        self.assertFalse(self.parse(finding("must-fix", "other"))["quality_only_findings"])
+
+    def test_unclassified_finding_is_a_plain_stop(self):
+        self.assertFalse(self.parse("- Null deref at x.py:12")["quality_only_findings"])
+        self.assertFalse(self.parse("Prose first.\n" + finding("ask-user", "other"))["quality_only_findings"])
+
+    def test_clean_report_is_not_flagged(self):
+        self.assertFalse(parse_report(CLEAN)["quality_only_findings"])
 
 
 class NoneDetection(unittest.TestCase):

@@ -46,7 +46,8 @@ ROLE_RULES = {
         "`/code-review medium --fix` before writing the final report. Apply safe review fixes "
         "inside the issue scope, classify any remaining issues by severity and recommendation, and put only "
         "unresolved must-fix and ask-user items in Findings. Never fix a finding that contradicts a "
-        "documented issue decision — report it as ask-user instead. Put nice-to-have or broader hardening "
+        "documented issue decision — report it as ask-user instead. A quality-only disagreement with an "
+        "earlier-stage decision is a recommendation, never a finding. Put nice-to-have or broader hardening "
         "in Recommendations."
     ),
 }
@@ -62,10 +63,19 @@ PORTABLE_ROLE_RULES = {
         "writing the final report. Run the three-axis review pass described in the contract below, apply "
         "safe review fixes inside the issue scope, classify any remaining issues by severity and "
         "recommendation, and put only unresolved must-fix and ask-user items in Findings. Never fix a "
-        "finding that contradicts a documented issue decision — report it as ask-user instead. Put "
-        "nice-to-have or broader hardening in Recommendations."
+        "finding that contradicts a documented issue decision — report it as ask-user instead. A "
+        "quality-only disagreement with an earlier-stage decision is a recommendation, never a finding. "
+        "Put nice-to-have or broader hardening in Recommendations."
     ),
 }
+# A follow-up pass applies triage-approved items to an already finished issue; it replaces the
+# implement rules and contract, because a behavior-preserving change cannot fail a regression test.
+FOLLOWUP_ROLE_RULES = (
+    "You are the implementation worker on a follow-up pass. The issue below is already implemented, "
+    "reviewed, and tested; do not rework it. Apply exactly the approved follow-up items listed under "
+    "`## Approved Follow-up Items`, and nothing else. Every item is behavior-preserving: do not change "
+    "observable behavior, acceptance behavior, or what existing tests expect. Do not edit orchestrator run state."
+)
 
 # Review check line and fix label differ by harness; the triage rules below them do not.
 REVIEW_CHECK_LINE = {CLAUDE_CODE: "`/code-review medium --fix`"}
@@ -129,6 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expected worker report handoff path. Defaults to run-dir/reports/<role>-<pass>.md",
     )
     parser.add_argument("--context-file", action="append", default=[], help="Additional report/context file to append")
+    parser.add_argument(
+        "--followup-file",
+        help="Triage-approved follow-up items; renders the implement prompt as a follow-up pass",
+    )
     return parser
 
 
@@ -149,6 +163,17 @@ def main() -> int:
         raise SystemExit(f"{issue.id} is HITL and must not be started as an AFK worker chain")
     if not issue_ready(issue, issues):
         raise SystemExit(f"{issue.id} is not ready: {blockers}")
+
+    followup = ""
+    if args.followup_file:
+        if args.role != "implement":
+            raise SystemExit("--followup-file applies to --role implement only")
+        followup_path = Path(args.followup_file)
+        if not followup_path.is_file():
+            raise SystemExit(f"follow-up file not found: {followup_path}")
+        followup = followup_path.read_text(encoding="utf-8").strip()
+        if not followup:
+            raise SystemExit(f"follow-up file is empty: {followup_path}")
 
     run_dir = Path(args.run_dir)
     # The prepared stage snapshot is the only source for the worker's harness, so the prompt
@@ -177,6 +202,7 @@ def main() -> int:
         harness=harness,
         snapshot_id=snapshot["snapshot_id"],
         artifact_path=run_dir / "artifacts" / stem,
+        followup=followup,
     )
     out.write_text(prompt, encoding="utf-8")
     print(out)
@@ -197,10 +223,15 @@ def render(
     harness: str = CLAUDE_CODE,
     snapshot_id: str | None = None,
     artifact_path: Path | None = None,
+    followup: str = "",
 ) -> str:
     context_files = context_files or []
     context = render_context(context_files)
-    if role == "review":
+    if followup and role != "implement":
+        raise ValueError("a follow-up pass is rendered for the implement role only")
+    if followup:
+        report_contract = render_followup_contract()
+    elif role == "review":
         report_contract = render_review_contract(harness)
     elif role == "simplify":
         report_contract = render_simplify_contract()
@@ -219,6 +250,12 @@ def render(
         "apply that approval only within its authorized scope.\n\n"
         f"{decisions}\n"
     ) if decisions else ""
+    followup_block = (
+        "\n## Approved Follow-up Items\n\nTriage approved exactly these items for this pass:\n\n"
+        f"{followup.strip()}\n"
+    ) if followup else ""
+    rules = FOLLOWUP_ROLE_RULES if followup else role_rules(role, harness)
+    contract_lines = followup_contract_lines() if followup else role_specific_contract(role, harness)
     return f"""# Worker Prompt: {role} {issue_id} (pass {pass_number})
 
 This file is your task assignment, not a document to summarize. Execute it now and write your
@@ -229,7 +266,7 @@ Pass: {pass_number}
 Harness: {harness}
 Stage snapshot: {snapshot_id or "(not provided)"}
 
-{role_rules(role, harness)}
+{rules}
 
 ## Handoff Paths
 
@@ -259,8 +296,8 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 - The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes and belong to the human.
 - Use the canonical check commands declared in the tracker ground rules as the baseline suite. Narrower targeted checks may be added, but never substitute a different suite.
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
-{role_specific_contract(role, harness)}
-{ground_rules_block}{decisions_block}
+{contract_lines}
+{ground_rules_block}{decisions_block}{followup_block}
 ## Blocker Status
 
 ```json
@@ -376,16 +413,25 @@ def review_contract_lines(harness: str) -> str:
         "are documented decisions: every item "
         "under a `## Not Applied` section and every behavior-preserving choice explained under "
         "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
-        "reverting one requires a finding with "
-        "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
-        "such an item without that approval, restore it before running the baseline suite and report "
-        "the proposal as ask-user.\n"
+        "never revert one. If the fix pass reverted "
+        "such an item without that approval, restore it before running the baseline suite.\n"
+        "- Report a proposal to revert such a decision by its reason. A quality-only reason (reuse, "
+        "simplification, efficiency, altitude, style) is never a finding: the earlier decision stands, and "
+        "the proposal goes under `## Recommendations` marked `Counter-proposal`, naming the earlier decision "
+        "and its report and linking any proposal artifact. A correctness, regression, acceptance, security, "
+        "or data-safety reason is a finding with `Recommendation: ask-user` and that reason.\n"
+        "- `Scope: other` never carries `Recommendation: ask-user`: a concern outside acceptance, regression, "
+        "security, and data-safety is a recommendation.\n"
+        "- Do not re-report as a finding an item that an earlier report of this run already queued for "
+        "triage under `## Recommendations`.\n"
         "- Reports from unrelated runs are outside this same-run protection.\n"
         "- Protection of Not Applied items and documented intended behavior persists until recorded "
         "human approval explicitly supersedes the earlier decision. The approval must identify the "
         "decision and the authorized replacement or scope. An agent proposal, a later report, or an "
         "unapproved recommendation alone does not supersede it. Report unresolved scope or precedence "
-        "ambiguity as `Recommendation: ask-user`; do not apply the disputed change.\n"
+        "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An orchestrator "
+        "triage verdict recorded under the human's autonomous-triage authorization for the run counts "
+        "as recorded human approval.\n"
         "- Correcting a regression introduced by an earlier refactoring remains a must-fix "
         "when the correction preserves the documented intended behavior; changing that "
         "intended behavior still requires ask-user.\n"
@@ -416,7 +462,10 @@ def simplify_contract_lines(harness: str) -> str:
         "- Include a `## Change Summary` section listing changed files and the behavior-preserving refactorings applied.\n"
         "- Include a `## Not Applied` section with one bullet per considered-but-not-applied refactoring "
         "and a one-line reason, or `- None`.\n"
-        "- Preserve behavior. If simplification would require design, acceptance, or scope changes, report it instead of editing."
+        "- `## Not Applied` holds only refactorings you considered and decided against yourself. Put a "
+        "refactoring that needs a human decision under `## Recommendations` instead.\n"
+        "- Preserve behavior. If simplification would require design, acceptance, or scope changes, report it "
+        "under `## Recommendations` instead of editing."
     )
 
 
@@ -477,14 +526,14 @@ and stops the chain as HITL. Add these sections and this stricter findings triag
 - None
 
 ## Recommendations
-- None, or non-blocking nice-to-have/follow-up items.
+- None, or non-blocking nice-to-have/follow-up items and `Counter-proposal` entries.
 ```
 
 `## Findings` follows the bare-`None` rule above. Remaining must-fix findings after {fix} replace the
 `- None` line entirely, each with:
 
 - Severity: critical|high|medium|low
-- Recommendation: must-fix|ask-user — ask-user when the finding challenges a documented issue or earlier-stage decision; the reviewer must not fix those
+- Recommendation: must-fix|ask-user — ask-user when the finding challenges a documented issue decision, or an earlier-stage decision for a non-quality reason; the reviewer must not fix those
 - Scope: acceptance|regression|security|data-safety|other
 - Evidence: file/line and observed behavior
 - Suggested fix: concrete action
@@ -505,10 +554,47 @@ Add these sections:
 
 ## Not Applied
 - None
+
+## Recommendations
+- None, or refactorings that need a human decision.
 ```
 
 Replace `- None` under `## Not Applied` with one bullet per considered-but-not-applied refactoring
-and a one-line reason when applicable. `## Not Applied` is not gate-parsed by `parse_report.py`.
+and a one-line reason when applicable. `## Not Applied` and `## Recommendations` are not gate-parsed
+by `parse_report.py`.
+"""
+
+
+def followup_contract_lines() -> str:
+    return (
+        "- Apply only the approved follow-up items. Anything beyond them is scope expansion and stops the chain.\n"
+        "- The approval recorded in the tracker decisions supersedes the earlier decision an item names, "
+        "within that item's scope only.\n"
+        "- Prove behavior preservation instead of a failing regression test: run the baseline suite before and "
+        "after your change with identical outcomes, do not edit existing tests, and add an A/B comparison of "
+        "the changed path where one is practical. List both runs under `## Tests / Checks`.\n"
+        "- If an item no longer fits the current code, do not adapt or redesign it: leave the code unchanged "
+        "for that item and list it under `## Not Applied` with a one-line reason.\n"
+        "- Include a `## Change Summary` section listing the changed files per item."
+    )
+
+
+def render_followup_contract() -> str:
+    return """
+
+Follow-up workers **extend** the contract above; they do not replace it. Keep every section listed there.
+Add these sections:
+
+```markdown
+## Change Summary
+- None, or changed files per approved item.
+
+## Not Applied
+- None
+```
+
+Replace `- None` under `## Not Applied` with one bullet per approved item that no longer fits the code
+and a one-line reason. `## Not Applied` is not gate-parsed by `parse_report.py`.
 """
 
 

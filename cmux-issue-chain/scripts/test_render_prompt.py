@@ -29,8 +29,18 @@ SUPERSESSION_RULE = (
     "human approval explicitly supersedes the earlier decision. The approval must identify the "
     "decision and the authorized replacement or scope. An agent proposal, a later report, or an "
     "unapproved recommendation alone does not supersede it. Report unresolved scope or precedence "
-    "ambiguity as `Recommendation: ask-user`; do not apply the disputed change."
+    "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An orchestrator "
+    "triage verdict recorded under the human's autonomous-triage authorization for the run counts "
+    "as recorded human approval."
 )
+COUNTER_PROPOSAL_RULE = (
+    "Report a proposal to revert such a decision by its reason. A quality-only reason (reuse, "
+    "simplification, efficiency, altitude, style) is never a finding: the earlier decision stands, and "
+    "the proposal goes under `## Recommendations` marked `Counter-proposal`, naming the earlier decision "
+    "and its report and linking any proposal artifact. A correctness, regression, acceptance, security, "
+    "or data-safety reason is a finding with `Recommendation: ask-user` and that reason."
+)
+FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Applied item 5.\n"
 
 
 class RenderFunction(unittest.TestCase):
@@ -72,13 +82,23 @@ class RenderFunction(unittest.TestCase):
             "are documented decisions: every item "
             "under a `## Not Applied` section and every behavior-preserving choice explained under "
             "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
-            "reverting one requires a finding with "
-            "`Recommendation: ask-user` and a reason; never revert silently. If the fix pass reverted "
-            "such an item without that approval, restore it before running the baseline suite and report the proposal as ask-user."
+            "never revert one. If the fix pass reverted "
+            "such an item without that approval, restore it before running the baseline suite."
         )
         for harness in ("claude-code", "codex"):
             with self.subTest(harness=harness):
                 self.assertIn(rule, self.render("review", harness))
+
+    def test_review_routes_counter_proposals_by_reason_for_both_harnesses(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                text = self.render("review", harness)
+                self.assertIn(COUNTER_PROPOSAL_RULE, text)
+                self.assertIn("`Scope: other` never carries `Recommendation: ask-user`", text)
+                self.assertIn("already queued for triage under `## Recommendations`", text)
+                self.assertIn("is a recommendation, never a finding", text)
+                self.assertIn("`Counter-proposal` entries", text)
+                self.assertNotIn("report the proposal as ask-user", text)
 
     def test_review_requires_human_supersession_with_same_run_boundary(self):
         for harness in ("claude-code", "codex"):
@@ -100,7 +120,33 @@ class RenderFunction(unittest.TestCase):
                 self.assertIn("Include a `## Not Applied` section", text)
                 self.assertIn("one bullet per considered-but-not-applied refactoring and a one-line reason, or `- None`", text)
                 self.assertIn("\n## Not Applied\n- None", text)
-                self.assertIn("`## Not Applied` is not gate-parsed", text)
+                self.assertIn("`## Not Applied` and `## Recommendations` are not gate-parsed", text)
+                self.assertIn("\n## Recommendations\n- None, or refactorings that need a human decision.", text)
+                self.assertIn(
+                    "Put a refactoring that needs a human decision under `## Recommendations` instead.", text
+                )
+
+    def test_followup_pass_replaces_the_implement_contract(self):
+        for harness in ("claude-code", "codex"):
+            with self.subTest(harness=harness):
+                text = render_prompt.render(
+                    "implement", "ISSUE-001", ISSUE, {}, harness=harness, followup=FOLLOWUP_ITEMS,
+                )
+                self.assertIn("You are the implementation worker on a follow-up pass.", text)
+                self.assertIn("## Approved Follow-up Items", text)
+                self.assertIn(FOLLOWUP_ITEMS.strip(), text)
+                self.assertIn("Apply only the approved follow-up items.", text)
+                self.assertIn("run the baseline suite before and after your change", text)
+                self.assertIn("list it under `## Not Applied` with a one-line reason", text)
+                self.assertIn("\n## Not Applied\n- None", text)
+                self.assertNotIn("verify at least one fails without the change", text)
+                self.assertNotIn("Implement the assigned issue scope only", text)
+        self.assertNotIn("## Approved Follow-up Items", self.render("implement", "codex"))
+
+    def test_followup_is_refused_for_other_roles(self):
+        for role in ("simplify", "review", "test"):
+            with self.subTest(role=role), self.assertRaises(ValueError):
+                render_prompt.render(role, "ISSUE-001", ISSUE, {}, followup=FOLLOWUP_ITEMS)
 
     def test_every_role_forbids_index_changes(self):
         for role in render_prompt.ROLES:
@@ -322,6 +368,41 @@ class RenderCli(unittest.TestCase):
                     self.assertIn(SUPERSESSION_RULE, text)
                     self.assertIn(REGRESSION_CLARIFICATION, text)
                     self.assertNotIn("earlier reports of this pass", text)
+
+    def test_cli_renders_followup_pass_after_the_final_test(self):
+        self.assertEqual(self.init().returncode, 0)
+        items = self.repo / "followup-items.md"
+        items.write_text(FOLLOWUP_ITEMS, encoding="utf-8")
+        refused = self.run_script(
+            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "test",
+            "--pass", "1", "--run-dir", str(self.run_dir), "--followup-file", str(items),
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--followup-file applies to --role implement only", refused.stderr)
+        gate = self.run_script(
+            RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "test",
+            "--decision", "advance", "--reason", "follow-up accepted", "--next-stage", "implement",
+        )
+        self.assertEqual(gate.returncode, 0, gate.stderr)
+        prepared = self.run_script(
+            RUN_STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "implement", "--pass", "2",
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        missing = self.run_script(
+            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "implement",
+            "--pass", "2", "--run-dir", str(self.run_dir), "--followup-file", str(self.repo / "absent.md"),
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("follow-up file not found", missing.stderr)
+        rendered = self.run_script(
+            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "implement",
+            "--pass", "2", "--run-dir", str(self.run_dir), "--followup-file", str(items),
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        text = (self.run_dir / "prompts" / "implement-2.md").read_text(encoding="utf-8")
+        self.assertIn("## Approved Follow-up Items", text)
+        self.assertIn(FOLLOWUP_ITEMS.strip(), text)
+        self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'implement-2'}`", text)
 
     def test_renders_the_snapshot_harness_variant(self):
         self.assertEqual(self.init("--harness", "implement=claude-code").returncode, 0)

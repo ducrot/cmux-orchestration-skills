@@ -199,6 +199,67 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertIn("explicit human supersession approvals", triage)
         self.assertIn("identify the earlier decision and the authorized replacement or scope", triage)
 
+    def test_issue_chain_routes_quality_counter_proposals_to_triage(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        for start, end, phrases in (
+            ("## review self-fix policy", "## gate rule", (
+                "a quality-only reason (reuse, simplification, efficiency, altitude, style) is never a finding",
+                "goes under `## recommendations` marked `counter-proposal`",
+                "`scope: other` therefore never carries `ask-user`",
+                "already queued for triage under `## recommendations`",
+                "### resuming after a confirming hitl",
+                "identical tree fingerprint, `head`, `staged_paths`, and `staged_diff_sha256`",
+                "the only case in which the orchestrator records `advance` over a parsed `stop`",
+            )),
+            ("## gate rule", "### diff inspection at code-changing gates", (
+                "`quality_only_findings: true`",
+                "moves those entries to `## recommendations` unchanged",
+                "a report mixing them with any other finding is a plain `stop`",
+            )),
+            ("### diff inspection at code-changing gates", "## canonical check commands", (
+                "reported as a `counter-proposal` under `## recommendations` is not reverted in the diff",
+                "any edit outside them gates `stop`",
+            )),
+        ):
+            self.assertIn(start, text)
+            self.assertIn(end, text)
+            section = text.split(start, 1)[1].split(end, 1)[0]
+            for phrase in phrases:
+                with self.subTest(section=start, phrase=phrase):
+                    self.assertIn(phrase, section)
+
+    def test_issue_chain_follow_up_pass_runs_before_complete(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        triage = text.split("## recommendations triage", 1)[1].split("## follow-up pass", 1)[0]
+        for phrase in (
+            "after the final test gates `advance` and before `run_state.py complete`",
+            "a follow-up pass exists only while the issue is uncommitted",
+            "authorized autonomous triage for the run, recorded as a `decision.human` event",
+            "without that authorization it never decides",
+            "accept only when the proposal refutes the recorded reason with evidence",
+        ):
+            with self.subTest(section="triage", phrase=phrase):
+                self.assertIn(phrase, triage)
+        followup = text.split("## follow-up pass", 1)[1].split("## hitl issues", 1)[0]
+        for phrase in (
+            "needs no approval beyond the triage verdict",
+            "the change is behavior-preserving", "it stays inside the files of the issue diff",
+            "no acceptance criterion changes", "`--next-stage implement`", "`--followup-file`",
+            "one follow-up pass per issue", "no simplify or review stage in it",
+            "never start another pass", "the commit proposal covers the issue and the follow-up together",
+        ):
+            with self.subTest(section="follow-up", phrase=phrase):
+                self.assertIn(phrase, followup)
+        raw = guide.read_text(encoding="utf-8")
+        self.assertIn("--role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file", raw)
+        self.assertIn("\n## Recommendations\n- None, or refactorings that need a human decision.", raw)
+
     def test_issue_chain_relevant_prior_pass_context_and_example(self):
         guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
         if not guide.is_file():

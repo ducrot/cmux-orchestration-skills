@@ -173,6 +173,8 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
    `/code-review medium --fix`; on any other harness the rendered prompt spells out a three-axis review pass
    (standards with a smell baseline, spec, correctness) inline.
 5. Final test with Codex.
+6. Recommendations triage, then at most one follow-up pass for accepted eligible items (see Follow-up
+   Pass), then `run_state.py complete`. A run with nothing to triage completes directly.
 
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
@@ -191,23 +193,35 @@ Review is an editing role, not a passive reviewer. If the review pass finds fixa
 Run review as a self-fix pass (`/code-review medium --fix` on Claude Code, the inline three-axis pass elsewhere). The review worker fixes must-fix findings itself when they are safely fixable inside the issue scope.
 
 Self-fix has an intent boundary. A finding that challenges a documented issue decision — the issue's
-"What to build", its acceptance criteria, or a recorded plan change — or an earlier-stage decision
-recorded in this run, including prior passes of the same run, is `Recommendation: ask-user`, not
+"What to build", its acceptance criteria, or a recorded plan change — is `Recommendation: ask-user`, not
 must-fix: the review worker must not fix it even when a safe mechanical fix exists, because the fix would
 silently undo a deliberate decision. It stays in `## Findings` and the orchestrator relays it to the human
 verbatim — file and description unparaphrased, never pre-judged. Routine correctness, reliability, and
 security fixes stay self-fixable even when the smallest fix re-adds a little previously deleted logic,
-provided they preserve documented decisions. Earlier-stage decisions include every item under
-`## Not Applied` and every behavior-preserving kept choice explained under `## Change Summary` or `## Notes`.
-Unless explicitly superseded by recorded human approval, reverting one requires an ask-user finding
-and a reason. If the fix pass reverted such an item without that approval, restore it before running
-the baseline suite and report the proposal as ask-user.
+provided they preserve documented decisions.
+
+An earlier-stage decision recorded in this run, including prior passes of the same run, is protected the
+same way. Earlier-stage decisions include every item under `## Not Applied` and every behavior-preserving
+kept choice explained under `## Change Summary` or `## Notes`. Unless explicitly superseded by recorded
+human approval, the review worker never reverts one. If the fix pass reverted such an item without that
+approval — `/code-review --fix` briefs its internal agents from the diff alone and does not see the
+`## Not Applied` list — the worker restores it before running the baseline suite.
+
+How the proposal is reported depends on its reason. A quality-only reason (reuse, simplification,
+efficiency, altitude, style) is never a finding: the earlier decision stands, and the proposal goes under
+`## Recommendations` marked `Counter-proposal`, naming the earlier decision and its report and linking any
+proposal artifact. The chain advances and the human sees the proposal in triage. Only a correctness,
+regression, acceptance, security, or data-safety reason makes it an ask-user finding. `Scope: other`
+therefore never carries `ask-user`. The review worker does not re-report as a finding an item that an
+earlier report of the run already queued for triage under `## Recommendations`.
 
 Reports from unrelated runs are outside this same-run protection. Protection of Not Applied items and
 documented intended behavior persists until recorded human approval explicitly supersedes the earlier
 decision. The approval must identify the decision and the authorized replacement or scope. An agent
 proposal, a later report, or an unapproved recommendation alone does not supersede it. Report unresolved
-scope or precedence ambiguity as `Recommendation: ask-user`; do not apply the disputed change.
+scope or precedence ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An
+orchestrator triage verdict recorded under the human's autonomous-triage authorization for the run counts
+as recorded human approval (see Recommendations Triage).
 
 Correcting a regression introduced by an earlier refactoring remains a must-fix when the correction
 preserves the documented intended behavior; changing that intended behavior still requires ask-user.
@@ -220,6 +234,19 @@ After review self-fix:
 2. If the review report has remaining must-fix or ask-user findings, a blocker, or unsafe fix uncertainty, record a `hitl` gate and stop.
 3. If the final Codex test after review changes reports findings, record a `hitl` gate and stop unless the user explicitly authorizes another worker pass.
 4. Review reports that contain only non-blocking recommendations may advance when `## Findings` is `None`.
+
+### Resuming after a confirming HITL
+
+A HITL decision that confirms the tree as the review left it needs no second review pass. When the human
+decision authorizes no product edit, take a fresh `run_state.py snapshot` and compare it with
+`report-captured review-<pass>`: identical tree fingerprint, `head`, `staged_paths`, and
+`staged_diff_sha256` mean nothing is left to review. Record `decision.human` and `hitl.resolved`, append
+the decision to `decisions.md`, record the review gate as `advance` with a reason naming the human
+resolution, and continue with the final test. This is the only case in which the orchestrator records
+`advance` over a parsed `stop`: the human resolved the gate, the orchestrator did not overrule it.
+
+Any authorized product edit, or any snapshot difference, takes the existing path instead: a scoped
+follow-up worker pass for the approved items, then the final test.
 
 ## Gate Rule
 
@@ -248,7 +275,7 @@ The gate is the **most severe** triggered condition, not the last one evaluated:
 A required section (`## Result`, `## Blockers`, `## Plan Drift`) that is absent or empty makes the report
 malformed and yields `hitl`. An omitted section never reads as `None`.
 
-Review reports must separate blocking findings from non-blocking recommendations. Only `Recommendation: must-fix` and `Recommendation: ask-user` items belong in `## Findings`. Low-risk cleanup, broader hardening, speculative edge cases, and nice-to-have improvements belong in `## Recommendations` and must not block the gate by themselves.
+Review reports must separate blocking findings from non-blocking recommendations. Only `Recommendation: must-fix` and `Recommendation: ask-user` items belong in `## Findings`. Low-risk cleanup, broader hardening, speculative edge cases, nice-to-have improvements, and quality-only counter-proposals to earlier-stage decisions belong in `## Recommendations` and must not block the gate by themselves.
 
 Unresolved must-fix or ask-user findings after the review worker's own self-fix pass become HITL. Do not launch another implementer or second reviewer automatically. Any blocker stops the issue chain and must be recorded in the issue and run log. Any major plan drift becomes a HITL blocker.
 
@@ -261,6 +288,14 @@ re-emission ("re-emit the report per the Worker Report Contract; fix the format,
 record a `report.reformat_requested` event, re-parse, and gate on the new report. If the worker pane is
 already gone or the re-emitted report still fails, stop as HITL for the human. The orchestrator never
 records `advance` while the latest parsed gate says otherwise.
+
+The same re-emission path covers quality-only findings. When every entry under `## Findings` is
+`Recommendation: ask-user` with `Scope: other`, `parse_report.py` still gates `stop` but reports
+`quality_only_findings: true` and the reason `quality-only ask-user findings: request re-emission under
+Recommendations`. Such a finding names no acceptance, regression, security, or data-safety concern, so it
+is a recommendation filed in the wrong section. Ask the worker for one re-emission that moves those
+entries to `## Recommendations` unchanged, record `report.reformat_requested`, and gate on the new report.
+A report mixing them with any other finding is a plain `stop`.
 
 The same re-emission path covers stage-ownership findings. The chain runs on a deliberately uncommitted
 working tree, and commit, push, PR, and CI belong to the human after `complete` — a finding whose sole
@@ -301,6 +336,10 @@ Look for:
   `orchestrator.verified` event and relay it to the human verbatim as a finding, not a recommendation.
   Correcting a regression while preserving documented intended behavior is not a decision reversion
   and does not trigger this stop rule; changing that intended behavior still requires ask-user.
+  An item the review worker restored and reported as a `Counter-proposal` under `## Recommendations`
+  is not reverted in the diff and does not trigger it either.
+- at the follow-up implement gate, compare the diff the pass added against the approved follow-up items:
+  any edit outside them gates `stop`.
 
 Record the inspection as an `orchestrator.verified` event with the commands used and a one-line verdict.
 This is diff-reading only and distinct from the orchestrator quick-check, which re-runs the test suite
@@ -439,11 +478,13 @@ orchestrator writes them neutrally and precisely, in whichever language the huma
 
 ## Recommendations Triage
 
-Non-blocking `## Recommendations` from review and simplify reports must not silently evaporate. After
-`run_state.py complete`, collect the recommendations from all reports of the run and present them to the
-human for triage. For each accepted item, draft a new issue file in the tracker (next free `ISSUE-NNN`,
-status `todo`, frontmatter per the tracker's convention) — creating an issue is a scope decision, so never
-add one without explicit human acceptance. Record the outcome per item as a `recommendations.triaged`
+Non-blocking `## Recommendations` from review and simplify reports must not silently evaporate. After the
+final test gates `advance` and before `run_state.py complete`, collect the recommendations from all
+reports of the run and present them to the human for triage, with `Counter-proposal` entries marked as
+such next to the earlier decision they challenge. An accepted item that meets the follow-up entry
+conditions is applied in this run (see Follow-up Pass). For every other accepted item, draft a new issue
+file in the tracker (next free `ISSUE-NNN`, status `todo`, frontmatter per the tracker's convention) —
+creating an issue is a scope decision, so never add one without explicit human acceptance. Record the outcome per item as a `recommendations.triaged`
 event, including a one-line reason for rejected or deferred items, so the next retro can see what was
 dropped and why. Also append approved, rejected, and deferred items to the tracker's `decisions.md`
 (one line each: item, verdict, reason). For explicit human supersession approvals, identify the earlier
@@ -451,8 +492,53 @@ decision and the authorized replacement or scope. An approved follow-up issue do
 authorize changing a protected decision in the current issue. `render_prompt.py` embeds that file into
 every worker prompt, so later reviewers and simplifiers see the human verdicts, honor explicit
 supersessions within their authorized scope, and do not re-report or re-apply rejected or deferred items
-unless the code presents a materially different problem. Triage never blocks the next issue chain:
-present it and continue; the decision may stay open until the human responds.
+unless the code presents a materially different problem.
+
+The verdict comes from the human by default: the orchestrator waits here as it waits for the commit
+afterwards. The human may answer "later"; then complete the run at once, keep the open items pending, and
+route any later acceptance to a new issue — a follow-up pass exists only while the issue is uncommitted.
+When the human has authorized autonomous triage for the run, recorded as a `decision.human` event, the
+orchestrator decides each item itself, and its verdict counts as the recorded approval a follow-up pass
+needs. Without that authorization it never decides. For a `Counter-proposal` the autonomous default is
+the earlier decision: accept only when the proposal refutes the recorded reason with evidence, such as a
+measurement or a concrete failure case; otherwise reject or defer with a reason. An autonomous verdict
+never creates a new issue beyond what the authorization covers. An open triage never blocks the next
+issue chain once the run is complete.
+
+## Follow-up Pass
+
+A follow-up pass applies small accepted triage items to the still uncommitted issue instead of queueing a
+full ticket for them. It runs inside the same run, after triage and before `run_state.py complete`, and
+needs no approval beyond the triage verdict: the orchestrator prepares, launches, gates, and tests it on
+its own.
+
+Entry conditions — all four, otherwise the item becomes a new issue or stays deferred:
+
+- the change is behavior-preserving;
+- it stays inside the files of the issue diff;
+- the proposal is concrete: described precisely or available as an artifact;
+- no acceptance criterion changes.
+
+Procedure:
+
+1. Record the verdicts (`recommendations.triaged`, `decisions.md`). For a superseding item, the ledger
+   line identifies the earlier decision and the authorized replacement or scope.
+2. Write the accepted items to `.scratch/orchestrator/runs/<run-id>/followup-items.md`, one bullet per
+   item with its source report, the earlier decision it supersedes, and any proposal artifact.
+3. Record the final test gate as `advance` with `--next-stage implement`, prepare `implement` with the
+   next pass number, and render its prompt with `--followup-file`. That variant replaces the implement
+   contract: apply exactly the listed items, prove behavior preservation with the baseline suite before
+   and after instead of a failing regression test, leave existing tests unedited.
+4. Gate the implement report as usual, including diff inspection against the item list, then run the
+   final test for the same pass with the follow-up report and the item list as context files.
+5. Complete the run. The commit proposal covers the issue and the follow-up together.
+
+Limits: one follow-up pass per issue, all accepted items bundled; no simplify or review stage in it;
+recommendations from its reports go to triage but never start another pass. An item the worker lists
+under `## Not Applied` because it no longer fits the code is not retried: it becomes a new issue or is
+dropped, per the human or the autonomous authorization. Findings from the follow-up implement or test
+report gate `hitl` like findings after review changes. Select a lighter implement profile for the pass
+with the typed `prepare` overrides when the default is oversized for the items.
 
 ## HITL Issues
 
@@ -749,7 +835,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `plan.drift`, `plan.drift.resolved`                      | Drift recorded / resolved per the Replanning rules                                                                                               |
 | `hitl.resolved`, `decision.human`                        | Human decisions and HITL resolutions                                                                                                             |
 | `commit.proposed`                                        | Commit proposal (file list + message draft) handed to the human after `complete`                                                                 |
-| `recommendations.triaged`                                | Per-item accept/reject outcome of the post-run recommendations triage                                                                            |
+| `recommendations.triaged`                                | Per-item accept/reject outcome of the end-of-chain recommendations triage                                                                        |
 | `artifact.written`, `hitl.verified`, `hitl.counterproof` | HITL-issue assistance (see HITL Issues)                                                                                                          |
 | `orchestrator.verified`                                  | Orchestrator-run verification: quick-check test rerun before the simplify gate, or diff inspection at a code-changing gate (commands + outcomes) |
 | `orchestrator.halted`, `orchestrator.unverified_input`   | Orchestrator-side anomalies                                                                                                                      |
@@ -879,6 +965,16 @@ python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 
 
 The pass-2 example assumes the pass-1 implement, simplify, and review reports carry protected decisions
 or explicit human supersession records. Select prior reports by the relevance rule above.
+
+Render a follow-up pass (see Follow-up Pass). `--followup-file` applies to `--role implement` only and
+swaps the implement contract for the follow-up contract; the test prompt stays the normal one and
+receives the follow-up report and the item list as context files:
+
+```bash
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage test --decision advance --reason "final test clean; follow-up items accepted in triage" --next-stage implement
+python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage implement --pass 2
+python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file .scratch/orchestrator/runs/<run-id>/followup-items.md
+```
 
 Parse worker reports. Exit code carries the gate; a missing report is `pending` (exit 6), never a crash:
 
@@ -1015,10 +1111,13 @@ NO FINDINGS
 
 `## Findings` follows the bare-`None` rule; remaining must-fix and ask-user findings after the self-fix pass replace
 the `- None` line entirely, each with Severity (critical|high|medium|low), `Recommendation: must-fix` or
-`Recommendation: ask-user` (ask-user when the finding challenges a documented issue or earlier-stage decision — the
-reviewer must not fix those), Scope (acceptance|regression|security|data-safety|other), file/line
-Evidence, and a concrete suggested fix.
-`## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose.
+`Recommendation: ask-user` (ask-user when the finding challenges a documented issue decision, or an
+earlier-stage decision for a non-quality reason — the reviewer must not fix those), Scope
+(acceptance|regression|security|data-safety|other), file/line Evidence, and a concrete suggested fix.
+`Scope: other` never carries `ask-user`; the parser flags a report whose findings are all of that shape for
+re-emission. `## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose;
+quality-only counter-proposals to earlier-stage decisions go under `## Recommendations` marked
+`Counter-proposal`.
 
 For simplify/refactor workers, require the simplify pass to be reported as a check (`/simplify` on Claude
 Code, `simplify pass` elsewhere):
@@ -1033,11 +1132,19 @@ Code, `simplify pass` elsewhere):
 
 ## Not Applied
 - None
+
+## Recommendations
+- None, or refactorings that need a human decision.
 ```
 
 Require one bullet per considered-but-not-applied refactoring and a one-line reason under
 `## Not Applied`, or `- None`. This section is not gate-parsed by `parse_report.py`; it records
-decisions for the review worker and the orchestrator's review-gate diff inspection.
+decisions for the review worker and the orchestrator's review-gate diff inspection. It holds only
+refactorings the simplifier decided against itself; one that needs a human decision goes under
+`## Recommendations` and reaches triage from there.
+
+A follow-up implement report adds `## Change Summary` (changed files per approved item) and
+`## Not Applied` (approved items that no longer fit the code, each with a one-line reason).
 
 Runs use the shared `.scratch/orchestrator/runs/` root and default UTC id
 `chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`. Each `state.json` records `workflow: issue-chain`,

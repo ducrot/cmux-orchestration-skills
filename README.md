@@ -91,9 +91,9 @@ Point it at a ready issue in a local tracker. Each worker stage starts fresh:
 4. **Review:** inspect the full diff and apply safe fixes within the issue's intent.
 5. **Final test:** independently verify the result after the last code-changing stage. The tester does not edit product code.
 
-Reviewers must respect documented decisions from earlier stages and passes of the same run, including refactorings deliberately left unapplied. Replacing those decisions requires recorded human approval. Fixing a regression while preserving the intended behavior remains allowed.
+Reviewers must respect documented decisions from earlier stages and passes of the same run, including refactorings deliberately left unapplied. Replacing those decisions requires recorded human approval. Fixing a regression while preserving the intended behavior remains allowed. A reviewer who disagrees with such a decision on quality grounds alone does not stop the chain: the earlier decision stands and the counter-proposal goes to triage.
 
-Blockers, plan drift, and unresolved review findings stop the chain for human input. Successful completion leaves checked changes and a commit proposal; committing, pushing, opening a PR, and CI remain subsequent human steps.
+Blockers, plan drift, and unresolved review findings stop the chain for human input. After the final test, recommendations are triaged; small accepted items that preserve behavior and stay inside the issue diff are applied in one follow-up pass (implement, then test) before the run completes, and everything else becomes a new issue. You decide the triage unless you authorized autonomous triage for the run. Successful completion leaves checked changes and a commit proposal; committing, pushing, opening a PR, and CI remain subsequent human steps.
 
 [Workflow, gates, and report contract](cmux-issue-chain/SKILL.md)
 
