@@ -37,11 +37,13 @@ Each skill includes its own runtime helpers and works without the sibling direct
 - **cmux** for visible worker panes, with its CLI available to the orchestrator.
 - **Git and Python 3** in the target repository. The bundled Python helpers use only the standard library.
 - **An orchestrating agent** that can load skills and operate cmux, such as Claude Code or Codex.
-- **Authenticated Claude Code and Codex CLIs** for the shipped worker defaults. The configured models must be available to your account.
+- **Authenticated Claude Code and Codex CLIs** for the shipped worker defaults. The configured models must be available to your account. The Pi CLI is supported too, but no default assignment uses it.
 
-Worker assignments are configurable. Issue-chain supports either CLI for every role; planning requires a Codex reviewer; grilling requires Claude Code for its web lane. The other roles accept either CLI.
+Worker assignments are configurable. Issue-chain supports every harness for every role; planning requires a Codex reviewer and accepts Claude Code, Codex or Pi for its authors; grilling's web lane needs Claude Code or Pi, because Codex cannot reach the web. A Pi profile must name its provider, as in `openrouter/z-ai/glm-5.3`.
 
-For Claude Code issue-chain workers, make sure `/simplify` and `/code-review medium --fix` are available in that installation. These commands are not supplied by this repository. On Codex, the skill provides the corresponding simplify and review instructions directly in the worker prompt.
+For Claude Code issue-chain workers, make sure `/simplify` and `/code-review medium --fix` are available in that installation. These commands are not supplied by this repository. On Codex and Pi, the skill provides the corresponding simplify and review instructions directly in the worker prompt.
+
+Pi is the least contained harness on offer: it ships no sandbox and no approval gate, so a Pi worker's shell and file tools run unconfined and the `.git` protection that Codex workers get does not apply. Choose a Pi profile only where that is acceptable.
 
 ## First run
 

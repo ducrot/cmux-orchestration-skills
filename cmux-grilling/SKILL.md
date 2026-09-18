@@ -71,12 +71,15 @@ protocol. Never offer profile overrides the human did not ask for.
 This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
 not emulate it with shell input, a sleeping process, or polling while the human edits the file.
 
-The ten shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
+The fourteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
 `claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
 (`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
 `codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
-`gpt-6-astra`); and `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`). Each tuple lists
-harness, executable, and model; the profile suffix specifies effort. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
+`gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
+`pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
+and `pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`). Each tuple lists
+harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
+profile by default; Pi is opted into per run or per tracker config. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
 `codebase`, `codebase2`, `docs`, and `web`, respectively. The `fable`, `opus`, and `sonnet`
 strings are intentionally moving provider aliases; deterministic selection of an alias does not
 pin the provider's underlying model version.
@@ -96,8 +99,10 @@ Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model
 strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
 provider or model entitlement. `show-resolved` is the inspection command for the complete
-profiles, assignments, sources, models, and efforts. Pi and Hermes remain explicit unsupported
-entries in the code-owned adapter registry; that registry — rather than JSON — is the implementation
+profiles, assignments, sources, models, and efforts. A Pi model must name its provider
+(`provider/id`, such as `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and
+its preflight check is scoped to the model it is given. Hermes remains an explicit unsupported
+entry in the code-owned adapter registry; that registry — rather than JSON — is the implementation
 boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
 preflight rules, the launch and probe adapters, and the override parsing and profile resolution
 all workflows share, so a harness is added in that one file; each workflow keeps its own
@@ -561,7 +566,7 @@ human sees what is still outstanding. The human reviews, commits, and pushes. Ne
 Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
 After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
 startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
-start and task delivery. The gate applies to Codex and Claude Code, all roles/lanes, and follow-ups.
+start and task delivery. The gate applies to Codex, Claude Code and Pi, all roles/lanes, and follow-ups.
 `worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
 
 ## CMUX Control

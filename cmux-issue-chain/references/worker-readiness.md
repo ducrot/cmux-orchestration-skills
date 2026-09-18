@@ -1,9 +1,10 @@
 # Interactive worker readiness
 
-Apply this protocol to Codex and Claude Code after every start, after recovering context,
-and before every `deliver` (including follow-ups and grilling session/round prompts).
+Apply this protocol to every harness worker (Codex, Claude Code, Pi) after every start,
+after recovering context, and before every `deliver` (including follow-ups and grilling session/round prompts).
 A successful `start-agent`, a live surface, provider preflight, or a visible prompt glyph
-is not proof of readiness. Codex can display a composer while still loading.
+is not proof of readiness. Codex can display a composer while still loading, and Pi renders
+its banner, skill list and composer frame before the session is usable.
 
 ## Observe, assess, then deliver
 

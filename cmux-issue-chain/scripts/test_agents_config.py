@@ -159,6 +159,30 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "gpt-5.6-luna",
                     "effort": "medium",
                 },
+                "pi-gemini-pro-high": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "google/gemini-3.1-pro-preview",
+                    "effort": "high",
+                },
+                "pi-gemini-pro-medium": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "google/gemini-3.1-pro-preview",
+                    "effort": "medium",
+                },
+                "pi-glm-high": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "openrouter/z-ai/glm-5.3",
+                    "effort": "high",
+                },
+                "pi-glm-medium": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "openrouter/z-ai/glm-5.3",
+                    "effort": "medium",
+                },
             },
         )
         self.assertEqual(
@@ -276,7 +300,6 @@ class AgentsConfigCli(unittest.TestCase):
         )
 
         for harness, message in (
-            ("pi", "not yet supported"),
             ("hermes", "not yet supported"),
             ("other", "unknown harness"),
         ):
@@ -414,6 +437,16 @@ class AgentsConfigCli(unittest.TestCase):
             ("planning", "tickets", "claude-code"),
             ("planning", "tickets", "codex"),
             ("planning", "reviewer", "codex"),
+            ("issue-chain", "implement", "pi"),
+            ("issue-chain", "simplify", "pi"),
+            ("issue-chain", "review", "pi"),
+            ("issue-chain", "test", "pi"),
+            ("grilling", "codebase", "pi"),
+            ("grilling", "codebase2", "pi"),
+            ("grilling", "docs", "pi"),
+            ("grilling", "web", "pi"),
+            ("planning", "spec", "pi"),
+            ("planning", "tickets", "pi"),
         }
         for workflow, assignments in default["workflows"].items():
             for worker in assignments:
@@ -485,7 +518,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(persisted["schema_version"], 2)
-        self.assertEqual(len(persisted["profiles"]), 10)
+        self.assertEqual(len(persisted["profiles"]), 14)
 
     def test_version_one_inspection_and_preview_are_read_only(self):
         _, legacy = self.legacy_default()
@@ -796,6 +829,30 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(shared.read_bytes(), original)
         self.assertEqual(peer.read_bytes(), original)
 
+    def test_pi_models_must_name_their_provider(self):
+        _, default = self.init_default()
+        changed = copy.deepcopy(default)
+        changed["profiles"]["pi-glm-high"]["model"] = "glm-5.3"
+        path = self.write_config(changed, "pi-bare-model.json")
+
+        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("profile=pi-glm-high", proc.stderr)
+        self.assertIn("field=model", proc.stderr)
+        self.assertIn("provider/id", proc.stderr)
+
+    def test_provider_qualified_models_stay_allowed_on_other_harnesses(self):
+        _, default = self.init_default()
+        changed = copy.deepcopy(default)
+        changed["profiles"]["codex-astra-xhigh"]["model"] = "gpt-6-astra"
+        changed["profiles"]["pi-glm-high"]["model"] = "openrouter/z-ai/glm-5.3"
+        path = self.write_config(changed, "mixed-models.json")
+
+        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
     def test_planning_reviewer_must_use_codex(self):
         _, current = self.init_default()
         current["workflows"]["planning"]["reviewer"] = "claude-opus-xhigh"
@@ -891,6 +948,107 @@ class ProbeArguments(unittest.TestCase):
         self.assertEqual(parsed.permission_mode, "plan")
         self.assertEqual(parsed.model, "opus")
         self.assertEqual(parsed.effort, "high")
+
+
+    def test_pi_probe_disables_tools_and_skips_session_storage(self):
+        sys.path.insert(0, str(SCRIPT_DIR))
+        try:
+            import agents_config
+        finally:
+            sys.path.pop(0)
+
+        argv = agents_config.probe_argv({
+            "resolved_executable": "/test-bin/pi",
+            "harness": "pi",
+            "model": "openrouter/z-ai/glm-5.3",
+            "effort": "high",
+        })
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--no-session", action="store_true")
+        parser.add_argument("--print", dest="print_mode", action="store_true")
+        parser.add_argument("--no-tools", action="store_true")
+        parser.add_argument("--model")
+        parser.add_argument("--thinking")
+        parser.add_argument("prompt", nargs="?")
+
+        parsed = parser.parse_args(argv[1:])
+
+        self.assertEqual(parsed.prompt, agents_config.PROBE_PROMPT)
+        self.assertTrue(parsed.no_session)
+        self.assertTrue(parsed.print_mode)
+        self.assertTrue(parsed.no_tools)
+        self.assertEqual(parsed.model, "openrouter/z-ai/glm-5.3")
+        self.assertEqual(parsed.thinking, "high")
+
+    def test_pi_launch_maps_effort_onto_thinking(self):
+        sys.path.insert(0, str(SCRIPT_DIR))
+        try:
+            import agents_config
+        finally:
+            sys.path.pop(0)
+
+        argv = agents_config.adapter_argv(
+            {
+                "requested_executable": "pi",
+                "harness": "pi",
+                "model": "google/gemini-3.1-pro-preview",
+                "effort": "xhigh",
+            },
+            codex_arguments=["-s", "workspace-write"],
+        )
+
+        self.assertEqual(
+            argv, ["pi", "--model", "google/gemini-3.1-pro-preview", "--thinking", "xhigh"]
+        )
+
+
+class ExecutableResolution(unittest.TestCase):
+    """A name-dispatching shim must reach the harness, not its realpath."""
+
+    def test_a_symlinked_shim_is_launched_under_the_name_it_was_found_as(self):
+        sys.path.insert(0, str(SCRIPT_DIR))
+        try:
+            import agents_config
+        finally:
+            sys.path.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real = root / "multi-call-shim"
+            real.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            real.chmod(0o755)
+            link = root / "harness-under-test"
+            link.symlink_to(real)
+
+            resolved = agents_config.resolve_executable(str(link))
+
+        self.assertEqual(resolved, str(link))
+
+
+class AuthStatusRules(unittest.TestCase):
+    def test_a_scoped_auth_check_receives_the_profile_model(self):
+        sys.path.insert(0, str(SCRIPT_DIR))
+        try:
+            import agents_config
+        finally:
+            sys.path.pop(0)
+
+        rule = agents_config.PREFLIGHT_RULES["pi"]["auth_status"]
+        substituted = [
+            "openrouter/z-ai/glm-5.3" if part == agents_config.MODEL_PLACEHOLDER else part
+            for part in rule
+        ]
+
+        self.assertIn(agents_config.MODEL_PLACEHOLDER, rule)
+        self.assertEqual(
+            substituted, ["auth", "check", "--model", "openrouter/z-ai/glm-5.3"]
+        )
+        # Harnesses with a global auth status must not carry a placeholder.
+        for harness in ("claude-code", "codex"):
+            self.assertNotIn(
+                agents_config.MODEL_PLACEHOLDER,
+                agents_config.PREFLIGHT_RULES[harness]["auth_status"],
+            )
 
 
 if __name__ == "__main__":

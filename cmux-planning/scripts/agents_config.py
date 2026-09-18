@@ -38,20 +38,21 @@ TOP_LEVEL_FIELDS = {"schema_version", "profiles", "workflows"}
 PROFILE_FIELDS = {"harness", "executable", "model", "effort"}
 COMPATIBLE_HARNESSES = {
     "issue-chain": {
-        "implement": {"claude-code", "codex"},
-        "simplify": {"claude-code", "codex"},
-        "review": {"claude-code", "codex"},
-        "test": {"claude-code", "codex"},
+        "implement": {"claude-code", "codex", "pi"},
+        "simplify": {"claude-code", "codex", "pi"},
+        "review": {"claude-code", "codex", "pi"},
+        "test": {"claude-code", "codex", "pi"},
     },
     "grilling": {
-        "codebase": {"claude-code", "codex"},
-        "codebase2": {"claude-code", "codex"},
-        "docs": {"claude-code", "codex"},
-        "web": {"claude-code"},
+        "codebase": {"claude-code", "codex", "pi"},
+        "codebase2": {"claude-code", "codex", "pi"},
+        "docs": {"claude-code", "codex", "pi"},
+        # Pi has no web tool, but reaches the web through bash; Codex cannot.
+        "web": {"claude-code", "pi"},
     },
     "planning": {
-        "spec": {"claude-code", "codex"},
-        "tickets": {"claude-code", "codex"},
+        "spec": {"claude-code", "codex", "pi"},
+        "tickets": {"claude-code", "codex", "pi"},
         "reviewer": {"codex"},
     },
 }
@@ -70,11 +71,21 @@ WORKFLOW_WORKERS = {
 # Each workflow calls its workers something else in operator-facing text.
 WORKFLOW_NOUN = {"issue-chain": "worker", "grilling": "lane", "planning": "role"}
 
+# Pi resolves a bare model name against its default provider and its auth check rejects one
+# outright, so a Pi profile has to name the provider it is entitled to.
+PI_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:@-]*/[A-Za-z0-9][A-Za-z0-9._+:/@-]*\Z")
+
 # The registry is the extension seam. Configuration cannot add entries or capabilities.
 ADAPTERS = {
     "claude-code": {"supported": True, "efforts": {"low", "medium", "high", "xhigh", "max"}},
     "codex": {"supported": True, "efforts": {"low", "medium", "high", "xhigh", "max", "ultra"}},
-    "pi": {"supported": False, "efforts": set()},
+    # Pi also knows "off" and "minimal"; they stay out so one effort word means the same
+    # thing on every harness.
+    "pi": {
+        "supported": True,
+        "efforts": {"low", "medium", "high", "xhigh", "max"},
+        "model_re": PI_MODEL_RE,
+    },
     "hermes": {"supported": False, "efforts": set()},
 }
 SUPPORTED_ADAPTERS = {name for name, adapter in ADAPTERS.items() if adapter["supported"]}
@@ -83,6 +94,19 @@ PROFILE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 PROGRAM_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
 ABSOLUTE_EXECUTABLE_RE = re.compile(r"/[A-Za-z0-9._+/@:-]+\Z")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+:/@-]*\Z")
+MODEL_SYNTAX_REASON = {
+    "pi": "model must be written as provider/id, for example google/gemini-3.1-pro-preview",
+}
+
+
+def model_syntax_error(harness: object, model: str) -> str | None:
+    """The model rule both the config file and a typed override are held to."""
+    if not MODEL_RE.fullmatch(model):
+        return "model has unusable syntax; use one non-whitespace model identifier"
+    rule = ADAPTERS.get(harness, {}).get("model_re") if isinstance(harness, str) else None
+    if rule is not None and not rule.fullmatch(model):
+        return MODEL_SYNTAX_REASON[harness]
+    return None
 
 
 def valid_executable_syntax(value: str) -> bool:
@@ -150,6 +174,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "harness": "codex",
             "executable": "codex",
             "model": "gpt-5.6-luna",
+            "effort": "medium",
+        },
+        "pi-gemini-pro-high": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "google/gemini-3.1-pro-preview",
+            "effort": "high",
+        },
+        "pi-gemini-pro-medium": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "google/gemini-3.1-pro-preview",
+            "effort": "medium",
+        },
+        "pi-glm-high": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "openrouter/z-ai/glm-5.3",
+            "effort": "high",
+        },
+        "pi-glm-medium": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "openrouter/z-ai/glm-5.3",
             "effort": "medium",
         },
     },
@@ -406,15 +454,10 @@ def validate_profile(name: str, value: Any, source: Path, errors: list[str]) -> 
             )
 
     model = value.get("model")
-    if isinstance(model, str) and model and not MODEL_RE.fullmatch(model):
-        errors.append(
-            context_error(
-                source,
-                "model has unusable syntax; use one non-whitespace model identifier",
-                profile=name,
-                field="model",
-            )
-        )
+    if isinstance(model, str) and model:
+        reason = model_syntax_error(harness, model)
+        if reason is not None:
+            errors.append(context_error(source, reason, profile=name, field="model"))
 
     effort = value.get("effort")
     if isinstance(harness, str) and harness in SUPPORTED_ADAPTERS and isinstance(effort, str) and effort:
@@ -928,6 +971,10 @@ PROBE_PROMPT = (
     "Do not call tools or modify any files."
 )
 
+# Stands in for the profile's model inside an auth-status rule, for harnesses whose auth check
+# is scoped rather than global.
+MODEL_PLACEHOLDER = "{model}"
+
 PREFLIGHT_RULES = {
     "codex": {
         "help_tokens": ("--model", "--sandbox", "--config", "--ask-for-approval", "login"),
@@ -945,6 +992,16 @@ PREFLIGHT_RULES = {
         "auth_status": ("auth", "status"),
         "probe_help": ("--help",),
         "probe_tokens": ("--safe-mode", "--print", "--no-session-persistence", "--permission-mode", "--tools"),
+    },
+    "pi": {
+        "help_tokens": ("--model", "--thinking", "--provider", "auth"),
+        "auth_help": ("auth", "--help"),
+        "auth_tokens": ("check",),
+        # Pi has no provider-wide status command: the check is scoped to one provider or model,
+        # which is why a Pi profile must spell its model as provider/id.
+        "auth_status": ("auth", "check", "--model", MODEL_PLACEHOLDER),
+        "probe_help": ("--help",),
+        "probe_tokens": ("--print", "--no-session", "--no-tools", "--model", "--thinking"),
     },
 }
 
@@ -972,9 +1029,12 @@ def _successful_probe(argv: list[str], purpose: str) -> subprocess.CompletedProc
 
 
 def _executable_file(candidate: Path, label: str, display: object) -> str:
+    # The checks follow symlinks; the returned path deliberately does not. Version-manager shims
+    # (Volta, mise, asdf) dispatch on the name they were invoked under, so substituting the
+    # realpath makes the harness refuse to start. `real_path` keeps it as audit data instead.
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
         raise HarnessError(f"{label} executable is not an executable file: {display}")
-    return str(candidate.resolve())
+    return os.path.normpath(candidate.absolute())
 
 
 def resolve_executable(requested: str) -> str:
@@ -1047,13 +1107,15 @@ def preflight_executable(profile: dict[str, str]) -> dict[str, Any]:
         rules["auth_tokens"],
         label="authentication help capability check",
     )
-    auth_result = _successful_probe(
-        [resolved, *rules["auth_status"]], "authentication status check"
-    )
+    auth_status = [
+        profile["model"] if part == MODEL_PLACEHOLDER else part for part in rules["auth_status"]
+    ]
+    auth_result = _successful_probe([resolved, *auth_status], "authentication status check")
 
     return {
         "requested_executable": requested,
         "resolved_executable": resolved,
+        "real_path": os.path.realpath(resolved),
         "detected_version": version,
         "preflight": {
             "status": "passed",
@@ -1097,6 +1159,16 @@ def adapter_argv(profile: dict[str, Any], *, codex_arguments: list[str]) -> list
             "-c",
             f"model_reasoning_effort={profile['effort']}",
         ]
+    if profile["harness"] == "pi":
+        # Pi ships no sandbox and no approval gate, so there is nothing here to pin: a Pi worker
+        # runs its read/bash/edit/write tools unconfined, without Codex's .git carve-out.
+        return [
+            executable,
+            "--model",
+            profile["model"],
+            "--thinking",
+            profile["effort"],
+        ]
     raise HarnessError(f"no launch adapter for harness {profile['harness']!r}")
 
 
@@ -1135,6 +1207,18 @@ def probe_argv(profile: dict[str, Any]) -> list[str]:
             "--config",
             'approval_policy="never"',
             "--skip-git-repo-check",
+            PROBE_PROMPT,
+        ]
+    if profile["harness"] == "pi":
+        return [
+            executable,
+            "--no-session",
+            "--print",
+            "--no-tools",
+            "--model",
+            profile["model"],
+            "--thinking",
+            profile["effort"],
             PROBE_PROMPT,
         ]
     raise HarnessError(f"no live probe adapter for harness {profile['harness']!r}")
@@ -1356,8 +1440,11 @@ def validate_effective_worker(
         raise invalid("harness", f"harness {harness!r} is not compatible with this worker")
     if not isinstance(executable, str) or not valid_executable_syntax(executable):
         raise invalid("executable", "executable must be a single program name or absolute path")
-    if not isinstance(model, str) or not MODEL_RE.fullmatch(model):
+    if not isinstance(model, str) or not model:
         raise invalid("model", "model has unusable syntax")
+    model_reason = model_syntax_error(harness, model)
+    if model_reason is not None:
+        raise invalid("model", model_reason)
     if not isinstance(effort, str) or effort not in ADAPTERS[harness]["efforts"]:
         raise invalid("effort", f"unsupported effort {effort!r} for {harness}")
 

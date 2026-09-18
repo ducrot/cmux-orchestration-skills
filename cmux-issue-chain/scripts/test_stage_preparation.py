@@ -327,7 +327,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(selected["entitlement"]["status"], "unverified")
         self.assertEqual(selected["argv"][0], "codex")
         self.assertEqual(selected["requested_executable"], "codex")
-        self.assertEqual(selected["resolved_executable"], str((self.bin_dir / "codex").resolve()))
+        self.assertEqual(selected["resolved_executable"], str(self.bin_dir / "codex"))
         self.assertEqual(
             selected["argv"][1:],
             [
@@ -492,7 +492,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("--probe-timeout", proc.stderr)
         self.assertFalse((self.run_dir / "state.json").exists())
 
-    def test_launch_identity_is_the_configured_executable_not_the_preflighted_realpath(self):
+    def test_launch_identity_and_preflight_both_keep_the_name_the_harness_was_found_as(self):
         alias_dir = self.root / "linked"
         alias_dir.mkdir()
         alias = alias_dir / "claude"
@@ -504,7 +504,10 @@ class PreparedStageCli(unittest.TestCase):
         review = self.read_snapshot()["resolved_profiles"]["review"]
         self.assertEqual(review["argv"][0], str(alias))
         self.assertEqual(review["requested_executable"], str(alias))
-        self.assertEqual(review["resolved_executable"], str((self.bin_dir / "claude").resolve()))
+        # Version-manager shims dispatch on the name they were invoked under, so neither the
+        # launch nor the preflight may substitute the realpath. It is kept as audit data only.
+        self.assertEqual(review["resolved_executable"], str(alias))
+        self.assertEqual(review["real_path"], str((self.bin_dir / "claude").resolve()))
 
     def test_capability_version_and_auth_failures_leave_no_launchable_run_or_pane(self):
         for mode in ("help", "version", "auth"):
@@ -703,9 +706,9 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.assertEqual(self.gate("implement", "simplify").returncode, 0)
 
-        # Every issue-chain worker accepts both supported harnesses, so the refusal that must
+        # Every issue-chain worker accepts every supported harness, so the refusal that must
         # precede pane creation is an unsupported adapter rather than a worker mismatch.
-        prepared = self.prepare("simplify", 1, "--harness", "simplify=pi")
+        prepared = self.prepare("simplify", 1, "--harness", "simplify=hermes")
 
         self.assertNotEqual(prepared.returncode, 0)
         self.assertIn("unsupported harness", prepared.stderr)

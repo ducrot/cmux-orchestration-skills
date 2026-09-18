@@ -68,6 +68,9 @@ handoffs.
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
 `claude-fable-high`; the reviewer defaults to `codex-astra-high` and must resolve to Codex.
+The author roles also accept Pi profiles; the reviewer does not. A Pi model must name its provider
+(`provider/id`, such as `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and
+its preflight check is scoped to the model it is given.
 `validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
@@ -274,7 +277,7 @@ A genuinely diverse resolution prepares normally with no warning or extra prompt
 Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
 After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
 startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
-start and task delivery. The gate applies to Codex and Claude Code, all roles/lanes, and follow-ups.
+start and task delivery. The gate applies to Codex, Claude Code and Pi, all roles/lanes, and follow-ups.
 `worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
 
 ## Run one stage
