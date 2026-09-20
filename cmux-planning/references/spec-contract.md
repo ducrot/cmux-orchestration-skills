@@ -22,7 +22,7 @@ The author report is separate from the draft. It names concrete repository sourc
 proposed test seams, blockers, plan drift, and the exact draft path. A clean author handoff moves
 only to independent review.
 
-The fresh Codex reviewer returns exactly one verdict:
+The fresh independent reviewer returns exactly one verdict:
 
 - `pass`: references the unchanged draft digest and writes no candidate.
 - `pass_with_fixes`: writes a complete candidate plus a structured correction summary. Corrections

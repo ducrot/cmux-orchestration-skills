@@ -265,7 +265,7 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
 
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
-Harness: {snapshot['selected_worker']['harness']} (Codex is mandatory)
+Harness: {snapshot['selected_worker']['harness']}
 
 Review independently in this fresh pane. Do not trust the author's summary: inspect the target repository
 read-only where useful. Check the persisted task, optional normalized grilling decisions, repository evidence,
@@ -562,7 +562,7 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
 
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
-Harness: {snapshot['selected_worker']['harness']} (Codex is mandatory)
+Harness: {snapshot['selected_worker']['harness']}
 
 Review independently in this fresh pane without either author session. Inspect the repository read-only
 where useful. Check the task, immutable approved specification and its decisions, exact author proposal

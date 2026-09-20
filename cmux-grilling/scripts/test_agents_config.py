@@ -448,6 +448,7 @@ class AgentsConfigCli(unittest.TestCase):
             ("planning", "spec", "codex"),
             ("planning", "tickets", "claude-code"),
             ("planning", "tickets", "codex"),
+            ("planning", "reviewer", "claude-code"),
             ("planning", "reviewer", "codex"),
             ("issue-chain", "implement", "pi"),
             ("issue-chain", "simplify", "pi"),
@@ -459,6 +460,7 @@ class AgentsConfigCli(unittest.TestCase):
             ("grilling", "web", "pi"),
             ("planning", "spec", "pi"),
             ("planning", "tickets", "pi"),
+            ("planning", "reviewer", "pi"),
         }
         for workflow, assignments in default["workflows"].items():
             for worker in assignments:
@@ -706,8 +708,9 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(migrated["profiles"]["codex-astra-high"]["model"], "collision-must-survive")
-        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-astra-high-2")
-        self.assertEqual(migrated["profiles"]["codex-astra-high-2"]["harness"], "codex")
+        # Every harness may review, so migration reuses a compatible profile instead of adding one.
+        self.assertEqual(migrated["workflows"]["planning"]["reviewer"], "codex-astra-high")
+        self.assertNotIn("codex-astra-high-2", migrated["profiles"])
         self.assertEqual(migrated["workflows"]["planning"]["spec"], "claude-opus-medium")
 
     def test_invalid_version_one_migration_preserves_original_bytes(self):
@@ -865,16 +868,18 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    def test_planning_reviewer_must_use_codex(self):
-        _, current = self.init_default()
-        current["workflows"]["planning"]["reviewer"] = "claude-opus-xhigh"
-        path = self.write_config(current, "non-codex-reviewer.json")
+    def test_planning_reviewer_accepts_every_supported_harness(self):
+        """The reviewer is assigned like any other worker; diversity is a run-time decision."""
+        _, default = self.init_default()
+        for profile in ("claude-opus-xhigh", "pi-glm-high"):
+            with self.subTest(profile=profile):
+                current = copy.deepcopy(default)
+                current["workflows"]["planning"]["reviewer"] = profile
+                path = self.write_config(current, f"reviewer-{profile}.json")
 
-        proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+                proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
 
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("workflow=planning worker=reviewer", proc.stderr)
-        self.assertIn("not compatible", proc.stderr)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))

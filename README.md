@@ -39,7 +39,7 @@ Each skill includes its own runtime helpers and works without the sibling direct
 - **An orchestrating agent** that can load skills and operate cmux, such as Claude Code or Codex.
 - **Authenticated Claude Code and Codex CLIs** for the shipped worker defaults. The configured models must be available to your account. The Pi CLI is supported too, but no default assignment uses it.
 
-Worker assignments are configurable. Issue-chain supports every harness for every role; planning requires a Codex reviewer and accepts Claude Code, Codex or Pi for its authors; grilling's web lane needs Claude Code or Pi, because Codex cannot reach the web. A Pi profile must name its provider, as in `openrouter/z-ai/glm-5.3`.
+Worker assignments are configurable. Issue-chain and planning support every harness for every role; grilling's web lane needs Claude Code or Pi, because Codex cannot reach the web. Planning pins no role to a harness: when its reviewer resolves to the same harness and model as the author it checks, preparation stops for your explicit confirmation instead. A Pi profile must name its provider, as in `openrouter/z-ai/glm-5.3`.
 
 For Claude Code issue-chain workers, make sure `/simplify` and `/code-review medium --fix` are available in that installation. These commands are not supplied by this repository. On Codex and Pi, the skill provides the corresponding simplify and review instructions directly in the worker prompt.
 
@@ -74,9 +74,9 @@ The research ends when the question budget is spent or no relevant open question
 Start with a task, optionally accompanied by a grilling artifact pair that you explicitly revalidate.
 
 1. A fresh author inspects the repository and writes a specification.
-2. A fresh Codex reviewer checks it and records what was checked and the outcome. Safe corrections are validated and shown to you.
+2. A fresh independent reviewer checks it and records what was checked and the outcome. Safe corrections are validated and shown to you.
 3. **You approve the specification** or request revisions.
-4. A fresh author creates cohesive implementation tickets, followed by another fresh Codex review.
+4. A fresh author creates cohesive implementation tickets, followed by another fresh independent review.
 5. **You approve the tickets**, then the complete native tracker is published with a collision-safe atomic move.
 
 Changes to scope, architecture, or other substantive decisions return to you. If an author and reviewer resolve to the same CLI and model, preparation pauses for explicit confirmation. Approvals are bound to the reviewed artifacts; changed content requires a new approval.

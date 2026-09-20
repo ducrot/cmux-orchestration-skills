@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Model-diversity identities and operator guidance for planning author stages."""
+"""Model-diversity identities and operator guidance for planning stages."""
 
 from __future__ import annotations
 
@@ -15,9 +15,10 @@ from stage_snapshot import STAGE_ROLE, WORKFLOW
 
 REVIEWER = "reviewer"
 REVIEWER_ROLE = f"{WORKFLOW}.{REVIEWER}"
-AUTHOR_ROLES = {
-    stage: f"{WORKFLOW}.{role}" for stage, role in STAGE_ROLE.items() if role != REVIEWER
-}
+# Every stage is decided against the author/reviewer pair that owns its artifact: the author
+# stage itself, and the reviewer stage that checks that author's work. Stage names carry the
+# pairing, so `tickets-review` resolves against `tickets`.
+AUTHOR_ROLE_FOR_STAGE = {stage: stage.split("-", 1)[0] for stage in STAGE_ROLE}
 DECISION_STATUSES = {"pending", "refused", "confirmed"}
 PENDING_STATUSES = {"pending", "refused"}
 STATE_SCRIPT = Path(__file__).resolve().with_name("planning_state.py")
@@ -33,16 +34,22 @@ def _worker_identity(role: str, worker: dict[str, Any]) -> dict[str, str]:
 
 
 def resolution_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the author/reviewer resolution for an author snapshot, including a stable key.
+    """Return the author/reviewer resolution for one stage snapshot, including a stable key.
+
+    Both identities come from the resolved profiles rather than the selected worker, so an author
+    stage and the reviewer stage that checks it produce the same key: a decision taken at one
+    carries to the other, and a configuration edit between them is caught instead of launched.
 
     Profile names and effort are deliberately excluded from the key. The human decision covers
     exactly the resolved harness-and-model combination named by the issue contract.
     """
     stage = snapshot.get("stage")
-    if stage not in AUTHOR_ROLES:
+    author_role = AUTHOR_ROLE_FOR_STAGE.get(stage)
+    if author_role is None:
         return None
-    author = _worker_identity(AUTHOR_ROLES[stage], snapshot["selected_worker"])
-    reviewer = _worker_identity(REVIEWER_ROLE, snapshot["resolved_profiles"]["reviewer"])
+    profiles = snapshot["resolved_profiles"]
+    author = _worker_identity(f"{WORKFLOW}.{author_role}", profiles[author_role])
+    reviewer = _worker_identity(REVIEWER_ROLE, profiles[REVIEWER])
     combination = {
         "author": {"harness": author["harness"], "model": author["model"]},
         "reviewer": {"harness": reviewer["harness"], "model": reviewer["model"]},
@@ -55,6 +62,9 @@ def resolution_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any] | None:
         "collision": combination["author"] == combination["reviewer"],
         "author": author,
         "reviewer": reviewer,
+        # The role the gated stage would launch, so the guidance names the profile the human can
+        # still change rather than one whose work is already done.
+        "selected_role": f"{WORKFLOW}.{STAGE_ROLE[stage]}",
     }
 
 
@@ -77,14 +87,14 @@ def decision_command(run_dir: Path, decision: str) -> str:
 def configuration_guidance(
     resolution: dict[str, Any], *, configuration_source: str
 ) -> dict[str, str]:
-    """Where the human assigns a diverse author profile, whatever the resolution currently is."""
-    assignment_path = f"workflows.{resolution['author']['role']}"
+    """Where the human assigns a diverse profile, whatever the resolution currently is."""
+    assignment_path = f"workflows.{resolution['selected_role']}"
     configuration_path = Path(configuration_source).resolve()
     return {
         "shared_configuration_path": str(configuration_path),
         "assignment_path": assignment_path,
         "guidance": (
-            f"To restore model diversity, explicitly assign a diverse author profile at "
+            f"To restore model diversity, explicitly assign a diverse profile at "
             f"{configuration_path} under {assignment_path}; the orchestrator "
             "will not substitute a profile automatically."
         ),

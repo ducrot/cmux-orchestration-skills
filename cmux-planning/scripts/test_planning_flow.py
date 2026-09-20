@@ -648,7 +648,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(state["prepared_stage"]["stage"], "tickets-review")
         self.render_and_baseline("tickets-review")
         reviewer_prompt = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
-        self.assertIn("Harness: codex (Codex is mandatory)", reviewer_prompt)
+        self.assertIn("Harness: codex\n", reviewer_prompt)
         self.assertIn(state["author_tickets"]["proposal_sha256"], reviewer_prompt)
         self.assertIn(state["author_tickets"]["summary_sha256"], reviewer_prompt)
         self.assertIn("Do not invent scope", reviewer_prompt)
@@ -1454,6 +1454,47 @@ sha256 {resulting_digest or digest}
             "prepared_stage"
         ]
         self.assertEqual(prepared["stage"], "tickets")
+
+    def test_reviewer_collision_is_gated_before_its_own_snapshot(self):
+        """A reviewer resolved onto the author's harness and model cannot launch unconfirmed."""
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.write_author_handoff()
+
+        accepted = self.cli(
+            STATE,
+            "accept-author",
+            "--run-dir",
+            str(self.run_dir),
+            "--profile",
+            "reviewer=claude-fable-high",
+        )
+
+        self.assertEqual(accepted.returncode, 2, accepted.stdout + accepted.stderr)
+        self.assertEqual(accepted.stderr, "", accepted.stdout)
+        payload = json.loads(accepted.stdout)
+        self.assertIsNone(payload["prepared"])
+        warning = payload["diversity_warning"]
+        self.assertEqual(warning["author"]["role"], "planning.spec")
+        self.assertEqual(warning["reviewer"]["profile"], "claude-fable-high")
+        # The author already ran, so the guidance names the assignment still worth changing.
+        self.assertEqual(warning["assignment_path"], "workflows.planning.reviewer")
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["current_stage"], "spec-review")
+        self.assertIsNone(state["prepared_stage"])
+        self.assertIsNone(state["tree_baseline"])
+        self.assertFalse(list((self.run_dir / "stage-snapshots").glob("spec-review-1-*.json")))
+
+        confirmed = self.decide_diversity("confirm", "No second provider is reachable today")
+
+        self.assertEqual(confirmed.returncode, 0, confirmed.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["prepared_stage"]["stage"], "spec-review")
+        self.assertEqual(state["diversity_confirmation"]["status"], "confirmed")
+        snapshot = json.loads(
+            (self.run_dir / state["prepared_stage"]["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(snapshot["selected_worker"]["profile"], "claude-fable-high")
 
     def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
         self.assign_planning_profile("spec", "codex-astra-xhigh")

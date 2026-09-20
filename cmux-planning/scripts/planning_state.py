@@ -364,8 +364,8 @@ def reconcile_diversity_confirmation(
     """Reconcile the author/reviewer waiver against a freshly resolved snapshot.
 
     Persists and records only the changes it makes, and returns whether the stage may be prepared.
-    Reviewer stages never alter the waiver. For author stages, the active decision is retained
-    only while the harness-and-model combination is unchanged.
+    Author and reviewer stages share one waiver per harness-and-model combination: the active
+    decision is retained only while that combination is unchanged.
     """
     resolution = resolution_from_snapshot(snapshot)
     if resolution is None:
@@ -513,7 +513,7 @@ def decide_diversity(args: argparse.Namespace) -> int:
     state = verify_or_gate(run_dir, stage="diversity-confirmation")
     stage = state.get("current_stage")
     pending = pending_confirmation(state, stage if isinstance(stage, str) else None)
-    if pending is None or stage not in {"spec", "tickets"}:
+    if pending is None or stage not in STAGES:
         raise SnapshotError("this run has no pending planning model-diversity confirmation")
     diversity_pass = stage_pass(state, stage)
     reason = args.reason.strip()
@@ -545,7 +545,7 @@ def decide_diversity(args: argparse.Namespace) -> int:
     )
     resolution = resolution_from_snapshot(snapshot)
     if resolution is None:
-        raise SnapshotError("diversity confirmation is available only for planning author stages")
+        raise SnapshotError("diversity confirmation is available only for planning worker stages")
 
     # Profile probing can take long enough for the run to move on, so the decision must never write
     # back state that predates the resolution, and it owes the tickets stage the same approved-spec
@@ -560,7 +560,7 @@ def decide_diversity(args: argparse.Namespace) -> int:
     pending = pending_confirmation(state, stage)
     if pending is None:
         raise SnapshotError("this run has no pending planning model-diversity confirmation")
-    if stage == "tickets":
+    if stage.startswith("tickets"):
         approved_spec_from_state(state, run_dir=run_dir)
     archived = False
     if resolution["combination_id"] != pending["combination_id"]:

@@ -53,7 +53,7 @@ COMPATIBLE_HARNESSES = {
     "planning": {
         "spec": {"claude-code", "codex", "pi"},
         "tickets": {"claude-code", "codex", "pi"},
-        "reviewer": {"codex"},
+        "reviewer": {"claude-code", "codex", "pi"},
     },
 }
 # The schema version each workflow became required in, so the version-one view stays derived.

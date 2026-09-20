@@ -520,7 +520,7 @@ def recommended_next(
                     return {
                         "action": (
                             "stop for human inspection: the recorded refusal requires a diverse "
-                            "author profile in the shared configuration"
+                            "profile in the shared configuration"
                         ),
                         "command": shell_join(base + ["context", "--run-dir", run_dir]),
                     }

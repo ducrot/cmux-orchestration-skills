@@ -67,10 +67,11 @@ handoffs.
 
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
-`claude-fable-high`; the reviewer defaults to `codex-astra-high` and must resolve to Codex.
-The author roles also accept Pi profiles; the reviewer does not. A Pi model must name its provider
-(`provider/id`, such as `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and
-its preflight check is scoped to the model it is given.
+`claude-fable-high` and the reviewer to `codex-astra-high`. Every role accepts Claude Code, Codex
+or Pi; the reviewer carries no fixed harness, and its independence from the authors is enforced by
+the model-diversity gate below instead. A Pi model must name its provider (`provider/id`, such as
+`openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and its preflight check is
+scoped to the model it is given.
 `validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
@@ -98,9 +99,9 @@ target. `atomic_initialize` remains create-only.
 ## Prerequisites and installation
 
 Install the skill into an agent that can run Python 3 and Git in the target repository. Visible worker
-operation additionally requires cmux, Claude Code for the default author profiles, and Codex CLI for
-the mandatory independent reviewer. Offline tests use fake harnesses and fake CMUX and contact no model
-provider.
+operation additionally requires cmux, Claude Code for the default author profiles, and Codex CLI
+for the default reviewer profile. Offline tests use fake harnesses and fake CMUX and contact no
+model provider.
 
 Use the skills CLI from this repository or copy the complete `cmux-planning` directory into the agent's
 skills directory. Upgrade installed siblings together before accepting schema-v1 migration. Runtime is
@@ -108,9 +109,9 @@ standalone: a direct task needs neither sibling, and vendored contracts validate
 and the native tracker without locating another skill installation.
 
 On first use, let `planning_state.py init` create or preview the shared configuration. For a newly
-created schema-v2 default, inspect `planning.spec`, `planning.tickets`, and the mandatory Codex
-`planning.reviewer`, then rerun with `--accept-config`. For schema v1, run the shared read-only preview,
-obtain explicit confirmation, run `agents_config.py migrate --accept`, and only then rerun
+created schema-v2 default, inspect `planning.spec`, `planning.tickets`, and `planning.reviewer`,
+then rerun with `--accept-config`. For schema v1, run the shared read-only preview, obtain explicit
+confirmation, run `agents_config.py migrate --accept`, and only then rerun
 `planning_state.py init`.
 
 ## Initialize
@@ -222,12 +223,16 @@ handoff prepares `spec-1`; partial or refused outcomes never make a worker launc
 
 ## Confirm author/reviewer model diversity
 
-Before preparing either author stage, planning compares the resolved `planning.spec` or
-`planning.tickets` profile with the resolved mandatory `planning.reviewer`. When both resolve to the
-same harness and model, preparation stops before a launchable snapshot exists and prints a warning
-naming both roles, profile names, harnesses, and models. Present that warning and ask the confirmation
-question in the user's language. Never substitute or fall back to another profile automatically.
-This expected gate is not a crash: every public command that reaches the blocked author preparation
+No role is pinned to a harness, so independent review rests on this gate alone. Before preparing any
+stage, planning compares the resolved `planning.spec` or `planning.tickets` profile with the resolved
+`planning.reviewer`. A reviewer stage is compared against the author it is about to check, so a
+configuration change or typed override between author and review is caught instead of launched. When
+both resolve to the same harness and model, preparation stops before a launchable snapshot exists and
+prints a warning naming both roles, profile names, harnesses, and models. Present that warning and ask
+the confirmation question in the user's language. Never substitute or fall back to another profile
+automatically. One decision covers one harness-and-model combination: an author stage and the reviewer
+stage that checks it share it, so a confirmed combination is never asked twice.
+This expected gate is not a crash: every public command that reaches the blocked preparation
 prints structured JSON with `prepared: null`, the warning, and the exact confirmation command, exits
 with exit code 2, and writes no traceback to stderr. A diverse or already-confirmed resolution remains
 successful and exits 0 with its launchable snapshot and no extra warning.
@@ -373,10 +378,10 @@ classification includes the warning, but its decision status controls the recove
 `pending` decision means awaiting confirmation and recommends the exact
 `diversity-confirmation --decision confirm` command. A `refused` decision is a recorded refusal and
 recommends human inspection and configuration recovery through `context`; it never recommends
-confirmation. The short action text refers to a diverse author profile in the shared configuration.
+confirmation. The short action text refers to a diverse profile in the shared configuration.
 For the exact file and assignment, inspect `shared_configuration_path` and `assignment_path` in the
-`diversity_confirmation` payload returned by `status` (`workflows.planning.spec` or
-`workflows.planning.tickets`).
+`diversity_confirmation` payload returned by `status`; it names the role of the stage that is
+blocked (`workflows.planning.spec`, `workflows.planning.tickets`, or `workflows.planning.reviewer`).
 Initialization persists a validated `input` checkpoint before activating the first
 stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
 pre-run input or configuration failure has no run state and remains an initialization error rather than
@@ -429,7 +434,7 @@ python3 scripts/planning_state.py accept-author --run-dir <run-dir>
 ```
 
 This verifies the after-tree, validates grounding, report structure, exact draft path, specification
-sections, and test seams, then advances only to `spec-review` and prepares a fresh Codex snapshot.
+sections, and test seams, then advances only to `spec-review` and prepares a fresh reviewer snapshot.
 
 After independent review:
 
@@ -498,7 +503,7 @@ python3 scripts/planning_state.py accept-author --run-dir <run-dir>
 This validates approved-spec identity, proposal structure, summary equality, ticket count, ready
 frontier, genuine blockers, cycles, qualitative sizing, merge/split rationale, and wide-refactor
 sequences, then prepares a fresh immutable `tickets-review` snapshot. Run that stage in a new visible
-pane; its selected harness must be Codex. Gate its report with:
+pane. Gate its report with:
 
 ```bash
 python3 scripts/planning_state.py accept-review --run-dir <run-dir>

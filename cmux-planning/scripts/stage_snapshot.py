@@ -122,8 +122,6 @@ def build_stage_snapshot(
         raise SnapshotError("stage pass must be a positive integer")
     resolved = resolve_workers(data, source, overrides, workflow=WORKFLOW)
     audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=stage_argv)
-    if audited["reviewer"]["harness"] != "codex":
-        raise SnapshotError("planning reviewer must resolve to the Codex harness")
     if probe_profiles:
         probe_workers(audited, source, workflow=WORKFLOW, timeout_seconds=probe_timeout_seconds)
     selected_role = STAGE_ROLE[stage]
