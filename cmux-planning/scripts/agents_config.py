@@ -200,6 +200,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "openrouter/z-ai/glm-5.3",
             "effort": "medium",
         },
+        "pi-grok-high": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "openrouter/x-ai/grok-4.6",
+            "effort": "high",
+        },
+        "pi-grok-medium": {
+            "harness": "pi",
+            "executable": "pi",
+            "model": "openrouter/x-ai/grok-4.6",
+            "effort": "medium",
+        },
     },
     "workflows": {
         "issue-chain": {

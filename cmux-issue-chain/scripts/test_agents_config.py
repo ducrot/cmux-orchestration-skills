@@ -183,6 +183,18 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "openrouter/z-ai/glm-5.3",
                     "effort": "medium",
                 },
+                "pi-grok-high": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "openrouter/x-ai/grok-4.6",
+                    "effort": "high",
+                },
+                "pi-grok-medium": {
+                    "harness": "pi",
+                    "executable": "pi",
+                    "model": "openrouter/x-ai/grok-4.6",
+                    "effort": "medium",
+                },
             },
         )
         self.assertEqual(
@@ -518,7 +530,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
         self.assertEqual(persisted["schema_version"], 2)
-        self.assertEqual(len(persisted["profiles"]), 14)
+        self.assertEqual(len(persisted["profiles"]), 16)
 
     def test_version_one_inspection_and_preview_are_read_only(self):
         _, legacy = self.legacy_default()

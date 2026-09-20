@@ -71,13 +71,14 @@ protocol. Never offer profile overrides the human did not ask for.
 This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
 not emulate it with shell input, a sleeping process, or polling while the human edits the file.
 
-The fourteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
+The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
 `claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
 (`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
 `codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
 `gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
 `pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
-and `pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`). Each tuple lists
+`pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`); and `pi-grok-high`
+and `pi-grok-medium` (`pi`, `pi`, `openrouter/x-ai/grok-4.6`). Each tuple lists
 harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
 profile by default; Pi is opted into per run or per tracker config. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
 `codebase`, `codebase2`, `docs`, and `web`, respectively. The `fable`, `opus`, and `sonnet`
