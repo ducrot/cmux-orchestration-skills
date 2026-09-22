@@ -186,13 +186,13 @@ class AgentsConfigCli(unittest.TestCase):
                 "pi-grok-high": {
                     "harness": "pi",
                     "executable": "pi",
-                    "model": "openrouter/x-ai/grok-4.6",
+                    "model": "xai/grok-4.7",
                     "effort": "high",
                 },
                 "pi-grok-medium": {
                     "harness": "pi",
                     "executable": "pi",
-                    "model": "openrouter/x-ai/grok-4.6",
+                    "model": "xai/grok-4.7",
                     "effort": "medium",
                 },
             },

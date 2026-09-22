@@ -73,7 +73,7 @@ The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (
 `gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
 `pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
 `pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`); and `pi-grok-high`
-and `pi-grok-medium` (`pi`, `pi`, `openrouter/x-ai/grok-4.6`). Each tuple lists
+and `pi-grok-medium` (`pi`, `pi`, `xai/grok-4.7`). Each tuple lists
 harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
 profile by default; Pi is opted into per run or per tracker config. Issue-chain assigns Astra/xhigh to
 `implement`, Opus/high to `simplify` and `review`, and Astra/high to `test`.
