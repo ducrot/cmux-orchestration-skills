@@ -95,7 +95,7 @@ Point it at a ready issue in a local tracker. Each worker stage starts fresh:
 
 Reviewers must respect documented decisions from earlier stages and passes of the same run, including refactorings deliberately left unapplied. Replacing those decisions requires recorded human approval. Fixing a regression while preserving the intended behavior remains allowed. A reviewer who disagrees with such a decision on quality grounds alone does not stop the chain: the earlier decision stands and the counter-proposal goes to triage.
 
-Blockers, plan drift, and unresolved review findings stop the chain for human input. After the final test, recommendations are triaged; small accepted items that preserve behavior and stay inside the issue diff are applied in one follow-up pass (implement, then test) before the run completes, and everything else becomes a new issue. You decide the triage unless you authorized autonomous triage for the run. Successful completion leaves checked changes and a commit proposal; committing, pushing, opening a PR, and CI remain subsequent human steps.
+Blockers, plan drift, and unresolved review findings stop the chain for human input. After the final test, recommendations are triaged; small accepted items that preserve behavior and stay inside the issue diff are applied in one follow-up pass (implement, then test) before the run completes, and other accepted items become new issues. A fresh triage worker decides recommendations autonomously by default; use `--human-triage` at init to decide them yourself. Successful completion leaves checked changes and a commit proposal; committing, pushing, opening a PR, and CI remain subsequent human steps.
 
 [Workflow, gates, and report contract](cmux-issue-chain/SKILL.md)
 

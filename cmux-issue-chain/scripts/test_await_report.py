@@ -52,7 +52,7 @@ class ExitCodeVocabulary(unittest.TestCase):
         self.assertEqual(EXIT_REPORT, 0)  # "report exists", intentionally shared with success
 
     def test_deadline_defaults_cover_all_roles(self):
-        self.assertEqual(set(MINIMUM_WAIT_MINUTES), {"implement", "simplify", "test", "review"})
+        self.assertEqual(set(MINIMUM_WAIT_MINUTES), {"implement", "simplify", "test", "review", "triage"})
 
 
 # Real output captured 2026-07-25 from `cmux --json --id-format both surface-health`

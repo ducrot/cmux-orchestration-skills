@@ -193,5 +193,96 @@ class Cli(unittest.TestCase):
             self.assertEqual(self.run_cli(str(path)).returncode, 0)
 
 
+def items_fixture(root: Path, kind="recommendation") -> Path:
+    path = root / "triage-items-1.md"
+    path.write_text('Run: fixture\nIssue: ISSUE-001\nTriage pass: 1\nFollow-up pass allowed: yes\n'
+                    'Scanned reports: ["review-1"]\nIssue diff files: ["src/a.py"]\n\n'
+                    f'## R1\nSource: review-1 (reports/review-1.md)\nKind: {kind}\n\n- Keep exact item.\n')
+    return path
+
+
+def verdict(**overrides):
+    fields = {"Source": "review-1", "Title": "A useful change", "Verdict": "accepted",
+              "Follow-up eligible": "yes", "Files": "`src/a.py`", "Supersedes": "none", "Reason": "Measured duplication"}
+    fields.update(overrides)
+    return "- R1\n" + "".join(f"  - {key}: {value}\n" for key, value in fields.items() if value is not None)
+
+
+DRAFT = "# A useful change\n\n## What to build\nMake the change.\n\n## Acceptance Criteria\n- [ ] Verify the result.\n"
+
+
+class TriageVerdicts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.items = items_fixture(self.root)
+
+    def test_verdict_section_without_items_cannot_advance(self):
+        result = parse_report(report(Verdicts=verdict()))
+        self.assertEqual(result["gate"], "hitl")
+        self.assertIn("triage report requires --items-file", result["reasons"])
+
+    def test_clean_verdict_advances_and_ungated_verdict_refuses(self):
+        text = report(Verdicts=verdict())
+        result = parse_report(text, self.items)
+        self.assertEqual(result["gate"], "advance")
+        self.assertEqual(result["followup_items"], ["R1"])
+        self.assertFalse(result["verdicts_malformed"])
+        unchecked = parse_report(text)
+        self.assertEqual(unchecked["gate"], "hitl")
+        self.assertIn("triage report requires --items-file", unchecked["reasons"])
+
+    def test_malformed_verdicts(self):
+        cases = [None, "", verdict().replace("- R1", "- R2"), verdict()+verdict(),
+                 verdict(Source="test-1"), verdict(Verdict="resolved"), verdict(Title=None),
+                 verdict(Reason=None), verdict(Title=""), verdict(Reason="", Evidence="observed"), verdict(**{"Follow-up eligible": "maybe"}),
+                 verdict(Verdict="recorded"), verdict(Files="none"), verdict(Files="`other.py`"),
+                 verdict(Supersedes=None), verdict(Files=None)]
+        for body in cases:
+            with self.subTest(body=body):
+                result = parse_report(report(Verdicts=body), self.items)
+                self.assertEqual(result["gate"], "hitl", result)
+                self.assertTrue(result["verdicts_malformed"])
+                self.assertTrue(result["reasons"][-1].startswith("malformed verdicts: "))
+        duplicate = report(Verdicts=verdict()) + "\n## Verdicts\n" + verdict()
+        self.assertEqual(parse_report(duplicate, self.items)["gate"], "hitl")
+        result = parse_report(report(Verdicts="", Blockers="- BLOCKER unavailable"), self.items)
+        self.assertEqual(result["gate"], "blocked")
+
+    def test_counterproposal_requires_supersedes(self):
+        items_fixture(self.root, "counter-proposal")
+        self.assertEqual(parse_report(report(Verdicts=verdict()), self.items)["gate"], "hitl")
+        self.assertEqual(parse_report(report(Verdicts=verdict(Supersedes="simplify-1 Not Applied 1")), self.items)["gate"], "advance")
+
+    def test_issue_draft_validation_and_report_location_independence(self):
+        body = report(Verdicts=verdict(**{"Follow-up eligible": "no", "Files": "none"}))
+        self.assertEqual(parse_report(body, self.items)["gate"], "hitl")
+        artifacts = self.root / "artifacts" / "triage-1"
+        artifacts.mkdir(parents=True)
+        draft = artifacts / "issue-draft-R1.md"
+        for invalid in ["", "---\nid: ISSUE-002\n---\n"+DRAFT, DRAFT.replace("- [ ]", "- [x]"),
+                        DRAFT.replace("## What to build", "## Other"), DRAFT+"\n# Second title\n",
+                        DRAFT+"\n## Blocked by\n- Future issue\n"]:
+            draft.write_text(invalid)
+            self.assertEqual(parse_report(body, self.items)["gate"], "hitl")
+        draft.write_text(DRAFT)
+        result = parse_report(body, self.items)
+        self.assertEqual(result["gate"], "advance")
+        self.assertEqual(result["new_issue_items"], ["R1"])
+        for location in [self.root / "reports" / "triage-1.md", artifacts / "report-draft.md"]:
+            location.parent.mkdir(exist_ok=True)
+            location.write_text(body)
+            proc = subprocess.run([sys.executable, str(Path(__file__).with_name("parse_report.py")),
+                                   "--items-file", str(self.items), str(location)], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+    def test_ledger_only_verdicts(self):
+        for word in ["recorded", "rejected", "deferred", "for-the-human"]:
+            result = parse_report(report(Verdicts=verdict(Verdict=word, **{"Follow-up eligible": "no", "Files": "none"})), self.items)
+            self.assertEqual(result["gate"], "advance")
+            self.assertEqual(result["for_the_human"], ["R1"] if word == "for-the-human" else [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

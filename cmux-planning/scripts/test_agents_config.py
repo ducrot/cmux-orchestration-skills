@@ -618,6 +618,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(migrated["schema_version"], 2)
+        self.assertNotIn("triage", migrated["workflows"]["issue-chain"])
         self.assertEqual(migrated["workflows"]["issue-chain"]["implement"], "aaa-author")
         self.assertEqual(
             migrated["workflows"]["planning"],
@@ -880,6 +881,39 @@ class AgentsConfigCli(unittest.TestCase):
                 proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
 
                 self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_optional_triage_resolution_keeps_serialized_config_unchanged(self):
+        import agents_config as config
+        path, data = self.init_default()
+        self.assertNotIn("triage", data["workflows"]["issue-chain"])
+        original = copy.deepcopy(data)
+        resolved = config.resolve_workers(data, path, {}, workflow="issue-chain")
+        self.assertEqual(resolved["triage"]["profile"], "claude-opus-high")
+        self.assertEqual(resolved["triage"]["assignment_source"], "built-in default")
+        self.assertEqual(data, original)
+        shown = config.resolved_display(data, path)
+        self.assertEqual(shown["resolved_workflows"]["issue-chain"]["triage"], {**resolved["triage"], "source": str(path)})
+        data["profiles"]["claude-opus-high"]["model"] = "custom-opus"
+        self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["model"], "custom-opus")
+        for worker in ("simplify", "review"):
+            data["workflows"]["issue-chain"][worker] = "codex-astra-xhigh"
+        del data["profiles"]["claude-opus-high"]
+        self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["model"], config.DEFAULT_CONFIG["profiles"]["claude-opus-high"]["model"])
+        overrides = {"triage": {"profile": "codex-astra-xhigh", "effort": "high"}}
+        triage = config.resolve_workers(data, path, overrides, workflow="issue-chain")["triage"]
+        self.assertEqual(triage["harness"], "codex")
+        self.assertEqual(triage["effort"], "high")
+        self.assertNotIn("assignment_source", triage)
+        data["workflows"]["issue-chain"]["triage"] = "codex-astra-xhigh"
+        self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["harness"], "codex")
+        self.assertEqual(config.COMPATIBLE_HARNESSES["issue-chain"]["triage"], {"claude-code", "codex", "pi"})
+        for harness, profile in (("codex", "codex-astra-xhigh"), ("claude-code", "claude-opus-high"), ("pi", "pi-triage")):
+            candidate = copy.deepcopy(original)
+            candidate["profiles"]["pi-triage"] = {"harness": "pi", "executable": "pi", "model": "anthropic/claude-opus-4-6", "effort": "high"}
+            candidate["workflows"]["issue-chain"]["triage"] = profile
+            config_path = self.write_config(candidate, "triage-" + harness + ".json")
+            proc = self.run_cli("validate", "--config", str(config_path), cwd=self.tmp)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))

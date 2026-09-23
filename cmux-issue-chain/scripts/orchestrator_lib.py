@@ -22,10 +22,10 @@ ISSUE_FILE_RE = re.compile(r"\A(?:ISSUE-)?(\d{1,4})(?:-|\Z)")
 NON_ISSUE_ALLOWLIST = {"README.md", "_index.md", "decisions.md", "spec.md", "map.md"}
 
 # Single source of truth for the wait policy; run_state.py and await_report.py both use it.
-MINIMUM_WAIT_MINUTES = {"implement": 45, "simplify": 30, "test": 30, "review": 90}
+MINIMUM_WAIT_MINUTES = {"implement": 45, "simplify": 30, "test": 30, "review": 90, "triage": 30}
 
 # Deterministic pane labels per role (SKILL.md, CMUX Control).
-ROLE_LABELS = {"implement": "Implementer", "simplify": "Simplifier", "test": "Tester", "review": "Reviewer"}
+ROLE_LABELS = {"implement": "Implementer", "simplify": "Simplifier", "test": "Tester", "review": "Reviewer", "triage": "Triager"}
 
 # Task framing is load-bearing, not style: a Claude worker reads "Read <path> and report back"
 # as a summarization request — it summarizes the prompt and waits — while Codex reads the same
@@ -276,4 +276,5 @@ def read_run_state(run_dir: Path) -> dict[str, Any]:
     state = read_json(run_dir / "state.json")
     if not isinstance(state, dict) or state.get("workflow") != "issue-chain" or state.get("layout_version") != 1:
         raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
+    state.setdefault("triage_mode", "human")
     return state

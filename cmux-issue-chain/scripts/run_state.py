@@ -67,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pin no workspace (offline runs outside cmux; cmux-scoped scripts will refuse to run)",
     )
+    init.add_argument("--human-triage", action="store_true", help="Let the human decide recommendations")
     add_override_options(init, workflow=WORKFLOW)
     add_probe_options(init)
 
@@ -102,6 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
     complete.add_argument("--run-dir", required=True)
     complete.add_argument("--message", default="chain complete")
 
+    publish = subparsers.add_parser("publish-triage", help="Publish a passing triage report")
+    publish.add_argument("--run-dir", required=True)
+    publish.add_argument("--pass", dest="pass_num", type=int, required=True)
+
     status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
     status.add_argument("--run-dir", required=True)
 
@@ -112,12 +117,21 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command == "status":
         run_dir = Path(args.run_dir)
         state = read_json(run_dir / "state.json")
+        if isinstance(state, dict):
+            state.setdefault("triage_mode", "human")
         try:
             read_run_state(run_dir)
             diagnostic = None
         except SystemExit as error:
             diagnostic = str(error)
         print(json.dumps({"state": state, "unsupported_layout": diagnostic}, indent=2))
+        return 0
+    if args.command == "publish-triage":
+        from publish_triage import publish
+        try:
+            print(json.dumps(publish(Path(args.run_dir), args.pass_num), sort_keys=True))
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
         return 0
     if args.command == "init":
         return init_run(args)
@@ -189,10 +203,10 @@ def init_run(args: argparse.Namespace) -> int:
     if (run_dir / "state.json").is_file():
         read_run_state(run_dir)
         # It also re-prepares nothing, so configuration inputs would be silently dropped.
-        if supplied_configuration_inputs(args, workflow=WORKFLOW):
+        if args.human_triage or supplied_configuration_inputs(args, workflow=WORKFLOW):
             raise SnapshotError(
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
-                "inputs belong to run_state.py prepare, not to re-initialization"
+                "inputs and --human-triage cannot be supplied on re-initialization"
             )
         ensure_runs_root_ignored(runs_root)
         (run_dir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -230,7 +244,8 @@ def init_run(args: argparse.Namespace) -> int:
         "issue": issue.to_dict(),
         "blocker_status": blocker_status(issue, issues),
         "ready": issue_ready(issue, issues),
-        "chain": [] if is_hitl else ["implement", "simplify", "review", "test"],
+        "triage_mode": "human" if args.human_triage else "autonomous",
+        "chain": [] if is_hitl else [w for w in ISSUE_WORKERS if w != "triage" or not args.human_triage],
         "configuration_source": configuration_source,
         "prepared_stage": prepared_pointer,
         "review_strategy": {
@@ -287,6 +302,8 @@ def prepare_stage(args: argparse.Namespace) -> int:
     if not state_path.is_file():
         raise SnapshotError(f"No state.json under {run_dir} — run run_state.py init first")
     state = read_run_state(run_dir)
+    if args.stage == "triage" and state["triage_mode"] != "autonomous":
+        raise SnapshotError("cannot prepare triage in human mode; use the human recommendations triage procedure")
     if state.get("current_stage") != args.stage:
         raise SnapshotError(
             f"cannot prepare {args.stage}: run current_stage is {state.get('current_stage')!r}"

@@ -93,7 +93,7 @@ class PaneCtlCase(unittest.TestCase):
             "status": status,
             "resolved_profiles": {
                 worker: {"entitlement": {"status": "unverified"}}
-                for worker in ("implement", "simplify", "review", "test")
+                for worker in ("implement", "simplify", "review", "test", "triage")
             },
             "selected_worker": selected,
         }
@@ -182,6 +182,12 @@ class Injector(PaneCtlCase):
 
 
 class Launch(PaneCtlCase):
+    def test_triager_label(self):
+        self.prepare_snapshot("triage")
+        result = self.run_ctl("launch", "--run-dir", str(self.run_dir), "--role", "triage", "--pass", "1", "--anchor", "surface:1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Triager 1 - ISSUE-001", str(self.cmux_calls()))
+
     def test_splits_labels_and_records_events(self):
         self.prepare_snapshot("review")
         proc = self.run_ctl(

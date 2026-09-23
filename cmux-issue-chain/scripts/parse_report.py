@@ -37,6 +37,7 @@ QUALITY_ONLY_REASON = "quality-only ask-user findings: request re-emission under
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report")
+    parser.add_argument("--items-file", type=Path)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -45,7 +46,7 @@ def main() -> int:
     args = build_parser().parse_args()
     path = Path(args.report)
     # A worker that has not finished yet is pending, not failing.
-    payload = pending_payload(path) if not path.is_file() else parse_report(path.read_text(encoding="utf-8"))
+    payload = pending_payload(path) if not path.is_file() else parse_report(path.read_text(encoding="utf-8"), args.items_file)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -75,7 +76,7 @@ def pending_payload(path: Path) -> dict:
     }
 
 
-def parse_report(text: str) -> dict:
+def parse_report(text: str, items_file: Path | None = None) -> dict:
     sections = split_sections(text)
     missing = [name for name in REQUIRED_SECTIONS if not sections.get(name, "").strip()]
 
@@ -117,7 +118,23 @@ def parse_report(text: str) -> dict:
         candidates.append(BLOCKED)
         reasons.append("blocker present")
 
+    from triage_contract import parse_verdicts, verdict_payload
+    triage = verdict_payload([], [])
+    if items_file is not None:
+        triage = parse_verdicts(sections.get("verdicts", ""), Path(items_file))
+        if sum(m.group("name").strip().lower() == "verdicts" for m in SECTION_RE.finditer(text)) > 1:
+            triage = verdict_payload(triage["verdicts"], triage["verdict_errors"] + ["duplicate Verdicts section"])
+        if triage["verdict_errors"]:
+            candidates.append(HITL)
+            reasons.append("malformed verdicts: " + "; ".join(triage["verdict_errors"]))
+    elif "verdicts" in sections:
+        missing_items = "triage report requires --items-file"
+        candidates.append(HITL)
+        reasons.append(missing_items)
+        triage = verdict_payload([], [missing_items])
+
     return {
+        **triage,
         "result": result,
         "has_tests": has_tests,
         "has_findings": has_findings,

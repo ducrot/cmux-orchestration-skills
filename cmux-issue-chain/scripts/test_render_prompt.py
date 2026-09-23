@@ -29,9 +29,10 @@ SUPERSESSION_RULE = (
     "human approval explicitly supersedes the earlier decision. The approval must identify the "
     "decision and the authorized replacement or scope. An agent proposal, a later report, or an "
     "unapproved recommendation alone does not supersede it. Report unresolved scope or precedence "
-    "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An orchestrator "
-    "triage verdict recorded under the human's autonomous-triage authorization for the run counts "
-    "as recorded human approval."
+    "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. "
+    "A triage-worker verdict that the orchestrator recorded in `decisions.md` after a passing triage gate "
+    "counts as recorded approval while autonomous triage is not opted out; such entries carry the marker "
+    "`[triage-worker verdict, run <run-id>, gate advance]`."
 )
 COUNTER_PROPOSAL_RULE = (
     "Report a proposal to revert such a decision by its reason. A quality-only reason (reuse, "
@@ -45,7 +46,34 @@ FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Ap
 
 class RenderFunction(unittest.TestCase):
     def render(self, role: str, harness: str) -> str:
+        if role == "triage":
+            from test_parse_report import items_fixture
+            with tempfile.TemporaryDirectory() as root:
+                return render_prompt.render(role, "ISSUE-001", ISSUE, {}, harness=harness,
+                                            snapshot_id="snap-1", items_file=items_fixture(Path(root)))
         return render_prompt.render(role, "ISSUE-001", ISSUE, {}, harness=harness, snapshot_id="snap-1")
+
+    def test_triage_contract_and_harness_neutral_body(self):
+        from test_parse_report import items_fixture
+        with tempfile.TemporaryDirectory() as root:
+            items = items_fixture(Path(root))
+            prompts = [render_prompt.render("triage", "ISSUE-001", ISSUE, {}, harness=h,
+                       items_file=items, decisions="- Protected", ground_rules="- Canonical tests") for h in ("claude-code", "codex")]
+            normalized = [p[p.index("You are the recommendations"): ] for p in prompts]
+            self.assertEqual(*normalized)
+            for phrase in (items.read_text(), "Never ask the human or the orchestrator anything",
+                           "Counter-proposal the default is the earlier decision", "behavior-preserving",
+                           "no acceptance criterion changes", "artifacts/triage-1/issue-draft-R<n>.md",
+                           "## Verdicts", "Source:", "Supersedes:", "Follow-up eligible:",
+                           f"--items-file {items} <your-draft-file>", "- Protected", "- Canonical tests",
+                           "Only non-opted-out runs produce the marker"):
+                self.assertIn(phrase, prompts[0])
+            with self.assertRaises(ValueError):
+                render_prompt.render("triage", "ISSUE-001", ISSUE, {})
+            with self.assertRaises(ValueError):
+                render_prompt.render("triage", "ISSUE-001", ISSUE, {}, items_file=items, pass_number=2)
+            with self.assertRaises(ValueError):
+                render_prompt.render("test", "ISSUE-001", ISSUE, {}, items_file=items)
 
     def test_header_records_harness_and_snapshot(self):
         text = self.render("implement", "codex")
@@ -344,13 +372,13 @@ class RenderCli(unittest.TestCase):
                         "## Blocker Status", 1
                     )[0]
                     self.assertIn(decision, decisions_block)
-                    self.assertIn("approved, rejected, or deferred", decisions_block)
+                    self.assertIn("approved, rejected, deferred, recorded, and open", decisions_block)
                     self.assertIn(
-                        "Do not re-report or re-apply rejected or deferred items unless the code "
+                        "Do not re-report or re-apply rejected, deferred, or recorded items unless the code "
                         "now presents a materially different problem.", decisions_block,
                     )
                     self.assertIn(
-                        "Only explicit recorded human approval identifying the earlier decision and "
+                        "Only an explicit recorded approval (human, or triage-worker as below) identifying the earlier decision and "
                         "the authorized replacement or scope supersedes a protected decision; "
                         "apply that approval only within its authorized scope.", decisions_block,
                     )

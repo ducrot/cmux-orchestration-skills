@@ -146,7 +146,7 @@ prompt delivery, or other runtime safety overrides.
 ## Boundaries
 
 - Treat product code as worker-owned. Do not modify application, extension, frontend, deployment, or test implementation files from the orchestrator role.
-- Write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, local issue frontmatter/checklists, run logs, prompt files, worker reports, gate decisions, snapshots, documented plan changes, the tracker `decisions.md` triage ledger, and human-approved issue drafts from recommendations triage.
+- Write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, local issue frontmatter/checklists, run logs, prompt files, worker reports, gate decisions, snapshots, documented plan changes, the tracker `decisions.md` triage ledger, and issue files from human acceptance or gated triage-worker acceptance in recommendations triage.
 - Require workers to write structured reports to their exact rendered report handoff paths and return the
   same report body in the console. That exact report file is the only orchestration lifecycle state a worker
   may write; all other run state remains orchestrator-owned.
@@ -179,8 +179,10 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
    `/code-review medium --fix`; on any other harness the rendered prompt spells out a three-axis review pass
    (standards with a smell baseline, spec, correctness) inline.
 5. Final test with Codex.
-6. Recommendations triage, then at most one follow-up pass for accepted eligible items (see Follow-up
-   Pass), then `run_state.py complete`. A run with nothing to triage completes directly.
+6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
+   decides the collected items, then at most one follow-up pass applies accepted eligible items (see
+   Follow-up Pass), then `run_state.py complete`. Opt out at init with `--human-triage`.
+   A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
 
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
@@ -225,9 +227,10 @@ Reports from unrelated runs are outside this same-run protection. Protection of 
 documented intended behavior persists until recorded human approval explicitly supersedes the earlier
 decision. The approval must identify the decision and the authorized replacement or scope. An agent
 proposal, a later report, or an unapproved recommendation alone does not supersede it. Report unresolved
-scope or precedence ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An
-orchestrator triage verdict recorded under the human's autonomous-triage authorization for the run counts
-as recorded human approval (see Recommendations Triage).
+scope or precedence ambiguity as `Recommendation: ask-user`; do not apply the disputed change. A triage-worker verdict that the orchestrator recorded in
+`decisions.md` after a passing triage gate counts as recorded approval while autonomous triage is
+not opted out; such entries carry the marker `[triage-worker verdict, run <run-id>, gate advance]`.
+Only non-opted-out runs produce the marker; a later opted-out run still honors it.
 
 Correcting a regression introduced by an earlier refactoring remains a must-fix when the correction
 preserves the documented intended behavior; changing that intended behavior still requires ask-user.
@@ -318,7 +321,7 @@ changed against the issue's "What to build" and acceptance criteria. A clean rep
 undocumented scope expansion gates `stop`, undocumented drift gates `hitl`, even when the report says
 `NO FINDINGS`.
 
-For every role (implement, simplify, review, and test), compare `staged_paths` and
+For every role (implement, simplify, review, test, and triage), compare `staged_paths` and
 `staged_diff_sha256` in the launch snapshot (`launched <role>-<pass>`) against the capture
 snapshot (`report-captured <role>-<pass>`) before recording its gate. A difference in either
 field is an unauthorized delta: gate `hitl` even with a clean report, with the sorted union
@@ -327,7 +330,7 @@ changed). Also compare `head` between the same two snapshots: any HEAD change is
 unauthorized delta that gates `hitl` even with a clean report, with the before and after HEAD
 values in the gate reason. The orchestrator never unstages on the worker's behalf. An unchanged
 pre-staged human baseline is permitted. This index and HEAD check applies to test as well as
-code-changing roles.
+code-changing roles. For triage also compare the full `fingerprint`; any difference gates `hitl`.
 
 Look for:
 
@@ -337,7 +340,8 @@ Look for:
 - at the review gate, compare the review diff against the simplify report's `## Not Applied` list
   and documented kept choices in reports of the current pass and relevant prior passes of the same run.
   Include prior-pass `## Not Applied` lists in this comparison. Check any claimed supersession against
-  recorded human approval identifying the decision and the authorized replacement or scope. A reverted
+  recorded human approval identifying the decision and the authorized replacement or scope, including
+  a marker-bearing triage-worker verdict as defined above. A reverted
   item without that approval or an `ask-user` finding gates `stop`. Record the reverted item in the
   `orchestrator.verified` event and relay it to the human verbatim as a finding, not a recommendation.
   Correcting a regression while preserving documented intended behavior is not a decision reversion
@@ -373,6 +377,7 @@ Default minimum waits before intervention:
 - Implementer: 45 minutes
 - Simplifier: 30 minutes
 - Tester: 30 minutes
+- Triager: 30 minutes
 - Reviewer: 90 minutes
 
 A review pass (`/code-review medium --fix` on Claude Code in particular) can legitimately take 15 minutes or longer. Do not interrupt or fail a review worker just because no report appears during that window.
@@ -484,32 +489,79 @@ orchestrator writes them neutrally and precisely, in whichever language the huma
 
 ## Recommendations Triage
 
-Non-blocking `## Recommendations` from review and simplify reports must not silently evaporate. After the
-final test gates `advance` and before `run_state.py complete`, collect the recommendations from all
-reports of the run and present them to the human for triage, with `Counter-proposal` entries marked as
-such next to the earlier decision they challenge. An accepted item that meets the follow-up entry
-conditions is applied in this run (see Follow-up Pass). For every other accepted item, draft a new issue
-file in the tracker (next free `ISSUE-NNN`, status `todo`, frontmatter per the tracker's convention) —
-creating an issue is a scope decision, so never add one without explicit human acceptance. Record the outcome per item as a `recommendations.triaged`
-event, including a one-line reason for rejected or deferred items, so the next retro can see what was
-dropped and why. Also append approved, rejected, and deferred items to the tracker's `decisions.md`
-(one line each: item, verdict, reason). For explicit human supersession approvals, identify the earlier
-decision and the authorized replacement or scope. An approved follow-up issue does not by itself
-authorize changing a protected decision in the current issue. `render_prompt.py` embeds that file into
-every worker prompt, so later reviewers and simplifiers see the human verdicts, honor explicit
-supersessions within their authorized scope, and do not re-report or re-apply rejected or deferred items
-unless the code presents a materially different problem.
+Recommendations triage is autonomous by default. `run_state.py init` records `triage_mode: autonomous`;
+`--human-triage` opts out and records `human`. Runs without that field read as human, including old
+runs with a `decision.human` event. The orchestrator never decides recommendation content.
 
-The verdict comes from the human by default: the orchestrator waits here as it waits for the commit
-afterwards. The human may answer "later"; then complete the run at once, keep the open items pending, and
-route any later acceptance to a new issue — a follow-up pass exists only while the issue is uncommitted.
-When the human has authorized autonomous triage for the run, recorded as a `decision.human` event, the
-orchestrator decides each item itself, and its verdict counts as the recorded approval a follow-up pass
-needs. Without that authorization it never decides. For a `Counter-proposal` the autonomous default is
-the earlier decision: accept only when the proposal refutes the recorded reason with evidence, such as a
-measurement or a concrete failure case; otherwise reject or defer with a reason. An autonomous verdict
-never creates a new issue beyond what the authorization covers. An open triage never blocks the next
-issue chain once the run is complete.
+After the final test report parses `advance` and before that gate event is recorded:
+
+1. Run `python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 1`. It scans every
+   non-triage implement, simplify, review, and test report by pass then chain order, preserving every
+   `## Recommendations` entry verbatim, including duplicates and leading prose. It marks Counter-proposal
+   entries and attaches named same-run `## Not Applied` sections. It writes immutable `triage-items-1.md`
+   with `R1..Rn`, source reports and the issue diff files (both rename paths and untracked files),
+   and records `triage.collected`. A matching repeated collection exits 0 without writes. An orphan
+   items file or digest mismatch refuses; gate `hitl` with the error. Only pass 1 is supported here.
+2. With zero items, record the test gate `advance` with no `--next-stage`, then complete from `test`.
+3. Otherwise, in autonomous mode record `advance --next-stage triage`, then
+   `prepare --stage triage --pass 1`. Render `--role triage --pass 1 --items-file <run-dir>/triage-items-1.md`
+   with all non-triage run reports supplied as `--context-file`. Keep the issue ready until completion.
+4. Launch a fresh visible Triager pane anchored to the test pane. Snapshot, deliver, and arm the watcher
+   as for every role. Between `launched triage-<pass>` and `report-captured triage-<pass>`, compare
+   `staged_paths`, `staged_diff_sha256`, `head`, and the full `fingerprint`. Any difference gates `hitl`:
+   triage is read-only, and its diff files were captured before launch.
+5. Parse `reports/triage-1.md` with `--items-file <run-dir>/triage-items-1.md`. The gate requires exactly
+   one verdict per ID, matching sources, present titles and reasons, eligible files inside the captured diff,
+   a Supersedes reference for accepted counter-proposals, and a valid issue draft for each accepted
+   non-follow-up item. `verdicts_malformed` uses the existing single re-emission request: fix the
+   format, not the substance. Quote the offending item and paths for a failed file check without
+   suggesting a verdict. A second failure gates `hitl`.
+6. After a passing gate, run `python3 scripts/run_state.py publish-triage --run-dir <run-dir> --pass 1`.
+   It rechecks the digest, capture snapshot, report, draft blockers and issue path/slug collisions
+   before writing. A failed publication precondition gates `hitl` with the error. Publication creates
+   `todo` issues from accepted non-follow-up drafts, appends `decisions.md`, writes `followup-items.md`
+   when needed, and records `recommendations.triaged` and `triage.published`.
+7. Record the triage gate `advance --next-stage implement` when publication prints `next_stage: implement`;
+   otherwise record `advance` with no next stage and run `complete`.
+
+The optional `triage` worker defaults to built-in profile `claude-opus-high`; an explicit assignment or
+typed override wins. Existing version 1/2 configurations need no edits; init and migration do not write
+a triage assignment. Every preparation resolves, preflights, and optionally probes all five workers,
+including in human mode. The default shares the Claude executable check and profile probe with simplify
+and review. `show-resolved` and stage snapshots mark `assignment_source: built-in default`.
+
+The triage worker decides every item autonomously and must never ask the human or the orchestrator
+anything. The orchestrator never answers a triage worker's content question; treat a worker that asks
+as a silent worker, following the wait policy until `hitl`. Uncertainty is a reasoned `for-the-human`
+or `deferred` verdict, never a question. The fixed vocabulary is:
+
+- `accepted`: follow-up when eligible, otherwise an issue draft.
+- `rejected`: do not do it; any earlier decision stands.
+- `deferred`: not this run, no issue now.
+- `recorded`: already handled or informational, no action (`resolved` maps here). Write `recorded` in the report, never `resolved`.
+- `for-the-human`: cannot decide or human-only action (`accepted-human` maps here). Write `for-the-human` in the report, never `accepted-human`. It is open, not approval.
+
+`for-the-human` never blocks. Rejected, deferred, and recorded items are ledger only. For a
+Counter-proposal the default is the earlier decision: accept only when the proposal refutes the
+recorded reason with evidence, such as a measurement or concrete failure case.
+After a triage `hitl` or `blocked` gate, the rest of that run's recommendations triage falls back to
+the human procedure; no automatic relaunch is allowed.
+
+In human mode, the human decides the same collector-owned numbered verbatim list. The orchestrator
+never decides. The human may answer "later": complete the run, keep open items pending, and route later
+acceptance to a new issue — a follow-up pass exists only while the issue is uncommitted. Record each
+verdict and reason in `recommendations.triaged` and append a ledger line carrying
+`[human verdict, run <run-id>]`. An open recommendations triage never blocks the next issue chain.
+Only the human's acceptance creates issues in human mode; only `publish-triage` from gated `accepted`
+verdicts creates issues in autonomous mode. An accepted new issue does not by itself authorize changing
+a protected decision in the current issue.
+
+The ledger distinguishes approved, rejected, deferred, recorded, and open items by human or triage-worker
+authority. Explicit recorded supersession approvals identify the earlier decision and the authorized
+replacement or scope; a marker-bearing triage-worker verdict satisfies the recorded approval rule.
+`render_prompt.py` embeds the ledger into every worker prompt. Do not re-report or re-apply rejected,
+deferred, or recorded items unless the code presents a materially different problem. Open items are
+not approvals and must not be applied.
 
 ## Follow-up Pass
 
@@ -527,12 +579,13 @@ Entry conditions — all four, otherwise the item becomes a new issue or stays d
 
 Procedure:
 
-1. Record the verdicts (`recommendations.triaged`, `decisions.md`). For a superseding item, the ledger
-   line identifies the earlier decision and the authorized replacement or scope.
-2. Write the accepted items to `.scratch/orchestrator/runs/<run-id>/followup-items.md`, one bullet per
-   item with its source report, the earlier decision it supersedes, and any proposal artifact.
-3. Record the final test gate as `advance` with `--next-stage implement`, prepare `implement` with the
-   next pass number, and render its prompt with `--followup-file`. That variant replaces the implement
+1. In autonomous mode `publish-triage` records the verdicts and writes `followup-items.md`, one bullet
+   per accepted eligible item with ID, source, supersedes, files, verbatim item text and triage reason.
+   In human mode record the human verdicts and write the same approved item list.
+2. In autonomous mode record the triage gate as `advance` with `--next-stage implement`; the final test
+   gate already moved the run to triage. In human mode the final test gate moves to implement instead.
+3. Prepare `implement` with the next pass number and render with `--followup-file`. Anchor the follow-up
+   implement pane to the triage pane (the test pane in human mode). The variant replaces the implement
    contract: apply exactly the listed items, prove behavior preservation with the baseline suite before
    and after instead of a failing regression test, leave existing tests unedited.
 4. Gate the implement report as usual, including diff inspection against the item list, then run the
@@ -542,7 +595,7 @@ Procedure:
 Limits: one follow-up pass per issue, all accepted items bundled; no simplify or review stage in it;
 recommendations from its reports go to triage but never start another pass. An item the worker lists
 under `## Not Applied` because it no longer fits the code is not retried: it becomes a new issue or is
-dropped, per the human or the autonomous authorization. Findings from the follow-up implement or test
+dropped only according to the recorded decision authority. Findings from the follow-up implement or test
 report gate `hitl` like findings after review changes. Select a lighter implement profile for the pass
 with the typed `prepare` overrides when the default is oversized for the items.
 
@@ -599,7 +652,7 @@ still appears in the Feed and in `surface-health`; only the banners are gone. Su
 `automation.suppressSubagentNotifications` (on by default), and the variable is a cmux internal, so the failure mode
 is noise, never a broken run.
 
-The defaults use plain `codex` for implement and test workers and plain `claude` for simplify/refactor and review
+The defaults use plain `codex` for implement and test workers and plain `claude` for simplify/refactor, review, and triage
 workers. Typed preparation overrides may select Claude Code or Codex for every role. Simplify and review default
 to Claude Code because its bundled `/simplify` and `/code-review medium --fix` fan out internal review agents; on
 Codex the same duties are rendered inline as a single-agent pass, which is a deliberate, weaker substitute the
@@ -723,10 +776,11 @@ Use this pane layout for the default chain:
 - Simplify: keep the implementer pane open and place the simplify pane to the right (preferred) or down of that implementer pane.
 - Review after simplify: keep the simplify pane open and place the review pane to the right (preferred) or down of that simplify pane. The orchestrator quick-check between them opens no pane.
 - Final test after review: keep the review pane open and place the test pane to the right (preferred) or down of that review pane.
+- Triage: anchor the fresh Triager pane to the test pane; anchor any follow-up implement pane to the triage pane.
 
 Do not open simplify, review, or test as down splits from the orchestrator pane just because the orchestrator pane is active after gate processing.
 
-For every role (implement, simplify, review, and test), including the initial implement launch,
+For every role (implement, simplify, review, test, and triage), including the initial implement launch,
 record `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
 Preserve that baseline until its report-capture comparison is complete; never replace it to
 adopt an unchecked delta.
@@ -764,7 +818,7 @@ recorded at capture: a mismatch means the tree changed after capture — by a hu
 necessarily the worker. Attribute first; if an accusation turns out wrong, retract it explicitly with a
 `report.integrity.retracted` event.
 
-Keep at most the orchestrator pane and the current active worker pane. Do not leave old implementer, tester, simplify, or reviewer panes open after their reports have been captured and used.
+Keep at most the orchestrator pane and the current active worker pane. Do not leave old implementer, tester, simplify, reviewer, or triage panes open after their reports have been captured and used.
 
 Before launching a worker, choose these paths deterministically and render them into the prompt:
 
@@ -779,7 +833,7 @@ Before launching a worker, choose these paths deterministically and render them 
   Not Applied items, documented intended behavior, and recorded human approvals that supersede them.
   Relevant prior reports are those carrying protected decisions or explicit human supersession records.
   Unrelated or decision-free historical reports are not required by default.
-  `decisions.md` is embedded automatically with approved, rejected, and deferred records distinguished;
+  `decisions.md` is embedded automatically with approved, rejected, deferred, recorded, and open records distinguished;
   supply approval records held elsewhere with `--context-file`.
   Keep the earlier decision and any explicit supersession together with their source paths and pass
   identities. Do not treat a later worker opinion as approval or infer supersession from report order.
@@ -853,12 +907,18 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `plan.drift`, `plan.drift.resolved`                      | Drift recorded / resolved per the Replanning rules                                                                                               |
 | `hitl.resolved`, `decision.human`                        | Human decisions and HITL resolutions                                                                                                             |
 | `commit.proposed`                                        | Commit proposal (file list + message draft) handed to the human after `complete`                                                                 |
-| `recommendations.triaged`                                | Per-item accept/reject outcome of the end-of-chain recommendations triage                                                                        |
+| `recommendations.triaged`                                | Per-item verdict, reason, supersedes, consequence, issue and authority (`human` or `triage-worker`)                                                                        |
+| `triage.collected` | Immutable recommendations list: pass, item count, scanned reports, items path and SHA-256 (null for zero items) |
+| `triage.published` | Counts per verdict, created issues, follow-up IDs, for-the-human IDs and follow-up file path |
 | `artifact.written`, `hitl.verified`, `hitl.counterproof` | HITL-issue assistance (see HITL Issues)                                                                                                          |
 | `orchestrator.verified`                                  | Orchestrator-run verification: quick-check test rerun before the simplify gate, or diff inspection at a code-changing gate (commands + outcomes) |
 | `orchestrator.halted`, `orchestrator.unverified_input`   | Orchestrator-side anomalies                                                                                                                      |
 
 ## Scripts
+
+`collect_recommendations.py --run-dir <run-dir> --pass 1` writes the immutable recommendations list.
+`run_state.py publish-triage --run-dir <run-dir> --pass 1` publishes a passing triage report;
+`parse_report.py --items-file <path> <report>` validates the verdicts.
 
 The scripts are deterministic helpers. They live canonically at `scripts/`
 (`~/.claude/skills/cmux-issue-chain` is a symlink to the same directory). Run them from the repo root.
@@ -989,7 +1049,7 @@ swaps the implement contract for the follow-up contract; the test prompt stays t
 receives the follow-up report and the item list as context files:
 
 ```bash
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage test --decision advance --reason "final test clean; follow-up items accepted in triage" --next-stage implement
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage triage --decision advance --reason "triage published; follow-up items accepted" --next-stage implement
 python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage implement --pass 2
 python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file .scratch/orchestrator/runs/<run-id>/followup-items.md
 ```
@@ -1013,10 +1073,12 @@ Control worker panes with `pane_ctl.py` (verbs and rules in CMUX Control): `work
 id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/`close` are the lifecycle verbs.
 
 Run the regression tests after touching `parse_report.py`, `await_report.py`, `pane_ctl.py`, `run_state.py`,
-`worker_snapshot.py`, or `agents_config.py`:
+`worker_snapshot.py`, `agents_config.py`, `collect_recommendations.py`, `triage_contract.py`, or
+`publish_triage.py`:
 
 ```bash
 python3 scripts/test_parse_report.py
+python3 scripts/test_collect_recommendations.py
 python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_worker_readiness.py
@@ -1033,6 +1095,7 @@ the whole block must be safe to run twice in a row:
 
 ```bash
 python3 scripts/test_parse_report.py
+python3 scripts/test_collect_recommendations.py
 python3 scripts/test_await_report.py
 python3 scripts/test_pane_ctl.py
 python3 scripts/test_worker_readiness.py
@@ -1045,12 +1108,19 @@ python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
 python3 scripts/issue_state.py list --tracker .scratch/<tracker>
 python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --run-id smoke-issue-001
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "prepare repeatable smoke" --next-stage implement
+python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --pass 1
+python3 scripts/collect_recommendations.py --run-dir .scratch/orchestrator/runs/smoke-issue-001 --pass 1
 python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/smoke-issue-001
 python3 scripts/parse_report.py references/sample-no-findings.md --json
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-issue-001 --label "smoke snapshot"
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "smoke test" --next-stage simplify
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-issue-001 --message "smoke complete"
 ```
+
+The collector on the fresh smoke run exits 0 with zero items and no items file; on the second run it
+exits 0 again without an extra collection event. The smoke-only gate and preparation reset the reusable
+smoke stage before rendering.
 
 The smoke test must prove gate correctness, issue parsing, blocker DAG evaluation, prompt rendering, run-state writing, tree fingerprinting, run closing, and report parsing without requiring product-code changes.
 

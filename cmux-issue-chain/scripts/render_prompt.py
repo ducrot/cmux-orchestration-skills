@@ -14,20 +14,21 @@ from worker_snapshot import SnapshotError, load_launchable_snapshot
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
 
 
-ROLES = ("implement", "simplify", "review", "test")
+ROLES = ("implement", "simplify", "review", "test", "triage")
 CLAUDE_CODE = "claude-code"
 
 # Role rules keyed by harness. Implement and test are harness-neutral. Simplify and review
 # drive Claude Code's bundled skills when the worker runs there; any other harness gets the
 # same duties spelled out inline, because no other harness ships /simplify or /code-review.
 ROLE_RULES = {
+    "triage": "You are the recommendations triage worker. Decide every item autonomously. Never ask the human or the orchestrator anything. Express uncertainty as for-the-human or deferred with a reason.",
     "implement": (
         "You are the implementation worker. You may edit product code and tests needed "
         "for this issue. Do not edit orchestrator run state. Keep changes scoped to the issue. "
         "Testing is part of implementation, not a later stage: every new or changed behavior needs a "
         "regression test that demonstrably fails without your change, and you must execute the changed "
         "path end-to-end (real request, browser, or CLI run) before reporting. "
-        "Do not handle code-review findings unless the orchestrator explicitly assigns a human-approved follow-up pass."
+        "Do not handle code-review findings unless the orchestrator explicitly assigns a follow-up pass approved by the human, or by a triage-worker verdict recorded in `decisions.md`."
     ),
     "test": (
         "You are the test worker. Do not edit product code. Run relevant checks, inspect "
@@ -99,6 +100,63 @@ SMELL_BASELINE = """- Mysterious Name: a name that does not reveal what it does 
 - Refused Bequest: an implementer ignoring most of what it inherits -> composition instead."""
 
 
+
+SUPERSESSION_RULE = (
+    "A triage-worker verdict that the orchestrator recorded in `decisions.md` after a passing triage gate "
+    "counts as recorded approval while autonomous triage is not opted out; such entries carry the marker "
+    "`[triage-worker verdict, run <run-id>, gate advance]`. "
+    "Only non-opted-out runs produce the marker; a later opted-out run still honors it."
+)
+
+
+def render_triage_contract(pass_number: int) -> str:
+    return f"""
+Triage workers extend the Worker Report Contract with `## Verdicts` and exactly one verdict per input ID.
+Keep `## Findings` exactly `- None`; defect evidence belongs to the item's verdict, never a finding.
+
+Read `git diff HEAD` plus untracked files, `decisions.md`, the run's reports, and code. Read-only checks
+and the canonical suite may reproduce items. Never edit product code, tests, tracker files, or lifecycle
+state. Check output that would land in a non-ignored repository path must go to your artifact directory.
+
+Decide every item autonomously. Never ask the human or the orchestrator anything.
+Verdict meanings are fixed:
+- accepted: do the item in the follow-up pass when eligible, otherwise create a new issue draft.
+- rejected: do not do it; any earlier decision stands.
+- deferred: not in this run, no issue now.
+- recorded: already handled in this run or informational only; `resolved` maps to recorded. Write `recorded` in the report, never `resolved`.
+- for-the-human: cannot decide or requires human-only action; `accepted-human` maps here. Write `for-the-human` in the report, never `accepted-human`.
+Rejected, deferred, and recorded are ledger only. for-the-human is open, is not an approval, and never blocks.
+Uncertainty becomes for-the-human or deferred with a reason, never a question.
+
+For a Counter-proposal the default is the earlier decision. Accept only when evidence such as a
+measurement or concrete failure case refutes its recorded reason.
+For every accepted item check all four follow-up entry conditions: behavior-preserving, inside the
+files of the issue diff (listed in the items file), concrete, and no acceptance criterion changes.
+Report `Follow-up eligible: yes|no`; non-accepted verdicts must say no.
+
+For an accepted item with Follow-up eligible: no, write
+`artifacts/triage-{pass_number}/issue-draft-R<n>.md`: no frontmatter, one `# <title>` line,
+`## What to build`, `## Acceptance Criteria` with at least one `- [ ]` item, and optional
+`## Blocked by` naming only existing issue IDs. Never publish the draft into the tracker yourself.
+
+```markdown
+## Verdicts
+- R1
+  - Source: review-1
+  - Title: <short title>
+  - Verdict: accepted
+  - Follow-up eligible: yes
+  - Files: `src/a.ts`, `src/b.ts`
+  - Supersedes: simplify-1 Not Applied item 3 (keep separate validators)
+  - Reason: <one line>
+  - Evidence: optional, may span lines
+```
+
+Use `none` for Files and Supersedes when not applicable. Accepted counter-proposals must identify
+what they supersede. Every ID must appear exactly once, with Source matching the items file.
+"""
+
+
 def role_rules(role: str, harness: str) -> str:
     if harness != CLAUDE_CODE and role in PORTABLE_ROLE_RULES:
         return PORTABLE_ROLE_RULES[role]
@@ -138,6 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-path",
         help="Expected worker report handoff path. Defaults to run-dir/reports/<role>-<pass>.md",
     )
+    parser.add_argument("--items-file", type=Path, help="Immutable numbered recommendations for triage")
     parser.add_argument("--context-file", action="append", default=[], help="Additional report/context file to append")
     parser.add_argument(
         "--followup-file",
@@ -155,6 +214,10 @@ def positive_int(value: str) -> int:
 
 def main() -> int:
     args = build_parser().parse_args()
+    try:
+        check_items_file(args.role, args.items_file, args.pass_number)
+    except (ValueError, OSError) as error:
+        raise SystemExit(str(error)) from error
     tracker = Path(args.tracker)
     issues = load_issues(tracker)
     issue, markdown = read_issue_markdown(tracker, args.issue)
@@ -203,10 +266,20 @@ def main() -> int:
         snapshot_id=snapshot["snapshot_id"],
         artifact_path=run_dir / "artifacts" / stem,
         followup=followup,
+        items_file=args.items_file,
     )
     out.write_text(prompt, encoding="utf-8")
     print(out)
     return 0
+
+
+def check_items_file(role: str, items_file: Path | None, pass_number: int) -> None:
+    if (role == "triage") != (items_file is not None):
+        raise ValueError("--items-file is required for --role triage and refused for every other role")
+    if items_file:
+        from collect_recommendations import read_items
+        if read_items(items_file)["pass"] != pass_number:
+            raise ValueError("items file Triage pass differs from --pass")
 
 
 def render(
@@ -224,13 +297,22 @@ def render(
     snapshot_id: str | None = None,
     artifact_path: Path | None = None,
     followup: str = "",
+    items_file: Path | None = None,
 ) -> str:
+    check_items_file(role, items_file, pass_number)
+    items_block = ""
+    validation_args = ""
+    if items_file:
+        items_block = "\n## Triage Items\n\n```markdown\n" + items_file.read_text(encoding="utf-8") + "\n```\n"
+        validation_args = f"--items-file {items_file} "
     context_files = context_files or []
     context = render_context(context_files)
     if followup and role != "implement":
         raise ValueError("a follow-up pass is rendered for the implement role only")
     if followup:
         report_contract = render_followup_contract()
+    elif role == "triage":
+        report_contract = render_triage_contract(pass_number)
     elif role == "review":
         report_contract = render_review_contract(harness)
     elif role == "simplify":
@@ -242,12 +324,14 @@ def render(
     artifact_path_text = str(artifact_path) if artifact_path else "(not provided)"
     ground_rules_block = f"\n## Tracker Ground Rules\n\nThese rules bind every worker on this tracker:\n\n{ground_rules}\n" if ground_rules else ""
     decisions_block = (
-        "\n## Tracker Decisions\n\nThese records distinguish items the human has approved, rejected, or deferred. "
-        "Do not re-report or re-apply rejected or deferred items unless the code "
-        "now presents a materially different problem. "
-        "Only explicit recorded human approval identifying the earlier decision and "
-        "the authorized replacement or scope supersedes a protected decision; "
+        "\n## Tracker Decisions\n\nThese records distinguish approved, rejected, deferred, recorded, and open "
+        "(`for-the-human`) items by human or triage-worker authority. "
+        "Do not re-report or re-apply rejected, deferred, or recorded items unless the code "
+        "now presents a materially different problem. Open items are not approvals and must not be applied. "
+        "Only an explicit recorded approval (human, or triage-worker as below) identifying the earlier decision "
+        "and the authorized replacement or scope supersedes a protected decision; "
         "apply that approval only within its authorized scope.\n\n"
+        f"{SUPERSESSION_RULE}\n\n"
         f"{decisions}\n"
     ) if decisions else ""
     followup_block = (
@@ -297,7 +381,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 - Use the canonical check commands declared in the tracker ground rules as the baseline suite. Narrower targeted checks may be added, but never substitute a different suite.
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
 {contract_lines}
-{ground_rules_block}{decisions_block}{followup_block}
+{ground_rules_block}{decisions_block}{followup_block}{items_block}
 ## Blocker Status
 
 ```json
@@ -350,7 +434,7 @@ Before returning, self-validate: write your draft report inside your worker arti
 handoff path) and run
 
 ```bash
-python3 {parser_path()} <your-draft-file>
+python3 {parser_path()} {validation_args}<your-draft-file>
 ```
 
 A clean report must print `gate=advance`. If you are genuinely reporting findings, a blocker, or plan
@@ -363,6 +447,8 @@ Do not delete or replace the handoff report with a summary.
 
 
 def role_specific_contract(role: str, harness: str = CLAUDE_CODE) -> str:
+    if role == "triage":
+        return "- Inspect only; write only your report and your artifact directory. Keep `## Findings` exactly `- None`."
     if role == "review":
         return review_contract_lines(harness)
     if role == "simplify":
@@ -429,9 +515,8 @@ def review_contract_lines(harness: str) -> str:
         "human approval explicitly supersedes the earlier decision. The approval must identify the "
         "decision and the authorized replacement or scope. An agent proposal, a later report, or an "
         "unapproved recommendation alone does not supersede it. Report unresolved scope or precedence "
-        "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. An orchestrator "
-        "triage verdict recorded under the human's autonomous-triage authorization for the run counts "
-        "as recorded human approval.\n"
+        "ambiguity as `Recommendation: ask-user`; do not apply the disputed change. "
+        f"{SUPERSESSION_RULE}\n"
         "- Correcting a regression introduced by an earlier refactoring remains a must-fix "
         "when the correction preserves the documented intended behavior; changing that "
         "intended behavior still requires ask-user.\n"
@@ -474,7 +559,7 @@ def indent_block(text: str, prefix: str = "  ") -> str:
 
 
 def tracker_decisions(tracker: Path) -> str:
-    """Read the tracker's triage ledger of human verdicts (approved, rejected, deferred)."""
+    """Read the tracker's recommendations ledger, including human and triage-worker authority."""
     decisions = tracker / "decisions.md"
     if not decisions.is_file():
         return ""

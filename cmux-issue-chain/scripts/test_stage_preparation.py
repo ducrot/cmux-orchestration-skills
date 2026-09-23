@@ -306,6 +306,199 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("unsupported legacy layout", inspected.stdout)
         self.assertEqual(before, file_contents(self.run_dir))
         self.assertFalse(self.cmux_log.exists())
+        state_path.write_text("[]")
+        inspected = self.run_state("status", "--run-dir", str(self.run_dir))
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertIn("unsupported legacy layout", inspected.stdout)
+
+    def script(self, name, *args):
+        return subprocess.run([sys.executable, str(SCRIPT_DIR / name), *map(str, args)],
+                              cwd=self.repo, env=self.env(), capture_output=True, text=True)
+
+    def triage_fixture(self, *, followup=True, numeric=False):
+        from test_parse_report import report, verdict, DRAFT
+        tracker = self.repo / ".scratch" / "tracker"
+        if numeric:
+            (tracker / "issues" / "ISSUE-001-prepared.md").rename(tracker / "issues" / "01-prepared.md")
+        self.assertEqual(self.init().returncode, 0)
+        for stage, following in (("implement", "simplify"), ("simplify", "review"), ("review", "test")):
+            self.assertEqual(self.gate(stage, following).returncode, 0)
+        (self.repo / "a.py").write_text("print('fixture')\n")
+        (self.run_dir / "reports" / "review-1.md").write_text(report(Recommendations=
+            "- Counter-proposal: simplify-1 Not Applied 1; extract the duplicated helper.\n"
+            "- Add a separate dashboard status view.\n- Human should remove the browser artifacts.\n"))
+        (self.run_dir / "reports" / "simplify-1.md").write_text(report(**{"Not Applied": "- Keep the helper inline until measured."}))
+        collected = self.script("collect_recommendations.py", "--run-dir", self.run_dir, "--pass", "1")
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        self.assertEqual(self.gate("test", "triage").returncode, 0)
+        prepared = self.prepare("triage")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        self.assertEqual(len(self.read_snapshot()["resolved_profiles"]), 5)
+        items = self.run_dir / "triage-items-1.md"
+        rendered = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001",
+                               "--role", "triage", "--pass", "1", "--run-dir", self.run_dir, "--items-file", items,
+                               "--context-file", self.run_dir / "reports" / "review-1.md")
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        first = verdict(Files="`a.py`", Supersedes="simplify-1 Not Applied 1", **{
+            "Verdict": "accepted" if followup else "recorded", "Follow-up eligible": "yes" if followup else "no"})
+        second = verdict(Title='New "status" view', **{"Follow-up eligible": "no", "Files": "none"}).replace("- R1", "- R2")
+        third = verdict(Verdict="for-the-human", **{"Follow-up eligible": "no", "Files": "none"}).replace("- R1", "- R3")
+        (self.run_dir / "reports" / "triage-1.md").write_text(report(Verdicts=first+second+third))
+        artifacts = self.run_dir / "artifacts" / "triage-1"
+        artifacts.mkdir(parents=True)
+        (artifacts / "issue-draft-R2.md").write_text(DRAFT.replace("# A useful change", '# New "status" view'))
+        parsed = self.script("parse_report.py", self.run_dir / "reports" / "triage-1.md", "--items-file", items)
+        self.assertEqual(parsed.returncode, 0, parsed.stdout+parsed.stderr)
+        # Capture event fixture: no commits or index changes are needed for this CLI walk.
+        captured = self.run_state("event", "--run-dir", str(self.run_dir), "--type", "tree.snapshot",
+                                  "--message", "report-captured triage-1")
+        self.assertEqual(captured.returncode, 0)
+        return tracker
+
+    def test_triage_modes_and_legacy_default(self):
+        self.assertEqual(self.init().returncode, 0)
+        state = self.read_state()
+        self.assertEqual(state["triage_mode"], "autonomous")
+        self.assertEqual(state["chain"], ["implement", "simplify", "review", "test", "triage"])
+        self.assertEqual(self.read_snapshot()["resolved_profiles"]["triage"]["assignment_source"], "built-in default")
+        before = file_contents(self.run_dir)
+        self.assertNotEqual(self.init("--human-triage").returncode, 0)
+        self.assertEqual(file_contents(self.run_dir), before)
+        self.assertEqual(self.init_for("human", "--human-triage").returncode, 0)
+        human = self.runs_root / "human"
+        state = json.loads((human / "state.json").read_text())
+        self.assertEqual(state["triage_mode"], "human")
+        self.assertEqual(state["chain"], ["implement", "simplify", "review", "test"])
+        for legacy in (False, True):
+            if legacy:
+                state.pop("triage_mode")
+                (human / "state.json").write_text(json.dumps(state))
+                self.run_state("event", "--run-dir", str(human), "--type", "decision.human", "--message", "authorize orchestrator triage")
+            before = file_contents(human)
+            refused = self.run_state("prepare", "--run-dir", str(human), "--stage", "triage", "--pass", "1")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("human", refused.stderr)
+            self.assertEqual(file_contents(human), before)
+            shown = self.run_state("status", "--run-dir", str(human))
+            self.assertEqual(json.loads(shown.stdout)["state"]["triage_mode"], "human")
+
+    def test_publish_triage_end_to_end_and_followup_prompts(self):
+        tracker = self.triage_fixture()
+        proc = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        publication = json.loads(proc.stdout)
+        self.assertEqual(publication["next_stage"], "implement")
+        self.assertEqual(publication["created_issues"], ["ISSUE-002"])
+        issue = next((tracker / "issues").glob("ISSUE-002-*.md"))
+        body = issue.read_text()
+        self.assertIn('title: "New \'status\' view"', body)
+        self.assertIn("id: ISSUE-002\n", body)
+        self.assertIn("type: AFK\nstatus: todo\nlabels: [ready-for-agent]", body)
+        self.assertEqual(sum(line.startswith("# ") for line in body.splitlines()), 1)
+        ready = self.script("issue_state.py", "ready", "--tracker", tracker)
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        self.assertIn("ISSUE-002", ready.stdout)
+        ledger = (tracker / "decisions.md").read_text()
+        self.assertIn("[triage-worker verdict, run prepared-run, gate advance]", ledger)
+        self.assertIn("FOR-THE-HUMAN (open)", ledger)
+        self.assertIn("Supersedes: simplify-1 Not Applied 1.", ledger)
+        audit = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(sum(e["type"] == "recommendations.triaged" for e in audit), 3)
+        self.assertEqual(audit[-1]["type"], "triage.published")
+        self.assertEqual(audit[-1]["data"]["counts"]["accepted"], 2)
+        self.assertEqual(audit[-1]["data"]["for_the_human"], ["R3"])
+        before = file_contents(self.repo)
+        self.assertNotEqual(self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1").returncode, 0)
+        self.assertEqual(file_contents(self.repo), before)
+        self.assertEqual(self.gate("triage", "implement").returncode, 0)
+        self.assertEqual(self.prepare("implement", 2).returncode, 0)
+        result = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001", "--role", "implement",
+                             "--pass", "2", "--run-dir", self.run_dir, "--followup-file", self.run_dir / "followup-items.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = (self.run_dir / "prompts" / "implement-2.md").read_text()
+        self.assertIn("Counter-proposal: simplify-1", prompt)
+        self.assertIn("Triage reason: Measured duplication", prompt)
+        self.assertIn("```markdown\n- Counter-proposal: simplify-1", prompt)
+        self.assertEqual(self.gate("implement", "review").returncode, 0)
+        self.assertEqual(self.prepare("review", 2).returncode, 0)
+        result = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001", "--role", "review",
+                             "--pass", "2", "--run-dir", self.run_dir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = (self.run_dir / "prompts" / "review-2.md").read_text()
+        self.assertIn(ledger.strip(), prompt)
+        self.assertIn("Only non-opted-out runs produce the marker", prompt)
+
+    def test_triage_items_cli_refusals_do_not_write(self):
+        tracker = self.triage_fixture()
+        before = file_contents(self.run_dir)
+        for role, pass_num, items in (("triage", "1", []), ("triage", "2", ["--items-file", self.run_dir / "triage-items-1.md"]),
+                                       ("implement", "1", ["--items-file", self.run_dir / "triage-items-1.md"])):
+            result = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001", "--role", role,
+                                 "--pass", pass_num, "--run-dir", self.run_dir, *items)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(file_contents(self.run_dir), before)
+
+    def test_publish_uses_maximum_number_and_refuses_duplicate_draft_slugs(self):
+        from test_parse_report import report, verdict, DRAFT
+        tracker = self.triage_fixture()
+        (tracker / "issues" / "ISSUE-009-later.md").write_text(ISSUE.replace("ISSUE-001", "ISSUE-009"))
+        report_path = self.run_dir / "reports" / "triage-1.md"
+        saved = report_path.read_text()
+        body = verdict(**{"Follow-up eligible": "no"})
+        report_path.write_text(report(Verdicts=body.replace("- R1", "- R2")+body.replace("- R1", "- R3")+
+            verdict(Files="`a.py`", Supersedes="simplify-1")))
+        draft = self.run_dir / "artifacts" / "triage-1" / "issue-draft-R3.md"
+        draft.write_text('# New "status" view\n' + DRAFT.split("\n", 1)[1])
+        before = file_contents(self.repo)
+        failed = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("slug collision", failed.stderr)
+        self.assertEqual(file_contents(self.repo), before)
+        report_path.write_text(saved)
+        success = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(success.returncode, 0, success.stderr)
+        self.assertEqual(json.loads(success.stdout)["created_issues"], ["ISSUE-010"])
+        self.assertEqual(len(list((tracker / "issues").glob("ISSUE-010-*.md"))), 1)
+
+    def test_publish_numeric_naming_and_no_followup(self):
+        tracker = self.triage_fixture(followup=False, numeric=True)
+        proc = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIsNone(json.loads(proc.stdout)["next_stage"])
+        self.assertEqual(len(list((tracker / "issues").glob("02-*.md"))), 1)
+        self.assertFalse((self.run_dir / "followup-items.md").exists())
+
+    def test_publish_failures_write_nothing(self):
+        tracker = self.triage_fixture()
+        baseline = file_contents(self.repo)
+        report = self.run_dir / "reports" / "triage-1.md"
+        draft = self.run_dir / "artifacts" / "triage-1" / "issue-draft-R2.md"
+        def write_state(**changes):
+            state = self.read_state()
+            state.update(changes)
+            (self.run_dir / "state.json").write_text(json.dumps(state))
+        changes = {
+            "non-advance": lambda: report.write_text(report.read_text().replace("NO FINDINGS", "FINDINGS")),
+            "hash mismatch": lambda: (self.run_dir / "triage-items-1.md").write_text("tampered"),
+            "capture": lambda: (self.run_dir / "events.jsonl").write_text("\n".join(line for line in (self.run_dir / "events.jsonl").read_text().splitlines() if 'report-captured triage-1' not in line)+"\n"),
+            "human mode": lambda: write_state(triage_mode="human"),
+            "wrong stage": lambda: write_state(current_stage="test"),
+            "unknown blocker": lambda: draft.write_text(draft.read_text()+"\n## Blocked by\n- ISSUE-999\n"),
+            "slug collision": lambda: draft.write_text(draft.read_text().replace('# New "status" view', '# Prepared')),
+            "orphan target": lambda: (tracker / "issues" / "ISSUE-002-new-status-view.md").mkdir(),
+        }
+        for name, mutate in changes.items():
+            with self.subTest(name=name):
+                mutate()
+                before = file_contents(self.repo)
+                proc = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+                self.assertNotEqual(proc.returncode, 0, proc.stdout)
+                self.assertEqual(file_contents(self.repo), before)
+                for path, content in baseline.items():
+                    (self.repo / path).write_bytes(content)
+                target = tracker / "issues" / "ISSUE-002-new-status-view.md"
+                if target.is_dir():
+                    target.rmdir()
 
     def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):
         proc = self.init()
@@ -318,7 +511,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(snapshot["stage"], "implement")
         self.assertEqual(snapshot["config"]["source"], str(config.resolve()))
         self.assertEqual(snapshot["config"]["sha256"], hashlib.sha256(config.read_bytes()).hexdigest())
-        self.assertEqual(set(snapshot["resolved_profiles"]), {"implement", "simplify", "review", "test"})
+        self.assertEqual(set(snapshot["resolved_profiles"]), {"implement", "simplify", "review", "test", "triage"})
         selected = snapshot["selected_worker"]
         self.assertEqual(selected["profile"], "codex-astra-xhigh")
         self.assertEqual(selected["model"], "gpt-6-astra")

@@ -67,7 +67,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         chain = normalized(REPOSITORY / "cmux-issue-chain" / "SKILL.md")
         grilling = normalized(REPOSITORY / "cmux-grilling" / "SKILL.md")
         for phrase in (
-            'every role (implement, simplify, review, and test)',
+            'every role (implement, simplify, review, test, and triage)',
             'run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery',
             'launch snapshot (`launched <role>-<pass>`) against the capture snapshot (`report-captured <role>-<pass>`)',
             '`staged_paths`', '`staged_diff_sha256`', 'gate `hitl` even with a clean report',
@@ -157,6 +157,8 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             ("## review self-fix policy", "## gate rule", (
                 "including prior passes of the same run",
                 "reports from unrelated runs are outside this same-run protection",
+                "a triage-worker verdict that the orchestrator recorded in `decisions.md` after a passing triage gate counts as recorded approval while autonomous triage is not opted out; such entries carry the marker `[triage-worker verdict, run <run-id>, gate advance]`",
+                "a later opted-out run still honors it",
                 "until recorded human approval explicitly supersedes the earlier decision",
                 "identify the decision and the authorized replacement or scope",
                 "an agent proposal, a later report, or an unapproved recommendation alone",
@@ -195,8 +197,9 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertIn("## recommendations triage", text)
         self.assertIn("## hitl issues", text)
         triage = text.split("## recommendations triage", 1)[1].split("## hitl issues", 1)[0]
-        self.assertIn("approved, rejected, and deferred", triage)
-        self.assertIn("explicit human supersession approvals", triage)
+        self.assertIn("approved, rejected, deferred, recorded, and open", triage)
+        self.assertIn("explicit recorded supersession approvals", triage)
+        self.assertIn("a marker-bearing triage-worker verdict satisfies the recorded approval rule", triage)
         self.assertIn("identify the earlier decision and the authorized replacement or scope", triage)
 
     def test_issue_chain_routes_quality_counter_proposals_to_triage(self):
@@ -238,10 +241,15 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         text = normalized(guide)
         triage = text.split("## recommendations triage", 1)[1].split("## follow-up pass", 1)[0]
         for phrase in (
-            "after the final test gates `advance` and before `run_state.py complete`",
+            "after the final test report parses `advance` and before that gate event is recorded",
             "a follow-up pass exists only while the issue is uncommitted",
-            "authorized autonomous triage for the run, recorded as a `decision.human` event",
-            "without that authorization it never decides",
+            "recommendations triage is autonomous by default",
+            "`--human-triage` opts out",
+            "the orchestrator never decides recommendation content",
+            "must never ask the human or the orchestrator anything",
+            "`for-the-human` never blocks",
+            "no automatic relaunch is allowed",
+            "`[human verdict, run <run-id>]`",
             "accept only when the proposal refutes the recorded reason with evidence",
         ):
             with self.subTest(section="triage", phrase=phrase):

@@ -42,6 +42,7 @@ COMPATIBLE_HARNESSES = {
         "simplify": {"claude-code", "codex", "pi"},
         "review": {"claude-code", "codex", "pi"},
         "test": {"claude-code", "codex", "pi"},
+        "triage": {"claude-code", "codex", "pi"},
     },
     "grilling": {
         "codebase": {"claude-code", "codex", "pi"},
@@ -68,6 +69,8 @@ LEGACY_COMPATIBLE_HARNESSES = {
 WORKFLOW_WORKERS = {
     workflow: tuple(workers) for workflow, workers in COMPATIBLE_HARNESSES.items()
 }
+OPTIONAL_WORKERS = {"issue-chain": {"triage": "claude-opus-high"}}
+
 # Each workflow calls its workers something else in operator-facing text.
 WORKFLOW_NOUN = {"issue-chain": "worker", "grilling": "lane", "planning": "role"}
 
@@ -559,7 +562,7 @@ def validate_workflows(
                     field="worker",
                 )
             )
-        for worker in sorted(expected_workers - set(assignments)):
+        for worker in sorted(expected_workers - set(assignments) - set(OPTIONAL_WORKERS.get(workflow, {}))):
             errors.append(
                 context_error(
                     source,
@@ -952,15 +955,11 @@ def load_validated(path: Path) -> dict[str, Any]:
 
 def resolved_display(data: dict[str, Any], source: Path) -> dict[str, Any]:
     resolved_workflows: dict[str, dict[str, dict[str, str]]] = {}
-    profiles = data["profiles"]
-    for workflow, assignments in data["workflows"].items():
-        resolved_workflows[workflow] = {}
-        for worker, profile_name in assignments.items():
-            resolved_workflows[workflow][worker] = {
-                "profile": profile_name,
-                **profiles[profile_name],
-                "source": str(source),
-            }
+    for workflow in data["workflows"]:
+        resolved_workflows[workflow] = {
+            worker: {**profile, "source": str(source)}
+            for worker, profile in resolve_workers(data, source, {}, workflow=workflow).items()
+        }
     return {
         "source": str(source),
         "schema_version": data["schema_version"],
@@ -1473,8 +1472,13 @@ def resolve_workers(
     profiles = data["profiles"]
     for worker in WORKFLOW_WORKERS[workflow]:
         worker_overrides = overrides.get(worker, {})
-        profile_name = worker_overrides.get("profile", assignments[worker])
-        if profile_name not in profiles:
+        default = OPTIONAL_WORKERS.get(workflow, {}).get(worker)
+        built_in = worker not in assignments and "profile" not in worker_overrides
+        profile_name = worker_overrides.get("profile", assignments.get(worker, default))
+        available = profiles
+        if built_in and profile_name not in profiles:
+            available = DEFAULT_CONFIG["profiles"]
+        if profile_name not in available:
             raise HarnessError(
                 context_error(
                     source,
@@ -1485,12 +1489,14 @@ def resolve_workers(
                     field="profile",
                 )
             )
-        effective = copy.deepcopy(profiles[profile_name])
+        effective = copy.deepcopy(available[profile_name])
         for field in PROFILE_OVERRIDE_FIELDS:
             if field in worker_overrides:
                 effective[field] = worker_overrides[field]
         validate_effective_worker(worker, profile_name, effective, source, workflow=workflow)
         resolved[worker] = {"profile": profile_name, **effective}
+        if built_in:
+            resolved[worker]["assignment_source"] = "built-in default"
     return resolved
 
 
