@@ -89,6 +89,48 @@ class CollectorCli(unittest.TestCase):
         self.assertEqual(audit[0]["type"], "triage.collected")
         self.assertEqual(audit[0]["data"], data)
 
+    def test_pass_two_only_scans_new_reports_and_keeps_counterproposal_context(self):
+        self.write_report("simplify-1", "## Not Applied\n- Keep it separate.\n")
+        self.write_report("review-1", "## Recommendations\n- Original item\n")
+        self.assertEqual(self.cli().returncode, 0)
+        self.write_report("implement-2", "## Not Applied\n- Cannot apply: changed context.\n")
+        self.write_report("test-2", "## Recommendations\n- Counter-proposal: simplify-1 reconsider.\n")
+        self.write_report("triage-1", "## Recommendations\n- Ignore triage\n")
+        # Different run-dir spelling must not rescan the pass-1 reports.
+        result = subprocess.run([sys.executable, str(SCRIPT), "--run-dir", "run", "--pass", "2"],
+                                cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["item_count"], 1)
+        self.assertEqual([Path(p).name for p in data["scanned_reports"]], ["implement-2.md", "test-2.md"])
+        path = self.run / "triage-items-2.md"
+        items = read_items(path)
+        self.assertEqual(items["pass"], 2)
+        self.assertFalse(items["followup_allowed"])
+        self.assertIn("Follow-up pass allowed: no", path.read_text())
+        self.assertIn("## Not Applied\n- Keep it separate.", items["items"][0]["text"])
+        before = self.contents()
+        self.assertEqual(self.cli(2).returncode, 0)
+        self.assertNotEqual(self.cli(3).returncode, 0)
+        self.assertEqual(before, self.contents())
+        path.write_text(path.read_text() + "tamper")
+        before = self.contents()
+        self.assertNotEqual(self.cli(2).returncode, 0)
+        self.assertEqual(before, self.contents())
+
+    def test_pass_two_not_applied_alone_does_not_trigger_triage(self):
+        self.write_report("review-1", "## Recommendations\n- Original item\n")
+        self.assertEqual(self.cli().returncode, 0)
+        self.write_report("implement-2", "## Not Applied\n- Cannot apply: changed context.\n")
+        self.write_report("test-2", "## Recommendations\n- None\n")
+        result = self.cli(2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["item_count"], 0)
+        self.assertFalse((self.run / "triage-items-2.md").exists())
+        before = self.contents()
+        self.assertEqual(self.cli(2).returncode, 0)
+        self.assertEqual(before, self.contents())
+
     def test_other_run_dir_spelling_still_matches_the_event(self):
         self.write_report("test-1", "## Recommendations\n- Keep me\n")
         self.assertEqual(self.cli().returncode, 0)

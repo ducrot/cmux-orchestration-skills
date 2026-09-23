@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from collect_recommendations import collected_data, read_items
+from collect_recommendations import FOLLOWUP_ALLOWED, UNSUPPORTED_PASS_ERROR, collected_data, read_items
 from orchestrator_lib import append_jsonl, load_issues, normalize_issue_id, read_run_state, slugify, utc_now
 from parse_report import parse_report
 from triage_contract import VERDICTS
@@ -12,8 +12,8 @@ from worker_readiness import read_events
 
 
 def publish(run_dir: Path, pass_num: int) -> dict:
-    if pass_num != 1:
-        raise ValueError("only --pass 1 is supported")
+    if pass_num not in FOLLOWUP_ALLOWED:
+        raise ValueError(UNSUPPORTED_PASS_ERROR)
     state = read_run_state(run_dir)
     if state["triage_mode"] != "autonomous" or state.get("current_stage") != "triage":
         raise ValueError("publish-triage requires autonomous mode and current_stage triage")

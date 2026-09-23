@@ -428,6 +428,83 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn(ledger.strip(), prompt)
         self.assertIn("Only non-opted-out runs produce the marker", prompt)
 
+    def test_publish_triage_two_completes_followup_cli_walk(self):
+        self.triage_two_cli_walk(existing_followup=True)
+
+    def test_publish_triage_two_does_not_create_followup_file(self):
+        self.triage_two_cli_walk(existing_followup=False)
+
+    def triage_two_cli_walk(self, *, existing_followup):
+        from collect_recommendations import read_items
+        from test_parse_report import report, verdict, DRAFT
+        tracker = self.triage_fixture()
+        published = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertEqual(json.loads(published.stdout)["next_stage"], "implement")
+        followup = self.run_dir / "followup-items.md"
+        original_followup = followup.read_bytes()
+        self.assertEqual(self.gate("triage", "implement").returncode, 0)
+        self.assertEqual(self.prepare("implement", 2).returncode, 0)
+        implement = self.run_dir / "reports" / "implement-2.md"
+        implement.write_text(report(**{"Not Applied": "- R1: helper has changed; keep current code."}))
+        self.assertEqual(self.script("parse_report.py", implement).returncode, 0)
+        self.assertEqual(self.gate("implement", "test").returncode, 0)
+        self.assertEqual(self.prepare("test", 2).returncode, 0)
+        test = self.run_dir / "reports" / "test-2.md"
+        test.write_text(report(Recommendations="- Add a follow-up diagnostics view."))
+        self.assertEqual(self.script("parse_report.py", test).returncode, 0)
+        collected = self.script("collect_recommendations.py", "--run-dir", self.run_dir, "--pass", "2")
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        items = self.run_dir / "triage-items-2.md"
+        parsed_items = read_items(items)
+        self.assertEqual(parsed_items["scanned_reports"], [str(implement), str(test)])
+        self.assertEqual([i["source"] for i in parsed_items["items"]], ["test-2"])
+        self.assertIn("Add a follow-up diagnostics view.", parsed_items["items"][0]["text"])
+        self.assertEqual(self.gate("test", "triage").returncode, 0)
+        self.assertEqual(self.prepare("triage", 2).returncode, 0)
+        contexts = sorted((self.run_dir / "reports").glob("*.md")) + [followup]
+        rendered = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001",
+                               "--role", "triage", "--pass", "2", "--run-dir", self.run_dir, "--items-file", items,
+                               *[arg for path in contexts for arg in ("--context-file", path)])
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        triage_report = self.run_dir / "reports" / "triage-2.md"
+        triage_report.write_text(report(Verdicts=verdict(Source="test-2", **{"Follow-up eligible": "no", "Files": "none"})))
+        artifacts = self.run_dir / "artifacts" / "triage-2"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "issue-draft-R1.md").write_text(DRAFT)
+        self.assertEqual(self.script("parse_report.py", triage_report, "--items-file", items).returncode, 0)
+        self.assertEqual(self.run_state("event", "--run-dir", str(self.run_dir), "--type", "tree.snapshot",
+                                      "--message", "report-captured triage-2").returncode, 0)
+        # Publication must neither overwrite an existing follow-up file nor create a new one.
+        if not existing_followup:
+            followup.unlink()
+        published = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "2")
+        self.assertEqual(published.returncode, 0, published.stderr)
+        result = json.loads(published.stdout)
+        self.assertIsNone(result["next_stage"])
+        self.assertIsNone(result["followup_file"])
+        self.assertEqual(result["followup_items"], [])
+        self.assertEqual(result["created_issues"], ["ISSUE-003"])
+        if existing_followup:
+            self.assertEqual(followup.read_bytes(), original_followup)
+        else:
+            self.assertFalse(followup.exists())
+        ledger = (tracker / "decisions.md").read_text()
+        self.assertIn("triage-2 R1 (test-2)", ledger)
+        self.assertIn("[triage-worker verdict, run prepared-run, gate advance]", ledger)
+        audit = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(audit[-1]["type"], "triage.published")
+        self.assertEqual(audit[-1]["data"]["pass"], 2)
+        self.assertEqual(audit[-2]["type"], "recommendations.triaged")
+        self.assertEqual(audit[-2]["data"]["issue"], "ISSUE-003")
+        self.assertEqual(self.run_state("gate", "--run-dir", str(self.run_dir), "--stage", "triage",
+                                      "--decision", "advance", "--reason", "triage-2 published").returncode, 0)
+        self.assertEqual(self.run_state("complete", "--run-dir", str(self.run_dir)).returncode, 0)
+        self.assertEqual(json.loads((self.run_dir / "state.json").read_text())["current_stage"], "done")
+        before = file_contents(self.repo)
+        self.assertNotEqual(self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "3").returncode, 0)
+        self.assertEqual(file_contents(self.repo), before)
+
     def test_triage_items_cli_refusals_do_not_write(self):
         tracker = self.triage_fixture()
         before = file_contents(self.run_dir)

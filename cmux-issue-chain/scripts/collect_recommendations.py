@@ -16,6 +16,9 @@ from worker_readiness import read_events
 ROLES = ("implement", "simplify", "review", "test")
 REPORT_RE = re.compile(rf'^({"|".join(ROLES)})-(\d+)\.md$')
 ITEM_RE = re.compile(r"^## (R[1-9]\d*)\n", re.MULTILINE)
+# Supported triage passes and their `Follow-up pass allowed` header value.
+FOLLOWUP_ALLOWED = {1: "yes", 2: "no"}
+UNSUPPORTED_PASS_ERROR = "only --pass 1 or 2 is supported"
 
 
 def sha256(path: Path) -> str:
@@ -56,8 +59,8 @@ def read_items(path: Path) -> dict:
         files = json.loads(fields["Issue diff files"])
     except (ValueError, TypeError) as error:
         raise ValueError(f"{path}: invalid items header") from error
-    if pass_num != 1 or fields["Follow-up pass allowed"] != "yes":
-        raise ValueError(f"{path}: only triage pass 1 is supported")
+    if fields["Follow-up pass allowed"] != FOLLOWUP_ALLOWED.get(pass_num):
+        raise ValueError(f"{path}: triage pass must be 1 (follow-up allowed) or 2 (no follow-up)")
     if not all(isinstance(v, list) and all(isinstance(p, str) for p in v) for v in (scanned, files)):
         raise ValueError(f"{path}: invalid report/file list")
     items = []
@@ -71,7 +74,7 @@ def read_items(path: Path) -> dict:
     if not items:
         raise ValueError(f"{path}: no items")
     return {"run": fields["Run"], "issue": fields["Issue"], "pass": pass_num,
-            "followup_allowed": True, "scanned_reports": scanned, "diff_files": files, "items": items}
+            "followup_allowed": FOLLOWUP_ALLOWED[pass_num] == "yes", "scanned_reports": scanned, "diff_files": files, "items": items}
 
 
 def collected_data(run_dir: Path, pass_num: int) -> dict | None:
@@ -110,17 +113,25 @@ def diff_files() -> list[str]:
 
 
 def collect(run_dir: Path, pass_num: int) -> dict:
-    if pass_num != 1:
-        raise ValueError("only --pass 1 is supported")
+    if pass_num not in FOLLOWUP_ALLOWED:
+        raise ValueError(UNSUPPORTED_PASS_ERROR)
     state = read_run_state(run_dir)
     existing = collected_data(run_dir, pass_num)
     if existing is not None:
         return existing
     matched = [(m, p) for p in (run_dir / "reports").glob("*.md") if (m := REPORT_RE.fullmatch(p.name))]
     reports = [p for _, p in sorted(matched, key=lambda mp: (int(mp[0][2]), ROLES.index(mp[0][1])))]
+    pending = reports
+    if pass_num == 2:
+        prior = collected_data(run_dir, 1)
+        if not prior or not prior["item_count"]:
+            raise ValueError("pass 2 requires nonempty triage-items-1.md")
+        # Reports belong to this run; their basenames survive relative/absolute CLI spelling.
+        scanned_names = {Path(path).name for path in prior["scanned_reports"]}
+        pending = [p for p in reports if p.name not in scanned_names]
     contents = {p.stem: p.read_text(encoding="utf-8") for p in reports}
     items = []
-    for path in reports:
+    for path in pending:
         for body in section_bodies(contents[path.stem], "Recommendations"):
             for entry in entries(body):
                 kind = "counter-proposal" if "Counter-proposal" in entry else "recommendation"
@@ -135,11 +146,11 @@ def collect(run_dir: Path, pass_num: int) -> dict:
                             attachment += "## Not Applied\n" + section
                 items.append(f"## R{len(items)+1}\nSource: {path.stem} ({path})\nKind: {kind}\n\n" + entry + "\n" + attachment)
     path = run_dir / f"triage-items-{pass_num}.md"
-    data = {"pass": pass_num, "item_count": len(items), "scanned_reports": [str(p) for p in reports],
+    data = {"pass": pass_num, "item_count": len(items), "scanned_reports": [str(p) for p in pending],
             "items_path": str(path) if items else None, "items_sha256": None}
     if items:
         header = (f'Run: {state["run_id"]}\nIssue: {state["issue"]["id"]}\nTriage pass: {pass_num}\n'
-                  f'Follow-up pass allowed: yes\nScanned reports: {json.dumps(data["scanned_reports"])}\n'
+                  f'Follow-up pass allowed: {FOLLOWUP_ALLOWED[pass_num]}\nScanned reports: {json.dumps(data["scanned_reports"])}\n'
                   f"Issue diff files: {json.dumps(diff_files())}\n\n")
         with path.open("x", encoding="utf-8") as stream:
             stream.write(header + "\n".join(items))

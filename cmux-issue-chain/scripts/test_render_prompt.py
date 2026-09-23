@@ -75,6 +75,28 @@ class RenderFunction(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render_prompt.render("test", "ISSUE-001", ISSUE, {}, items_file=items)
 
+    def test_pass_two_restriction_and_context_are_harness_neutral(self):
+        from test_parse_report import items_fixture
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            items = items_fixture(root, pass_num=2)
+            contexts = []
+            for name in ("implement-1", "simplify-1", "review-1", "test-1", "implement-2", "test-2", "triage-1", "followup-items"):
+                path = root / (name + ".md")
+                path.write_text(f"Unique context for {name}\n")
+                contexts.append(path)
+            prompts = [render_prompt.render("triage", "ISSUE-001", ISSUE, {}, harness=h,
+                       items_file=items, pass_number=2, context_files=contexts) for h in ("claude-code", "codex")]
+            self.assertEqual(*[p[p.index("You are the recommendations"):] for p in prompts])
+            for phrase in ("`Follow-up eligible: yes` is not allowed", "No further follow-up pass exists",
+                           "artifacts/triage-2/issue-draft-R<n>.md", "  - Follow-up eligible: no"):
+                self.assertIn(phrase, prompts[0])
+            self.assertNotIn("  - Follow-up eligible: yes", prompts[0])
+            for path in contexts:
+                self.assertIn(path.read_text(), prompts[0])
+            with self.assertRaises(ValueError):
+                render_prompt.render("triage", "ISSUE-001", ISSUE, {}, items_file=items, pass_number=1)
+
     def test_header_records_harness_and_snapshot(self):
         text = self.render("implement", "codex")
         self.assertIn("Harness: codex\n", text)

@@ -181,7 +181,9 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 5. Final test with Codex.
 6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
    decides the collected items, then at most one follow-up pass applies accepted eligible items (see
-   Follow-up Pass), then `run_state.py complete`. Opt out at init with `--human-triage`.
+   Follow-up Pass). Full flow:
+   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> final summary + commit message proposal -> wait`.
+   Triage-2 runs only for new follow-up recommendations. Opt out at init with `--human-triage`.
    A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
 
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
@@ -467,6 +469,7 @@ as a `commit.proposed` event:
 
 - the exact file list of the issue diff (`git diff --stat`, `git status --short`) — anything the issue did
   not cause is flagged as ride-along and excluded from the proposal;
+- list tracker files published by triage (new issue files, `decisions.md`) separately from the product diff;
 - a draft commit message: English, what + why in the subject, optional body.
 
 The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
@@ -487,6 +490,19 @@ orchestrator writes them neutrally and precisely, in whichever language the huma
 - Relay worker findings unparaphrased, as the Review Self-Fix Policy already requires. Rewording a
   finding is a form of evaluation, and a softened finding is how a real one gets dropped.
 
+Every autonomous run ends with a compact, neutral final summary, followed by the commit message proposal:
+
+- One line per stage (gate, changed files, test result).
+- A triage table (ID, short title, verdict, consequence: `follow-up` / `ISSUE-0xx` / `ledger only`,
+  reason verbatim). Identify the triage pass alongside the ID so repeated R numbers are unambiguous;
+  open `for-the-human` verdicts have ledger-only consequences and are listed as open below.
+- The follow-up result including `## Not Applied`, or that no follow-up ran.
+- Open `for-the-human` items.
+- `Created by triage: ISSUE-0xx, ...` (write `none` when no issues were created).
+- The commit message proposal (`commit.proposed`), with the separate file lists required above.
+
+After the summary and proposal, the orchestrator waits for the human.
+
 ## Recommendations Triage
 
 Recommendations triage is autonomous by default. `run_state.py init` records `triage_mode: autonomous`;
@@ -501,7 +517,8 @@ After the final test report parses `advance` and before that gate event is recor
    entries and attaches named same-run `## Not Applied` sections. It writes immutable `triage-items-1.md`
    with `R1..Rn`, source reports and the issue diff files (both rename paths and untracked files),
    and records `triage.collected`. A matching repeated collection exits 0 without writes. An orphan
-   items file or digest mismatch refuses; gate `hitl` with the error. Only pass 1 is supported here.
+   items file or digest mismatch refuses; gate `hitl` with the error. Only passes 1 and 2 are supported;
+   higher values refuse without writes.
 2. With zero items, record the test gate `advance` with no `--next-stage`, then complete from `test`.
 3. Otherwise, in autonomous mode record `advance --next-stage triage`, then
    `prepare --stage triage --pass 1`. Render `--role triage --pass 1 --items-file <run-dir>/triage-items-1.md`
@@ -523,6 +540,20 @@ After the final test report parses `advance` and before that gate event is recor
    when needed, and records `recommendations.triaged` and `triage.published`.
 7. Record the triage gate `advance --next-stage implement` when publication prints `next_stage: implement`;
    otherwise record `advance` with no next stage and run `complete`.
+
+After the follow-up test report parses `advance` and before that gate event is recorded, run
+`python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 2`. It scans only non-triage
+reports not listed under `Scanned reports` in `triage-items-1.md`, retaining same-run counter-proposal
+context, and writes `triage-items-2.md` with `Triage pass: 2` and `Follow-up pass allowed: no` when nonempty.
+The extraction, immutability, `triage.collected`, and idempotency rules above also apply to pass 2.
+With zero new items, record the test gate `advance` with no next stage and complete. Otherwise record
+`advance --next-stage triage` and repeat steps 3–7 with `--pass 2`, `triage-items-2.md`, and
+`reports/triage-2.md`. Supply every non-triage report plus `reports/triage-1.md` and `followup-items.md`
+as `--context-file`. Launch a fresh Triager 2 anchored to the follow-up test pane; use the same
+snapshot comparison, watcher, parse, and publication steps. Pass 2 forbids `Follow-up eligible: yes`;
+the gate marks it `verdicts_malformed` and `hitl`. `publish-triage --pass 2` writes issues, ledger lines,
+and events, writes no `followup-items.md`, and prints `next_stage: null`. Record the triage-2 gate
+`advance` with no next stage, then complete. Triage-2 never starts another follow-up pass.
 
 The optional `triage` worker defaults to built-in profile `claude-opus-high`; an explicit assignment or
 typed override wins. Existing version 1/2 configurations need no edits; init and migration do not write
@@ -590,12 +621,22 @@ Procedure:
    and after instead of a failing regression test, leave existing tests unedited.
 4. Gate the implement report as usual, including diff inspection against the item list, then run the
    final test for the same pass with the follow-up report and the item list as context files.
-5. Complete the run. The commit proposal covers the issue and the follow-up together.
+5. In autonomous mode, after the follow-up test report parses `advance` and before that gate event is recorded,
+   run `python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 2`. With new items record
+   the test gate `advance --next-stage triage`, then run triage pass 2 using the launch, anchoring,
+   snapshot comparison, parse, and publish steps in Recommendations Triage. Otherwise record
+   `advance` with no next stage and complete. After the triage-2 gate, complete the run; triage-2 never
+   starts another follow-up pass. In human mode, relay new recommendations for human triage as above;
+   no further follow-up pass is available. The commit proposal covers the issue and the follow-up together.
 
 Limits: one follow-up pass per issue, all accepted items bundled; no simplify or review stage in it;
 recommendations from its reports go to triage but never start another pass. An item the worker lists
-under `## Not Applied` because it no longer fits the code is not retried: it becomes a new issue or is
-dropped only according to the recorded decision authority. Findings from the follow-up implement or test
+under `## Not Applied` is not retried. These items do not trigger `triage-2`. For each such item,
+append a factual line to `decisions.md` identifying the run and triage-1 item:
+`accepted in triage-1, not applied in the follow-up pass: <reason verbatim> — OPEN`.
+For example: `- <issue> triage-1 R<n> (<source>): <title> — accepted in triage-1, not applied in the follow-up pass: <reason verbatim> — OPEN. [run <run-id>]`
+List these open items in the final summary; do not turn them into new recommendations or retry them.
+Findings from the follow-up implement or test
 report gate `hitl` like findings after review changes. Select a lighter implement profile for the pass
 with the typed `prepare` overrides when the default is oversized for the items.
 
@@ -916,8 +957,8 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 
 ## Scripts
 
-`collect_recommendations.py --run-dir <run-dir> --pass 1` writes the immutable recommendations list.
-`run_state.py publish-triage --run-dir <run-dir> --pass 1` publishes a passing triage report;
+`collect_recommendations.py --run-dir <run-dir> --pass <1|2>` writes the immutable recommendations list.
+`run_state.py publish-triage --run-dir <run-dir> --pass <1|2>` publishes a passing triage report;
 `parse_report.py --items-file <path> <report>` validates the verdicts.
 
 The scripts are deterministic helpers. They live canonically at `scripts/`

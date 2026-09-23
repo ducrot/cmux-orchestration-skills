@@ -268,6 +268,33 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertIn("--role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file", raw)
         self.assertIn("\n## Recommendations\n- None, or refactorings that need a human decision.", raw)
 
+    def test_issue_chain_autonomous_completion_and_summary(self):
+        guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        text = normalized(guide)
+        followup = text.split("## follow-up pass", 1)[1].split("## hitl issues", 1)[0]
+        for phrase in (
+            "after the follow-up test report parses `advance` and before that gate event is recorded",
+            "collect_recommendations.py --run-dir <run-dir> --pass 2",
+            "`advance --next-stage triage`", "`advance` with no next stage",
+            "triage-2 never starts another follow-up pass",
+            "accepted in triage-1, not applied in the follow-up pass: <reason verbatim> — open",
+            "do not trigger `triage-2`",
+        ):
+            self.assertIn(phrase, followup)
+        triage = text.split("## recommendations triage", 1)[1].split("## follow-up pass", 1)[0]
+        for phrase in ("--pass 2", "reports/triage-1.md", "followup-items.md", "next_stage: null"):
+            self.assertIn(phrase, triage)
+        summary = text.split("## reporting to the human", 1)[1].split("## recommendations triage", 1)[0]
+        for phrase in ("one line per stage", "gate, changed files, test result", "triage table",
+                       "id, short title, verdict", "reason verbatim", "## not applied", "for-the-human",
+                       "created by triage:", "commit.proposed", "wait"):
+            self.assertIn(phrase, summary)
+        commit = text.split("## branch and commit policy", 1)[1].split("## reporting to the human", 1)[0]
+        self.assertIn("tracker files published by triage (new issue files, `decisions.md`) separately from the product diff", commit)
+        self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> final summary + commit message proposal -> wait", text)
+
     def test_issue_chain_relevant_prior_pass_context_and_example(self):
         guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
         if not guide.is_file():

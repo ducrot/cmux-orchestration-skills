@@ -110,6 +110,11 @@ SUPERSESSION_RULE = (
 
 
 def render_triage_contract(pass_number: int) -> str:
+    from collect_recommendations import FOLLOWUP_ALLOWED
+
+    followup_allowed = FOLLOWUP_ALLOWED[pass_number] == "yes"
+    restriction = ("" if followup_allowed else
+                   "\nPass 2 only: `Follow-up eligible: yes` is not allowed. No further follow-up pass exists.")
     return f"""
 Triage workers extend the Worker Report Contract with `## Verdicts` and exactly one verdict per input ID.
 Keep `## Findings` exactly `- None`; defect evidence belongs to the item's verdict, never a finding.
@@ -132,7 +137,7 @@ For a Counter-proposal the default is the earlier decision. Accept only when evi
 measurement or concrete failure case refutes its recorded reason.
 For every accepted item check all four follow-up entry conditions: behavior-preserving, inside the
 files of the issue diff (listed in the items file), concrete, and no acceptance criterion changes.
-Report `Follow-up eligible: yes|no`; non-accepted verdicts must say no.
+Report `Follow-up eligible: yes|no`; non-accepted verdicts must say no.{restriction}
 
 For an accepted item with Follow-up eligible: no, write
 `artifacts/triage-{pass_number}/issue-draft-R<n>.md`: no frontmatter, one `# <title>` line,
@@ -145,7 +150,7 @@ For an accepted item with Follow-up eligible: no, write
   - Source: review-1
   - Title: <short title>
   - Verdict: accepted
-  - Follow-up eligible: yes
+  - Follow-up eligible: {"yes" if followup_allowed else "no"}
   - Files: `src/a.ts`, `src/b.ts`
   - Supersedes: simplify-1 Not Applied item 3 (keep separate validators)
   - Reason: <one line>

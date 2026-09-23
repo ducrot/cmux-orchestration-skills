@@ -193,9 +193,10 @@ class Cli(unittest.TestCase):
             self.assertEqual(self.run_cli(str(path)).returncode, 0)
 
 
-def items_fixture(root: Path, kind="recommendation") -> Path:
-    path = root / "triage-items-1.md"
-    path.write_text('Run: fixture\nIssue: ISSUE-001\nTriage pass: 1\nFollow-up pass allowed: yes\n'
+def items_fixture(root: Path, kind="recommendation", pass_num=1) -> Path:
+    path = root / f"triage-items-{pass_num}.md"
+    followup = "yes" if pass_num == 1 else "no"
+    path.write_text(f'Run: fixture\nIssue: ISSUE-001\nTriage pass: {pass_num}\nFollow-up pass allowed: {followup}\n'
                     'Scanned reports: ["review-1"]\nIssue diff files: ["src/a.py"]\n\n'
                     f'## R1\nSource: review-1 (reports/review-1.md)\nKind: {kind}\n\n- Keep exact item.\n')
     return path
@@ -232,6 +233,16 @@ class TriageVerdicts(unittest.TestCase):
         unchecked = parse_report(text)
         self.assertEqual(unchecked["gate"], "hitl")
         self.assertIn("triage report requires --items-file", unchecked["reasons"])
+
+    def test_pass_two_refuses_followup_and_accepts_ledger_verdict(self):
+        self.items = items_fixture(self.root, pass_num=2)
+        result = parse_report(report(Verdicts=verdict()), self.items)
+        self.assertEqual(result["gate"], "hitl")
+        self.assertTrue(result["verdicts_malformed"])
+        self.assertIn("R1: follow-up is not allowed", result["verdict_errors"])
+        result = parse_report(report(Verdicts=verdict(Verdict="recorded", **{"Follow-up eligible": "no"})), self.items)
+        self.assertEqual(result["gate"], "advance")
+        self.assertEqual(result["followup_items"], [])
 
     def test_malformed_verdicts(self):
         cases = [None, "", verdict().replace("- R1", "- R2"), verdict()+verdict(),
