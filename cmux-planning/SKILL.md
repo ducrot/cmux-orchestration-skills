@@ -587,6 +587,28 @@ ticket set, and staged artifact identities before completing state. If both stag
 identities differ, or the run is already complete, publication refuses to duplicate or partially
 overwrite anything.
 
+## Run recap
+
+The counterpart to the Run briefing. After a successful `publish`, or after a halting gate that ends
+the run (`hitl`, `blocked`, or `stop`):
+
+```bash
+python3 scripts/run_briefing.py recap-draft --run-dir <run-dir> --lang <de|en>
+# Replace {{outcome}} in <run-dir>/recap.md, then:
+python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
+```
+
+- `recap-draft` refuses an active run, including one waiting at an approval boundary. It writes
+  `recap.md` with the facts from `state.json` and `events.jsonl`: status (complete, or halted at stage
+  and decision), duration, the published tracker path with its issue count and ready frontier, and
+  the number of spec and ticket revisions. It never overwrites an existing recap.
+- Fill only `{{outcome}}`: one or two sentences on what the approved plan delivers, or for a halted
+  run what stopped it and what the human has to decide. Neutral wording.
+- `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and
+  turns the sidebar pill into `✓ Planning · <slug>` (green) or `<decision> · Planning · <slug>` (red).
+  `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap
+  verbatim as its own message. Like `briefing.md`, `recap.md` is skipped by the artifact audit.
+
 ## Artifact locations and failure policy
 
 Each run records `workflow: planning`, `layout_version: 1`, and an initially empty `deliverables` object.

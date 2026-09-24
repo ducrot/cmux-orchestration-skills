@@ -456,7 +456,7 @@ before `init` — resolves by the same table. First match wins:
 ## Finalize and Artifact
 
 The order of the closing steps is fixed: finalize (below) → assumptions review → decision
-walkthrough → update both artifacts → commit proposal. The sections after this one expand
+walkthrough → update both artifacts → commit proposal → run recap. The sections after this one expand
 the steps past finalize.
 
 When the loop ends cleanly (`max-questions` or `griller-done`):
@@ -580,10 +580,33 @@ walked away": at the next contact, not on a clock.
 
 Always propose a commit for the artifact pair as a `commit.proposed` event: the exact file
 list (the two artifact files; anything else
-is a ride-along and excluded) plus a draft commit message (English, what + why). Name
+is a ride-along and excluded) plus a draft commit message (English, what + why) whose subject line
+goes into the event data as `subject`. Name
 explicitly which decisions are being committed unresolved (`open` or `deferred`), so the
 human sees what is still outstanding. The human reviews, commits, and pushes. Never run
 `git push`.
+
+## Run Recap
+
+The counterpart to the Run Briefing and the last message of a session. After the commit proposal,
+or after a `hitl`, `blocked`, or `stop` gate that ends the session:
+
+```bash
+python3 scripts/run_briefing.py recap-draft --run-dir <run-dir> --lang <de|en>
+# Replace {{outcome}} in <run-dir>/recap.md, then:
+python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
+```
+
+- `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json`,
+  `events.jsonl`, and the artifact JSON: status (done, or halted at stage and decision), duration,
+  questions asked against the budget and the stop reason, assumption count, decisions by status, the
+  artifact paths, and the commit subject. It never overwrites an existing recap.
+- Fill only `{{outcome}}`: one or two sentences on the key findings, or for a halted session what
+  stopped it and what the human has to decide. Neutral wording.
+- `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and
+  turns the sidebar pill into `✓ Grilling · <slug>` (green) or `<decision> · Grilling · <slug>` (red).
+  `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap
+  verbatim as its own message.
 
 ## Worker input readiness
 
@@ -758,6 +781,7 @@ consistently within a run.
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
 | `run.briefing`                                         | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                 |
+| `run.recap`                                            | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                       |
 | `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |

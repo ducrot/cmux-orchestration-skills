@@ -182,7 +182,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
    decides the collected items, then at most one follow-up pass applies accepted eligible items (see
    Follow-up Pass). Full flow:
-   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> final summary + commit message proposal -> wait`.
+   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> commit proposal -> run recap + final summary -> wait`.
    Triage-2 runs only for new follow-up recommendations. Opt out at init with `--human-triage`.
    A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
 
@@ -470,7 +470,8 @@ as a `commit.proposed` event:
 - the exact file list of the issue diff (`git diff --stat`, `git status --short`) — anything the issue did
   not cause is flagged as ride-along and excluded from the proposal;
 - list tracker files published by triage (new issue files, `decisions.md`) separately from the product diff;
-- a draft commit message: English, what + why in the subject, optional body.
+- a draft commit message: English, what + why in the subject, optional body. Record the subject line as
+  `subject` in the event data; the run recap reads it from there.
 
 The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
 active; the tree belongs to the worker until its report is captured and snapshotted.
@@ -511,9 +512,8 @@ orchestrator writes them neutrally and precisely, in whichever language the huma
 - Relay worker findings unparaphrased, as the Review Self-Fix Policy already requires. Rewording a
   finding is a form of evaluation, and a softened finding is how a real one gets dropped.
 
-Every autonomous run ends with a compact, neutral final summary, followed by the commit message proposal:
+Every autonomous run ends with the Run Recap (below), followed by the details it does not carry:
 
-- One line per stage (gate, changed files, test result).
 - A triage table (ID, short title, verdict, consequence: `follow-up` / `ISSUE-0xx` / `ledger only`,
   reason verbatim). Identify the triage pass alongside the ID so repeated R numbers are unambiguous;
   open `for-the-human` verdicts have ledger-only consequences and are listed as open below.
@@ -522,7 +522,29 @@ Every autonomous run ends with a compact, neutral final summary, followed by the
 - `Created by triage: ISSUE-0xx, ...` (write `none` when no issues were created).
 - The commit message proposal (`commit.proposed`), with the separate file lists required above.
 
-After the summary and proposal, the orchestrator waits for the human.
+After the recap, details, and proposal, the orchestrator waits for the human.
+
+## Run Recap
+
+The counterpart to the Run Briefing. After `run_state.py complete` and the `commit.proposed` event, or
+after a `hitl`, `blocked`, or `stop` gate that ends the run:
+
+```bash
+python3 scripts/run_briefing.py recap-draft --run-dir <run-dir> --lang <de|en>
+# Replace {{outcome}} in <run-dir>/recap.md, then:
+python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
+```
+
+- `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json` and
+  `events.jsonl`: status (done, or halted at stage and decision), duration, tracker status of the issue,
+  every gate in order, triage consequences, open `for-the-human` items, and the commit subject. It
+  never overwrites an existing recap.
+- Fill only `{{outcome}}`: one or two sentences on what the run actually delivered, or for a halted
+  run what stopped it and what the human has to decide. Neutral wording per Reporting to the Human.
+- `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and turns
+  the sidebar pill into `✓ <issue-id> · <title>` (green) or `<decision> · <issue-id> · <title>` (red).
+  `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap
+  verbatim as its own message, then the details listed above.
 
 ## Recommendations Triage
 
@@ -954,6 +976,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 |----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
 | `run.briefing`                                           | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                               |
+| `run.recap`                                              | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                                     |
 | `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |

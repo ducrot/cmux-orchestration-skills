@@ -413,8 +413,8 @@ def audit_artifacts(state: dict[str, Any], run_dir: Path) -> dict[str, list[str]
             _, relative = _relative_path(run_dir, path.relative_to(run_dir))
         except ArtifactIntegrityError:
             relative = str(path.absolute())
-        # briefing.md is the orchestrator's own human-facing text, never a worker handoff.
-        if relative in {"state.json", "events.jsonl", "briefing.md"} or relative.startswith("publication-stage/"):
+        # briefing.md and recap.md are the orchestrator's own human-facing text, never worker handoffs.
+        if relative in {"state.json", "events.jsonl", "briefing.md", "recap.md"} or relative.startswith("publication-stage/"):
             continue
         seen.add(relative)
     counters = state.get("artifact_attempt_counters", {})

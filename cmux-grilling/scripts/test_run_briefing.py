@@ -54,7 +54,7 @@ GRILLING_STATE = {
 }
 
 
-class RunBriefing(unittest.TestCase):
+class RunDirTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -79,6 +79,8 @@ class RunBriefing(unittest.TestCase):
             [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=env, cwd=self.root
         )
 
+
+class RunBriefing(RunDirTestCase):
     def draft(self, run_dir: Path, lang: str = "de") -> dict:
         result = self.call("draft", "--run-dir", str(run_dir), "--lang", lang)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -175,10 +177,146 @@ class RunBriefing(unittest.TestCase):
         self.fill(run_dir)
         result = self.call("show", "--run-dir", str(run_dir), "--cmux-cmd", self.cmux, exit_code=3)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("status pill not set", result.stderr)
+        self.assertIn("status pill not updated", result.stderr)
         self.assertIn("filled subject", result.stdout)
         event = json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
         self.assertIsNone(event["data"]["pill"])
+
+
+def event(event_type: str, time: str = "2026-09-23T21:42:00+00:00", **fields) -> dict:
+    return {"type": event_type, "time": time, **fields}
+
+
+DONE_ISSUE_STATE = {
+    **ISSUE_STATE,
+    "created_at": "2026-09-23T20:00:00+00:00",
+    "current_stage": "done",
+    "issue": {**ISSUE_STATE["issue"], "status": "done", "acceptance_done": 4},
+}
+DONE_ISSUE_EVENTS = [
+    event("gate", stage="implement", decision="advance", reason="r"),
+    event("gate", stage="test", decision="advance", reason="r"),
+    event("recommendations.triaged", data={"id": "R1", "pass": 1, "verdict": "accepted", "consequence": "follow-up", "title": "a"}),
+    event("recommendations.triaged", data={"id": "R2", "pass": 1, "verdict": "for-the-human", "consequence": "ledger only", "title": "Pick a name"}),
+    event("commit.proposed", data={"subject": "Harden triage inputs", "product_files": []}),
+]
+
+
+class RunRecap(RunDirTestCase):
+    def write_events(self, run_dir: Path, events: list) -> None:
+        (run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
+
+    def recap(self, run_dir: Path, lang: str = "de") -> str:
+        result = self.call("recap-draft", "--run-dir", str(run_dir), "--lang", lang)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["placeholders"], ["outcome"])
+        return (run_dir / "recap.md").read_text(encoding="utf-8")
+
+    def fill_recap(self, run_dir: Path) -> None:
+        path = run_dir / "recap.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("{{outcome}}", "filled outcome"), encoding="utf-8")
+
+    def pill_calls(self) -> list:
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_issue_chain_recap_collects_gates_triage_and_commit(self):
+        run_dir = self.run_dir(DONE_ISSUE_STATE)
+        self.write_events(run_dir, DONE_ISSUE_EVENTS)
+        text = self.recap(run_dir)
+        self.assertIn("**Run-Recap · chain-issue-003-2026-09-23-2007 · 1 h 42 min**", text)
+        self.assertIn("Status: **abgeschlossen**", text)
+        self.assertIn("- Tracker-Status: done · 4/4 Kriterien abgehakt", text)
+        self.assertIn("- Stages: implement ✓ · test ✓", text)
+        self.assertIn("- Triage: 2 Empfehlungen → 1 follow-up, 1 ledger only", text)
+        self.assertIn("- Offen für den Menschen: R2 (Triage 1) – Pick a name", text)
+        self.assertIn("- Commit: Harden triage inputs", text)
+
+    def test_recap_refuses_an_active_run(self):
+        run_dir = self.run_dir({**DONE_ISSUE_STATE, "current_stage": "review"})
+        self.write_events(run_dir, DONE_ISSUE_EVENTS[:2])
+        result = self.call("recap-draft", "--run-dir", str(run_dir))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still active", result.stderr)
+        self.assertFalse((run_dir / "recap.md").exists())
+
+    def test_halted_run_gets_red_pill_with_decision(self):
+        run_dir = self.run_dir({**DONE_ISSUE_STATE, "current_stage": "review"})
+        self.write_events(run_dir, [event("gate", stage="review", decision="hitl", reason="r")])
+        text = self.recap(run_dir, lang="en")
+        self.assertIn("Status: **halted at review: hitl**", text)
+        self.assertIn("review ✗ hitl", text)
+        self.assertNotIn("Triage", text)
+        self.assertNotIn("Commit", text)
+        self.fill_recap(run_dir)
+        result = self.call("recap-show", "--run-dir", str(run_dir), "--cmux-cmd", self.cmux)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = self.pill_calls()[-1]
+        self.assertTrue(argv[2].startswith("hitl · ISSUE-003"))
+        self.assertEqual(argv[argv.index("--color") + 1], "#ff3b30")
+        logged = json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(logged["type"], "run.recap")
+        self.assertEqual(logged["data"]["outcome"]["decision"], "hitl")
+
+    def test_done_run_gets_green_check_pill_or_clears_it(self):
+        run_dir = self.run_dir(DONE_ISSUE_STATE)
+        self.write_events(run_dir, DONE_ISSUE_EVENTS)
+        self.recap(run_dir)
+        show = self.call("recap-show", "--run-dir", str(run_dir), "--cmux-cmd", self.cmux)
+        self.assertNotEqual(show.returncode, 0)
+        self.fill_recap(run_dir)
+        show = self.call("recap-show", "--run-dir", str(run_dir), "--cmux-cmd", self.cmux)
+        self.assertEqual(show.returncode, 0, show.stderr)
+        self.assertIn("filled outcome", show.stdout)
+        argv = self.pill_calls()[-1]
+        self.assertTrue(argv[2].startswith("✓ ISSUE-003"))
+        self.assertEqual(argv[argv.index("--color") + 1], "#34c759")
+        cleared = self.call("recap-show", "--run-dir", str(run_dir), "--clear-status", "--cmux-cmd", self.cmux)
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        self.assertEqual(self.pill_calls()[-1], ["clear-status", "cmux-issue-chain-run", "--workspace", "WS-UUID"])
+
+    def test_planning_recap_names_published_tracker(self):
+        state = {
+            **PLANNING_STATE,
+            "created_at": "2026-09-23T08:00:00+00:00",
+            "current_stage": "complete",
+            "spec_pass": 2,
+            "tickets_pass": 1,
+            "published_tracker": {
+                "path": ".scratch/trackers/run-briefing",
+                "ticket_ids": ["ISSUE-001", "ISSUE-002"],
+                "ready_frontier": ["ISSUE-001"],
+            },
+        }
+        run_dir = self.run_dir(state)
+        self.write_events(run_dir, [event("tracker.published", time="2026-09-23T08:30:00+00:00")])
+        text = self.recap(run_dir)
+        self.assertIn("· 30 min**", text)
+        self.assertIn("- Tracker: `.scratch/trackers/run-briefing` · 2 Issues, sofort startbar: ISSUE-001", text)
+        self.assertIn("- Revisionen: Spec 1 · Tickets 0", text)
+
+    def test_grilling_recap_reads_the_artifact(self):
+        artifact = self.root / "grilling" / "briefing.json"
+        artifact.parent.mkdir()
+        artifact.write_text(json.dumps({
+            "questionsAsked": 7,
+            "maxQuestions": 10,
+            "stopReason": "griller-done",
+            "assumptions": ["a", "b", "c"],
+            "open_decisions": [{"status": "decided"}, {"status": "decided"}, {"status": "deferred"}],
+        }), encoding="utf-8")
+        state = {
+            **GRILLING_STATE,
+            "created_at": "2026-09-23T20:00:00+00:00",
+            "current_stage": "done",
+            "deliverables": {"markdown": str(artifact.with_suffix(".md")), "json": str(artifact)},
+        }
+        run_dir = self.run_dir(state)
+        self.write_events(run_dir, [event("commit.proposed", data={"subject": "Record grilling result"})])
+        text = self.recap(run_dir)
+        self.assertIn("- Fragen: 7 von 10 · Stop: griller-done", text)
+        self.assertIn("- Annahmen: 3 · Entscheidungen: 2 entschieden, 1 zurückgestellt, 0 offen", text)
+        self.assertIn("briefing.json`", text)
+        self.assertIn("- Commit: Record grilling result", text)
 
 
 if __name__ == "__main__":
