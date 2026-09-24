@@ -21,6 +21,13 @@ LANES = {
 
 # Minimum wait per lane and round, uniform across lanes (see SKILL.md, Lane Wait Policy).
 LANE_WAIT_MINUTES = 15
+# Each question beyond the first adds this much to a round's wait.
+LANE_WAIT_EXTRA_MINUTES_PER_QUESTION = 5
+
+
+def round_wait_minutes(questions: int) -> int:
+    """Minimum wait for a round asking `questions` questions."""
+    return LANE_WAIT_MINUTES + LANE_WAIT_EXTRA_MINUTES_PER_QUESTION * max(questions - 1, 0)
 
 # Task framing is load-bearing, not style: a Claude lane reads "Read <path> and report back"
 # as a summarization request — it summarizes the prompt and waits — while Codex reads the same
@@ -91,6 +98,12 @@ def run_identifier(workflow: str, key: str, now: str) -> str:
 def read_run_state(run_dir: Path) -> dict[str, Any]:
     """Load a current run before any continuation or lifecycle write."""
     state = read_json(run_dir / "state.json")
-    if not isinstance(state, dict) or state.get("workflow") != "grilling" or state.get("layout_version") != 1:
+    # A state without max_rounds predates multi-question rounds and is not resumed.
+    if (
+        not isinstance(state, dict)
+        or state.get("workflow") != "grilling"
+        or state.get("layout_version") != 1
+        or "max_rounds" not in state
+    ):
         raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
     return state

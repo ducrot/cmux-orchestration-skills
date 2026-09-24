@@ -19,7 +19,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from orchestrator_lib import LANES, LANE_WAIT_MINUTES, append_jsonl, read_json, read_run_state, utc_now
+from orchestrator_lib import LANES, append_jsonl, read_json, read_run_state, round_wait_minutes, utc_now
 
 EXIT_REPORTS = 0    # every lane report exists — parse them next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # a lane surface with a pending report is gone per surface-health
@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         help="cmux workspace id override (tests). Defaults to the run's pinned workspace_id "
         "from state.json; no env fallback — an unresolvable workspace is a usage error.",
+    )
+    parser.add_argument(
+        "--questions",
+        type=int,
+        required=True,
+        help="Questions in the round; scales the default deadline (15 min + 5 per extra question)",
     )
     parser.add_argument(
         "--deadline-minutes",
@@ -165,10 +171,12 @@ def join(lanes: list[str]) -> str:
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     run_dir = Path(args.run_dir)
     read_run_state(run_dir)
+    if args.questions < 1:
+        raise SystemExit("--questions must be >= 1")
     lanes = parse_lanes(args)
     surfaces = parse_lane_surfaces(args.lane_surface, lanes)
     reports = {lane: report_path(run_dir, args.round_number, lane) for lane in lanes}
-    deadline_minutes = args.deadline_minutes if args.deadline_minutes is not None else LANE_WAIT_MINUTES
+    deadline_minutes = args.deadline_minutes if args.deadline_minutes is not None else round_wait_minutes(args.questions)
     # File-only mode (no lane surfaces) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if surfaces else []
     start = time.monotonic()

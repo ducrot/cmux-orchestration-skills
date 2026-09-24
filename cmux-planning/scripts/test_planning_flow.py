@@ -2699,10 +2699,11 @@ Option?
                     "run_id": "grill-1",
                     "task": "Planung",
                     "codebasePath": str(self.repo),
-                    "maxQuestions": 2,
+                    "maxRounds": 2,
+                    "roundsRun": 1,
                     "questionsAsked": 1,
                     "stopReason": "griller-done",
-                    "qa": [{"answer": "evidence"}],
+                    "qa": [{"round": 1, "id": "Q1", "answer": "evidence"}],
                     "assumptions": ["Eins", "Zwei", "Drei"],
                     "open_decisions": [
                         {

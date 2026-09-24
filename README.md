@@ -63,9 +63,9 @@ Issue-chain needs a compatible local Markdown tracker with issue metadata, depen
 
 ### cmux-grilling: research decisions
 
-Give it a task or plan and any constraints already settled. The orchestrator asks one decision-level question per round. Four persistent workers research it in parallel: repository analysis, a second repository opinion, official documentation, and web research. The orchestrator checks their reports and synthesizes an answer with confidence and sources.
+Give it a task or plan and any constraints already settled. The orchestrator asks the decision-level questions whose prerequisites are settled in rounds (four by default), several per round when they are independent. Four persistent workers research each round's questions in parallel: repository analysis, a second repository opinion, official documentation, and web research. The orchestrator checks their reports and synthesizes an answer with confidence and sources.
 
-The research ends when the question budget is spent or no relevant open question remains. It produces a Markdown + JSON pair containing assumptions and open decisions. You then review the assumptions and walk through the open decisions; the artifacts are updated with those outcomes. Research is autonomous, while the closing review involves you.
+The research ends when the round budget is spent or no relevant open question remains. It produces a Markdown + JSON pair containing assumptions and open decisions. You then review the assumptions and walk through the open decisions; the artifacts are updated with those outcomes. Research is autonomous, while the closing review involves you.
 
 [Workflow and artifact details](cmux-grilling/SKILL.md). A separate interactive grilling skill, where you answer every research question, is not bundled here.
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Run-local research draft prompt regression tests."""
 
+import json
 from pathlib import Path
 import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -19,12 +22,12 @@ class RenderFunction(unittest.TestCase):
         self.run_dir = Path(tmp.name) / "run"
         self.run_dir.mkdir()
         (self.run_dir / "task.md").write_text("Research task\n", encoding="utf-8")
-        self.state = {"run_id": "test-run", "max_questions": 5, "task_file": "task.md"}
+        self.state = {"run_id": "test-run", "max_rounds": 5, "task_file": "task.md"}
 
-    def render(self, lane="codebase", round_number=1, **kwargs):
+    def render(self, lane="codebase", round_number=1, questions=("What exists?",), **kwargs):
         report = self.run_dir / "reports" / f"round-{round_number}-{lane}.md"
         return render_prompt.render_round(
-            lane, self.state, self.run_dir, round_number, "What exists?", report, **kwargs
+            lane, self.state, self.run_dir, round_number, list(questions), report, **kwargs
         )
 
     def test_round_names_distinct_run_local_draft_and_validates_exact_path(self):
@@ -37,7 +40,7 @@ class RenderFunction(unittest.TestCase):
                     self.assertIn(f"- Draft path: `{draft}`", prompt)
                     self.assertIn(f"- Report handoff path: `{report}`", prompt)
                     command = prompt.split("```bash\n", 1)[1].splitlines()[0]
-                    self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft)])
+                    self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft), "--questions", "1"])
                     self.assertNotEqual(draft, report)
 
     def test_session_limits_writes_to_draft_and_handoff(self):
@@ -63,7 +66,33 @@ class RenderFunction(unittest.TestCase):
         prompt = self.render(draft_path=draft)
         self.assertIn(f"- Draft path: `{draft}`", prompt)
         command = prompt.split("```bash\n", 1)[1].splitlines()[0]
-        self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft)])
+        self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft), "--questions", "1"])
+
+    def test_round_lists_every_question_and_validates_with_the_count(self):
+        questions = ["What exists?", "Which version is pinned?", "Is there a precedent?"]
+        prompt = self.render(questions=questions)
+        self.assertIn("## Questions (3)", prompt)
+        for number, question in enumerate(questions, start=1):
+            self.assertIn(f"### Q{number}\n\n{question}", prompt)
+        self.assertIn("Q1..Q3", prompt)
+        command = prompt.split("```bash\n", 1)[1].splitlines()[0]
+        self.assertEqual(shlex.split(command)[-2:], ["--questions", "3"])
+
+    def test_round_does_not_recommend_answers(self):
+        prompt = self.render(questions=["A?", "B?"])
+        self.assertNotIn("recommend", prompt.lower())
+
+    def test_round_requires_a_question(self):
+        with self.assertRaisesRegex(ValueError, "at least one question"):
+            self.render(questions=[])
+
+    def test_session_contract_describes_question_blocks_and_max_rounds(self):
+        prompt = render_prompt.render_session("codebase", self.state, self.run_dir)
+        self.assertIn("Max rounds: 5", prompt)
+        self.assertNotIn("Max questions", prompt)
+        self.assertIn("## Q1\n### Result", prompt)
+        self.assertIn("--questions <number-of-questions>", prompt)
+        self.assertIn("Q2's answer must not shape Q1's", prompt)
 
     def test_rejects_draft_equal_to_report(self):
         report = self.run_dir / "reports" / "round-1-codebase.md"
@@ -103,7 +132,46 @@ class RenderFunction(unittest.TestCase):
         draft = self.run_dir / "drafts" / "nested dir" / "custom draft.md"
         prompt = self.render(draft_path=draft)
         command = prompt.split("```bash\n", 1)[1].splitlines()[0]
-        self.assertEqual(shlex.split(command)[-1], str(draft))
+        self.assertEqual(shlex.split(command)[-3], str(draft))
+
+
+class RenderCli(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.run_dir = Path(tmp.name) / "run"
+        self.run_dir.mkdir()
+        (self.run_dir / "task.md").write_text("Research task\n", encoding="utf-8")
+        (self.run_dir / "state.json").write_text(
+            json.dumps({"workflow": "grilling", "layout_version": 1, "run_id": "r", "max_rounds": 2, "task_file": "task.md"}),
+            encoding="utf-8",
+        )
+
+    def render(self, *args):
+        return subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "render_prompt.py"), "round", "--run-dir", str(self.run_dir),
+             "--lane", "docs", *args],
+            capture_output=True, text=True,
+        )
+
+    def test_repeated_question_flags_become_numbered_questions(self):
+        question_file = self.run_dir / "q3.md"
+        question_file.write_text("Third from file\n", encoding="utf-8")
+        proc = self.render("--round", "1", "--question", "First", "--question", "Second",
+                           "--question-file", str(question_file))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        prompt = Path(proc.stdout.strip()).read_text(encoding="utf-8")
+        self.assertIn("## Questions (3)", prompt)
+        self.assertIn("### Q3\n\nThird from file", prompt)
+
+    def test_round_beyond_budget_is_rejected(self):
+        proc = self.render("--round", "3", "--question", "Late?")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("exceeds max_rounds 2", proc.stderr)
+
+    def test_missing_or_blank_question_is_rejected(self):
+        self.assertIn("At least one", self.render("--round", "1").stderr)
+        self.assertIn("Question text is empty", self.render("--round", "1", "--question", "  ").stderr)
 
 
 if __name__ == "__main__":

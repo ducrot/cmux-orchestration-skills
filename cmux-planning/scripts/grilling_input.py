@@ -33,7 +33,8 @@ TOP_LEVEL_FIELDS = {
     "run_id",
     "task",
     "codebasePath",
-    "maxQuestions",
+    "maxRounds",
+    "roundsRun",
     "questionsAsked",
     "stopReason",
     "qa",
@@ -153,22 +154,41 @@ def validate_pair(
         raise GrillingInputError(f"grilling JSON file is missing: {json_path}")
     json_bytes = json_path.read_bytes()
     data = parse_json_bytes(json_bytes, json_path)
+    if "maxQuestions" in data and "maxRounds" not in data:
+        raise GrillingInputError(
+            "grilling JSON predates multi-question rounds (maxQuestions); it is not imported, rerun the grilling"
+        )
     missing = sorted(TOP_LEVEL_FIELDS - set(data))
     if missing:
         raise GrillingInputError("grilling JSON is missing fields: " + ", ".join(missing))
     for field in ("run_id", "task", "codebasePath", "stopReason", "markdownPath", "jsonPath"):
         if not isinstance(data.get(field), str) or not data[field].strip():
             raise GrillingInputError(f"grilling JSON field {field} must be a non-empty string")
-    for field in ("maxQuestions", "questionsAsked"):
+    for field in ("maxRounds", "roundsRun", "questionsAsked"):
         if isinstance(data.get(field), bool) or not isinstance(data.get(field), int) or data[field] < 0:
             raise GrillingInputError(f"grilling JSON field {field} must be a non-negative integer")
-    if data["questionsAsked"] > data["maxQuestions"]:
-        raise GrillingInputError("questionsAsked cannot exceed maxQuestions")
+    if data["roundsRun"] > data["maxRounds"]:
+        raise GrillingInputError("roundsRun cannot exceed maxRounds")
     _strings(data.get("assumptions"), "assumptions")
     if not isinstance(data.get("qa"), list):
         raise GrillingInputError("qa must be a list")
     if len(data["qa"]) != data["questionsAsked"]:
         raise GrillingInputError("qa must contain exactly one synthesis entry per question asked")
+    seen_questions: set[tuple[int, str]] = set()
+    for entry in data["qa"]:
+        round_number = entry.get("round") if isinstance(entry, dict) else None
+        question_id = entry.get("id") if isinstance(entry, dict) else None
+        if (
+            isinstance(round_number, bool)
+            or not isinstance(round_number, int)
+            or not 1 <= round_number <= data["roundsRun"]
+            or not isinstance(question_id, str)
+            or not question_id.strip()
+        ):
+            raise GrillingInputError("each qa entry needs a round within roundsRun and a question id")
+        if (round_number, question_id) in seen_questions:
+            raise GrillingInputError(f"ambiguous duplicate qa entry: round {round_number} {question_id}")
+        seen_questions.add((round_number, question_id))
     decisions = data.get("open_decisions")
     if not isinstance(decisions, list):
         raise GrillingInputError("open_decisions must be a list")

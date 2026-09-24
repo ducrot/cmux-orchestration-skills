@@ -1,6 +1,6 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - one decision-level question per round, four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
@@ -183,9 +183,15 @@ matters and attacks the open decisions behind them instead.
 
 Roles:
 
-1. **Griller** — orchestrator step. One question per round, on decision level: a question
-   whose answer changes what would be built. Never ask what the task's fixed constraints
-   already decide. Respect the remaining question budget (`max_questions`, default 10).
+1. **Griller** — orchestrator step. Works the plan as a design tree in **rounds**. Each round
+   asks the whole **frontier**: every decision-level question whose prerequisites the earlier
+   rounds' syntheses already settled, numbered `Q1..Qn`. A question is decision-level when its
+   answer changes what would be built. There is no cap on questions per round; the budget
+   counts rounds (`max_rounds`, default 4). A question whose answer depends on another question
+   still open in the same round belongs to a later round. Never ask what the task's fixed
+   constraints already decide. Facts are the lanes' job; nothing is put to the human during the
+   run. The loop ends when the frontier is empty (`griller-done`) or the round budget is spent
+   (`max-rounds`).
 2. **Research lanes** — four persistent visible panes, launched once and kept open for the
    whole session:
    - `codebase` — repo-only research, no web (Claude Opus/high by default).
@@ -247,31 +253,36 @@ who changed the index before accusing a lane; retract a mistaken accusation expl
 
 For each round `N` (1-based), in order:
 
-1. Formulate the question and record it: `run_state.py event --type grill.question`
-   with `{"round": N, "question": "..."}`.
-2. Render the four round prompts with `render_prompt.py round` (one per lane), capture the
+1. Compute the frontier and record one `grill.question` event per question with
+   `{"round": N, "id": "Q1", "question": "..."}` (`"depends_on": ["R1Q2"]`, round 1 Q2, when the
+   question builds on an earlier answer). The questions of a round must be independent of each other; a
+   question deferred from an earlier round (see Question failures) is asked again as a new
+   question with its own id.
+2. Render the four round prompts with `render_prompt.py round` (one per lane, every question
+   passed as its own `--question`/`--question-file`), capture the
    delivery baseline under Delivery baselines and staged deltas, and send each
    lane its prompt with `pane_ctl.py deliver --lane <lane> --kind round --prompt <path>`
    (send + Enter + screen echo). Judge the echoed screen per lane before treating the round as
    started; a lane that answers with a summary of the prompt and goes idle has not started (see
    CMUX Control).
-3. Arm the round watcher (`await_reports.py` under `Monitor`) per the Lane Wait Policy before
-   ending the turn. Reports land at
+3. Arm the round watcher (`await_reports.py --questions <n>` under `Monitor`) per the Lane Wait
+   Policy before ending the turn. Reports land at
    `.scratch/orchestrator/runs/<run-id>/reports/round-<N>-<lane>.md`.
 4. When all four reports exist, record one tree snapshot:
    `run_state.py snapshot --label "reports-captured round-<N>"`. Compare the staged fields
    and HEAD against the round delivery baseline before parsing advance gates.
-5. Parse each report with `parse_research_report.py` and record one gate per lane with
-   `--stage round-<N>-<lane>`. Record `worker.finished` per lane with
-   `{"lane": ..., "round": N, "surface_id": ...}`.
-6. All four gates `advance` → synthesize: write `synthesis/round-<N>.json` (format below),
-   record `grill.synthesis`, then either ask the next question, or stop the loop when the
-   budget is exhausted or no open decision-level question remains (`grill.done` with the
-   reason; `stopReason` is `max-questions` or `griller-done`).
-7. Any other gate → the session stops on that lane (see Gate Rule), with one exception: a
-   `hitl` whose sole reason is plan drift goes through Drift Triage and may continue as
-   small-factual. There is no empty-finding degradation and no automatic lane relaunch: a
-   failed lane is a session-level `hitl`/`blocked`, resumable only through a human decision
+5. Parse each report with `parse_research_report.py --questions <n>` and record one gate per lane
+   with `--stage round-<N>-<lane>`; the gate reason names each non-advancing question. Record
+   `worker.finished` per lane with `{"lane": ..., "round": N, "surface_id": ...}`.
+6. Every question whose four lane gates are `advance` is synthesized: write
+   `synthesis/round-<N>.json` (format below) and record `grill.synthesis` per question. Questions
+   that failed on form follow Question failures. Then either open the next round, or stop the
+   loop when the budget is exhausted or the frontier is empty (`grill.done` with the reason;
+   `stopReason` is `max-rounds` or `griller-done`).
+7. A `blocked` or `hitl` gate that is not a pure form failure stops the session (see Gate Rule),
+   with one exception: a `hitl` whose sole reason is plan drift goes through Drift Triage and may
+   continue as small-factual. There is no empty-finding degradation and no automatic lane relaunch:
+   a failed lane is a session-level `hitl`/`blocked`, resumable only through a human decision
    (`hitl.resolved`, `decision.human`).
 
 The last lane gate of a clean round carries `--next-stage round-<N+1>` (or `finalize` after
@@ -280,69 +291,95 @@ the final round) so `state.json` tracks the position; the coarse `chain` stays
 
 ### Synthesis
 
-Synthesis is judgment, not vote counting:
+Synthesis is judgment, not vote counting, and runs per question:
 
 - Weigh lanes by authority: project-internal questions → the codebase lanes are
   authoritative; library/API questions → docs; external practice questions → web.
 - A `NO ANSWER` lane neither conflicts nor adds evidence.
 - Disagreement between `codebase` and `codebase2` lowers confidence, must be named in the
-  reasoning, and is a legitimate trigger for a follow-up question next round.
+  reasoning, and is a legitimate trigger for a follow-up question in a later round.
 - An answer's sources are the union of the supporting lanes' sources, not everything any
   lane mentioned.
 
-`synthesis/round-<N>.json`:
+`synthesis/round-<N>.json` holds every synthesized question of the round:
 
 ```json
 {
   "round": 1,
-  "question": "...",
-  "answer": "...",
-  "confidence": "high|medium|low",
-  "sources": ["..."],
-  "reasoning": "...",
-  "findings": {
-    "codebase": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
-    "codebase2": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
-    "docs": {"result": "NO ANSWER", "answer": "...", "sources": []},
-    "web": {"result": "NO ANSWER", "answer": "...", "sources": []}
-  }
+  "questions": [
+    {
+      "id": "Q1",
+      "question": "...",
+      "answer": "...",
+      "confidence": "high|medium|low",
+      "sources": ["..."],
+      "reasoning": "...",
+      "findings": {
+        "codebase": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
+        "codebase2": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
+        "docs": {"result": "NO ANSWER", "answer": "...", "sources": []},
+        "web": {"result": "NO ANSWER", "answer": "...", "sources": []}
+      }
+    }
+  ]
 }
 ```
 
 ## Gate Rule
 
-`parse_research_report.py` decides the gate per lane report and emits one of five values.
+`parse_research_report.py` gates every `## Q<n>` block of a lane report on its own and emits
+one of five values per question; the report gate is the most severe question gate.
 `run_state.py gate --decision` accepts the same five. Never invent a sixth.
 
 | Gate      | Meaning                                        | Exit code | Orchestrator action                  |
 |-----------|------------------------------------------------|-----------|--------------------------------------|
 | `advance` | Well-formed report (`ANSWERED` or `NO ANSWER`) | 0         | Count the lane as delivered          |
-| `stop`    | Ungrounded or contradictory report             | 3         | Do not synthesize; triage            |
+| `stop`    | Ungrounded or contradictory question           | 3         | Do not synthesize it; Question failures |
 | `blocked` | Lane reported a `BLOCKER`                      | 4         | Stop the session, record the blocker |
-| `hitl`    | Plan drift, or a malformed report              | 5         | Stop; a human decides                |
+| `hitl`    | Plan drift, or a malformed question or report  | 5         | Form: Question failures; drift: Drift Triage; else stop |
 | `pending` | Report not written yet                         | 6         | Keep waiting per the wait policy     |
 
 The gate is the **most severe** triggered condition: `blocked` > `hitl` > `stop` >
 `advance`. Research-specific semantics:
 
-- `NO ANSWER` with an explanation under `## Answer` is a clean `advance`. The gate checks
+- `NO ANSWER` with an explanation under `### Answer` is a clean `advance`. The gate checks
   form; the synthesizer judges research quality.
 - `ANSWERED` without at least one real source is `stop` — ungrounded answers must not reach
   the synthesizer.
-- `## Plan Drift` is for a stale or wrong task premise (the plan contradicts what research
+- `### Plan Drift` is for a stale or wrong task premise (the plan contradicts what research
   found). The parser gates any drift as `hitl`; the orchestrator then triages it in two
   classes (see Drift Triage) — only load-bearing drift reaches the human mid-run.
-- A required section (`## Result`, `## Answer`, `## Sources`, `## Method`, `## Blockers`,
-  `## Plan Drift`) that is absent or empty makes the report malformed and yields `hitl`. An
-  omitted section never reads as `None`.
+- A required section (`### Result`, `### Answer`, `### Sources`, `### Method`, `### Blockers`,
+  `### Plan Drift`) that is absent or empty makes its question malformed and yields `hitl`. An
+  omitted section never reads as `None`. So does a missing, duplicate, or unexpected `## Q<n>`
+  block; a report without any question block is `hitl` for the whole report.
 
-A round synthesizes only when all four lanes gate `advance`. Any `stop`, `blocked`, or
-`hitl` stops the whole session — strict like the issue chain: a failing lane never silently
-degrades to an empty finding. The one exception is small-factual drift, triaged below.
+A question synthesizes only when all four lanes gate `advance` for it. A failing lane never
+silently degrades to an empty finding, and a question is never synthesized from fewer than four
+lanes. A `blocked` question, a load-bearing drift, a dead pane, or an exhausted deadline stops the
+whole session. A form failure (`stop` or malformed `hitl` without blocker or drift) is handled per
+question, below. The one other exception is small-factual drift, triaged next.
+
+### Question failures: re-emit once, then defer
+
+A question whose gate is `stop` or `hitl` purely because of form (ungrounded `ANSWERED`, missing
+method, missing or empty section, unfilled `|` menu, missing question block) does not stop the session:
+
+1. Ask the still-open lane pane once to re-emit the whole report, fixing exactly the named
+   questions ("re-emit the report per the Research Report Contract; fix the format of Q2 and Q3,
+   not the substance"), and record `report.reformat_requested` naming the questions. Re-parse.
+2. A question still failing on any lane is **deferred**: record `grill.question_deferred` with
+   `{round, id, lanes, reason}`, leave it out of the synthesis, and ask it again in a later round as
+   a new question, so all four lanes see it again. The other questions of the round synthesize
+   normally.
+3. A question that cannot be deferred because no round is left is `hitl` for the session; a human
+   decides. Every deferral appears in the final artifact's `## Q&A` protocol.
+
+Never overrule the parser with your own `advance`.
 
 ### Drift Triage
 
-When a lane report's only gate reason is `plan drift present`, the orchestrator — the
+When a question's only gate reason is `plan drift present`, the orchestrator — the
 judgment role that reads all four reports — triages the drift in two classes, mirroring the
 issue chain's replanning rule:
 
@@ -364,22 +401,17 @@ This triage is the one documented case where the orchestrator's recorded gate ma
 from the parser's exit code, and only when drift is the sole reason. A report whose drift
 rides along with findings, blockers, or format failures is not eligible.
 
-### Formatting failures: request re-emission, never override
-
-When a gate is `stop` or `hitl` purely because of report format — prose after `- None`, a
-missing required section, the unfilled `|` menu — and the substance looks clean, do not
-overrule the parser with your own `advance`. Ask the still-open lane pane for exactly one
-contract-conforming re-emission ("re-emit the report per the Research Report Contract; fix
-the format, not the substance"), record a `report.reformat_requested` event, re-parse, and
-gate on the new report. If the re-emitted report still fails, stop as HITL for the human.
-The orchestrator never records `advance` while the latest parsed gate says otherwise.
+The orchestrator never records `advance` for a question or lane while the latest parsed gate says
+otherwise; re-emission and deferral (Question failures) are the only ways past a form failure.
 
 ## Lane Wait Policy
 
 Treat a missing lane report as `pending`, not as a failed gate. `parse_research_report.py`
 enforces this: a missing report prints `gate=pending` and exits 6 rather than raising.
 
-Minimum wait per lane and round: **15 minutes**, uniform across lanes.
+Minimum wait per lane and round: **15 minutes for the first question plus 5 minutes per further
+question** (30 minutes for four), uniform across lanes. Pass the round's question count to the
+watcher as `--questions <n>`; the flag is required, so a forgotten count cannot shorten the wait.
 
 ### Armed watcher, not polling
 
@@ -393,7 +425,7 @@ itself. Arm it through the harness `Monitor` tool:
 
 ```
 Monitor(
-  command: "python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --lane-surface codebase=<surface-id> --lane-surface codebase2=<surface-id> --lane-surface docs=<surface-id> --lane-surface web=<surface-id>",
+  command: "python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 3 --lane-surface codebase=<surface-id> --lane-surface codebase2=<surface-id> --lane-surface docs=<surface-id> --lane-surface web=<surface-id>",
   description: "await round-1 lane reports",
   persistent: true
 )
@@ -402,7 +434,7 @@ Monitor(
 `persistent: true` is the safe choice: `Monitor`'s `timeout_ms` caps at 60 minutes and is
 ignored when persistent, so the script's own deadline ends the watch. `Bash` with
 `run_in_background` caps at 600000 ms = 10 minutes and is therefore too short for the
-15-minute wait — do not substitute it.
+round wait — do not substitute it.
 
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.
@@ -459,7 +491,7 @@ The order of the closing steps is fixed: finalize (below) → assumptions review
 walkthrough → update both artifacts → commit proposal → run recap. The sections after this one expand
 the steps past finalize.
 
-When the loop ends cleanly (`max-questions` or `griller-done`):
+When the loop ends cleanly (`max-rounds` or `griller-done`):
 
 1. Distill the **defined assumptions** from all round syntheses: concrete, decision-ready
    statements a plan can build on — each traceable to Q&A rounds, none invented beyond the
@@ -469,8 +501,9 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
 3. Write the artifact pair to the output directory from `state.json`:
    - `<output-dir>/<slug>-<timestamp>.md` — human-readable protocol in the established
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
-     `## Q&A` (per round: question, Antwort, Confidence, Quellen, Reasoning, plus the four
-     lane findings in a collapsible block), `## Definierte Annahmen`, `## Entscheidungen`
+     `## Q&A` (per round a `### Runde <N>` heading, per question: question, Antwort, Confidence,
+     Quellen, Reasoning, plus the four lane findings in a collapsible block; deferred questions
+     are listed with their reason), `## Definierte Annahmen`, `## Entscheidungen`
      (one top-level block per open decision, rendering the `open_decisions` fields in German —
      Frage, Kontext, Belege, Optionen mit Implikation, Empfehlung — plus its Ausgang once
      decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
@@ -484,10 +517,11 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
      "run_id": "...",
      "task": "...",
      "codebasePath": ".",
-     "maxQuestions": 10,
+     "maxRounds": 4,
+     "roundsRun": 3,
      "questionsAsked": 7,
      "stopReason": "griller-done",
-     "qa": ["... the synthesis objects, in round order ..."],
+     "qa": ["... every synthesized question, flattened in round order, each with its round and id ..."],
      "assumptions": ["..."],
      "open_decisions": ["... see Open Decisions ..."],
      "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
@@ -495,8 +529,13 @@ When the loop ends cleanly (`max-questions` or `griller-done`):
    }
    ```
 
-   The JSON schema is deliberately stable: the same top-level fields and one findings entry
-   per lane in every session, so downstream consumers can build on it.
+   `qa` holds exactly one entry per synthesized question (`len(qa) == questionsAsked`), each
+   the question object from `synthesis/round-<N>.json` plus `round`; `(round, id)` is unique and
+   `round <= roundsRun <= maxRounds`. Deferred questions are not entries. The JSON schema is
+   deliberately stable: the same top-level fields and one findings entry per lane in every
+   session, so downstream consumers can build on it. Artifacts with `maxQuestions` instead of
+   `maxRounds` come from before multi-question rounds; `cmux-planning` does not import them —
+   rerun the grilling.
 4. Validate what was just written: `run_state.py validate-artifact --artifact <json>`. It
    checks every `open_decisions` entry against the schema here, so a thin entry is repaired
    while the rounds are still in context.
@@ -599,7 +638,7 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 
 - `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json`,
   `events.jsonl`, and the artifact JSON: status (done, or halted at stage and decision), duration,
-  questions asked against the budget and the stop reason, assumption count, decisions by status, the
+  questions asked in the rounds run against the round budget and the stop reason, assumption count, decisions by status, the
   artifact paths, the commit subject, and for a completed session the next step: resolving the
   decisions still `open` in the walkthrough, or else planning with the artifact JSON, followed by a
   prompt block with `/cmux-planning <artifact.json>`; additions from the grilling prompt are not
@@ -800,9 +839,10 @@ consistently within a run.
 | `report.integrity`, `report.integrity.retracted`       | Report-claim accusation and its retraction                                                                                         |
 | `plan.drift`, `plan.drift.resolved`                    | Task-premise drift recorded / resolved; data carries `class` (small-factual, load-bearing) and `resolved_by` (orchestrator, human) |
 | `hitl.resolved`, `decision.human`                      | Human decisions and HITL resolutions                                                                                               |
-| `grill.question`                                       | Round question recorded before delivery; data `{round, question}`                                                                  |
-| `grill.synthesis`                                      | Round synthesis written; data `{round, confidence}`                                                                                |
-| `grill.done`                                           | Griller ends the loop before the cap; data `{round, reason}`                                                                       |
+| `grill.question`                                       | Round question recorded before delivery, one per question; data `{round, id, question, depends_on?}`                               |
+| `grill.question_deferred`                              | Question dropped from a round's synthesis after a failed re-emission; data `{round, id, lanes, reason}`                             |
+| `grill.synthesis`                                      | One question synthesized; data `{round, id, confidence}`                                                                           |
+| `grill.done`                                           | Griller ends the loop (empty frontier or round budget spent); data `{round, reason}`                                                |
 | `grill.assumptions`                                    | Defined assumptions distilled; data `{count}`                                                                                      |
 | `grill.assumptions_triaged`                            | Per-assumption human review outcome                                                                                                |
 | `grill.open_decisions`                                 | Open decisions distilled at finalize; data `{count}`                                                                               |
@@ -822,7 +862,7 @@ for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into
 root, so run state never reaches git in any target repo:
 
 ```bash
-python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-questions 10
+python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-rounds 4
 python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
 python3 scripts/run_state.py init --task-file path/to/task.md --config path/to/agents.json
 python3 scripts/run_state.py init --task-file path/to/task.md --probe-profiles --probe-timeout 180
@@ -839,11 +879,12 @@ python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.j
 python3 scripts/run_state.py pending-decisions
 ```
 
-Render prompts. Session prompts once per lane at launch, round prompts per question:
+Render prompts. Session prompts once per lane at launch, round prompts once per round with one
+`--question` (or `--question-file`) per frontier question, numbered `Q1..Qn` in order:
 
 ```bash
 python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/<run-id> --lane codebase
-python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run-id> --lane web --round 1 --question "Which HTTP client does the frontend use?"
+python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run-id> --lane web --round 1 --question "Which HTTP client does the frontend use?" --question "Which API base URL does it use?"
 ```
 
 Await a round's reports. One watcher per round, armed through `Monitor` (see Lane Wait
@@ -851,13 +892,14 @@ Policy); exits 0 = all reports, 7 = pending lane's pane dead, 8 = deadline. Heal
 scoped to the run's pinned `workspace_id` from `state.json`; there is no env fallback:
 
 ```bash
-python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --lane-surface codebase=surface:465 --lane-surface codebase2=surface:466 --lane-surface docs=surface:467 --lane-surface web=surface:468
+python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 2 --lane-surface codebase=surface:465 --lane-surface codebase2=surface:466 --lane-surface docs=surface:467 --lane-surface web=surface:468
 ```
 
-Parse lane reports. Exit code carries the gate; a missing report is `pending` (exit 6):
+Parse lane reports. `--questions <n>` demands blocks `Q1..Qn`. The exit code carries the most severe
+question gate, `--json` the gate of every question; a missing report is `pending` (exit 6):
 
 ```bash
-python3 scripts/parse_research_report.py .scratch/orchestrator/runs/<run-id>/reports/round-1-web.md --json
+python3 scripts/parse_research_report.py .scratch/orchestrator/runs/<run-id>/reports/round-1-web.md --questions 2 --json
 ```
 
 Record events, snapshots, gates; close the run. An unreadable or vanished untracked path fails the snapshot
@@ -866,7 +908,7 @@ warns about an unreadable untracked directory, so its contents stay invisible ra
 Then:
 
 ```bash
-python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 question" --data '{"round":1,"question":"..."}'
+python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 Q1" --data '{"round":1,"id":"Q1","question":"..."}'
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "reports-captured round-1"
 python3 scripts/run_state.py gate --run-dir <run-dir> --stage round-1-web --decision advance --reason "well-formed ANSWERED, sources cited"
 python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <output-dir>/<slug>.md --json <output-dir>/<slug>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
@@ -902,17 +944,17 @@ python3 scripts/test_worker_readiness.py
 python3 scripts/test_run_state.py
 python3 scripts/test_agents_config.py
 python3 scripts/test_launch_wave.py
-python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-questions 2 --output-dir .scratch/grilling
+python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-rounds 2 --output-dir .scratch/grilling
 python3 scripts/run_state.py pending-decisions --output-dir .scratch/grilling
 python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/smoke-grill --lane codebase
 python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/smoke-grill --lane web --round 1 --question "Which HTTP client does the frontend use?"
-python3 scripts/parse_research_report.py references/sample-research-report.md --json
+python3 scripts/parse_research_report.py references/sample-research-report.md --questions 1 --json
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-grill --label "smoke snapshot"
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-grill --stage round-1-web --decision advance --reason "smoke test"
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-grill --markdown .scratch/grilling/smoke.md --json .scratch/grilling/smoke.json --message "smoke complete" --data '{"stop_reason":"smoke"}'
 
 # The watcher without reports must hit its deadline (exit 8), file-only, in ~1 second:
-python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/smoke-grill --round 1 --deadline-minutes 0.01 --poll-seconds 0.2; [ $? -eq 8 ]
+python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/smoke-grill --round 1 --questions 1 --deadline-minutes 0.01 --poll-seconds 0.2; [ $? -eq 8 ]
 ```
 
 `references/sample-research-report.md` is the shipped clean-report fixture. Run the block
@@ -921,44 +963,54 @@ from the orchestrator's cmux pane so `init` can pin the workspace; outside cmux,
 
 ## Research Report Contract
 
-Ask every lane to finish each round with this report shape. `## Result`, `## Answer`,
-`## Sources`, `## Method`, `## Blockers`, and `## Plan Drift` are required: absent or empty,
-they make the report malformed and the gate returns `hitl`. Under `## Result`, emit exactly
-one of `ANSWERED`, `NO ANSWER`, `BLOCKER` — a literal `ANSWERED | NO ANSWER | BLOCKER` line
-is an unfilled template and is rejected.
+Ask every lane to finish each round with one `## Q<n>` block per round question, numbered as in
+the round prompt (`Q1..Qn`, also for a round of a single question). Inside a block the sections are
+`###` headings. `### Result`, `### Answer`, `### Sources`, `### Method`, `### Blockers`, and
+`### Plan Drift` are required: absent or empty, they make the question malformed and its gate
+`hitl`. Under `### Result`, emit exactly one of `ANSWERED`, `NO ANSWER`, `BLOCKER` — a literal
+`ANSWERED | NO ANSWER | BLOCKER` line is an unfilled template and is rejected. A missing, duplicate,
+or unexpected question block is malformed too. Each question is gated independently; the parser
+takes the expected count as the required `--questions <n>`, so a report that leaves out a
+question never passes as clean.
 
 ```markdown
-## Result
+## Q1
+### Result
 ANSWERED
 
-## Answer
+### Answer
 The finding in prose. For NO ANSWER: why this lane cannot answer the question.
 
-## Sources
+### Sources
 - relative/repo/path or URL
 
-## Method
+### Method
 - what was searched, read, or run: outcome
 
-## Blockers
+### Blockers
 - None
 
-## Plan Drift
+### Plan Drift
 - None
 
-## Notes
+### Notes
 - Optional: caveats, confidence hints, context. Never load-bearing evidence.
+
+## Q2
+### Result
+...
 ```
 
-The bare-`None` rule: in `## Sources`, `## Blockers`, and `## Plan Drift`, an empty section
+The bare-`None` rule: in `### Sources`, `### Blockers`, and `### Plan Drift`, an empty section
 is exactly the line `- None` — no prose on or after that line. Explanations belong in
-`## Answer` or `## Notes`, which the gate does not parse for content.
+`### Answer` or `### Notes`, which the gate does not parse for content. Question blocks end at the
+next `##` heading, so a trailing `## Notes` never joins a section.
 
 Research-specific gate requirements:
 
 - `ANSWERED` needs at least one real source; without one the gate is `stop`.
-- `NO ANSWER` needs an explanation under `## Answer`; `## Sources` may be `- None`.
-- `## Method` must be substantive in every report, including `NO ANSWER` — what was searched
+- `NO ANSWER` needs an explanation under `### Answer`; `### Sources` may be `- None`.
+- `### Method` must be substantive in every report, including `NO ANSWER` — what was searched
   and found nothing is evidence too.
 
 Lanes may write exactly two files per round: the draft path and the report handoff path
@@ -969,9 +1021,10 @@ file. `render_prompt.py round --draft-path <path>` overrides the draft location;
 resolve strictly inside the run-local `drafts/` directory (never run state, prompts,
 synthesis, or any lane's report) and differ from the report handoff path.
 
-Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, and `slug` (at most 30
+Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, `max_rounds`, and `slug` (at most 30
 characters; override with `init --slug <value>` using lowercase words separated by hyphens).
 `complete` requires `--markdown` and `--json` paths resolving under the recorded `output_dir` and
 records them in `deliverables`. Artifact JSON and `pending-decisions` discovery remain unchanged.
 Before continuing an existing run, inspect it with `run_state.py status --run-dir <run-dir>`.
-An unsupported legacy layout must be restarted; never infer its identity or continue it.
+An unsupported legacy layout — including a run whose state has `max_questions` instead of
+`max_rounds` — must be restarted; never infer its identity or continue it.

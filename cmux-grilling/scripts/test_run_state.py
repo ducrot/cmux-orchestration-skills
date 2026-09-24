@@ -271,7 +271,7 @@ class RecordDecision(unittest.TestCase):
         )
         self.run_dir = self.root / "run"
         self.run_dir.mkdir()
-        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1}))
+        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1, "max_rounds": 4}))
 
     def tearDown(self):
         self.tmp.cleanup()

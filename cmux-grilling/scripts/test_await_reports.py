@@ -21,13 +21,13 @@ from await_reports import (  # noqa: E402
     live_surfaces,
     report_path,
 )
-from orchestrator_lib import LANE_WAIT_MINUTES, LANES  # noqa: E402
+from orchestrator_lib import LANE_WAIT_MINUTES, LANES, round_wait_minutes  # noqa: E402
 from parse_research_report import EXIT_CODES as GATE_EXIT_CODES  # noqa: E402
 
 
 def write_state(run_dir: str, **fields) -> None:
     (Path(run_dir) / "state.json").write_text(
-        json.dumps({"workflow": "grilling", "layout_version": 1, **fields}), encoding="utf-8"
+        json.dumps({"workflow": "grilling", "layout_version": 1, "max_rounds": 4, **fields}), encoding="utf-8"
     )
 
 
@@ -50,6 +50,9 @@ class ExitCodeVocabulary(unittest.TestCase):
     def test_lane_wait_is_uniform(self):
         self.assertEqual(set(LANES), {"codebase", "codebase2", "docs", "web"})
         self.assertEqual(LANE_WAIT_MINUTES, 15)
+
+    def test_round_wait_grows_five_minutes_per_extra_question(self):
+        self.assertEqual([round_wait_minutes(n) for n in (1, 2, 4)], [15, 20, 30])
 
 
 # Real output captured 2026-07-25 from `cmux --json --id-format both surface-health`
@@ -147,7 +150,7 @@ class Cli(unittest.TestCase):
             write_state(run_dir)
         argv = [
             sys.executable, self.script,
-            "--run-dir", run_dir, "--round", "1",
+            "--run-dir", run_dir, "--round", "1", "--questions", "1",
             "--poll-seconds", "0.05", "--heartbeat-seconds", "0.05",
             *extra,
         ]
@@ -242,6 +245,27 @@ class Cli(unittest.TestCase):
                         "deadline_minutes"):
                 self.assertIn(key, event["data"])
 
+    def test_default_deadline_scales_with_question_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_all(tmp)
+            self.run_cli(tmp, "--questions", "4")
+            event = json.loads((Path(tmp) / "events.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(event["data"]["deadline_minutes"], 30)
+
+    def test_questions_flag_is_required(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_state(tmp)
+            argv = [sys.executable, self.script, "--run-dir", tmp, "--round", "1"]
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--questions", proc.stderr)
+
+    def test_questions_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self.run_cli(tmp, "--questions", "0")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("--questions must be >= 1", proc.stderr)
+
     def test_unknown_lane_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             proc = self.run_cli(tmp, "--lanes", "codebase,frontend")
@@ -293,7 +317,7 @@ class WorkspaceResolution(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             write_state(tmp, workspace_id="WS-UUID")
             parser = build_parser()
-            args = parser.parse_args(["--run-dir", tmp, "--round", "1"])
+            args = parser.parse_args(["--run-dir", tmp, "--round", "1", "--questions", "1"])
             cmd = health_command(args, parser)
         # --id-format both is required: launch hands out UUIDs, and a ref-only
         # listing can never contain them.

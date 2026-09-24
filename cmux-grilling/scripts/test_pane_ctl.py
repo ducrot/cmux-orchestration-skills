@@ -82,7 +82,7 @@ class PaneCtlCase(unittest.TestCase):
         }
         (self.run_dir / "state.json").write_text(
             json.dumps({
-                "workflow": "grilling", "layout_version": 1,
+                "workflow": "grilling", "layout_version": 1, "max_rounds": 4,
                 "run_id": "test-run", "workspace_id": "WS-UUID",
                 "slug": "checkout-refactor", "launch_wave": pointer,
             }),
@@ -123,7 +123,7 @@ class Workspace(PaneCtlCase):
 
     def test_null_workspace_fails_loudly(self):
         (self.run_dir / "state.json").write_text(
-            json.dumps({"workflow": "grilling", "layout_version": 1, "workspace_id": None}), encoding="utf-8"
+            json.dumps({"workflow": "grilling", "layout_version": 1, "max_rounds": 4, "workspace_id": None}), encoding="utf-8"
         )
         proc = self.run_ctl("workspace", "--run-dir", str(self.run_dir))
         self.assertNotEqual(proc.returncode, 0)

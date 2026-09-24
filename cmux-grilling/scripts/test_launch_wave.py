@@ -255,11 +255,11 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 draft = override or run_dir / "drafts" / "round-1-codebase2.md"
                 prompt = prompt_path.read_text(encoding="utf-8")
                 command = shlex.split(prompt.split("```bash\n", 1)[1].splitlines()[0])
-                self.assertEqual(command[-1], str(draft))
+                self.assertEqual(command[-3:], [str(draft), "--questions", "1"])
                 draft.write_text(
-                    "## Result\nNO ANSWER\n\n## Answer\nThe fixture has no product code.\n"
-                    "\n## Sources\n- None\n\n## Method\n- Read the fixture task file.\n"
-                    "\n## Blockers\n- None\n\n## Plan Drift\n- None\n",
+                    "## Q1\n### Result\nNO ANSWER\n\n### Answer\nThe fixture has no product code.\n"
+                    "\n### Sources\n- None\n\n### Method\n- Read the fixture task file.\n"
+                    "\n### Blockers\n- None\n\n### Plan Drift\n- None\n",
                     encoding="utf-8",
                 )
                 validated = subprocess.run(
@@ -287,6 +287,27 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn("--slug", invalid.stderr)
             self.assertFalse(self.run_dir("invalid").exists())
+
+    def test_run_without_max_rounds_is_not_resumed(self):
+        """Runs from before multi-question rounds carry max_questions and must be restarted."""
+        self.assertEqual(self.init_for("old-budget").returncode, 0)
+        run_dir = self.run_dir("old-budget")
+        state = self.read_state("old-budget")
+        self.assertEqual(state["max_rounds"], 4)
+        self.assertNotIn("max_questions", state)
+        del state["max_rounds"]
+        state["max_questions"] = 10
+        (run_dir / "state.json").write_text(json.dumps(state))
+        result = self.run_state("event", "--run-dir", str(run_dir), "--type", "test", "--message", "test")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported legacy layout", result.stderr)
+
+    def test_max_rounds_is_configurable_and_validated(self):
+        self.assertEqual(self.init_for("rounds", "--max-rounds", "6").returncode, 0)
+        self.assertEqual(self.read_state("rounds")["max_rounds"], 6)
+        invalid = self.init_for("rounds-zero", "--max-rounds", "0")
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("--max-rounds must be >= 1", invalid.stderr)
 
     def test_legacy_run_is_inspectable_but_cannot_continue_or_launch(self):
         self.assertEqual(self.init_for("legacy").returncode, 0)

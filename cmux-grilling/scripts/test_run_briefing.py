@@ -51,7 +51,7 @@ GRILLING_STATE = {
     "workflow": "grilling",
     "workspace_id": "WS-UUID",
     "slug": "briefing",
-    "max_questions": 10,
+    "max_rounds": 4,
     "lanes": {"codebase": {}, "codebase2": {}, "docs": {}, "web": {}},
     "output_dir": ".scratch/grilling",
 }
@@ -124,7 +124,7 @@ class RunBriefing(RunDirTestCase):
         grilling = self.run_dir(GRILLING_STATE)
         self.assertEqual(self.draft(grilling)["placeholders"], ["constraints", "focus", "subject"])
         text = (grilling / "briefing.md").read_text(encoding="utf-8")
-        self.assertIn("höchstens 10 Fragen · Lanes codebase, codebase2, docs, web", text)
+        self.assertIn("höchstens 4 Runden · Lanes codebase, codebase2, docs, web", text)
         self.assertIn("`.scratch/grilling`", text)
 
     def test_grilling_input_source_is_named(self):
@@ -302,7 +302,8 @@ class RunRecap(RunDirTestCase):
         artifact.parent.mkdir()
         artifact.write_text(json.dumps({
             "questionsAsked": 7,
-            "maxQuestions": 10,
+            "roundsRun": 2,
+            "maxRounds": 4,
             "stopReason": "griller-done",
             "assumptions": ["a", "b", "c"],
             "open_decisions": [{"status": "decided"}, {"status": "decided"}, {"status": "deferred"}],
@@ -316,7 +317,7 @@ class RunRecap(RunDirTestCase):
         run_dir = self.run_dir(state)
         self.write_events(run_dir, [event("commit.proposed", data={"subject": "Record grilling result"})])
         text = self.recap(run_dir)
-        self.assertIn("- Fragen: 7 von 10 · Stop: griller-done", text)
+        self.assertIn("- Fragen: 7 in 2 von 4 Runden · Stop: griller-done", text)
         self.assertIn("- Annahmen: 3 · Entscheidungen: 2 entschieden, 1 zurückgestellt, 0 offen", text)
         self.assertIn("briefing.json`", text)
         self.assertIn("- Commit: Record grilling result", text)

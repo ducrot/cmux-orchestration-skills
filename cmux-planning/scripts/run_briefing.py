@@ -76,7 +76,7 @@ LABELS = {
         "subject": "Subject",
         "focus": "Focus areas",
         "budget": "Budget",
-        "budget_value": "at most {count} questions · lanes {lanes}",
+        "budget_value": "at most {count} rounds · lanes {lanes}",
         "grilling_outcome": "assumptions + open decisions as Markdown/JSON under `{path}`",
         "pill_planning": "Planning",
         "pill_grilling": "Grilling",
@@ -98,7 +98,7 @@ LABELS = {
         "revisions": "Revisions",
         "revisions_value": "spec {spec} · tickets {tickets}",
         "questions": "Questions",
-        "questions_value": "{asked} of {budget} · stop: {reason}",
+        "questions_value": "{asked} in {rounds} of {budget} rounds · stop: {reason}",
         "assumptions": "Assumptions",
         "decisions": "decisions",
         "decided": "decided",
@@ -148,7 +148,7 @@ LABELS = {
         "subject": "Gegenstand",
         "focus": "Prüfschwerpunkte",
         "budget": "Budget",
-        "budget_value": "höchstens {count} Fragen · Lanes {lanes}",
+        "budget_value": "höchstens {count} Runden · Lanes {lanes}",
         "grilling_outcome": "Annahmen + offene Entscheidungen als Markdown/JSON unter `{path}`",
         "pill_planning": "Planung",
         "pill_grilling": "Grilling",
@@ -170,7 +170,7 @@ LABELS = {
         "revisions": "Revisionen",
         "revisions_value": "Spec {spec} · Tickets {tickets}",
         "questions": "Fragen",
-        "questions_value": "{asked} von {budget} · Stop: {reason}",
+        "questions_value": "{asked} in {rounds} von {budget} Runden · Stop: {reason}",
         "assumptions": "Annahmen",
         "decisions": "Entscheidungen",
         "decided": "entschieden",
@@ -298,7 +298,7 @@ def planning_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
 
 
 def grilling_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
-    budget = labels["budget_value"].format(count=state["max_questions"], lanes=", ".join(state["lanes"]))
+    budget = labels["budget_value"].format(count=state["max_rounds"], lanes=", ".join(state["lanes"]))
     return [
         f"- {labels['subject']}: {{{{subject}}}}",
         f"- {labels['focus']}: {{{{focus}}}}",
@@ -587,7 +587,8 @@ def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
             f"- {labels['questions']}: "
             + labels["questions_value"].format(
                 asked=artifact.get("questionsAsked"),
-                budget=artifact.get("maxQuestions", state.get("max_questions")),
+                rounds=artifact.get("roundsRun"),
+                budget=artifact.get("maxRounds", state.get("max_rounds")),
                 reason=artifact.get("stopReason"),
             )
         )

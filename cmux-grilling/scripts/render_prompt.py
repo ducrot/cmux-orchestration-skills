@@ -2,7 +2,7 @@
 """Render deterministic prompts for the persistent research lanes.
 
 `session` renders a lane's standing onboarding prompt (sent once at lane launch).
-`round` renders the small per-round question prompt for one lane.
+`round` renders the per-round question prompt (all questions of the round) for one lane.
 """
 
 from __future__ import annotations
@@ -75,9 +75,18 @@ def build_parser() -> argparse.ArgumentParser:
     round_cmd.add_argument("--run-dir", required=True)
     round_cmd.add_argument("--lane", choices=sorted(LANES), required=True)
     round_cmd.add_argument("--round", dest="round_number", type=positive_int, required=True)
-    question_source = round_cmd.add_mutually_exclusive_group(required=True)
-    question_source.add_argument("--question", help="The round's question text")
-    question_source.add_argument("--question-file", help="File containing the round's question text")
+    round_cmd.add_argument(
+        "--question",
+        action="append",
+        default=[],
+        help="One question of the round; repeat for each question (numbered Q1.. in order)",
+    )
+    round_cmd.add_argument(
+        "--question-file",
+        action="append",
+        default=[],
+        help="File containing one question; repeatable, ordered after any --question",
+    )
     round_cmd.add_argument("--out", help="Prompt path. Defaults to run-dir/prompts/round-<N>-<lane>.md")
     round_cmd.add_argument(
         "--report-path",
@@ -109,10 +118,14 @@ def main() -> int:
         out = Path(args.out) if args.out else run_dir / "prompts" / f"session-{args.lane}.md"
         prompt = render_session(args.lane, state, run_dir)
     else:
-        if args.round_number > int(state["max_questions"]):
-            raise SystemExit(f"round {args.round_number} exceeds max_questions {state['max_questions']}")
-        question = read_text(Path(args.question_file)).strip() if args.question_file else args.question.strip()
-        if not question:
+        if args.round_number > int(state["max_rounds"]):
+            raise SystemExit(f"round {args.round_number} exceeds max_rounds {state['max_rounds']}")
+        questions = [text.strip() for text in args.question] + [
+            read_text(Path(path)).strip() for path in args.question_file
+        ]
+        if not questions:
+            raise SystemExit("At least one --question or --question-file is required")
+        if any(not question for question in questions):
             raise SystemExit("Question text is empty")
         stem = f"round-{args.round_number}-{args.lane}"
         out = Path(args.out) if args.out else run_dir / "prompts" / f"{stem}.md"
@@ -120,7 +133,7 @@ def main() -> int:
         draft_path = Path(args.draft_path) if args.draft_path else run_dir / "drafts" / f"{stem}.md"
         try:
             prompt = render_round(
-                args.lane, state, run_dir, args.round_number, question, report_path, draft_path
+                args.lane, state, run_dir, args.round_number, questions, report_path, draft_path
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -141,17 +154,18 @@ confirm in one line, then wait for round prompts.
 
 Created: {utc_now()}
 Run: {state["run_id"]}
-Max questions: {state["max_questions"]}
+Max rounds: {state["max_rounds"]}
 
 {LANE_RULES[lane]}
 
 ## Session Shape
 
-- You are one of four persistent research lanes in an autonomous grilling session. The
-  orchestrator grills the task below with one decision-level question per round and sends
-  each question to you as a small prompt file.
-- Answer every question independently on its own evidence. Do not reuse an earlier round's
-  conclusion without re-verifying it; earlier answers are context, not sources.
+- You are one of four persistent research lanes in an autonomous grilling session. Each round
+  the orchestrator asks the decision-level questions whose prerequisites are settled (the
+  frontier) and sends them to you as one prompt file, numbered Q1..Qn.
+- Answer every question independently on its own evidence, including questions of the same
+  round: Q2's answer must not shape Q1's. Do not reuse an earlier round's conclusion without
+  re-verifying it; earlier answers are context, not sources.
 - You never talk to the user. The orchestrator synthesizes all lane reports; your report is
   raw research input, not a message to a human.
 - After finishing a round, wait idle for the next round prompt. Do not invent follow-up work.
@@ -182,9 +196,11 @@ Max questions: {state["max_questions"]}
 
 
 def render_round(
-    lane: str, state: dict, run_dir: Path, round_number: int, question: str,
+    lane: str, state: dict, run_dir: Path, round_number: int, questions: list[str],
     report_path: Path, draft_path: Path | None = None,
 ) -> str:
+    if not questions:
+        raise ValueError("A round needs at least one question")
     if draft_path is None:
         draft_path = run_dir / "drafts" / f"round-{round_number}-{lane}.md"
     resolved_draft = draft_path.resolve()
@@ -196,17 +212,19 @@ def render_round(
     if (run_dir / "drafts").resolve() not in resolved_draft.parents:
         raise ValueError("Draft path must be inside the run-local drafts directory")
     session_prompt = run_dir / "prompts" / f"session-{lane}.md"
-    return f"""# Round {round_number} Question — lane {lane}
+    count = len(questions)
+    listing = "\n\n".join(f"### Q{number}\n\n{question}" for number, question in enumerate(questions, start=1))
+    return f"""# Round {round_number} Questions — lane {lane}
 
-This file is your round task, not a document to summarize. Answer the question now and write
+This file is your round task, not a document to summarize. Answer the questions now and write
 your report to the handoff path below.
 
 Run: {state["run_id"]}
 Created: {utc_now()}
 
-## Question
+## Questions ({count})
 
-{question}
+{listing}
 
 ## Handoff
 
@@ -216,11 +234,12 @@ Created: {utc_now()}
 - Report handoff path: `{report_path}`
 - Standing session contract: `{session_prompt}`
 
-Answer per your standing session contract, then write your final report to the handoff path.
+Answer per your standing session contract, then write your final report to the handoff path:
+exactly one `## Q<n>` block per question, Q1..Q{count}, each with its own sections.
 Before writing it, self-validate your draft with
 
 ```bash
-python3 {shlex.quote(parser_path())} {shlex.quote(str(draft_path))}
+python3 {shlex.quote(parser_path())} {shlex.quote(str(draft_path))} --questions {count}
 ```
 
 A well-formed report prints `gate=advance` (or `blocked`/`hitl` if you are genuinely
@@ -231,48 +250,55 @@ reporting a blocker or plan drift). Fix the format, never the substance.
 def contract_block() -> str:
     return f"""## Research Report Contract
 
-Every section below except `## Notes` is required. Emit exactly one token under `## Result` — not the `|`
-menu. An omitted or empty required section is treated as a malformed report and stops the session as HITL;
-it never reads as `None`.
+The report holds one `## Q<n>` block per round question, numbered as in the round prompt. Every
+section below except `### Notes` is required in every block. Emit exactly one token under
+`### Result` — not the `|` menu. An omitted or empty required section, or a missing question block,
+is treated as a malformed report; it never reads as `None`. Each question is gated on its own.
 
 ```markdown
-## Result
+## Q1
+### Result
 ANSWERED
 
-## Answer
+### Answer
 Your finding in prose. For NO ANSWER: why this lane cannot answer the question.
 
-## Sources
+### Sources
 - relative/repo/path or URL
 
-## Method
+### Method
 - what you searched, read, or ran: outcome
 
-## Blockers
+### Blockers
 - None
 
-## Plan Drift
+### Plan Drift
 - None
 
-## Notes
+### Notes
 - Optional: caveats, confidence hints, context. Never load-bearing evidence.
+
+## Q2
+### Result
+...
 ```
 
-Allowed `## Result` values: `ANSWERED`, `NO ANSWER`, `BLOCKER`.
+Allowed `### Result` values: `ANSWERED`, `NO ANSWER`, `BLOCKER`.
 
 Formatting rules the gate parser enforces:
 
-- In `## Sources`, `## Blockers`, and `## Plan Drift`, an empty section is exactly the line `- None` —
-  no prose on or after that line. Explanations belong in `## Answer` or `## Notes`.
+- Use `## Q<n>` for question blocks and `###` for the sections inside; no other `##` headings.
+- In `### Sources`, `### Blockers`, and `### Plan Drift`, an empty section is exactly the line `- None` —
+  no prose on or after that line. Explanations belong in `### Answer` or `### Notes`.
 - `ANSWERED` requires at least one real source; an ungrounded answer is gated `stop`.
-- `NO ANSWER` requires an explanation under `## Answer` and allows `## Sources: - None`.
-- `## Method` must list what you actually searched or read, even when the result is `NO ANSWER`.
+- `NO ANSWER` requires an explanation under `### Answer` and allows `### Sources: - None`.
+- `### Method` must list what you actually searched or read, even when the result is `NO ANSWER`.
 
 Before returning, self-validate: write your draft report to the draft path named in each round prompt
 and run
 
 ```bash
-python3 {shlex.quote(parser_path())} <draft-path-named-in-round-prompt>
+python3 {shlex.quote(parser_path())} <draft-path-named-in-round-prompt> --questions <number-of-questions>
 ```
 
 A clean report must print `gate=advance`. If you are genuinely reporting a blocker or plan drift,

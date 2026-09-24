@@ -74,10 +74,11 @@ Welche Variante?
             "run_id": "grill-1",
             "task": "Eine Aufgabe",
             "codebasePath": str(self.repo),
-            "maxQuestions": 3,
+            "maxRounds": 4,
+            "roundsRun": 1,
             "questionsAsked": 1,
             "stopReason": "griller-done",
-            "qa": [{"question": "Q", "answer": "A", "evidence": ["src/example.py:1"]}],
+            "qa": [{"round": 1, "id": "Q1", "question": "Q", "answer": "A", "evidence": ["src/example.py:1"]}],
             "assumptions": ["Annahme eins", "Annahme zwei"],
             "open_decisions": [decision()],
             "markdownPath": str(self.markdown),
@@ -117,6 +118,45 @@ Welche Variante?
             self.markdown.write_text(self.markdown.read_text() + "\n## Aufgabe\nDoppelt\n", encoding="utf-8")
             with self.assertRaisesRegex(GrillingInputError, "duplicate"):
                 validate_pair(self.artifact, self.markdown, self.repo)
+
+    def rewrite(self, **changes):
+        self.data.update(changes)
+        self.artifact.write_text(json.dumps(self.data), encoding="utf-8")
+
+    def test_artifact_from_before_multi_question_rounds_is_refused(self):
+        legacy = {key: value for key, value in self.data.items() if key not in ("maxRounds", "roundsRun")}
+        legacy["maxQuestions"] = 10
+        self.artifact.write_text(json.dumps(legacy), encoding="utf-8")
+        with self.assertRaisesRegex(GrillingInputError, "rerun the grilling"):
+            validate_pair(self.artifact, self.markdown, self.repo)
+
+    def test_rounds_run_cannot_exceed_the_round_budget(self):
+        self.rewrite(roundsRun=5)
+        with self.assertRaisesRegex(GrillingInputError, "roundsRun cannot exceed maxRounds"):
+            validate_pair(self.artifact, self.markdown, self.repo)
+
+    def test_several_questions_per_round_are_valid(self):
+        qa = [{"round": 1, "id": f"Q{n}", "answer": "A"} for n in (1, 2, 3)] + [{"round": 2, "id": "Q1", "answer": "B"}]
+        self.rewrite(roundsRun=2, questionsAsked=4, qa=qa)
+        self.assertEqual(len(validate_pair(self.artifact, self.markdown, self.repo)["data"]["qa"]), 4)
+
+    def test_qa_entries_need_a_round_within_range_and_an_id(self):
+        for label, entry in (
+            ("no round", {"id": "Q1"}),
+            ("round zero", {"round": 0, "id": "Q1"}),
+            ("round beyond roundsRun", {"round": 2, "id": "Q1"}),
+            ("no id", {"round": 1}),
+            ("not an object", "Q1"),
+        ):
+            with self.subTest(label):
+                self.rewrite(qa=[entry])
+                with self.assertRaisesRegex(GrillingInputError, "round within roundsRun"):
+                    validate_pair(self.artifact, self.markdown, self.repo)
+
+    def test_duplicate_round_and_id_is_ambiguous(self):
+        self.rewrite(questionsAsked=2, qa=[{"round": 1, "id": "Q1"}, {"round": 1, "id": "Q1"}])
+        with self.assertRaisesRegex(GrillingInputError, "duplicate qa entry"):
+            validate_pair(self.artifact, self.markdown, self.repo)
 
     def test_a_longer_decision_id_does_not_satisfy_a_missing_one(self):
         self.markdown.write_text(

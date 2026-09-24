@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--slug", help="Artifact slug: lowercase words separated by hyphens, at most 30 characters")
     init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
     init.add_argument("--runs-root", default=f"{TRACKER_ROOT}/orchestrator/runs")
-    init.add_argument("--max-questions", type=int, default=10)
+    init.add_argument("--max-rounds", type=int, default=4, help="Round budget; each round asks the whole frontier")
     init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
     init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
     init.add_argument(
@@ -275,8 +275,8 @@ def validate_decision(entry: object) -> list[str]:
 
 
 def init_run(args: argparse.Namespace) -> int:
-    if args.max_questions < 1:
-        raise SystemExit("--max-questions must be >= 1")
+    if args.max_rounds < 1:
+        raise SystemExit("--max-rounds must be >= 1")
     workspace_id = resolve_workspace_id(args)
     task_text = read_text(Path(args.task_file)) if args.task_file else args.task
     task_text = task_text.strip()
@@ -338,7 +338,7 @@ def init_run(args: argparse.Namespace) -> int:
         "workspace_id": workspace_id,
         "task_file": "task.md",
         "slug": slug,
-        "max_questions": args.max_questions,
+        "max_rounds": args.max_rounds,
         "tracker": str(tracker) if tracker else None,
         "output_dir": str(output_dir),
         "lanes": {name: dict(config) for name, config in LANES.items()},
