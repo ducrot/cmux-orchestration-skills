@@ -34,6 +34,20 @@ DONE_STAGES = {"issue-chain": "done", "planning": "complete", "grilling": "done"
 HALTING_DECISIONS = {"hitl", "blocked", "stop"}
 DECISION_STATUSES = ("decided", "deferred", "open")
 
+# Read-only mirror of cmux-issue-chain's tracker conventions (orchestrator_lib.py); the vendored
+# copies in planning and grilling cannot import it.
+FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+ISSUE_FILE_RE = re.compile(r"\A(?:ISSUE-)?(\d{1,4})(?:-|\Z)")
+ISSUE_ID_RE = re.compile(r"\bISSUE-\d+\b")
+BARE_NUMBER_RE = re.compile(r"(?<![\w-])(\d{1,4})(?![\w-])")
+CHECKBOX_RE = re.compile(r"^- \[(?P<mark>[ xX])\] ", re.MULTILINE)
+OPEN_STATUSES = {"todo", "in_progress"}
+NEXT_LINE_RE = re.compile(r"^- (?:Next step|Nächster Schritt): .*?\b(ISSUE-\d+)\b", re.MULTILINE)
+REASON_LINE_RE = re.compile(r"^  (?:Reason|Begründung): \S", re.MULTILINE)
+PROMPT_BLOCK_RE = re.compile(
+    r"^(?:Prompt for the next run|Prompt für den nächsten Lauf):\n~~~\n(.*?)\n~~~$", re.MULTILINE | re.DOTALL
+)
+
 LABELS = {
     "en": {
         "heading": "Run briefing",
@@ -92,6 +106,20 @@ LABELS = {
         "open": "open",
         "artifacts": "Artifacts",
         "none": "none",
+        "next": "Next step",
+        "also_ready": "also ready",
+        "unlocks_one": "unblocks 1 issue",
+        "unlocks": "unblocks {count} issues",
+        "hitl_next": "HITL, for the human",
+        "tracker_complete": "tracker complete, no open issues",
+        "none_ready": "none ready – {waits}",
+        "waits_for": "{id} waits for {blockers}",
+        "chain_with": "issue chain with {issue}",
+        "resolve_decisions": "resolve {count} open decisions in the walkthrough",
+        "resolve_decision_one": "resolve 1 open decision in the walkthrough",
+        "plan_from": "planning with the grilling result `{path}`",
+        "prompt": "Prompt for the next run",
+        "prompt_unchanged": "the issue does not appear in the initial prompt; it is repeated unchanged",
     },
     "de": {
         "heading": "Run-Briefing",
@@ -150,6 +178,20 @@ LABELS = {
         "open": "offen",
         "artifacts": "Artefakte",
         "none": "keine",
+        "next": "Nächster Schritt",
+        "also_ready": "außerdem startbar",
+        "unlocks_one": "schaltet 1 Issue frei",
+        "unlocks": "schaltet {count} Issues frei",
+        "hitl_next": "HITL, liegt beim Menschen",
+        "tracker_complete": "Tracker vollständig erledigt",
+        "none_ready": "keins startbar – {waits}",
+        "waits_for": "{id} wartet auf {blockers}",
+        "chain_with": "Issue-Chain mit {issue}",
+        "resolve_decisions": "{count} offene Entscheidungen im Walkthrough klären",
+        "resolve_decision_one": "1 offene Entscheidung im Walkthrough klären",
+        "plan_from": "Planning mit dem Grilling-Ergebnis `{path}`",
+        "prompt": "Prompt für den nächsten Lauf",
+        "prompt_unchanged": "das Issue steht nicht im ursprünglichen Prompt; er wird unverändert wiederholt",
     },
 }
 
@@ -298,8 +340,174 @@ def last_data(events: list[dict[str, Any]], event_type: str) -> dict[str, Any] |
     return matches[-1] if matches and isinstance(matches[-1], dict) else None
 
 
+def section_text(markdown: str, heading: str) -> str:
+    match = re.search(rf"^##\s+{re.escape(heading)}\s*$", markdown, re.MULTILINE | re.IGNORECASE)
+    if not match:
+        return ""
+    rest = markdown[match.end():]
+    following = re.search(r"^##\s+", rest, re.MULTILINE)
+    return (rest[: following.start()] if following else rest).strip()
+
+
+def blocked_by(body: str) -> list[str]:
+    section = section_text(body, "Blocked by")
+    if not section or re.search(r"\bNone\b", section, re.IGNORECASE):
+        return []
+    ids = set(ISSUE_ID_RE.findall(section))
+    if ids:
+        return sorted(ids)
+    return sorted({f"ISSUE-{int(number):03d}" for number in BARE_NUMBER_RE.findall(section)})
+
+
+def load_tracker(tracker: Path) -> dict[str, dict[str, Any]] | None:
+    """Live issue states, or None when the tracker is missing or not adopted."""
+    issue_dir = tracker / "issues"
+    if not issue_dir.is_dir():
+        return None
+    issues: dict[str, dict[str, Any]] = {}
+    for path in sorted(issue_dir.glob("*.md")):
+        number = ISSUE_FILE_RE.match(path.name.removesuffix(".md"))
+        if not number:
+            continue
+        text = path.read_text(encoding="utf-8")
+        front = FRONTMATTER_RE.match(text)
+        if not front:
+            return None
+        fields: dict[str, str] = {}
+        for line in front.group(1).splitlines():
+            if line and not line.startswith(" ") and ":" in line:
+                key, value = line.split(":", 1)
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                    value = value[1:-1]
+                fields[key.strip()] = value
+        body = text[front.end():]
+        marks = [match.group("mark") for match in CHECKBOX_RE.finditer(body)]
+        issue_id = fields.get("id") or f"ISSUE-{int(number.group(1)):03d}"
+        issues[issue_id] = {
+            "id": issue_id,
+            "path": str(path),
+            "title": fields.get("title", ""),
+            "type": fields.get("type", ""),
+            "status": fields.get("status", ""),
+            "blocked_by": blocked_by(body),
+            "acceptance_done": sum(1 for mark in marks if mark in "xX"),
+            "acceptance_total": len(marks),
+        }
+    return issues or None
+
+
+def ranked_candidates(issues: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Startable issues: AFK before HITL, in_progress first, most unblocked issues, lowest ID."""
+    def unblocked(issue: dict[str, Any]) -> bool:
+        return all(issues.get(blocker, {}).get("status") == "done" for blocker in issue["blocked_by"])
+
+    dependents: dict[str, set[str]] = {}
+    for issue in issues.values():
+        if issue["status"] != "done":
+            for blocker in issue["blocked_by"]:
+                dependents.setdefault(blocker, set()).add(issue["id"])
+
+    def unlocks(issue_id: str) -> int:
+        seen: set[str] = set()
+        pending = [issue_id]
+        while pending:
+            for dependent in dependents.get(pending.pop(), ()):
+                if dependent not in seen:
+                    seen.add(dependent)
+                    pending.append(dependent)
+        return len(seen)
+
+    ready = [
+        {**issue, "unlocks": unlocks(issue["id"])}
+        for issue in issues.values()
+        if issue["status"] in OPEN_STATUSES and unblocked(issue)
+    ]
+    return sorted(
+        ready,
+        key=lambda issue: (
+            issue["type"].upper() == "HITL",
+            issue["status"] != "in_progress",
+            -issue["unlocks"],
+            int(re.sub(r"\D", "", issue["id"]) or 0),
+        ),
+    )
+
+
+def next_issue_lines(
+    issues: dict[str, dict[str, Any]] | None, labels: dict[str, str], *, wrap: str = "{issue}"
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Next-step lines plus the recommended issue when it is one the next run can start."""
+    if issues is None:
+        return [], None
+    ranked = ranked_candidates(issues)
+    if not ranked:
+        waiting = [issue for issue in issues.values() if issue["status"] in OPEN_STATUSES]
+        if not waiting:
+            return [f"- {labels['next']}: {labels['tracker_complete']}"], None
+        waits = "; ".join(
+            labels["waits_for"].format(
+                id=issue["id"],
+                blockers=", ".join(b for b in issue["blocked_by"] if issues.get(b, {}).get("status") != "done"),
+            )
+            for issue in waiting[:3]
+        )
+        return [f"- {labels['next']}: {labels['none_ready'].format(waits=waits)}"], None
+    first = ranked[0]
+    hitl = first["type"].upper() == "HITL"
+    text = f"{first['id']} – {first['title']}"
+    if hitl:
+        text += f" ({labels['hitl_next']})"
+    elif first["unlocks"]:
+        count = first["unlocks"]
+        text += f" ({labels['unlocks_one'] if count == 1 else labels['unlocks'].format(count=count)})"
+    lines = [f"- {labels['next']}: {wrap.format(issue=text)}"]
+    others = [issue["id"] + (" (HITL)" if issue["type"].upper() == "HITL" else "") for issue in ranked[1:]]
+    if others:
+        lines.append(f"  {labels['also_ready']}: {', '.join(others)}")
+    return lines, None if hitl else first
+
+
+def substitute_issue(invocation: str, old: dict[str, Any], new: dict[str, Any]) -> str | None:
+    """The human's initial prompt with the next issue swapped in; None when it never named the old one."""
+    replacements = [(old.get("path", ""), new["path"]), (Path(old.get("path", "")).name, Path(new["path"]).name)]
+    text = invocation
+    for before, after in replacements:
+        if before:
+            text = text.replace(before, after)
+    text, count = re.subn(rf"\b{re.escape(old['id'])}\b", new["id"], text)
+    return text if count or text != invocation else None
+
+
+def next_prompt(state: dict[str, Any], issue: dict[str, Any] | None) -> tuple[str, bool] | None:
+    """Prompt for the next run, and whether it had to repeat the initial prompt unchanged."""
+    workflow = state["workflow"]
+    if workflow == "grilling":
+        json_path = (state.get("deliverables") or {}).get("json")
+        return (f"/cmux-planning {display_path(json_path)}", False) if json_path else None
+    if issue is None:
+        return None
+    if workflow == "planning":
+        return f"/cmux-issue-chain {display_path(state['published_tracker']['path'])} {issue['id']}", False
+    invocation = state.get("invocation")
+    if not invocation:
+        return f"/cmux-issue-chain {state['tracker']} {issue['id']}", False
+    substituted = substitute_issue(invocation, state["issue"], issue)
+    return (invocation, True) if substituted is None else (substituted, False)
+
+
+def recap_tracker(state: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    if state["workflow"] == "issue-chain":
+        return load_tracker(Path(state["tracker"]))
+    published = state.get("published_tracker")
+    if state["workflow"] == "planning" and isinstance(published, dict):
+        return load_tracker(Path(published["path"]))
+    return None
+
+
 def issue_chain_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: dict[str, str]) -> list[str]:
-    issue = state["issue"]
+    # Live tracker state: the snapshot in state.json predates the status update before `complete`.
+    issue = {**state["issue"], **((recap_tracker(state) or {}).get(state["issue"]["id"]) or {})}
     lines = [f"**{issue['id']} – {issue['title']}**", f"- {labels['outcome']}: {{{{outcome}}}}"]
     lines.append(
         f"- {labels['tracker_status']}: "
@@ -401,7 +609,72 @@ def render_recap(state: dict[str, Any], events: list[dict[str, Any]], lang: str)
     commit = last_data(events, "commit.proposed")
     if commit and commit.get("subject"):
         lines.append(f"- {labels['commit']}: {commit['subject']}")
+    # A halted run's next step is resolving the halt; the outcome sentence names it.
+    if outcome["status"] == "done":
+        lines += next_step_lines(state, labels)
     return "\n".join(lines) + "\n"
+
+
+def next_step_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
+    workflow = state["workflow"]
+    if workflow in {"issue-chain", "planning"}:
+        wrap = labels["chain_with"] if workflow == "planning" else "{issue}"
+        lines, issue = next_issue_lines(recap_tracker(state), labels, wrap=wrap)
+        return lines + prompt_block(state, issue, labels) if issue else lines
+    json_path = (state.get("deliverables") or {}).get("json")
+    if not json_path or not Path(json_path).is_file():
+        return []
+    artifact = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    decisions = artifact.get("open_decisions") or [] if isinstance(artifact, dict) else []
+    still_open = sum(1 for entry in decisions if isinstance(entry, dict) and entry.get("status") == "open")
+    if still_open:
+        template = labels["resolve_decision_one"] if still_open == 1 else labels["resolve_decisions"]
+        return [f"- {labels['next']}: {template.format(count=still_open)}"]
+    return [f"- {labels['next']}: {labels['plan_from'].format(path=display_path(json_path))}"] + prompt_block(
+        state, None, labels
+    )
+
+
+def prompt_block(state: dict[str, Any], issue: dict[str, Any] | None, labels: dict[str, str]) -> list[str]:
+    generated = next_prompt(state, issue)
+    if generated is None:
+        return []
+    prompt, unchanged = generated
+    lines = ["", f"{labels['prompt']}:", "~~~", prompt, "~~~"]
+    if unchanged:
+        lines.append(f"({labels['prompt_unchanged']})")
+    return lines
+
+
+def checked_next_step(state: dict[str, Any], text: str) -> dict[str, Any] | None:
+    """The orchestrator may pick another startable issue, but only with a written reason."""
+    if state["workflow"] not in {"issue-chain", "planning"}:
+        return None
+    issues = recap_tracker(state)
+    match = NEXT_LINE_RE.search(text)
+    if issues is None or not match:
+        return None
+    ranked = [issue["id"] for issue in ranked_candidates(issues)]
+    chosen = match.group(1)
+    if chosen not in ranked:
+        raise SystemExit(f"next step {chosen} is not startable; candidates: {', '.join(ranked) or 'none'}")
+    override = chosen != ranked[0]
+    reasoned = bool(REASON_LINE_RE.search(text))
+    if override and not reasoned:
+        raise SystemExit(
+            f"next step {chosen} deviates from the default {ranked[0]}; add a reason line under it"
+        )
+    block = PROMPT_BLOCK_RE.search(text)
+    expected = next_prompt(state, issues[chosen])
+    prompt_edited = False
+    if block and expected:
+        prompt, unchanged = expected
+        if not unchanged and chosen not in block.group(1):
+            raise SystemExit(f"the prompt for the next run must name {chosen}")
+        prompt_edited = block.group(1) != prompt
+        if prompt_edited and not reasoned:
+            raise SystemExit("the prompt for the next run deviates from the generated one; add a reason line")
+    return {"default": ranked[0], "chosen": chosen, "override": override, "prompt_edited": prompt_edited}
 
 
 def pill_text(state: dict[str, Any], lang: str, outcome: dict[str, Any] | None = None) -> str:
@@ -480,12 +753,13 @@ def show(args: argparse.Namespace, filename: str, event_type: str, recap: bool) 
     if missing:
         raise SystemExit(f"{path} still has unfilled placeholders: {', '.join(missing)}")
     outcome = run_outcome(state, read_events(run_dir)) if recap else None
+    next_step = checked_next_step(state, text) if outcome and outcome["status"] == "done" else None
     pill = update_pill(args, state, outcome)
     event = {
         "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "type": event_type,
         "message": f"{'recap' if recap else 'briefing'} shown to the human",
-        "data": {"path": filename, "pill": pill, **({"outcome": outcome} if recap else {})},
+        "data": {"path": filename, "pill": pill, **({"outcome": outcome, "next_step": next_step} if recap else {})},
     }
     with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")

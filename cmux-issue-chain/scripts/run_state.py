@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pin no workspace (offline runs outside cmux; cmux-scoped scripts will refuse to run)",
     )
     init.add_argument("--human-triage", action="store_true", help="Let the human decide recommendations")
+    init.add_argument("--invocation", help="The human's initial prompt, verbatim; the recap reuses it for the next issue")
     add_override_options(init, workflow=WORKFLOW)
     add_probe_options(init)
 
@@ -202,7 +203,9 @@ def init_run(args: argparse.Namespace) -> int:
     run_dir = runs_root / run_id
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
-        read_run_state(run_dir)
+        existing = read_run_state(run_dir)
+        if args.invocation is not None and args.invocation != existing.get("invocation"):
+            raise SystemExit(f"run {run_id} already exists with a different --invocation")
         # It also re-prepares nothing, so configuration inputs would be silently dropped.
         if args.human_triage or supplied_configuration_inputs(args, workflow=WORKFLOW):
             raise SnapshotError(
@@ -246,6 +249,7 @@ def init_run(args: argparse.Namespace) -> int:
         "blocker_status": blocker_status(issue, issues),
         "ready": issue_ready(issue, issues),
         "triage_mode": "human" if args.human_triage else "autonomous",
+        "invocation": args.invocation,
         "chain": [] if is_hitl else [w for w in ISSUE_WORKERS if w != "triage" or not args.human_triage],
         "configuration_source": configuration_source,
         "prepared_stage": prepared_pointer,

@@ -600,7 +600,10 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 - `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json`,
   `events.jsonl`, and the artifact JSON: status (done, or halted at stage and decision), duration,
   questions asked against the budget and the stop reason, assumption count, decisions by status, the
-  artifact paths, and the commit subject. It never overwrites an existing recap.
+  artifact paths, the commit subject, and for a completed session the next step: resolving the
+  decisions still `open` in the walkthrough, or else planning with the artifact JSON, followed by a
+  prompt block with `/cmux-planning <artifact.json>`; additions from the grilling prompt are not
+  carried over. It never overwrites an existing recap.
 - Fill only `{{outcome}}`: one or two sentences on the key findings, or for a halted session what
   stopped it and what the human has to decide. Neutral wording.
 - `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and

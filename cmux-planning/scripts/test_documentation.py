@@ -293,7 +293,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             self.assertIn(phrase, summary)
         commit = text.split("## branch and commit policy", 1)[1].split("## reporting to the human", 1)[0]
         self.assertIn("tracker files published by triage (new issue files, `decisions.md`) separately from the product diff", commit)
-        self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> commit proposal -> run recap + final summary -> wait", text)
+        self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> run recap + final summary -> wait", text)
 
     def test_issue_chain_relevant_prior_pass_context_and_example(self):
         guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"

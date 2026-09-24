@@ -1009,6 +1009,18 @@ class PreparedStageCli(unittest.TestCase):
             self.assertIn("already exists", proc.stderr)
         self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6-astra")
 
+    def test_init_records_the_invocation_and_reinit_keeps_it(self):
+        prompt = "/cmux-issue-chain .scratch/tracker ISSUE-001 bitte Tests zuerst"
+        self.assertEqual(self.init("--invocation", prompt).returncode, 0)
+        self.assertEqual(self.read_state()["invocation"], prompt)
+
+        self.assertEqual(self.init("--invocation", prompt).returncode, 0)
+        changed = self.init("--invocation", "/cmux-issue-chain other")
+
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("different --invocation", changed.stderr)
+        self.assertEqual(self.read_state()["invocation"], prompt)
+
     def test_reinit_restores_a_deleted_runs_root_ignore(self):
         self.assertEqual(self.init().returncode, 0)
         ignore = self.runs_root / ".gitignore"

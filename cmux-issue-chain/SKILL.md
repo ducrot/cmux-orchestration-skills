@@ -182,7 +182,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
    decides the collected items, then at most one follow-up pass applies accepted eligible items (see
    Follow-up Pass). Full flow:
-   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> complete -> commit proposal -> run recap + final summary -> wait`.
+   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> run recap + final summary -> wait`.
    Triage-2 runs only for new follow-up recommendations. Opt out at init with `--human-triage`.
    A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
 
@@ -536,9 +536,24 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 ```
 
 - `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json` and
-  `events.jsonl`: status (done, or halted at stage and decision), duration, tracker status of the issue,
-  every gate in order, triage consequences, open `for-the-human` items, and the commit subject. It
-  never overwrites an existing recap.
+  `events.jsonl`: status (done, or halted at stage and decision), duration, the issue's live tracker
+  status, every gate in order, triage consequences, open `for-the-human` items, the commit subject, and
+  for a completed run the next step. It never overwrites an existing recap.
+- The next step comes from the live tracker, triage-created issues included. Candidates are the
+  startable issues (the `issue_state.py ready` rule, plus unblocked HITL issues); the default ranks AFK
+  before HITL, `in_progress` before `todo`, then the issue that transitively unblocks the most open
+  issues, then the lowest ID. Other candidates follow as `also ready`; with none startable the line names
+  what waits on what, or that the tracker is complete. The orchestrator may replace the default with
+  another candidate when the run gives a concrete reason (for example a triage-created issue touching the
+  same files), and then adds a `Reason:` line (German: `Begründung:`) with one sentence under the
+  next-step line. `recap-show` refuses a non-startable issue and an unexplained deviation, and records
+  default, choice, and override in `run.recap`.
+- Below the next-step line, `Prompt für den nächsten Lauf` / `Prompt for the next run` repeats the
+  `--invocation` with the recommended issue swapped in (ID and issue file name); a run without one gets
+  `/cmux-issue-chain <tracker> <issue-id>`. When the initial prompt never named the issue, it is repeated
+  unchanged with a note. Remove additions that only applied to the finished issue, with the same one-line
+  reason; keep everything else. `recap-show` refuses a prompt that drops the recommended issue or differs
+  from the generated one without a reason, and records `prompt_edited` in `run.recap`.
 - Fill only `{{outcome}}`: one or two sentences on what the run actually delivered, or for a halted
   run what stopped it and what the human has to decide. Neutral wording per Reporting to the Human.
 - `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and turns
@@ -1065,10 +1080,12 @@ checkpoint above to be complete, then preflights every role and prepares `implem
 invalid configuration and any preflight failure happen before a launchable state or stage snapshot is
 written. HITL issues get no configuration source and no snapshot, so `prepare` stays unavailable on
 them, and re-running `init` on an existing run re-prepares nothing — it refuses `--config` and typed
-overrides instead of dropping them:
+overrides instead of dropping them. Pass the human's initial prompt verbatim as `--invocation` (skill
+command plus any additions); the run recap reuses it for the next issue, and a re-init refuses a
+different value:
 
 ```bash
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001
+python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --probe-profiles
 python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "prompt delivered and confirmed via read-screen" --data '{"role":"review","pass":1,"pane_id":"<pane-id>","surface_id":"<surface-id>"}'
 ```
@@ -1102,8 +1119,12 @@ python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> 
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage review --decision hitl --reason "unresolved must-fix after --fix"
 ```
 
-Close a run after the final `advance` gate (or after a HITL issue is fully verified). This sets
-`current_stage: done`, refreshes the issue snapshot in `state.json`, and appends `run.completed`:
+Close a run after the final `advance` gate (or after a HITL issue is fully verified). First update the
+issue file, which is lifecycle state and belongs to the orchestrator: tick each acceptance criterion the
+test report (for a HITL issue, the recorded verification) confirmed, set `status: done` only when all
+criteria are ticked, and keep a `progress` field in frontmatter in step. An unticked criterion keeps the
+status open and is named in the recap outcome. Then `complete` sets `current_stage: done`, refreshes the
+issue snapshot in `state.json`, and appends `run.completed`:
 
 ```bash
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/<run-id> --message "chain complete, issue done 10/10"

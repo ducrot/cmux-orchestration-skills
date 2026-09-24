@@ -12,6 +12,9 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).parent / "run_briefing.py"
+sys.path.insert(0, str(SCRIPT.parent))
+
+import run_briefing  # noqa: E402
 
 FAKE_CMUX = '''#!/usr/bin/env python3
 import json, os, sys
@@ -317,6 +320,210 @@ class RunRecap(RunDirTestCase):
         self.assertIn("- Annahmen: 3 · Entscheidungen: 2 entschieden, 1 zurückgestellt, 0 offen", text)
         self.assertIn("briefing.json`", text)
         self.assertIn("- Commit: Record grilling result", text)
+
+
+def issue_file(issue_id: str, status: str = "todo", blockers: tuple = (), issue_type: str = "AFK", checked: int = 0) -> str:
+    blocked = "\n".join(f"- {blocker}" for blocker in blockers) or "- None"
+    boxes = "\n".join(["- [x] done"] * checked + ["- [ ] open"] * (2 - checked))
+    return (
+        f"---\nid: {issue_id}\ntitle: \"Title {issue_id}\"\ntype: {issue_type}\nstatus: {status}\n"
+        f"labels:\n  - ready-for-agent\n---\n\n# {issue_id}\n\n## Acceptance Criteria\n\n{boxes}\n\n"
+        f"## Blocked by\n\n{blocked}\n"
+    )
+
+
+class NextStep(RunDirTestCase):
+    def tracker(self, files: dict) -> Path:
+        tracker = self.root / "tracker"
+        (tracker / "issues").mkdir(parents=True)
+        for issue_id, text in files.items():
+            (tracker / "issues" / f"{issue_id}-slug.md").write_text(text, encoding="utf-8")
+        return tracker
+
+    def done_run(self, tracker: Path, run_id: str = DONE_ISSUE_STATE["run_id"]) -> Path:
+        run_dir = self.run_dir({**DONE_ISSUE_STATE, "tracker": str(tracker), "run_id": run_id})
+        (run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in DONE_ISSUE_EVENTS), encoding="utf-8")
+        return run_dir
+
+    def recap(self, run_dir: Path, lang: str = "de") -> str:
+        result = self.call("recap-draft", "--run-dir", str(run_dir), "--lang", lang)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = run_dir / "recap.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("{{outcome}}", "filled"), encoding="utf-8")
+        return path.read_text(encoding="utf-8")
+
+    def show(self, run_dir: Path) -> subprocess.CompletedProcess:
+        return self.call("recap-show", "--run-dir", str(run_dir), "--no-status")
+
+    def test_ranking_prefers_in_progress_then_unlocks_then_lowest_id(self):
+        tracker = self.tracker({
+            "ISSUE-003": issue_file("ISSUE-003", status="done", checked=2),
+            "ISSUE-004": issue_file("ISSUE-004"),
+            "ISSUE-005": issue_file("ISSUE-005"),
+            "ISSUE-006": issue_file("ISSUE-006", blockers=("ISSUE-005",)),
+            "ISSUE-007": issue_file("ISSUE-007", blockers=("ISSUE-006",)),
+            "ISSUE-008": issue_file("ISSUE-008", issue_type="HITL"),
+        })
+        text = self.recap(self.done_run(tracker))
+        self.assertIn("- Tracker-Status: done · 2/2 Kriterien abgehakt", text)
+        self.assertIn("- Nächster Schritt: ISSUE-005 – Title ISSUE-005 (schaltet 2 Issues frei)", text)
+        self.assertIn(f"Prompt für den nächsten Lauf:\n~~~\n/cmux-issue-chain {tracker} ISSUE-005\n~~~", text)
+        self.assertIn("  außerdem startbar: ISSUE-004, ISSUE-008 (HITL)", text)
+        (tracker / "issues" / "ISSUE-004-slug.md").write_text(issue_file("ISSUE-004", status="in_progress"))
+        text = self.recap(self.done_run(tracker, run_id="chain-issue-003-second"))
+        self.assertIn("- Nächster Schritt: ISSUE-004 – Title ISSUE-004\n", text)
+
+    def test_only_hitl_ready_is_named_for_the_human(self):
+        tracker = self.tracker({
+            "ISSUE-003": issue_file("ISSUE-003", status="done"),
+            "ISSUE-004": issue_file("ISSUE-004", issue_type="HITL"),
+        })
+        text = self.recap(self.done_run(tracker))
+        self.assertIn("- Nächster Schritt: ISSUE-004 – Title ISSUE-004 (HITL, liegt beim Menschen)", text)
+        self.assertNotIn("Start:", text)
+
+    def test_blocked_and_complete_trackers(self):
+        tracker = self.tracker({
+            "ISSUE-003": issue_file("ISSUE-003", status="in_review"),
+            "ISSUE-004": issue_file("ISSUE-004", blockers=("ISSUE-003",)),
+        })
+        text = self.recap(self.done_run(tracker))
+        self.assertIn("- Nächster Schritt: keins startbar – ISSUE-004 wartet auf ISSUE-003", text)
+        (tracker / "issues" / "ISSUE-003-slug.md").write_text(issue_file("ISSUE-003", status="done"))
+        (tracker / "issues" / "ISSUE-004-slug.md").write_text(issue_file("ISSUE-004", status="done"))
+        text = self.recap(self.done_run(tracker, run_id="chain-issue-003-second"))
+        self.assertIn("- Nächster Schritt: Tracker vollständig erledigt", text)
+
+    def test_halted_run_has_no_next_issue(self):
+        tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
+        run_dir = self.run_dir({**DONE_ISSUE_STATE, "tracker": str(tracker), "current_stage": "review"})
+        (run_dir / "events.jsonl").write_text(json.dumps(event("gate", stage="review", decision="hitl", reason="r")) + "\n")
+        self.assertNotIn("Nächster Schritt", self.recap(run_dir))
+
+    def test_override_needs_a_startable_issue_and_a_reason(self):
+        tracker = self.tracker({
+            "ISSUE-004": issue_file("ISSUE-004"),
+            "ISSUE-005": issue_file("ISSUE-005"),
+            "ISSUE-006": issue_file("ISSUE-006", blockers=("ISSUE-009",)),
+        })
+        run_dir = self.done_run(tracker)
+        path = run_dir / "recap.md"
+        default = self.recap(run_dir)
+        self.assertIn("ISSUE-004 – Title ISSUE-004", default)
+        path.write_text(default.replace("ISSUE-004 – Title ISSUE-004", "ISSUE-006 – Title ISSUE-006"))
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("ISSUE-006 is not startable", refused.stderr)
+        overridden = default.replace("ISSUE-004 – Title ISSUE-004", "ISSUE-005 – Title ISSUE-005")
+        path.write_text(overridden)
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("deviates from the default ISSUE-004", refused.stderr)
+        reasoned = overridden.replace(
+            "ISSUE-005 – Title ISSUE-005\n", "ISSUE-005 – Title ISSUE-005\n  Begründung: shares files with ISSUE-003\n"
+        )
+        path.write_text(reasoned)
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("must name ISSUE-005", refused.stderr)
+        path.write_text(reasoned.replace(f"{tracker} ISSUE-004", f"{tracker} ISSUE-005"))
+        accepted = self.show(run_dir)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        logged = json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(
+            logged["data"]["next_step"],
+            {"default": "ISSUE-004", "chosen": "ISSUE-005", "override": True, "prompt_edited": False},
+        )
+
+    def invoked_run(self, tracker: Path, invocation: str) -> Path:
+        issue = {**DONE_ISSUE_STATE["issue"], "path": str(tracker / "issues" / "ISSUE-003-slug.md")}
+        state = {**DONE_ISSUE_STATE, "tracker": str(tracker), "issue": issue, "invocation": invocation}
+        run_dir = self.run_dir(state)
+        (run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in DONE_ISSUE_EVENTS), encoding="utf-8")
+        return run_dir
+
+    def test_prompt_reuses_the_initial_invocation_with_the_next_issue(self):
+        tracker = self.tracker({
+            "ISSUE-003": issue_file("ISSUE-003", status="done"),
+            "ISSUE-004": issue_file("ISSUE-004", blockers=("ISSUE-003",)),
+        })
+        invocation = "/cmux-issue-chain tracker ISSUE-003\nsiehe ISSUE-003-slug.md, bitte Tests zuerst"
+        text = self.recap(self.invoked_run(tracker, invocation))
+        self.assertIn(
+            "~~~\n/cmux-issue-chain tracker ISSUE-004\nsiehe ISSUE-004-slug.md, bitte Tests zuerst\n~~~", text
+        )
+        self.assertNotIn("unverändert", text)
+
+    def test_prompt_without_the_issue_is_repeated_and_flagged(self):
+        tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
+        text = self.recap(self.invoked_run(tracker, "/cmux-issue-chain nimm das nächste ready Issue"))
+        self.assertIn("~~~\n/cmux-issue-chain nimm das nächste ready Issue\n~~~", text)
+        self.assertIn("steht nicht im ursprünglichen Prompt", text)
+        self.assertEqual(self.show(self.root / DONE_ISSUE_STATE["run_id"]).returncode, 0)
+
+    def test_stripping_an_addition_needs_a_reason(self):
+        tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
+        run_dir = self.invoked_run(tracker, "/cmux-issue-chain tracker ISSUE-003 achte auf den Porcelain-Parser")
+        path = run_dir / "recap.md"
+        stripped = self.recap(run_dir).replace(" achte auf den Porcelain-Parser", "")
+        path.write_text(stripped)
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("deviates from the generated one", refused.stderr)
+        path.write_text(stripped.replace(
+            "ISSUE-004 – Title ISSUE-004\n", "ISSUE-004 – Title ISSUE-004\n  Begründung: parser note was ISSUE-003 only\n"
+        ))
+        accepted = self.show(run_dir)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        logged = json.loads((run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertTrue(logged["data"]["next_step"]["prompt_edited"])
+        self.assertFalse(logged["data"]["next_step"]["override"])
+
+    def test_planning_and_grilling_next_steps(self):
+        tracker = self.tracker({"ISSUE-001": issue_file("ISSUE-001"), "ISSUE-002": issue_file("ISSUE-002", blockers=("ISSUE-001",))})
+        state = {
+            **PLANNING_STATE,
+            "created_at": "2026-09-23T08:00:00+00:00",
+            "current_stage": "complete",
+            "published_tracker": {"path": str(tracker), "ticket_ids": ["ISSUE-001", "ISSUE-002"], "ready_frontier": ["ISSUE-001"]},
+        }
+        run_dir = self.run_dir(state)
+        (run_dir / "events.jsonl").write_text(json.dumps(event("tracker.published")) + "\n")
+        text = self.recap(run_dir)
+        self.assertIn("- Nächster Schritt: Issue-Chain mit ISSUE-001 – Title ISSUE-001 (schaltet 1 Issue frei)", text)
+        self.assertIn(f"~~~\n/cmux-issue-chain {tracker} ISSUE-001\n~~~", text)
+        artifact = self.root / "result.json"
+        grilling = {**GRILLING_STATE, "created_at": "2026-09-23T08:00:00+00:00", "current_stage": "done",
+                    "deliverables": {"json": str(artifact)}}
+        run_dir = self.run_dir(grilling)
+        (run_dir / "events.jsonl").write_text(json.dumps(event("run.completed")) + "\n")
+        artifact.write_text(json.dumps({"open_decisions": [{"status": "open"}, {"status": "decided"}]}))
+        text = self.recap(run_dir)
+        self.assertIn("- Nächster Schritt: 1 offene Entscheidung im Walkthrough klären", text)
+        self.assertNotIn("Prompt", text)
+        (run_dir / "recap.md").unlink()
+        artifact.write_text(json.dumps({"open_decisions": [{"status": "decided"}]}))
+        text = self.recap(run_dir)
+        self.assertIn("- Nächster Schritt: Planning mit dem Grilling-Ergebnis", text)
+        self.assertIn(f"~~~\n/cmux-planning {artifact}\n~~~", text)
+
+    def test_candidates_match_the_issue_chain_ready_rule(self):
+        try:
+            from orchestrator_lib import issue_ready, load_issues
+        except ImportError:
+            self.skipTest("only cmux-issue-chain ships the canonical ready rule")
+        tracker = self.tracker({
+            "ISSUE-001": issue_file("ISSUE-001", status="done"),
+            "ISSUE-002": issue_file("ISSUE-002", blockers=("ISSUE-001",)),
+            "ISSUE-003": issue_file("ISSUE-003", status="in_progress", blockers=("ISSUE-002",)),
+            "ISSUE-004": issue_file("ISSUE-004", blockers=("ISSUE-099",)),
+            "ISSUE-005": issue_file("ISSUE-005", issue_type="HITL"),
+        })
+        canonical = load_issues(tracker)
+        expected = sorted(issue_id for issue_id, issue in canonical.items() if issue_ready(issue, canonical))
+        afk = [issue["id"] for issue in run_briefing.ranked_candidates(run_briefing.load_tracker(tracker))
+               if issue["type"].upper() != "HITL"]
+        self.assertEqual(sorted(afk), expected)
 
 
 if __name__ == "__main__":
