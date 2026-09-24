@@ -337,6 +337,20 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 sources.append(ast.get_source_segment(source, function))
             self.assertEqual(sources, [sources[0]] * 3, name)
 
+    def test_vendored_run_briefing_files_are_byte_identical(self):
+        if len(SIBLINGS) != 3:
+            self.skipTest("sibling skills are absent in this independent installation")
+        for filename in ("run_briefing.py", "test_run_briefing.py"):
+            contents = [(guide.parent / "scripts" / filename).read_bytes() for guide in SIBLINGS]
+            self.assertEqual(contents, [contents[0]] * 3, filename)
+
+    def test_every_guide_briefs_the_human_before_the_first_worker(self):
+        for guide in SIBLINGS:
+            text = normalized(guide)
+            self.assertIn("## run briefing", text, guide)
+            self.assertIn("run_briefing.py draft", text, guide)
+            self.assertIn("run_briefing.py show", text, guide)
+
     def test_vendored_untracked_hashing_matches_without_chain_tokenizer(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")

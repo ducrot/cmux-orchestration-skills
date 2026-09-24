@@ -1063,6 +1063,17 @@ sha256 {resulting_digest or digest}
             {entry["path"] for entry in state["artifact_manifest"].values()},
         )
 
+    def test_run_briefing_is_not_audited_as_an_unexpected_artifact(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        drafted = self.cli(SCRIPT_DIR / "run_briefing.py", "draft", "--run-dir", str(self.run_dir))
+        self.assertEqual(drafted.returncode, 0, drafted.stderr)
+        prepared = self.cli(
+            STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["artifact_audit"]["unexpected"], [])
+
     def test_failed_prompt_emission_preserves_bytes_and_retry_uses_fresh_paths(self):
         self.assertEqual(self.init_direct().returncode, 0)
         state_path = self.run_dir / "state.json"

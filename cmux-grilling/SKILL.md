@@ -201,6 +201,29 @@ This deliberately deviates from the sibling skill's "at most orchestrator plus o
 pane" rule: a grilling session keeps the orchestrator pane plus all four lane panes open
 until the session ends.
 
+## Run Briefing
+
+A fresh session opens with a compact briefing so the human sees what is being grilled without
+opening a file. After `run_state.py init` and before the first `pane_ctl.py launch`:
+
+```bash
+python3 scripts/run_briefing.py draft --run-dir <run-dir> --lang <de|en>
+# Replace {{subject}}, {{focus}} and {{constraints}} in <run-dir>/briefing.md, then:
+python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
+```
+
+- `draft` writes `briefing.md` with the facts filled in (question budget, lanes, artifact directory)
+  and never overwrites an existing briefing. Pick `--lang` by the human's language.
+- Fill only the placeholders, from `task.md`: `{{subject}}` is the plan or task in one or two
+  sentences; `{{focus}}` names the three to five decision areas the griller intends to probe,
+  which previews the round questions; `{{constraints}}` lists the fixed constraints that will not
+  be questioned. Neutral wording; keep the fixed lines and their order unchanged.
+- `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
+  the sidebar pill `cmux-grilling-run` (`Grilling · <slug>`) in the pinned workspace. A failed pill
+  is a stderr note, not a stop. Relay the printed briefing verbatim as its own message, without
+  preamble.
+- On resume, run `show` again: it is the reorientation after a context compaction as well.
+
 ## Delivery baselines and staged deltas
 
 Capture a baseline snapshot before initial lane delivery:
@@ -696,8 +719,8 @@ The same screen after a *session* delivery is the expected outcome, not a failur
 Session start:
 
 1. Check the previous session first (`run_state.py pending-decisions`, see Resuming an
-   unfinished walkthrough); then `run_state.py init` with the task, and render the four
-   session prompts with `render_prompt.py session`.
+   unfinished walkthrough); then `run_state.py init` with the task, show the Run Briefing,
+   and render the four session prompts with `render_prompt.py session`.
 2. Launch the four lanes one after another with `pane_ctl.py launch`, each split anchored to
    the previously launched lane (`--anchor <previous-lane-surface-id>`); the first lane
    may split from the orchestrator pane. A 2×2 arrangement next to the orchestrator pane
@@ -734,6 +757,7 @@ consistently within a run.
 | Event                                                  | When                                                                                                                               |
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
+| `run.briefing`                                         | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                 |
 | `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |

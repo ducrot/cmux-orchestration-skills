@@ -179,6 +179,29 @@ repository. It prints that run and its exact `resume` command and exits before c
 Completed runs never block a later session. Use `--new-run` only after the human deliberately chooses
 a separate planning session beside an unfinished one; it never resets an existing run.
 
+## Run briefing
+
+A fresh run opens with a compact briefing so the human sees what is being planned without opening a
+file. After `planning_state.py init` (including a diversity-gated exit 2 or grilling input awaiting
+revalidation) and before the first `pane_ctl.py launch`:
+
+```bash
+python3 scripts/run_briefing.py draft --run-dir <run-dir> --lang <de|en>
+# Replace {{task}} and {{constraints}} in <run-dir>/briefing.md, then:
+python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
+```
+
+- `draft` writes `briefing.md` with the facts filled in (task source, stage flow, tracker slug) and
+  never overwrites an existing briefing. Pick `--lang` by the human's language.
+- Fill only the placeholders, from `task.md` and, for grilling input, the copied pair:
+  `{{task}}` is what will be planned in two or three sentences; `{{constraints}}` lists the fixed
+  constraints and non-goals. Neutral wording; keep the fixed lines and their order unchanged.
+- `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
+  the sidebar pill `cmux-planning-run` (`Planning · <slug>`) in the pinned workspace. A failed pill is
+  a stderr note, not a stop. Relay the printed briefing verbatim as its own message, without preamble.
+- On resume, run `show` again after `context` and status. `briefing.md` is orchestrator text, not a
+  worker artifact: the artifact audit skips it and no prompt attaches it.
+
 ## Revalidate optional grilling input
 
 Show every item that the human must consider:

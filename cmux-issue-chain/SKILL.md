@@ -475,6 +475,27 @@ as a `commit.proposed` event:
 The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
 active; the tree belongs to the worker until its report is captured and snapshotted.
 
+## Run Briefing
+
+A fresh run opens with a compact briefing so the human sees what the run is about without opening a
+file. After `run_state.py init` (HITL issues included) and before the first `pane_ctl.py launch`:
+
+```bash
+python3 scripts/run_briefing.py draft --run-dir <run-dir> --lang <de|en>
+# Replace {{goal}} and {{scope}} in <run-dir>/briefing.md, then:
+python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
+```
+
+- `draft` writes `briefing.md` with the facts filled in (issue ID and title, acceptance count, blockers,
+  chain, triage mode, branch) and never overwrites an existing briefing. Pick `--lang` by the human's language.
+- Fill only the placeholders, from the issue file: `{{goal}}` is one sentence on what the issue achieves;
+  `{{scope}}` is what this run implements, one line or up to four short sub-bullets. Neutral wording per
+  Reporting to the Human; keep the fixed lines and their order unchanged.
+- `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets the
+  sidebar pill `cmux-issue-chain-run` (`<issue-id> · <title>`) in the pinned workspace. A failed pill is a
+  stderr note, not a stop. Relay the printed briefing verbatim as its own message, without preamble.
+- On resume, run `show` again: it is the reorientation after a context compaction as well.
+
 ## Reporting to the Human
 
 Gate decisions, stage summaries, and the end-of-run report are technical status, not narration. The
@@ -932,6 +953,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | Event                                                    | When                                                                                                                                             |
 |----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
+| `run.briefing`                                           | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                               |
 | `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
