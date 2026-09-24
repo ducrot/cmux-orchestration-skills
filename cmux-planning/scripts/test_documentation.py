@@ -337,17 +337,25 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 sources.append(ast.get_source_segment(source, function))
             self.assertEqual(sources, [sources[0]] * 3, name)
 
-    def test_vendored_untracked_hashing_is_byte_identical(self):
+    def test_vendored_untracked_hashing_matches_without_chain_tokenizer(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")
         sources = []
+        parsers = []
         for guide in SIBLINGS:
             filename = "tree_integrity.py" if guide == PLANNING else "run_state.py"
             source = (guide.parent / "scripts" / filename).read_text(encoding="utf-8")
             nodes = ast.parse(source).body
             function = next(node for node in nodes if isinstance(node, ast.FunctionDef) and node.name == "untracked_content")
             limit = next(node for node in nodes if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "UNTRACKED_HASH_LIMIT_BYTES" for target in node.targets))
-            sources.append((ast.get_source_segment(source, function), ast.get_source_segment(source, limit)))
+            function_source = ast.get_source_segment(source, function)
+            # Issue-chain shares a stricter tokenizer; keep the other two parsers
+            # identical and compare only the hashing tail in all three.
+            if guide.parent.name != "cmux-issue-chain":
+                parsers.append(function_source)
+            hashing = function_source[function_source.index('        if code != "??":'):]
+            sources.append((hashing, ast.get_source_segment(source, limit)))
+        self.assertEqual(parsers, [parsers[0]] * 2)
         self.assertEqual(sources, [sources[0]] * 3)
 
     def test_shared_root_and_legacy_documentation(self):

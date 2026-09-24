@@ -294,6 +294,30 @@ class TriageVerdicts(unittest.TestCase):
             self.assertEqual(result["gate"], "advance")
             self.assertEqual(result["for_the_human"], ["R1"] if word == "for-the-human" else [])
 
+    def test_draft_blocker_ids_must_be_canonical_at_cli_gate(self):
+        artifacts = self.root / "artifacts" / "triage-1"
+        artifacts.mkdir(parents=True)
+        draft = artifacts / "issue-draft-R1.md"
+        location = self.root / "report.md"
+        body = report(Verdicts=verdict(**{"Follow-up eligible": "no", "Files": "none"}))
+        location.write_text(body)
+        cases = [("ISSUE-7", False), ("ISSUE-0007", False), ("ISSUE-\u0660\u0660\u0667", False),
+                 ("ISSUE-007", True), ("ISSUE-1000", True)]
+        for issue_id, canonical in cases:
+            with self.subTest(issue_id=issue_id):
+                draft.write_text(DRAFT + f"\n## Blocked by\n- {issue_id}\n")
+                proc = subprocess.run([sys.executable, str(Path(__file__).with_name("parse_report.py")),
+                                       "--items-file", str(self.items), str(location)], capture_output=True, text=True)
+                if canonical:
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertEqual(parse_report(body, self.items)["verdicts"][0]["draft"]["blockers"], [issue_id])
+                else:
+                    self.assertEqual(proc.returncode, EXIT_CODES["hitl"], proc.stdout + proc.stderr)
+                    self.assertIn("gate=hitl", proc.stdout)
+                    self.assertIn("malformed verdicts", proc.stdout)
+                    self.assertIn("invalid draft", proc.stdout)
+                    self.assertIn("canonical", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

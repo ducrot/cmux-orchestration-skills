@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Collector CLI regression tests in an isolated Git repository."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -25,9 +26,9 @@ class CollectorCli(unittest.TestCase):
         (self.run / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1,
             "run_id": "test-run", "issue": {"id": "ISSUE-001"}}))
 
-    def cli(self, pass_num=1):
+    def cli(self, pass_num=1, env=None):
         return subprocess.run([sys.executable, str(SCRIPT), "--run-dir", str(self.run), "--pass", str(pass_num)],
-                              cwd=self.repo, capture_output=True, text=True)
+                              cwd=self.repo, env=env, capture_output=True, text=True)
 
     def write_report(self, stem, text):
         (self.run / "reports" / (stem + ".md")).write_text(text)
@@ -153,6 +154,46 @@ class CollectorCli(unittest.TestCase):
         with patch("collect_recommendations.subprocess.run", return_value=status) as command:
             self.assertEqual(diff_files(), ["changed", "new name", "old name", "untracked"])
             self.assertEqual(command.call_args.args[0], ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"])
+
+    def test_bad_porcelain_refuses_without_writes(self):
+        from run_state import untracked_content
+        self.write_report("review-1", "## Recommendations\n- Keep this item.\n")
+        shim_dir = self.repo / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        env = dict(os.environ, PATH=str(shim_dir) + os.pathsep + os.environ["PATH"])
+        cases = [(raw, "unparseable porcelain entry") for raw in
+                 (b"bad\0", b" M\0", b" M \0", b"ZZ file\0", b"\xff  file\0",
+                  b" M file", b" M file\0\0?? hidden\0")]
+        cases += [(raw, "rename/copy entry is incomplete") for raw in
+                  (b"R  new", b"R  new\0", b" C new\0", b"R  new\0\0", b"C  new\0old")]
+        before = self.contents()
+        for raw, message in cases:
+            with self.subTest(raw=raw):
+                # Exercise the real collector CLI with only Git's byte stream substituted.
+                shim.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write({raw!r})\n")
+                shim.chmod(0o755)
+                result = self.cli(env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(self.contents(), before)
+                self.assertFalse((self.run / "triage-items-1.md").exists())
+                self.assertFalse((self.run / "events.jsonl").exists())
+                with self.assertRaisesRegex(ValueError, message):
+                    untracked_content(self.repo, raw)
+
+    def test_shared_status_parser_preserves_path_bytes(self):
+        from run_state import untracked_content
+        raw = b"C  new\nname\0?? source\0 M byte-\xff\0"
+        status = subprocess.CompletedProcess([], 0, stdout=raw)
+        with patch("collect_recommendations.subprocess.run", return_value=status):
+            paths = diff_files()
+        entries, states, block = untracked_content(self.repo, raw)
+        self.assertEqual(paths, sorted(["new\nname", "?? source", "byte-\udcff"]))
+        self.assertEqual(paths, sorted(path for _, path in entries))
+        self.assertEqual(states, {})
+        self.assertEqual(block, b"")
 
 
 if __name__ == "__main__":

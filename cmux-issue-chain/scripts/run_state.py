@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from git_status import porcelain_entries
 from agents_config import (
     ConfigError,
     add_override_options,
@@ -387,30 +388,13 @@ UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024
 
 
 def untracked_content(repository: Path, raw: bytes) -> tuple[list[tuple[str, str]], dict[str, dict[str, str]], bytes]:
-    """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes.
-
-    Vendored identically across the three independently installed skills.
-    Rename/copy source tokens are paths, never independent status entries.
-    """
-    tokens = raw.split(b"\0")
+    """Parse NUL-delimited status and hash bounded untracked content without decoding file bytes."""
     entries = []
     states = {}
     hashed = []
-    index = 0
-    while index < len(tokens) and tokens[index]:
-        token = tokens[index]
-        if len(token) < 4 or token[2:3] != b" ":
-            raise ValueError("git status returned an unparseable porcelain entry")
-        code = token[:2].decode("ascii")
-        path_bytes = token[3:]
+    for code, path_bytes in porcelain_entries(raw):
         path = os.fsdecode(path_bytes)
         entries.append((code, path))
-        index += 1
-        if "R" in code or "C" in code:
-            if index >= len(tokens) or not tokens[index]:
-                raise ValueError("git status rename/copy entry is incomplete")
-            entries.append((code, os.fsdecode(tokens[index])))
-            index += 1
         if code != "??":
             continue
         absolute = os.path.join(os.fsencode(repository), path_bytes)

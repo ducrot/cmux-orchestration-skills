@@ -10,6 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from git_status import porcelain_entries
 from orchestrator_lib import append_jsonl, read_run_state, utc_now
 from worker_readiness import read_events
 
@@ -99,17 +100,7 @@ def collected_data(run_dir: Path, pass_num: int) -> dict | None:
 def diff_files() -> list[str]:
     result = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                             capture_output=True, check=True)
-    tokens = result.stdout.split(b"\0")
-    paths = set()
-    i = 0
-    while i < len(tokens) and tokens[i]:
-        token = tokens[i]
-        paths.add(os.fsdecode(token[3:]))
-        i += 1
-        if b"R" in token[:2] or b"C" in token[:2]:
-            paths.add(os.fsdecode(tokens[i]))
-            i += 1
-    return sorted(paths)
+    return sorted({os.fsdecode(path) for _, path in porcelain_entries(result.stdout)})
 
 
 def collect(run_dir: Path, pass_num: int) -> dict:

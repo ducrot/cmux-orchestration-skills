@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from collect_recommendations import read_items
+from orchestrator_lib import normalize_issue_id
 
 VERDICTS = ("accepted", "rejected", "deferred", "recorded", "for-the-human")
 
@@ -24,9 +25,13 @@ def read_draft(path: Path) -> dict:
         for line in blocked.splitlines():
             if not line.strip():
                 continue
-            if not re.fullmatch(r"- ISSUE-\d+", line):
+            match = re.fullmatch(r"- (ISSUE-(\d+))", line)
+            if not match:
                 raise ValueError(f"{path}: Blocked by must name only existing issue IDs")
-            blockers.append(line[2:])
+            issue_id, number = match.groups()
+            if issue_id != normalize_issue_id(number):
+                raise ValueError(f"{path}: Blocked by must use canonical issue IDs: {issue_id}")
+            blockers.append(issue_id)
     return {"title": lines[0][2:], "body": "\n".join(lines[1:]).strip(), "blockers": blockers}
 
 
