@@ -204,13 +204,23 @@ def init_run(args: argparse.Namespace) -> int:
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
         existing = read_run_state(run_dir)
-        if args.invocation is not None and args.invocation != existing.get("invocation"):
+        stored_invocation = existing.get("invocation")
+        if args.invocation is not None and stored_invocation is not None and args.invocation != stored_invocation:
             raise SystemExit(f"run {run_id} already exists with a different --invocation")
         # It also re-prepares nothing, so configuration inputs would be silently dropped.
         if args.human_triage or supplied_configuration_inputs(args, workflow=WORKFLOW):
             raise SnapshotError(
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
                 "inputs and --human-triage cannot be supplied on re-initialization"
+            )
+        # A run that never recorded its prompt (older runs, or init without it) adopts it once.
+        if args.invocation is not None and stored_invocation is None:
+            existing["invocation"] = args.invocation
+            write_json(run_dir / "state.json", existing)
+            append_jsonl(
+                run_dir / "events.jsonl",
+                {"time": utc_now(), "type": "run.invocation", "message": "initial prompt recorded on re-init",
+                 "data": {"invocation": args.invocation}},
             )
         ensure_runs_root_ignored(runs_root)
         (run_dir / "prompts").mkdir(parents=True, exist_ok=True)

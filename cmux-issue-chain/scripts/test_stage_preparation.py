@@ -1021,6 +1021,17 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("different --invocation", changed.stderr)
         self.assertEqual(self.read_state()["invocation"], prompt)
 
+    def test_reinit_adopts_an_invocation_the_run_never_recorded(self):
+        self.assertEqual(self.init().returncode, 0)
+        self.assertIsNone(self.read_state()["invocation"])
+
+        adopted = self.init("--invocation", "/cmux-issue-chain later")
+
+        self.assertEqual(adopted.returncode, 0, adopted.stderr)
+        self.assertEqual(self.read_state()["invocation"], "/cmux-issue-chain later")
+        events = (self.run_dir / "events.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"type": "run.invocation"', events)
+
     def test_reinit_restores_a_deleted_runs_root_ignore(self):
         self.assertEqual(self.init().returncode, 0)
         ignore = self.runs_root / ".gitignore"

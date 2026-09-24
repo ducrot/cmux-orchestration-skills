@@ -435,6 +435,39 @@ class NextStep(RunDirTestCase):
             {"default": "ISSUE-004", "chosen": "ISSUE-005", "override": True, "prompt_edited": False},
         )
 
+    def test_removed_next_step_or_prompt_is_refused(self):
+        tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
+        run_dir = self.done_run(tracker)
+        path = run_dir / "recap.md"
+        default = self.recap(run_dir)
+        path.write_text(default.replace("- Nächster Schritt: ISSUE-004 – Title ISSUE-004", "- Nächster Schritt: offen"))
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("next-step line naming one of ISSUE-004 is missing", refused.stderr)
+        path.write_text(default.split("\nPrompt für den nächsten Lauf:")[0] + "\n")
+        refused = self.show(run_dir)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("prompt for the next run is missing", refused.stderr)
+        self.assertFalse(any(e["type"] == "run.recap" for e in map(json.loads, (run_dir / "events.jsonl").read_text().splitlines())))
+
+    def test_broken_json_is_reported_not_raised(self):
+        run_dir = self.run_dir(ISSUE_STATE)
+        (run_dir / "events.jsonl").write_text('{"type": "gate"}\n{"type": "ga', encoding="utf-8")
+        result = self.call("draft", "--run-dir", str(run_dir))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("events.jsonl:2 is not valid JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        artifact = self.root / "broken.json"
+        artifact.write_text('{"open_decisions": [],}', encoding="utf-8")
+        grilling = {**GRILLING_STATE, "created_at": "2026-09-23T08:00:00+00:00", "current_stage": "done",
+                    "deliverables": {"json": str(artifact)}}
+        run_dir = self.run_dir(grilling)
+        result = self.call("recap-draft", "--run-dir", str(run_dir))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broken.json:1 is not valid JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse((run_dir / "recap.md").exists())
+
     def invoked_run(self, tracker: Path, invocation: str) -> Path:
         issue = {**DONE_ISSUE_STATE["issue"], "path": str(tracker / "issues" / "ISSUE-003-slug.md")}
         state = {**DONE_ISSUE_STATE, "tracker": str(tracker), "issue": issue, "invocation": invocation}

@@ -210,7 +210,22 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
     path = run_dir / "events.jsonl"
     if not path.is_file():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    events = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"{path}:{number} is not valid JSON ({error.msg}); repair the event log first") from error
+    return events
+
+
+def read_artifact(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"{path}:{error.lineno} is not valid JSON ({error.msg}); repair the artifact first") from error
 
 
 def current_branch(path: Path) -> str | None:
@@ -566,7 +581,7 @@ def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
     artifact_path = deliverables.get("json")
     artifact = None
     if artifact_path and Path(artifact_path).is_file():
-        artifact = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+        artifact = read_artifact(Path(artifact_path))
     if isinstance(artifact, dict):
         lines.append(
             f"- {labels['questions']}: "
@@ -624,7 +639,7 @@ def next_step_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
     json_path = (state.get("deliverables") or {}).get("json")
     if not json_path or not Path(json_path).is_file():
         return []
-    artifact = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    artifact = read_artifact(Path(json_path))
     decisions = artifact.get("open_decisions") or [] if isinstance(artifact, dict) else []
     still_open = sum(1 for entry in decisions if isinstance(entry, dict) and entry.get("status") == "open")
     if still_open:
@@ -651,13 +666,20 @@ def checked_next_step(state: dict[str, Any], text: str) -> dict[str, Any] | None
     if state["workflow"] not in {"issue-chain", "planning"}:
         return None
     issues = recap_tracker(state)
-    match = NEXT_LINE_RE.search(text)
-    if issues is None or not match:
+    if issues is None:
         return None
     ranked = [issue["id"] for issue in ranked_candidates(issues)]
+    redraft = "if the tracker changed since recap-draft, delete recap.md and draft it again"
+    match = NEXT_LINE_RE.search(text)
+    if not match:
+        if ranked:
+            raise SystemExit(f"the next-step line naming one of {', '.join(ranked)} is missing; {redraft}")
+        return None
     chosen = match.group(1)
     if chosen not in ranked:
-        raise SystemExit(f"next step {chosen} is not startable; candidates: {', '.join(ranked) or 'none'}")
+        raise SystemExit(
+            f"next step {chosen} is not startable; candidates: {', '.join(ranked) or 'none'}; {redraft}"
+        )
     override = chosen != ranked[0]
     reasoned = bool(REASON_LINE_RE.search(text))
     if override and not reasoned:
@@ -665,7 +687,10 @@ def checked_next_step(state: dict[str, Any], text: str) -> dict[str, Any] | None
             f"next step {chosen} deviates from the default {ranked[0]}; add a reason line under it"
         )
     block = PROMPT_BLOCK_RE.search(text)
-    expected = next_prompt(state, issues[chosen])
+    # HITL issues are not started by a run, so they get no prompt.
+    expected = None if issues[chosen]["type"].upper() == "HITL" else next_prompt(state, issues[chosen])
+    if expected and not block:
+        raise SystemExit("the prompt for the next run is missing; restore it or delete recap.md and draft again")
     prompt_edited = False
     if block and expected:
         prompt, unchanged = expected

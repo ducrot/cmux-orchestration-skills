@@ -552,8 +552,10 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
   `--invocation` with the recommended issue swapped in (ID and issue file name); a run without one gets
   `/cmux-issue-chain <tracker> <issue-id>`. When the initial prompt never named the issue, it is repeated
   unchanged with a note. Remove additions that only applied to the finished issue, with the same one-line
-  reason; keep everything else. `recap-show` refuses a prompt that drops the recommended issue or differs
-  from the generated one without a reason, and records `prompt_edited` in `run.recap`.
+  reason; keep everything else. `recap-show` refuses a missing next-step line or prompt block while an
+  issue is startable, a prompt that drops the recommended issue, or one that differs from the generated
+  prompt without a reason, and records `prompt_edited` in `run.recap`. When the tracker changed after
+  `recap-draft`, delete `recap.md` and draft it again.
 - Fill only `{{outcome}}`: one or two sentences on what the run actually delivered, or for a halted
   run what stopped it and what the human has to decide. Neutral wording per Reporting to the Human.
 - `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and turns
@@ -992,6 +994,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
 | `run.briefing`                                           | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                               |
 | `run.recap`                                              | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                                     |
+| `run.invocation`                                         | Initial prompt adopted on re-init by a run that had none; written by `run_state.py init`                                                        |
 | `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
@@ -1081,8 +1084,9 @@ invalid configuration and any preflight failure happen before a launchable state
 written. HITL issues get no configuration source and no snapshot, so `prepare` stays unavailable on
 them, and re-running `init` on an existing run re-prepares nothing — it refuses `--config` and typed
 overrides instead of dropping them. Pass the human's initial prompt verbatim as `--invocation` (skill
-command plus any additions); the run recap reuses it for the next issue, and a re-init refuses a
-different value:
+command plus any additions) on the first init only; the run recap reuses it for the next issue. Omit it
+on resume: a re-init refuses a value that differs from the recorded one, and only a run without a
+recorded prompt adopts it (`run.invocation`):
 
 ```bash
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
