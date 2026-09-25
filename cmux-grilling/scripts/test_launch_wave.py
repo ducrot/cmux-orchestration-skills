@@ -413,6 +413,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.assertIn("workspace-write", argv)
             self.assertIn("approvals_reviewer=auto_review", argv)
             self.assertIn("check_for_update_on_startup=false", argv)
+            self.assertIn("tui.whimsy=false", argv)
         self.assertNotIn("sandbox_workspace_write.network_access=true", codebase2)
         self.assertIn("sandbox_workspace_write.network_access=true", docs)
 
@@ -442,6 +443,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 self.assertIn("exec", call["argv"])
                 self.assertIn("read-only", call["argv"])
                 self.assertIn('approval_policy="never"', call["argv"])
+                self.assertIn("tui.whimsy=false", call["argv"])
                 self.assertIn("--ephemeral", call["argv"])
             else:
                 self.assertIn("--print", call["argv"])

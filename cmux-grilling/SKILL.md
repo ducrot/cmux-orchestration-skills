@@ -674,6 +674,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
+  -c tui.whimsy=false \
   --model gpt-6-astra \
   -c model_reasoning_effort=high                          # codebase2
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
@@ -681,6 +682,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
+  -c tui.whimsy=false \
   --model gpt-5.6-luna \
   -c model_reasoning_effort=medium                         # docs
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
@@ -720,6 +722,8 @@ human for startup options at session start. Each flag earns its place:
 - `check_for_update_on_startup=false` suppresses the startup update prompt, which otherwise
   blocks an unattended lane before it reads its task. Set it only here, so interactive Codex
   sessions still get update notices.
+- `tui.whimsy=false` turns off Codex's decorative TUI animations, so the lane screen that
+  readiness checks and `observe` read stays calm and stable.
 
 Which lanes may reach the network is declared by `launch_wave.CODEX_NETWORK_LANES`. Only a
 Codex docs lane receives `sandbox_workspace_write.network_access=true`, preserving its

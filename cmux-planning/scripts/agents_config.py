@@ -1216,6 +1216,8 @@ def probe_argv(profile: dict[str, Any]) -> list[str]:
             "--config",
             "check_for_update_on_startup=false",
             "--config",
+            "tui.whimsy=false",
+            "--config",
             'approval_policy="never"',
             "--skip-git-repo-check",
             PROBE_PROMPT,

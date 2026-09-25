@@ -607,6 +607,7 @@ class PreparedStageCli(unittest.TestCase):
                 "--ask-for-approval", "on-request",
                 "-c", "approvals_reviewer=auto_review",
                 "-c", "check_for_update_on_startup=false",
+                "-c", "tui.whimsy=false",
                 "--model", "gpt-6-astra",
                 "-c", "model_reasoning_effort=xhigh",
             ],
@@ -690,6 +691,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("exec", codex)
         self.assertIn("read-only", codex)
         self.assertIn('approval_policy="never"', codex)
+        self.assertIn("tui.whimsy=false", codex)
         self.assertIn("--ephemeral", codex)
         self.assertIn("--print", claude)
         self.assertIn("--safe-mode", claude)

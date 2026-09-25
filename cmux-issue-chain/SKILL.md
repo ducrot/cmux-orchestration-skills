@@ -736,6 +736,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
+  -c tui.whimsy=false \
   --model gpt-6-astra \
   -c model_reasoning_effort=xhigh                # implement; test uses model_reasoning_effort=high
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
@@ -841,6 +842,8 @@ Each flag earns its place, so keep them together:
 - `check_for_update_on_startup=false` suppresses the startup update prompt, which otherwise blocks an
   unattended worker before it reads its task. Set it only here, so interactive Codex sessions still get
   update notices; Codex itself is kept current through Homebrew.
+- `tui.whimsy=false` turns off Codex's decorative TUI animations, so the worker screen that readiness
+  checks and `observe` read stays calm and stable.
 
 Two limits survive these flags, by design. `.git`, `.agents`, and `.codex` stay read-only inside an otherwise
 writable workspace; the read-only git commands this skill uses (`status --short`, `diff`, `diff --stat`,

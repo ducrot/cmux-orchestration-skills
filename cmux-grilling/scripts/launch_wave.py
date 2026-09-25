@@ -54,6 +54,8 @@ CODEX_APPROVAL_ARGUMENTS = [
     "approvals_reviewer=auto_review",
     "-c",
     "check_for_update_on_startup=false",
+    "-c",
+    "tui.whimsy=false",
 ]
 
 
