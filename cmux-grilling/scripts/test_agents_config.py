@@ -71,10 +71,17 @@ class AgentsConfigCli(unittest.TestCase):
         path.write_text(json.dumps(data), encoding="utf-8")
         return path
 
-    def legacy_default(self) -> tuple[Path, dict]:
-        """The initialized default path plus a schema-v1 copy of its configuration."""
+    def schema_two_default(self) -> tuple[Path, dict]:
+        """The initialized default path plus a schema-v2 copy of its configuration."""
         path, current = self.init_default()
         legacy = copy.deepcopy(current)
+        legacy["schema_version"] = 2
+        del legacy["workflows"]["issue-chain"]["triage"]
+        return path, legacy
+
+    def legacy_default(self) -> tuple[Path, dict]:
+        """The initialized default path plus a schema-v1 copy of its configuration."""
+        path, legacy = self.schema_two_default()
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
         return path, legacy
@@ -95,7 +102,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         path = self.repo / ".scratch" / "orchestrator" / "agents.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(data["schema_version"], 2)
+        self.assertEqual(data["schema_version"], 3)
         self.assertEqual(
             data["profiles"],
             {
@@ -205,6 +212,7 @@ class AgentsConfigCli(unittest.TestCase):
                     "simplify": "claude-opus-high",
                     "review": "claude-opus-high",
                     "test": "codex-astra-high",
+                    "triage": "claude-opus-high",
                 },
                 "grilling": {
                     "codebase": "claude-opus-high",
@@ -437,6 +445,8 @@ class AgentsConfigCli(unittest.TestCase):
             ("issue-chain", "review", "codex"),
             ("issue-chain", "test", "claude-code"),
             ("issue-chain", "test", "codex"),
+            ("issue-chain", "triage", "claude-code"),
+            ("issue-chain", "triage", "codex"),
             ("grilling", "codebase", "claude-code"),
             ("grilling", "codebase", "codex"),
             ("grilling", "codebase2", "claude-code"),
@@ -454,6 +464,7 @@ class AgentsConfigCli(unittest.TestCase):
             ("issue-chain", "simplify", "pi"),
             ("issue-chain", "review", "pi"),
             ("issue-chain", "test", "pi"),
+            ("issue-chain", "triage", "pi"),
             ("grilling", "codebase", "pi"),
             ("grilling", "codebase2", "pi"),
             ("grilling", "docs", "pi"),
@@ -531,7 +542,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("initialized:", first_stdout + second_stdout)
         self.assertIn("already exists", first_stderr + second_stderr)
         persisted = json.loads(config.read_text(encoding="utf-8"))
-        self.assertEqual(persisted["schema_version"], 2)
+        self.assertEqual(persisted["schema_version"], 3)
         self.assertEqual(len(persisted["profiles"]), 16)
 
     def test_version_one_inspection_and_preview_are_read_only(self):
@@ -553,7 +564,7 @@ class AgentsConfigCli(unittest.TestCase):
                 self.assertNotEqual(proc.returncode, 0)
                 output = proc.stdout + proc.stderr
                 self.assertIn("Coordinated upgrade required", output)
-                self.assertIn('"schema_version": 2', output)
+                self.assertIn('"schema_version": 3', output)
                 self.assertIn("agents_config.py migrate", output)
                 self.assertIn("--accept", output)
                 self.assert_untouched(path, original, before)
@@ -586,7 +597,7 @@ class AgentsConfigCli(unittest.TestCase):
             ]
         )
         self.assertEqual(proc.stdout.count("Read-only schema-v1 migration preview"), 1)
-        self.assertEqual(proc.stdout.count(f"Validated schema-v2 candidate SHA-256: {digest}"), 1)
+        self.assertEqual(proc.stdout.count(f"Validated schema-v3 candidate SHA-256: {digest}"), 1)
         self.assertEqual(proc.stdout.count(f"Preview command: {preview_command}"), 1)
         self.assertEqual(proc.stdout.count(f"Acceptance command: {acceptance_command}"), 1)
         self.assertEqual(
@@ -617,8 +628,8 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["schema_version"], 2)
-        self.assertNotIn("triage", migrated["workflows"]["issue-chain"])
+        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["workflows"]["issue-chain"]["triage"], "claude-opus-high")
         self.assertEqual(migrated["workflows"]["issue-chain"]["implement"], "aaa-author")
         self.assertEqual(
             migrated["workflows"]["planning"],
@@ -671,7 +682,7 @@ class AgentsConfigCli(unittest.TestCase):
         accepted = self.run_cli("migrate", "--accept", "--config", str(omitted), cwd=self.tmp)
 
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertEqual(json.loads(omitted.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(json.loads(omitted.read_text(encoding="utf-8"))["schema_version"], 3)
 
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
         _, legacy = self.legacy_default()
@@ -723,7 +734,7 @@ class AgentsConfigCli(unittest.TestCase):
         proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
 
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("invalid version-one", proc.stderr)
+        self.assertIn("invalid schema-v1", proc.stderr)
         self.assertEqual(path.read_bytes(), original)
 
     def test_version_one_migration_writes_through_a_symlinked_default_path(self):
@@ -737,7 +748,7 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertTrue(default_path.is_symlink(), "a shared configuration link must survive")
-        self.assertEqual(json.loads(shared.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(json.loads(shared.read_text(encoding="utf-8"))["schema_version"], 3)
 
     def test_acceptance_migrates_the_candidate_bound_to_the_previewed_digest(self):
         _, legacy = self.legacy_default()
@@ -759,7 +770,7 @@ class AgentsConfigCli(unittest.TestCase):
         )
 
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 3)
 
     def test_acceptance_refuses_a_candidate_the_preview_did_not_display(self):
         _, legacy = self.legacy_default()
@@ -882,38 +893,66 @@ class AgentsConfigCli(unittest.TestCase):
 
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    def test_optional_triage_resolution_keeps_serialized_config_unchanged(self):
+    def test_triage_assignment_is_required_and_resolved_from_the_file(self):
         import agents_config as config
         path, data = self.init_default()
-        self.assertNotIn("triage", data["workflows"]["issue-chain"])
-        original = copy.deepcopy(data)
-        resolved = config.resolve_workers(data, path, {}, workflow="issue-chain")
-        self.assertEqual(resolved["triage"]["profile"], "claude-opus-high")
-        self.assertEqual(resolved["triage"]["assignment_source"], "built-in default")
-        self.assertEqual(data, original)
-        shown = config.resolved_display(data, path)
-        self.assertEqual(shown["resolved_workflows"]["issue-chain"]["triage"], {**resolved["triage"], "source": str(path)})
+        self.assertEqual(data["workflows"]["issue-chain"]["triage"], "claude-opus-high")
         data["profiles"]["claude-opus-high"]["model"] = "custom-opus"
         self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["model"], "custom-opus")
-        for worker in ("simplify", "review"):
-            data["workflows"]["issue-chain"][worker] = "codex-astra-xhigh"
-        del data["profiles"]["claude-opus-high"]
-        self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["model"], config.DEFAULT_CONFIG["profiles"]["claude-opus-high"]["model"])
         overrides = {"triage": {"profile": "codex-astra-xhigh", "effort": "high"}}
         triage = config.resolve_workers(data, path, overrides, workflow="issue-chain")["triage"]
-        self.assertEqual(triage["harness"], "codex")
-        self.assertEqual(triage["effort"], "high")
+        self.assertEqual((triage["harness"], triage["effort"]), ("codex", "high"))
         self.assertNotIn("assignment_source", triage)
-        data["workflows"]["issue-chain"]["triage"] = "codex-astra-xhigh"
-        self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["harness"], "codex")
-        self.assertEqual(config.COMPATIBLE_HARNESSES["issue-chain"]["triage"], {"claude-code", "codex", "pi"})
-        for harness, profile in (("codex", "codex-astra-xhigh"), ("claude-code", "claude-opus-high"), ("pi", "pi-triage")):
-            candidate = copy.deepcopy(original)
-            candidate["profiles"]["pi-triage"] = {"harness": "pi", "executable": "pi", "model": "anthropic/claude-opus-4-6", "effort": "high"}
-            candidate["workflows"]["issue-chain"]["triage"] = profile
-            config_path = self.write_config(candidate, "triage-" + harness + ".json")
-            proc = self.run_cli("validate", "--config", str(config_path), cwd=self.tmp)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        missing = copy.deepcopy(data)
+        del missing["workflows"]["issue-chain"]["triage"]
+        proc = self.run_cli("validate", "--config", str(self.write_config(missing, "no-triage.json")), cwd=self.tmp)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("workflow=issue-chain worker=triage", proc.stderr)
+        self.assertIn("required worker assignment is missing", proc.stderr)
+
+    def test_schema_two_migration_adds_the_triage_profile_it_resolved_to(self):
+        _, legacy = self.schema_two_default()
+        bare = copy.deepcopy(legacy)
+        legacy["profiles"]["claude-opus-high"]["model"] = "custom-opus"
+        path = self.write_config(legacy, "v2-custom.json")
+        refused = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Read-only schema-v2 migration preview", refused.stderr)
+        self.assertIn("Added required assignment issue-chain.triage = 'claude-opus-high'", refused.stderr)
+
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("migrated schema 2 to 3", proc.stdout)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["workflows"]["issue-chain"]["triage"], "claude-opus-high")
+        self.assertEqual(migrated["profiles"]["claude-opus-high"]["model"], "custom-opus")
+        self.assertEqual(migrated["workflows"]["planning"], legacy["workflows"]["planning"])
+
+        # Without the profile, migration copies in the built-in one the worker used to fall back to.
+        for worker in ("simplify", "review"):
+            bare["workflows"]["issue-chain"][worker] = "claude-opus-medium"
+        bare["workflows"]["grilling"]["codebase"] = "claude-opus-medium"
+        del bare["profiles"]["claude-opus-high"]
+        bare_path = self.write_config(bare, "v2-bare.json")
+        self.assertEqual(self.run_cli("migrate", "--accept", "--config", str(bare_path), cwd=self.tmp).returncode, 0)
+        import agents_config as config
+        migrated = json.loads(bare_path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["profiles"]["claude-opus-high"], config.DEFAULT_CONFIG["profiles"]["claude-opus-high"])
+
+    def test_schema_two_migration_keeps_an_explicit_triage_assignment(self):
+        _, legacy = self.schema_two_default()
+        legacy["workflows"]["issue-chain"]["triage"] = "codex-astra-xhigh"
+        path = self.write_config(legacy, "v2-explicit.json")
+
+        preview = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
+        self.assertNotIn("Added required assignment", preview.stdout)
+        proc = self.run_cli("migrate", "--accept", "--config", str(path), cwd=self.tmp)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(migrated["workflows"]["issue-chain"]["triage"], "codex-astra-xhigh")
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))

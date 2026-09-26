@@ -55,7 +55,7 @@ Open the target repository in cmux and ask your agent to use the relevant skill.
 
 > Use cmux-issue-chain to implement ISSUE-001 from .scratch/orders-export. Follow the tracker's acceptance criteria and canonical check commands.
 
-On first use, the orchestrator creates `.scratch/orchestrator/agents.json`, shows the assignments for all three workflows, and asks whether to start or pause for edits. An existing valid schema-v2 file needs no start confirmation. Worker startup checks the configured executables, CLI capabilities, and local authentication.
+On first use, the orchestrator creates `.scratch/orchestrator/agents.json`, shows the assignments for all three workflows, and asks whether to start or pause for edits. An existing valid schema-v3 file needs no start confirmation. Worker startup checks the configured executables, CLI capabilities, and local authentication.
 
 Issue-chain needs a compatible local Markdown tracker with issue metadata, dependencies, and canonical check commands. Planning produces this format. Existing `to-tickets` trackers can be converted with the [tracker adoption helper](cmux-issue-chain/SKILL.md#adopting-a-to-tickets-tracker).
 
@@ -121,9 +121,9 @@ Use the installed skill's `scripts/agents_config.py validate` and `show-resolved
 
 ### Upgrading an existing configuration
 
-> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
-Upgrade all installed siblings together. Schema-v1 migration requires a read-only preview and explicit human approval before running the displayed `agents_config.py migrate --accept` command. Validation never migrates configuration as a side effect. A schema-v2 file needs no migration question.
+Upgrade all installed siblings together. Schema-v1 and schema-v2 migration requires a read-only preview and explicit human approval before running the displayed `agents_config.py migrate --accept` command. Validation never migrates configuration as a side effect. A schema-v3 file needs no migration question.
 
 [Migration procedure and safeguards](cmux-issue-chain/SKILL.md#worker-profile-configuration)
 

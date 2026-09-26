@@ -13,7 +13,7 @@ directory, not the working directory.
 
 ## Worker Profile Configuration
 
-> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
 The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
 inside the target Git repository; the default path is the repository root's
@@ -32,23 +32,24 @@ or `--repo <path>` to resolve the default path from a specific target repository
 atomically creates the complete shared defaults and never changes an existing file or the
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
 not launch workers or contact Claude Code, Codex, or any provider. They are read-only and stop
-on schema v1 with the exact preview and acceptance commands; run initialization and stage
+on schema v1 or v2 with the exact preview and acceptance commands; run initialization and stage
 preparation do the same before publishing launchable state.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
 protocol. Never offer profile overrides the human did not ask for.
 
-1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
+1. If the file already exists at schema v1 or v2, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,
    including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
    the displayed fallback profile name, harness, model, and effort without inferring relative quality.
+   Also call out every added required assignment the preview names, such as `issue-chain.triage`.
    Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
    On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
    argument included, then validate and continue.
-2. If the file already exists and is valid schema v2, continue with its assignments.
-   A schema-v2 file needs no migration question.
-   An existing valid schema-v2 file needs no start confirmation either; the start question
+2. If the file already exists and is valid schema v3, continue with its assignments.
+   A schema-v3 file needs no migration question.
+   An existing valid schema-v3 file needs no start confirmation either; the start question
    belongs only to a newly created default (accepted with the **Yes, start now** answer).
 3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
    `show-resolved`. Do not call `run_state.py init` yet.
@@ -76,20 +77,21 @@ The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (
 and `pi-grok-medium` (`pi`, `pi`, `xai/grok-4.7`). Each tuple lists
 harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
 profile by default; Pi is opted into per run or per tracker config. Issue-chain assigns Astra/xhigh to
-`implement`, Opus/high to `simplify` and `review`, and Astra/high to `test`.
+`implement`, Opus/high to `simplify`, `review`, and `triage`, and Astra/high to `test`.
 The `fable`, `opus`, and `sonnet` model strings are intentionally moving provider aliases;
 deterministic selection of an alias does not pin the provider's underlying model version.
 
-Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 reads never migrate.
-The read-only `migrate` preview validates the complete schema-v2 candidate before displaying it;
+Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 and schema-v2 reads never migrate.
+The read-only `migrate` preview validates the complete schema-v3 candidate before displaying it;
 `migrate --accept` is the only shared-CLI path that atomically replaces the file. Existing profiles and
-assignments are preserved, planning roles are selected deterministically, a collision-safe Codex
-reviewer is added only when needed, and the original bytes remain untouched if validation or publication
-fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
+assignments are preserved. From schema v1, planning roles are selected deterministically and a
+collision-safe Codex reviewer is added only when needed. A missing `issue-chain.triage` is assigned
+`claude-opus-high`, copied from the defaults when the file lacks that profile. The original bytes remain
+untouched if validation or publication fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
 preserved and those same guards apply to its intended target.
 The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
 guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
-For a schema-v1 refusal, planning initialization leaves stdout empty and writes one complete actionable
+For a schema-v1 or schema-v2 refusal, planning initialization leaves stdout empty and writes one complete actionable
 guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
 Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model
@@ -615,11 +617,10 @@ the gate marks it `verdicts_malformed` and `hitl`. `publish-triage --pass 2` wri
 and events, writes no `followup-items.md`, and prints `next_stage: null`. Record the triage-2 gate
 `advance` with no next stage, then complete. Triage-2 never starts another follow-up pass.
 
-The optional `triage` worker defaults to built-in profile `claude-opus-high`; an explicit assignment or
-typed override wins. Existing version 1/2 configurations need no edits; init and migration do not write
-a triage assignment. Every preparation resolves, preflights, and optionally probes all five workers,
-including in human mode. The default shares the Claude executable check and profile probe with simplify
-and review. `show-resolved` and stage snapshots mark `assignment_source: built-in default`.
+The `triage` worker needs an assignment in the configuration like every other worker, even though its
+run is optional; `--human-triage` only decides whether it launches. `init` writes `claude-opus-high`,
+and migration from schema v1 or v2 adds that assignment when it is missing. Every preparation
+resolves, preflights, and optionally probes all five workers, including in human mode.
 
 The triage worker decides every item autonomously and must never ask the human or the orchestrator
 anything. The orchestrator never answers a triage worker's content question; treat a worker that asks

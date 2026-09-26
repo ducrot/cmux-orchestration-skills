@@ -63,28 +63,28 @@ handoffs.
 
 ## First-use configuration checkpoint
 
-> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
-All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v2 CLI.
+All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v3 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
 `claude-fable-high` and the reviewer to `codex-astra-high`. Every role accepts Claude Code, Codex
 or Pi; the reviewer carries no fixed harness, and its independence from the authors is enforced by
 the model-diversity gate below instead. A Pi model must name its provider (`provider/id`, such as
 `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and its preflight check is
 scoped to the model it is given.
-`validate` and `show-resolved` are read-only and never migrate schema v1; all planning preparation
+`validate` and `show-resolved` are read-only and never migrate schema v1 or v2; all planning preparation
 commands likewise stop before launchable state and display the exact preview and acceptance commands.
 
-A schema-v2 file needs no migration question.
-An existing valid schema-v2 file needs no start confirmation either; the start question belongs only to a newly created default (accepted with `--accept-config`). Never offer profile overrides the human did not ask for.
+A schema-v3 file needs no migration question.
+An existing valid schema-v3 file needs no start confirmation either; the start question belongs only to a newly created default (accepted with `--accept-config`). Never offer profile overrides the human did not ask for.
 
-`planning_state.py init` creates a missing config or detects a valid schema-v1 file, then displays
-every resolved workflow. For schema v1 it strictly validates and previews the complete schema-v2
+`planning_state.py init` creates a missing config or detects a valid schema-v1 or schema-v2 file, then displays
+every resolved workflow. For those it strictly validates and previews the complete schema-v3
 candidate without changing the original bytes, emits the compatibility warning above, and exits
 before a run exists. The shared `agents_config.py migrate` command is the read-only preview interface.
 Present its complete preview in the human's language and ask the human to accept exactly that proposal.
 Its stable output contract writes the complete migration guidance once on stdout; stderr contains only
-the short read-only refusal and does not repeat either command. A schema-v1 planning initialization leaves
+the short read-only refusal and does not repeat either command. A schema-v1 or schema-v2 planning initialization leaves
 stdout empty and emits one complete actionable guidance block on stderr, including the candidate digest
 and exact preview and acceptance commands once each.
 On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
@@ -92,7 +92,8 @@ argument, then rerun planning
 initialization; `--accept-config` never authorizes schema migration. When `claude-fable-high` is absent,
 the preview identifies it as unavailable and displays the lexicographically first compatible fallback's
 profile name, harness, model, and effort without inferring relative quality. Migration preserves existing
-profiles and assignments and leaves original bytes untouched on failure. It refuses targets with no
+profiles and assignments, assigns a missing `issue-chain.triage` to `claude-opus-high`, and leaves
+original bytes untouched on failure. It refuses targets with no
 write bit or more than one hard link, preserves a symlink path, and applies both guards to its resolved
 target. `atomic_initialize` remains create-only.
 
@@ -104,13 +105,13 @@ for the default reviewer profile. Offline tests use fake harnesses and fake CMUX
 model provider.
 
 Use the skills CLI from this repository or copy the complete `cmux-planning` directory into the agent's
-skills directory. Upgrade installed siblings together before accepting schema-v1 migration. Runtime is
+skills directory. Upgrade installed siblings together before accepting schema migration. Runtime is
 standalone: a direct task needs neither sibling, and vendored contracts validate optional grilling input
 and the native tracker without locating another skill installation.
 
 On first use, let `planning_state.py init` create or preview the shared configuration. For a newly
-created schema-v2 default, inspect `planning.spec`, `planning.tickets`, and `planning.reviewer`,
-then rerun with `--accept-config`. For schema v1, run the shared read-only preview, obtain explicit
+created schema-v3 default, inspect `planning.spec`, `planning.tickets`, and `planning.reviewer`,
+then rerun with `--accept-config`. For schema v1 or v2, run the shared read-only preview, obtain explicit
 confirmation, run `agents_config.py migrate --accept`, and only then rerun
 `planning_state.py init`.
 

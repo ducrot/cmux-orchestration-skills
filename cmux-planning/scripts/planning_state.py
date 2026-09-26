@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--accept-config",
         action="store_true",
-        help="accept a newly created schema-v2 default; never authorizes schema migration",
+        help="accept a newly created current-schema default; never authorizes schema migration",
     )
     init.add_argument("--workspace-id")
     init.add_argument("--no-workspace", action="store_true")
@@ -295,7 +295,7 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
         atomic_initialize(path)
         created = True
     # Detection goes through the CLI's own parser and version sentinel so this checkpoint cannot
-    # disagree with the loader below about what a version-one file is.
+    # disagree with the loader below about what a legacy-schema file is.
     try:
         parsed = parse_json(read_config_bytes(path, ConfigError), path, ConfigError)
     except ConfigError:
@@ -305,7 +305,7 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
             preview = migration_preview(parsed, path)
         except ConfigError as cause:
             raise ConfigError(
-                f"Planning initialization stopped: schema-v1 configuration at {path} cannot "
+                f"Planning initialization stopped: schema-v{parsed['schema_version']} configuration at {path} cannot "
                 f"produce a valid migration candidate: {cause}\n"
                 "No configuration bytes, planning run, or launchable state were recorded."
             ) from cause
@@ -319,7 +319,7 @@ def planning_config(args: argparse.Namespace, repository: Path) -> tuple[Path, d
         )
     data = load_validated(path)
     print(json.dumps(resolved_display(data, path), indent=2, sort_keys=True))
-    # Only the create path can require this planning-specific acceptance; schema-v1 raised above.
+    # Only the create path can require this planning-specific acceptance; legacy schemas raised above.
     if created and not args.accept_config:
         raise ConfigError(
             f"configuration created at {path}; review all resolved workflows and rerun with "

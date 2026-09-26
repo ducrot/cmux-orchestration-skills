@@ -390,7 +390,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 if "planning-runs" in line:
                     self.assertIn("legacy", line.lower())
 
-    def test_every_shipped_guide_requires_a_coordinated_schema_v2_upgrade(self):
+    def test_every_shipped_guide_requires_a_coordinated_schema_v3_upgrade(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")
         # The README line is the single source; asserting the copies equal it is what actually
@@ -400,7 +400,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             "cmux-planning",
             "cmux-grilling",
             "cmux-issue-chain",
-            "schema v2",
+            "schema v3",
             "older separately installed sibling skills",
         ):
             self.assertIn(required, canonical.lower())
@@ -512,17 +512,17 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         ):
             self.assertIn(required, text)
 
-    def test_valid_schema_v2_configuration_needs_no_question(self):
+    def test_valid_schema_v3_configuration_needs_no_question(self):
         if README.is_file():
             for required in (
-                "a schema-v2 file needs no migration question",
+                "a schema-v3 file needs no migration question",
                 "needs no start confirmation",
             ):
                 self.assertIn(required, normalized(README))
         for guide in SIBLINGS:
             text = normalized(guide)
             for required in (
-                "a schema-v2 file needs no migration question",
+                "a schema-v3 file needs no migration question",
                 "needs no start confirmation",
                 "never offer profile overrides the human did not ask for",
             ):

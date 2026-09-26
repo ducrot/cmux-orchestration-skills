@@ -18,7 +18,7 @@ directory, not the working directory.
 
 ## Worker Profile Configuration
 
-> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v2. Older separately installed sibling skills cannot read the migrated schema-v2 shared configuration.
+> **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
 The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
 inside the target Git repository; the default path is the repository root's
@@ -37,23 +37,24 @@ or `--repo <path>` to resolve the default path from a specific target repository
 atomically creates the complete shared defaults and never changes an existing file or the
 repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
 not launch workers or contact Claude Code, Codex, or any provider. They are read-only and stop
-on schema v1 with the exact preview and acceptance commands; run initialization does the same
+on schema v1 or v2 with the exact preview and acceptance commands; run initialization does the same
 before publishing a launch wave.
 
 Treat configuration creation as a first-use human checkpoint, separate from run initialization.
 Before starting any worker-bearing run, resolve the selected configuration path and follow this
 protocol. Never offer profile overrides the human did not ask for.
 
-1. If the file already exists at schema v1, run `agents_config.py migrate` without `--accept`.
+1. If the file already exists at schema v1 or v2, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,
    including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
    the displayed fallback profile name, harness, model, and effort without inferring relative quality.
+   Also call out every added required assignment the preview names, such as `issue-chain.triage`.
    Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
    On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
    argument included, then validate and continue.
-2. If the file already exists and is valid schema v2, continue with its assignments.
-   A schema-v2 file needs no migration question.
-   An existing valid schema-v2 file needs no start confirmation either; the start question
+2. If the file already exists and is valid schema v3, continue with its assignments.
+   A schema-v3 file needs no migration question.
+   An existing valid schema-v3 file needs no start confirmation either; the start question
    belongs only to a newly created default (accepted with the **Yes, start now** answer).
 3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
    `show-resolved`. Do not call `run_state.py init` yet.
@@ -85,16 +86,17 @@ profile by default; Pi is opted into per run or per tracker config. Grilling ass
 strings are intentionally moving provider aliases; deterministic selection of an alias does not
 pin the provider's underlying model version.
 
-Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 reads never migrate.
-The read-only `migrate` preview validates the complete schema-v2 candidate before displaying it;
+Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 and schema-v2 reads never migrate.
+The read-only `migrate` preview validates the complete schema-v3 candidate before displaying it;
 `migrate --accept` is the only shared-CLI path that atomically replaces the file. Existing profiles and
-assignments are preserved, planning roles are selected deterministically, a collision-safe Codex
-reviewer is added only when needed, and the original bytes remain untouched if validation or publication
-fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
+assignments are preserved. From schema v1, planning roles are selected deterministically and a
+collision-safe Codex reviewer is added only when needed. A missing `issue-chain.triage` is assigned
+`claude-opus-high`, copied from the defaults when the file lacks that profile. The original bytes remain
+untouched if validation or publication fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
 preserved and those same guards apply to its intended target.
 The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
 guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
-For a schema-v1 refusal, planning initialization leaves stdout empty and writes one complete actionable
+For a schema-v1 or schema-v2 refusal, planning initialization leaves stdout empty and writes one complete actionable
 guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
 Unknown fields, versions,
 harnesses, efforts, assignments, or profile references fail rather than falling back. Model

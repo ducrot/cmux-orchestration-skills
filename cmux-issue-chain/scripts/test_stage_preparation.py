@@ -360,7 +360,7 @@ class PreparedStageCli(unittest.TestCase):
         state = self.read_state()
         self.assertEqual(state["triage_mode"], "autonomous")
         self.assertEqual(state["chain"], ["implement", "simplify", "review", "test", "triage"])
-        self.assertEqual(self.read_snapshot()["resolved_profiles"]["triage"]["assignment_source"], "built-in default")
+        self.assertEqual(self.read_snapshot()["resolved_profiles"]["triage"]["profile"], "claude-opus-high")
         before = file_contents(self.run_dir)
         self.assertNotEqual(self.init("--human-triage").returncode, 0)
         self.assertEqual(file_contents(self.run_dir), before)

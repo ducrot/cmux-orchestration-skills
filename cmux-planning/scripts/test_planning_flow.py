@@ -2562,7 +2562,7 @@ sha256 {resulting_digest or digest}
         self.assertFalse(run_dir.exists())
         self.assertEqual(self.config.read_bytes(), legacy_bytes)
         self.assertEqual(proc.stdout, "")
-        self.assertIn('"schema_version": 2', proc.stderr)
+        self.assertIn('"schema_version": 3', proc.stderr)
         digest_match = re.search(r"candidate SHA-256: ([0-9a-f]{64})", proc.stderr)
         self.assertIsNotNone(digest_match, proc.stderr)
         digest = digest_match.group(1)
@@ -2582,7 +2582,7 @@ sha256 {resulting_digest or digest}
             ]
         )
         self.assertEqual(proc.stderr.count("Read-only schema-v1 migration preview"), 1)
-        self.assertEqual(proc.stderr.count(f"Validated schema-v2 candidate SHA-256: {digest}"), 1)
+        self.assertEqual(proc.stderr.count(f"Validated schema-v3 candidate SHA-256: {digest}"), 1)
         self.assertEqual(proc.stderr.count(f"Preview command: {preview_command}"), 1)
         self.assertEqual(proc.stderr.count(f"Acceptance command: {acceptance_command}"), 1)
         self.assertEqual(proc.stderr.lower().count("upgrade all three skills together"), 1)
@@ -2600,7 +2600,7 @@ sha256 {resulting_digest or digest}
         )
 
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["schema_version"], 2)
+        self.assertEqual(json.loads(self.config.read_text(encoding="utf-8"))["schema_version"], 3)
         initialized = self.cli(
             STATE,
             "init",
@@ -2653,7 +2653,7 @@ sha256 {resulting_digest or digest}
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "")
         self.assertIn("cannot produce a valid migration candidate", proc.stderr)
-        self.assertIn("cannot migrate invalid version-one configuration", proc.stderr)
+        self.assertIn("cannot migrate invalid schema-v1 configuration", proc.stderr)
         self.assertIn("workflow=grilling worker=web profile=codex-astra-xhigh field=harness", proc.stderr)
         self.assertIn(
             "No configuration bytes, planning run, or launchable state were recorded", proc.stderr

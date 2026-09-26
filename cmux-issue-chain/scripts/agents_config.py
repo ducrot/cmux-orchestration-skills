@@ -24,13 +24,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 
-SCHEMA_VERSION = 2
-LEGACY_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+# Older versions `migrate` upgrades; every other version is refused.
+LEGACY_SCHEMA_VERSIONS = (1, 2)
 DEFAULT_RELATIVE_PATH = Path(".scratch/orchestrator/agents.json")
 SCRIPT_PATH = Path(__file__).resolve()
 COORDINATED_UPGRADE_WARNING = (
     "Coordinated upgrade required: upgrade all three skills together (cmux-planning, "
-    "cmux-grilling, and cmux-issue-chain) before migrating the shared configuration to schema v2. "
+    f"cmux-grilling, and cmux-issue-chain) before migrating the shared configuration to schema v{SCHEMA_VERSION}. "
     "Older separately installed sibling skills cannot read the migrated file."
 )
 
@@ -57,19 +58,17 @@ COMPATIBLE_HARNESSES = {
         "reviewer": {"claude-code", "codex", "pi"},
     },
 }
-# The schema version each workflow became required in, so the version-one view stays derived.
+# The schema version each workflow became required in, so legacy validation stays derived.
 WORKFLOW_SCHEMA_VERSION = {"issue-chain": 1, "grilling": 1, "planning": 2}
-LEGACY_COMPATIBLE_HARNESSES = {
-    workflow: workers
-    for workflow, workers in COMPATIBLE_HARNESSES.items()
-    if WORKFLOW_SCHEMA_VERSION.get(workflow, SCHEMA_VERSION) <= LEGACY_SCHEMA_VERSION
-}
+# Workers that became required after their workflow; older files may omit or already carry them.
+WORKER_SCHEMA_VERSION = {("issue-chain", "triage"): 3}
 # Derived so the worker vocabulary cannot drift from the compatibility rules. Ordered, because
 # CLI help, error text, and worker iteration all present workers in this order.
 WORKFLOW_WORKERS = {
     workflow: tuple(workers) for workflow, workers in COMPATIBLE_HARNESSES.items()
 }
-OPTIONAL_WORKERS = {"issue-chain": {"triage": "claude-opus-high"}}
+# The profile migration assigns to a worker an older file omitted: the one it resolved to before.
+MIGRATED_WORKER_PROFILES = {("issue-chain", "triage"): "claude-opus-high"}
 
 # Each workflow calls its workers something else in operator-facing text.
 WORKFLOW_NOUN = {"issue-chain": "worker", "grilling": "lane", "planning": "role"}
@@ -222,6 +221,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "simplify": "claude-opus-high",
             "review": "claude-opus-high",
             "test": "codex-astra-high",
+            "triage": "claude-opus-high",
         },
         "grilling": {
             "codebase": "claude-opus-high",
@@ -497,6 +497,7 @@ def validate_workflows(
     *,
     compatibility: dict[str, dict[str, set[str]]] = COMPATIBLE_HARNESSES,
     optional: frozenset[str] = frozenset(),
+    optional_workers: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
     if not require_object(workflows, errors, source, field="workflows"):
         return
@@ -562,7 +563,8 @@ def validate_workflows(
                     field="worker",
                 )
             )
-        for worker in sorted(expected_workers - set(assignments) - set(OPTIONAL_WORKERS.get(workflow, {}))):
+        omissible = {worker for owner, worker in optional_workers if owner == workflow}
+        for worker in sorted(expected_workers - set(assignments) - omissible):
             errors.append(
                 context_error(
                     source,
@@ -622,6 +624,7 @@ def validation_errors(
     expected_schema_version: int = SCHEMA_VERSION,
     compatibility: dict[str, dict[str, set[str]]] = COMPATIBLE_HARNESSES,
     optional: frozenset[str] = frozenset(),
+    optional_workers: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     if not isinstance(data, dict):
@@ -673,6 +676,7 @@ def validation_errors(
             errors,
             compatibility=compatibility,
             optional=optional,
+            optional_workers=optional_workers,
         )
     return errors
 
@@ -761,26 +765,50 @@ def migrated_planning_assignments(candidate: dict[str, Any]) -> dict[str, str]:
     return {"spec": author, "tickets": author, "reviewer": reviewer}
 
 
-def migrate_version_one(data: dict[str, Any], source: Path) -> tuple[dict[str, Any], bytes]:
-    """Build and validate the complete v2 candidate before any file replacement."""
-    # Workflows introduced after v1 are rebuilt below, so a v1 file that already carries one --
-    # the shape a user reaches by editing schema_version back to unblock an older sibling -- must
-    # not be rejected as declaring an unknown workflow it can never remove.
+def migrated_worker_assignment(candidate: dict[str, Any], workflow: str, worker: str) -> str:
+    """Keep the profile an omitted worker resolved to before, copying the default in if absent."""
+    profile = MIGRATED_WORKER_PROFILES[(workflow, worker)]
+    candidate["profiles"].setdefault(profile, copy.deepcopy(DEFAULT_CONFIG["profiles"][profile]))
+    return profile
+
+
+def migrate_legacy(data: dict[str, Any], source: Path) -> tuple[dict[str, Any], bytes, list[str]]:
+    """Build and validate the complete current candidate before any file replacement.
+
+    Also returns the workers the migration added, so the preview can name them."""
+    version = data["schema_version"]
+    later_workflows = frozenset(
+        workflow for workflow, since in WORKFLOW_SCHEMA_VERSION.items() if since > version
+    )
+    later_workers = frozenset(key for key, since in WORKER_SCHEMA_VERSION.items() if since > version)
+    # Workflows and workers introduced later are filled in below, so an older file that already
+    # carries one -- the shape a user reaches by editing schema_version back to unblock an older
+    # sibling -- must not be rejected as declaring something it can never remove.
     legacy_errors = validation_errors(
         data,
         source,
-        expected_schema_version=LEGACY_SCHEMA_VERSION,
-        optional=frozenset(set(COMPATIBLE_HARNESSES) - set(LEGACY_COMPATIBLE_HARNESSES)),
+        expected_schema_version=version,
+        optional=later_workflows,
+        optional_workers=later_workers,
     )
     if legacy_errors:
-        raise ConfigError("cannot migrate invalid version-one configuration:\n" + "\n".join(legacy_errors))
+        raise ConfigError(
+            f"cannot migrate invalid schema-v{version} configuration:\n" + "\n".join(legacy_errors)
+        )
     candidate = copy.deepcopy(data)
     candidate["schema_version"] = SCHEMA_VERSION
-    candidate["workflows"]["planning"] = migrated_planning_assignments(candidate)
+    if "planning" in later_workflows:
+        candidate["workflows"]["planning"] = migrated_planning_assignments(candidate)
+    added = []
+    for workflow, worker in sorted(later_workers):
+        assignments = candidate["workflows"][workflow]
+        if worker not in assignments:
+            assignments[worker] = migrated_worker_assignment(candidate, workflow, worker)
+            added.append(f"{workflow}.{worker}")
     payload = (json.dumps(candidate, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    # Candidate validation deliberately goes through the same strict parser as every v2 read.
+    # Candidate validation deliberately goes through the same strict parser as every current read.
     validated = require_valid(parse_json(payload, source, ConfigError), source, ConfigError)
-    return validated, payload
+    return validated, payload, added
 
 
 def candidate_digest(payload: bytes) -> str:
@@ -804,8 +832,10 @@ class MigrationPreview:
     """One validated migration candidate and all human-facing data derived from it."""
 
     source: Path
+    source_version: int
     candidate: dict[str, Any]
     payload: bytes
+    added_workers: tuple[str, ...] = ()
     accepting: bool = False
 
     @property
@@ -818,12 +848,14 @@ class MigrationPreview:
         proposed = self.candidate["workflows"]["planning"]["spec"]
         lines = [
             COORDINATED_UPGRADE_WARNING,
-            "Acceptance requested for the schema-v1 migration candidate below."
+            f"Acceptance requested for the schema-v{self.source_version} migration candidate below."
             if self.accepting
-            else "Read-only schema-v1 migration preview; the source file has not been changed.",
-            f"Validated schema-v2 candidate SHA-256: {self.digest}",
+            else f"Read-only schema-v{self.source_version} migration preview; "
+            "the source file has not been changed.",
+            f"Validated schema-v{SCHEMA_VERSION} candidate SHA-256: {self.digest}",
         ]
-        if preferred not in self.candidate["profiles"]:
+        rebuilt_planning = self.source_version < WORKFLOW_SCHEMA_VERSION["planning"]
+        if rebuilt_planning and preferred not in self.candidate["profiles"]:
             profile = self.candidate["profiles"][proposed]
             lines.extend(
                 [
@@ -833,6 +865,12 @@ class MigrationPreview:
                     f"harness={profile['harness']!r}, model={profile['model']!r}, "
                     f"effort={profile['effort']!r}.",
                 ]
+            )
+        for added in self.added_workers:
+            workflow, worker = added.split(".")
+            lines.append(
+                f"Added required assignment {added} = {self.candidate['workflows'][workflow][worker]!r}, "
+                "the profile this worker already resolved to."
             )
         lines.extend(
             [
@@ -848,9 +886,16 @@ class MigrationPreview:
 def migration_preview(
     data: dict[str, Any], source: Path, *, accepting: bool = False
 ) -> MigrationPreview:
-    """Build the one authoritative representation of a validated v2 candidate preview."""
-    candidate, payload = migrate_version_one(data, source)
-    return MigrationPreview(source=source, candidate=candidate, payload=payload, accepting=accepting)
+    """Build the one authoritative representation of a validated current candidate preview."""
+    candidate, payload, added = migrate_legacy(data, source)
+    return MigrationPreview(
+        source=source,
+        source_version=data["schema_version"],
+        candidate=candidate,
+        payload=payload,
+        added_workers=tuple(added),
+        accepting=accepting,
+    )
 
 
 def migration_target(path: Path) -> tuple[Path, os.stat_result]:
@@ -912,7 +957,7 @@ def atomic_replace(path: Path, payload: bytes, *, expected_original: bytes) -> N
 
 
 def is_legacy(data: Any) -> bool:
-    """Whether a parsed payload declares the previous schema version.
+    """Whether a parsed payload declares a schema version that `migrate` upgrades.
 
     Shared so preview, refusal, and acceptance cannot disagree about what requires migration.
     `True == 1`, so a bool must not be mistaken for a version-one file."""
@@ -920,7 +965,7 @@ def is_legacy(data: Any) -> bool:
     return (
         isinstance(version, int)
         and not isinstance(version, bool)
-        and version == LEGACY_SCHEMA_VERSION
+        and version in LEGACY_SCHEMA_VERSIONS
     )
 
 
@@ -936,13 +981,13 @@ def load_validated_with_payload(
             raise error(
                 context_error(
                     path,
-                    f"cannot inspect invalid version-one migration candidate: {cause}",
+                    f"cannot inspect invalid schema-v{data['schema_version']} migration candidate: {cause}",
                     field="migration",
                 )
             ) from cause
         raise error(
             f"{preview.render_guidance()}\n"
-            "Schema-v1 configuration cannot be used by inspection or orchestration "
+            f"Schema-v{data['schema_version']} configuration cannot be used by inspection or orchestration "
             "preparation. Run the preview command, obtain explicit human approval, then run "
             "the acceptance command."
         )
@@ -1474,13 +1519,8 @@ def resolve_workers(
     profiles = data["profiles"]
     for worker in WORKFLOW_WORKERS[workflow]:
         worker_overrides = overrides.get(worker, {})
-        default = OPTIONAL_WORKERS.get(workflow, {}).get(worker)
-        built_in = worker not in assignments and "profile" not in worker_overrides
-        profile_name = worker_overrides.get("profile", assignments.get(worker, default))
-        available = profiles
-        if built_in and profile_name not in profiles:
-            available = DEFAULT_CONFIG["profiles"]
-        if profile_name not in available:
+        profile_name = worker_overrides.get("profile", assignments[worker])
+        if profile_name not in profiles:
             raise HarnessError(
                 context_error(
                     source,
@@ -1491,14 +1531,12 @@ def resolve_workers(
                     field="profile",
                 )
             )
-        effective = copy.deepcopy(available[profile_name])
+        effective = copy.deepcopy(profiles[profile_name])
         for field in PROFILE_OVERRIDE_FIELDS:
             if field in worker_overrides:
                 effective[field] = worker_overrides[field]
         validate_effective_worker(worker, profile_name, effective, source, workflow=workflow)
         resolved[worker] = {"profile": profile_name, **effective}
-        if built_in:
-            resolved[worker]["assignment_source"] = "built-in default"
     return resolved
 
 
@@ -1645,13 +1683,13 @@ def build_parser() -> argparse.ArgumentParser:
         add_path_options(subparser, suppress_defaults=True)
     migrate = subparsers.add_parser(
         "migrate",
-        help="preview schema-v1 migration; replace the file only with --accept",
+        help="preview legacy-schema migration; replace the file only with --accept",
     )
     add_path_options(migrate, suppress_defaults=True)
     migrate.add_argument(
         "--accept",
         action="store_true",
-        help="explicitly accept and atomically publish the displayed schema-v2 candidate",
+        help="explicitly accept and atomically publish the displayed current-schema candidate",
     )
     migrate.add_argument(
         "--expect-sha256",
@@ -1705,7 +1743,7 @@ def run(args: argparse.Namespace) -> int:
                 f"{path}; preview again"
             )
         atomic_replace(path, preview.payload, expected_original=original)
-        print(f"migrated schema {LEGACY_SCHEMA_VERSION} to {SCHEMA_VERSION}: {path}")
+        print(f"migrated schema {preview.source_version} to {SCHEMA_VERSION}: {path}")
         return 0
     data = load_validated(path)
     if args.command == "validate":
