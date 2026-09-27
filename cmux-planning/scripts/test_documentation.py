@@ -35,6 +35,37 @@ def notice(text: str) -> str:
     return lines[0]
 
 
+class WorkerStartDocumentation(unittest.TestCase):
+    def test_shared_protocol_separates_normal_start_from_readiness(self):
+        for guide in SIBLINGS:
+            with self.subTest(skill=guide.parent.name):
+                text = normalized(guide.parent / "references/worker-readiness.md")
+                self.assertIn("## normal start", text)
+                normal = text.split("## normal start", 1)[1].split("## ", 1)[0]
+                for phrase in ("no readiness assessment", "start prompt", "first step",
+                               "marker", "watcher writes `worker.started`",
+                               "`worker.launch_sent`", "exit 9"):
+                    self.assertIn(phrase, normal)
+                for phrase in ("after a watcher exit 9", "after context recovery before any new input",
+                               "before every `deliver`", "follow-ups", "re-delivery", "grilling rounds",
+                               "codex can display a composer while still loading",
+                               "pi renders its banner", "never paste a work order into it",
+                               "do not restart into an existing tui", "without re-delivery"):
+                    self.assertIn(phrase, text)
+                self.assertNotIn("after every start", text)
+                procedure = text.split("## observe, assess, then deliver", 1)[1].split("## ", 1)[0]
+                self.assertNotIn("run `pane_ctl.py start-agent`", procedure)
+
+    @unittest.skipUnless(README.is_file(), "repository README absent in independent installation")
+    def test_readme_describes_marker_start_and_exception_path(self):
+        text = normalized(README).split("## visibility, checks, and run artifacts", 1)[1].split("## ", 1)[0]
+        for phrase in ("start prompt", "marker", "watcher writes `worker.started`", "exit 9",
+                       "exception path", "`worker.launch_sent` and `worker.started`",
+                       "every worker", "before every `deliver`", "after context recovery"):
+            self.assertIn(phrase, text)
+        self.assertNotIn("before sending each task", text)
+
+
 class CoordinatedUpgradeDocumentation(unittest.TestCase):
     def test_grilling_session_start_captures_and_compares_delivery_baseline(self):
         guide = REPOSITORY / "cmux-grilling" / "SKILL.md"

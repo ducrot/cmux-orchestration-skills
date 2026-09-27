@@ -130,7 +130,7 @@ Upgrade all installed siblings together. Schema-v1 and schema-v2 migration requi
 
 ## Visibility, checks, and run artifacts
 
-Workers run in visible cmux panes. Before sending each task, the orchestrator inspects the worker's screen and confirms that it is ready for input. A running process alone is insufficient; the delivery helper requires a fresh readiness assessment. See the [worker readiness protocol](cmux-planning/references/worker-readiness.md).
+Workers run in visible cmux panes. The launch command carries a start prompt instructing the worker to create its `started` marker as its first step. The watcher writes `worker.started` when it confirms that marker (or, for issue-chain and planning, a report arriving first); normal starts need no readiness assessment or separate delivery. Successful starts record `worker.launch_sent` and `worker.started` for every worker. Watcher exit 9 means start was not confirmed within the start window and requires the exception path: observe and assess the pane, resolve any dialog, and re-arm without automatically sending the assignment again. A fresh readiness assessment is also required after context recovery before any new input and before every `deliver`, including follow-ups, re-delivery, and grilling rounds. See the [worker readiness protocol](cmux-planning/references/worker-readiness.md).
 
 Structured reports gate advancement, and Git snapshots support checks for unauthorized changes, including staged changes and commits. Coverage has limits, including ignored files and some untracked content; see the [integrity boundaries](cmux-planning/SKILL.md#ground-rules) for the exact scope. A clean report alone does not establish that a stage is safe to advance.
 
