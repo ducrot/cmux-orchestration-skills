@@ -46,6 +46,16 @@ FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Ap
 
 
 class RenderFunction(unittest.TestCase):
+    def test_marker_is_first_section(self):
+        text = render_prompt.render("implement", "ISSUE-001", ISSUE, {},
+                                    artifact_path=Path("/run/artifacts/implement-2"), pass_number=2)
+        self.assertEqual(text.splitlines()[2], "## First Step")
+        for phrase in ("/run/artifacts/implement-2/started", "file-writing tool",
+                       "Before reading further or running anything else", "create or overwrite",
+                       "parent directory", "modification time is refreshed"):
+            self.assertIn(phrase, text)
+
+
     def render(self, role: str, harness: str) -> str:
         if role == "triage":
             from test_parse_report import items_fixture

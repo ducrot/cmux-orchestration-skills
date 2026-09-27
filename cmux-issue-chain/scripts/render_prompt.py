@@ -347,6 +347,12 @@ def render(
     contract_lines = followup_contract_lines() if followup else role_specific_contract(role, harness)
     return f"""# Worker Prompt: {role} {issue_id} (pass {pass_number})
 
+## First Step
+
+Before reading further or running anything else, use the harness's file-writing tool to
+create or overwrite `{artifact_path_text}/started`, creating its parent directory if
+necessary. Rewrite an existing marker so its modification time is refreshed.
+
 This file is your task assignment, not a document to summarize. Execute it now and write your
 final report to the handoff path below.
 

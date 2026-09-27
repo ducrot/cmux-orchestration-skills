@@ -61,6 +61,20 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertLess(procedure.index('pane_ctl.py deliver'),
                         procedure.index('snapshot --label "adopted session"'))
 
+    def test_issue_chain_start_sequence_and_exception_path(self):
+        path = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not path.exists():
+            self.skipTest("sibling absent")
+        text = normalized(path)
+        procedure = text.split("close completed worker panes promptly:", 1)[1]
+        self.assertLess(procedure.index('snapshot --label "launched <role>-<pass>"'),
+                        procedure.index('pane_ctl.py start-agent --role'))
+        for phrase in ('| 9 | assignment not started', 'after exit 9, take one `observe` and `assess`',
+                       'then re-arm without re-delivery', 'one readiness-gated `deliver --prompt`',
+                       '`evidence: "screen"`', 'exception-path and follow-up only',
+                       'role deadline counts from arming'):
+            self.assertIn(phrase, text)
+
     def test_sibling_guides_gate_staged_deltas_at_every_delivery_boundary(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")
@@ -68,7 +82,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         grilling = normalized(REPOSITORY / "cmux-grilling" / "SKILL.md")
         for phrase in (
             'every role (implement, simplify, review, test, and triage)',
-            'run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery',
+            'run_state.py snapshot --label "launched <role>-<pass>"` right before `start-agent`',
             'launch snapshot (`launched <role>-<pass>`) against the capture snapshot (`report-captured <role>-<pass>`)',
             '`staged_paths`', '`staged_diff_sha256`', 'gate `hitl` even with a clean report',
             "staged path lists in the gate reason", "never unstages on the worker's behalf",

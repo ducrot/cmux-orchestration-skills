@@ -6,6 +6,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from await_report import (  # noqa: E402
     EXIT_DEADLINE,
+    EXIT_NOT_STARTED,
     EXIT_PANE_DEAD,
     EXIT_REPORT,
     build_parser,
@@ -45,8 +48,9 @@ class ReportPath(unittest.TestCase):
 
 class ExitCodeVocabulary(unittest.TestCase):
     def test_watcher_codes_disjoint_from_gate_codes(self):
-        """Skill-wide unique vocabulary: 0 ok, 1 crash, 2 usage, 3-6 gate, 7-8 watcher."""
-        watcher = {EXIT_PANE_DEAD, EXIT_DEADLINE}
+        """Skill-wide unique vocabulary: 0 ok, 1 crash, 2 usage, 3-6 gate, 7-9 watcher."""
+        watcher = {EXIT_PANE_DEAD, EXIT_DEADLINE, EXIT_NOT_STARTED}
+        self.assertEqual(watcher, {7, 8, 9})
         self.assertFalse(watcher & set(GATE_EXIT_CODES.values()))
         self.assertFalse(watcher & {1, 2})
         self.assertEqual(EXIT_REPORT, 0)  # "report exists", intentionally shared with success
@@ -116,7 +120,7 @@ class CheckHealth(unittest.TestCase):
         self.assertEqual(status, "unknown")
 
 
-class Cli(unittest.TestCase):
+class CliHarness(unittest.TestCase):
     script = str(Path(__file__).parent / "await_report.py")
 
     def run_cli(self, run_dir: str, *extra: str) -> subprocess.CompletedProcess:
@@ -137,6 +141,8 @@ class Cli(unittest.TestCase):
         path.write_text("## Result\nNO FINDINGS\n", encoding="utf-8")
         return path
 
+
+class Cli(CliHarness):
     def test_existing_report_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.write_report(tmp)
@@ -205,6 +211,112 @@ class Cli(unittest.TestCase):
             proc = self.run_cli(tmp, "--surface", "surface:465", "--deadline-minutes", "0.01")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("workspace", proc.stderr)
+
+
+class StartWindow(CliHarness):
+    def launch(self, tmp, **changes):
+        marker = Path(tmp) / "artifacts/review-1/started"
+        marker.parent.mkdir(parents=True)
+        data = {"role": "review", "pass": 1, "surface_id": None, "launch_id": "new",
+                "start_time_ns": time.time_ns(), "prompt_path": "/prompt",
+                "marker_path": str(marker), **changes}
+        self.append(tmp, "worker.starting", data)
+        self.append(tmp, "worker.launch_sent", data)
+        return marker, data
+
+    def append(self, tmp, kind, data):
+        with (Path(tmp) / "events.jsonl").open("a") as f:
+            f.write(json.dumps({"type": kind, "data": data}) + "\n")
+
+    def events(self, tmp):
+        return [json.loads(line) for line in (Path(tmp) / "events.jsonl").read_text().splitlines()]
+
+    def started(self, tmp):
+        return [e["data"] for e in self.events(tmp) if e["type"] == "worker.started"]
+
+    def test_marker_mid_wait_then_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker, _ = self.launch(tmp)
+            def finish():
+                marker.write_text("started")
+                time.sleep(.15)
+                self.write_report(tmp)
+            timer = threading.Timer(.15, finish)
+            timer.start()
+            try:
+                proc = self.run_cli(tmp, "--start-minutes", ".02", "--deadline-minutes", ".03")
+            finally:
+                timer.join()
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual([e["evidence"] for e in self.started(tmp)], ["marker"])
+
+    def test_missing_and_stale_markers_timeout(self):
+        for age in (None, 1, 1_000_000_000):
+            with self.subTest(age=age), tempfile.TemporaryDirectory() as tmp:
+                marker, data = self.launch(tmp, start_time_ns=1_900_000_000_500_000_000)
+                if age is not None:
+                    marker.write_text("old")
+                    ns = data["start_time_ns"] - age
+                    os.utime(marker, ns=(ns, ns))
+                proc = self.run_cli(tmp, "--start-minutes", ".002", "--deadline-minutes", ".03")
+                self.assertEqual(proc.returncode, 9, proc.stderr)
+                self.assertIn("outcome=not_started", proc.stdout)
+                self.assertEqual(self.events(tmp)[-1]["data"]["outcome"], "not_started")
+                self.assertEqual(self.started(tmp), [])
+
+    def test_rewritten_marker_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker, data = self.launch(tmp)
+            marker.write_text("old")
+            os.utime(marker, ns=(data["start_time_ns"] - 1, data["start_time_ns"] - 1))
+            marker.write_text("new")
+            proc = self.run_cli(tmp, "--start-minutes", ".002", "--deadline-minutes", ".005")
+            self.assertEqual(proc.returncode, 8)
+            self.assertEqual([e["evidence"] for e in self.started(tmp)], ["marker"])
+
+    def test_current_started_or_legacy_launch_skips_start_phase(self):
+        for legacy in (False, True):
+            with tempfile.TemporaryDirectory() as tmp:
+                _, data = self.launch(tmp, **({"prompt_path": None} if legacy else {}))
+                if not legacy:
+                    self.append(tmp, "worker.started", {**data, "evidence": "screen"})
+                proc = self.run_cli(tmp, "--start-minutes", "0", "--deadline-minutes", ".002")
+                self.assertEqual(proc.returncode, 8)
+
+    def test_old_launch_started_does_not_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, data = self.launch(tmp)
+            self.append(tmp, "worker.started", {**data, "launch_id": "old"})
+            proc = self.run_cli(tmp, "--start-minutes", "0", "--deadline-minutes", ".02")
+            self.assertEqual(proc.returncode, 9)
+
+    def test_report_first_confirms_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.launch(tmp)
+            self.write_report(tmp)
+            proc = self.run_cli(tmp)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual([e["evidence"] for e in self.started(tmp)], ["report"])
+
+    def test_dead_pane_during_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.launch(tmp, surface_id="surface:465")
+            proc = self.run_cli(tmp, "--surface", "surface:465", "--health-cmd",
+                                f'{sys.executable} -c "print(\'surface:999\')"',
+                                "--start-minutes", ".02")
+            self.assertEqual(proc.returncode, 7)
+
+    def test_marker_requires_matching_starting_event(self):
+        for field, value in (("launch_id", "other"), ("surface_id", "other"), ("pass", 2),
+                             ("role", "test"), ("start_time_ns", 0)):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                marker, data = self.launch(tmp)
+                lines = self.events(tmp)
+                lines[0]["data"][field] = value
+                (Path(tmp) / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in lines))
+                marker.write_text("started")
+                proc = self.run_cli(tmp, "--start-minutes", "0", "--deadline-minutes", ".02")
+                self.assertEqual(proc.returncode, 9)
 
 
 class WorkspaceResolution(unittest.TestCase):

@@ -29,6 +29,7 @@ class PaneCtlCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.run_dir = Path(self._tmp.name) / "run"
         self.run_dir.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.run_dir.parent)], check=True)
         (self.run_dir / "state.json").write_text(
             json.dumps({
                 "workflow": "issue-chain", "layout_version": 1,
@@ -114,6 +115,9 @@ class PaneCtlCase(unittest.TestCase):
             "snapshot_id": snapshot["snapshot_id"],
         }
         (self.run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        prompt = self.run_dir / "prompts" / f"{role}-{pass_num}.md"
+        prompt.parent.mkdir(exist_ok=True)
+        prompt.write_text("Worker assignment")
         return path
 
     def restamp(self, path: Path, snapshot: dict) -> None:
@@ -305,7 +309,7 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
         verbs = [call[0] for call in self.cmux_calls()]
-        self.assertEqual(verbs, ["send", "send-key", "read-screen"])
+        self.assertEqual(verbs, ["send", "send-key"])
         command = self.cmux_calls()[0][-1]
         # The marker is what keeps the worker pane out of the human's notification centre.
         self.assertTrue(command.startswith("CMUX_AGENT_MANAGED_SUBAGENT=1 codex "), command)
@@ -314,6 +318,36 @@ class StartAgent(PaneCtlCase):
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["worker.starting", "worker.launch_sent"])
         self.assertEqual(events[0]["data"]["command"], command)
+        data = events[1]["data"]
+        self.assertEqual(data["start_time_ns"], events[0]["data"]["start_time_ns"])
+        self.assertIsInstance(data["start_time_ns"], int)
+        self.assertEqual(data["prompt_path"], str(self.run_dir.resolve() / "prompts/implement-1.md"))
+        self.assertEqual(data["prompt_path_relative"], "run/prompts/implement-1.md")
+        self.assertEqual(data["text"], delivery_text(data["prompt_path_relative"]))
+        self.assertEqual(shlex.split(command)[-1], data["text"])
+        self.assertEqual(data["marker_path"], str(self.run_dir.resolve() / "artifacts/implement-1/started"))
+        self.assertEqual(json.loads(proc.stdout)["launch_id"], data["launch_id"])
+        self.assertEqual(json.loads(proc.stdout)["next"], "arm the watcher")
+
+    def test_missing_prompt_refuses_without_cmux(self):
+        self.prepare_snapshot("implement")
+        (self.run_dir / "prompts/implement-1.md").unlink()
+        proc = self.run_ctl("start-agent", "--run-dir", str(self.run_dir),
+                            "--surface", "SURF-UUID", "--role", "implement", "--pass", "1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Missing worker prompt", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
+
+    def test_default_and_opt_in_diagnostics(self):
+        for options, verbs in (([], ["send", "send-key"]),
+                                (["--settle-seconds", "0.001"], ["send", "send-key", "read-screen"])):
+            self.prepare_snapshot("implement")
+            self.log.unlink(missing_ok=True)
+            proc = self.run_ctl("start-agent", "--run-dir", str(self.run_dir),
+                                "--surface", "SURF-UUID", "--role", "implement", "--pass", "1", *options)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual([c[0] for c in self.cmux_calls()], verbs)
+            self.assertEqual(len(proc.stdout.splitlines()), 1)
 
     def test_claude_role_gets_the_marker_too(self):
         self.prepare_snapshot("review")
@@ -326,7 +360,7 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(
             self.cmux_calls()[0][-1],
             "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model opus --effort xhigh "
-            "--permission-mode auto",
+            "--permission-mode auto " + shlex.quote(delivery_text("run/prompts/review-1.md")),
         )
 
     def test_argument_vector_is_shell_quoted_without_losing_boundaries(self):
@@ -343,7 +377,8 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         command = self.cmux_calls()[0][-1]
         self.assertIn('sandbox_workspace_write.writable_roots=["~/.ddev"]', argv)
-        self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *argv])
+        self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *argv, delivery_text("run/prompts/implement-1.md")])
+        self.assertEqual(json.loads(path.read_text())["selected_worker"]["argv"], argv)
 
     def test_failed_snapshot_refuses_start_without_any_cmux_call(self):
         self.prepare_snapshot("implement", status="failed")

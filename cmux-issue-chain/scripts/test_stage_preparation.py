@@ -901,6 +901,13 @@ class PreparedStageCli(unittest.TestCase):
 
         config["profiles"]["claude-next"]["model"] = "changed-after-prepare"
         config_path.write_text(json.dumps(config), encoding="utf-8")
+        from orchestrator_lib import delivery_text
+        from render_prompt import render
+        prompt = self.run_dir / "prompts/simplify-1.md"
+        prompt.parent.mkdir(exist_ok=True)
+        prompt.write_text(render("simplify", "ISSUE-001", "# Test issue", {},
+                                 prompt_path=prompt,
+                                 artifact_path=self.run_dir / "artifacts/simplify-1"))
         started = self.pane(
             "start-agent", "--run-dir", str(self.run_dir),
             "--surface", "SURFACE", "--role", "simplify", "--pass", "1",
@@ -910,7 +917,8 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(started.returncode, 0, started.stderr)
         cmux_calls = [json.loads(line) for line in self.cmux_log.read_text().splitlines()]
         command = cmux_calls[0][-1]
-        self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *prepared_argv])
+        self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *prepared_argv,
+                                               delivery_text(str(prompt.relative_to(self.repo)))])
         self.assertIn("next-model", command)
         self.assertNotIn("changed-after-prepare", command)
         self.assertEqual(

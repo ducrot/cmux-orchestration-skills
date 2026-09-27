@@ -409,13 +409,22 @@ Monitor(
 90; the script's own role-derived deadline ends the watch. `Bash` with `run_in_background` is an
 acceptable substitute only when the remaining wait is at most 10 minutes (Bash timeout caps at 600000 ms).
 
-The watcher ends on exactly three conditions and nothing else:
+Exit vocabulary: 0 = report, 1 = crash, 2 = usage, 3–6 = report gates, 7 = pane dead,
+8 = deadline, 9 = not started. The watcher ends on exactly four conditions:
 
 | Exit | Condition                             | Orchestrator action                                                                      |
 |------|---------------------------------------|------------------------------------------------------------------------------------------|
 | 0    | Report file exists                    | Snapshot, parse, gate — exit 0 is not an advance verdict                                 |
 | 7    | Pane dead per `cmux surface-health`   | Stop as HITL; a dead pane with no report is orchestration uncertainty, not findings      |
 | 8    | Deadline exceeded, pane alive/unknown | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL |
+| 9    | Assignment not started within `--start-minutes` (default 5) | Follow the exit-9 exception path below |
+
+The start window applies only to the latest matching `worker.launch_sent` carrying `prompt_path`
+without a `worker.started` for that launch ID. The watcher accepts a marker only with a matching
+`worker.starting` and marker `st_mtime_ns >= start_time_ns`; a report arriving first also confirms
+start. It writes one `worker.started` with `evidence: "marker"` or `"report"` and continues the
+report wait. Legacy launches and already-confirmed launches skip this phase. The role deadline
+counts from arming, including time spent waiting for start.
 
 While a watcher is armed it is the sole emitter of `worker.waiting`; the orchestrator does not hand-write
 waiting events in parallel. Silence is never success — only the report file is ground truth. A
@@ -587,7 +596,7 @@ After the final test report parses `advance` and before that gate event is recor
 3. Otherwise, in autonomous mode record `advance --next-stage triage`, then
    `prepare --stage triage --pass 1`. Render `--role triage --pass 1 --items-file <run-dir>/triage-items-1.md`
    with all non-triage run reports supplied as `--context-file`. Keep the issue ready until completion.
-4. Launch a fresh visible Triager pane anchored to the test pane. Snapshot, deliver, and arm the watcher
+4. Launch a fresh visible Triager pane anchored to the test pane. Snapshot, start-agent, and arm the watcher
    as for every role. Between `launched triage-<pass>` and `report-captured triage-<pass>`, compare
    `staged_paths`, `staged_diff_sha256`, `head`, and the full `fingerprint`. Any difference gates `hitl`:
    triage is read-only, and its diff files were captured before launch.
@@ -720,17 +729,19 @@ The orchestrator may still assist the human:
 
 ## Worker input readiness
 
-Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
-After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
-startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
-start and task delivery. The gate applies to Codex, Claude Code and Pi, all roles/lanes, and follow-ups.
-`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+Normal starts attach the assignment with `start-agent`; arm `await_report.py` immediately.
+The watcher confirms `worker.started` from the marker or report, with no screen judgment.
+After exit 9, use the exception path below. For recovery and follow-ups, follow
+[Interactive worker readiness](references/worker-readiness.md): `observe`, explicitly
+`assess`, resolve any dialog with `respond`, and use readiness-gated `deliver --prompt`
+for re-delivery or `deliver --text` for follow-ups. Read each result before the next input.
+`worker.ready` permits one delivery and is distinct from assignment start confirmation.
 
 ## CMUX Control
 
 Prefer current CLI syntax discovered from `cmux --help` before launching workers. Workers must be visible in CMUX
 panes. Never type a launch command into a worker pane by hand: `pane_ctl.py start-agent` owns it, so every worker
-starts from the exact audited argument vector in its prepared stage snapshot. The default profiles produce:
+starts from the audited argument vector in its prepared stage snapshot with the assignment delivery line appended as its final argument. The default profiles produce:
 
 ```bash
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
@@ -781,13 +792,15 @@ run owns, and cmux resolves unscoped commands against the focused one.
 The lifecycle verbs cover the error-prone multi-step sequences and record their events themselves:
 
 ```bash
+# Prepare, render, launch, close the previous pane, snapshot, start-agent, then arm the watcher.
+python3 scripts/run_state.py prepare --run-dir <run-dir> --stage review --pass 1
+python3 scripts/render_prompt.py --tracker <tracker> --issue <issue> --run-dir <run-dir> --role review --pass 1
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --anchor <prev-worker-surface-id>
+python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <prev-worker-surface-id> --role <previous-role> --pass <previous-pass>
+python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "launched review-1"
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
-# Read each result; ready is a judgment, not an unconditional startup command.
-python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --role review --pass 1
-python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --role review --pass 1 --observation <observation-id> --state ready --reason "<screen evidence>"
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --role review --pass 1 --prompt <prompt-path>
-python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --role review --pass 1
+# Arm via the harness Monitor tool as described above.
+python3 scripts/await_report.py --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
 
 - `launch` first validates that the requested role/pass matches the current, passed, untampered prepared
@@ -796,11 +809,15 @@ python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --r
   per the deterministic label scheme, records `pane.launched` + `pane.labeled`, and prints the new
   surface's stable UUID — use that UUID in every later command; positional refs like `surface:465` shift
   when panes close.
-- `start-agent` revalidates the same snapshot, safely shell-quotes its argument vector, sends that exact
-  launch command without reading live configuration, records `worker.launch_sent`, and echoes the screen.
-- `deliver` requires a fresh, screen-bound readiness assessment, consumes it, then sends the text, submits it with an explicit Enter key event, records `worker.prompt_sent`,
-  and echoes the pane screen after a short settle. Judging that screen — worker started, or sitting at an
-  approval prompt — stays the orchestrator's call; record `worker.started` only after that judgment.
+- `start-agent` revalidates the same snapshot and requires the rendered prompt before any cmux call.
+  It appends the repository-relative assignment delivery line as one shell-quoted argument, records
+  `worker.starting` and `worker.launch_sent` with a launch ID and nanosecond start time, and prints
+  one JSON line containing `launch_id`, `surface_id`, `prompt_path`, `marker_path`, and the next step:
+  arm the watcher. The default `--settle-seconds 0` sends only the command and Enter; a positive
+  settle opts into a diagnostic screen echo on stderr.
+- `deliver` is for the exception path and follow-ups. It requires a fresh, screen-bound readiness
+  assessment, consumes it, sends the text and explicit Enter, records `worker.prompt_sent`, and echoes
+  the pane screen after a short settle.
   Hand over a rendered prompt with `--prompt <prompt-path>`, never with hand-written `--text`: the
   wording is skill policy like the launch command, and getting it wrong stalls the worker (see the
   send/Enter rule below). `--text` is for follow-ups into a working pane — re-emission requests,
@@ -888,7 +905,7 @@ Use this pane layout for the default chain:
 Do not open simplify, review, or test as down splits from the orchestrator pane just because the orchestrator pane is active after gate processing.
 
 For every role (implement, simplify, review, test, and triage), including the initial implement launch,
-record `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
+record `run_state.py snapshot --label "launched <role>-<pass>"` right before `start-agent`.
 Preserve that baseline until its report-capture comparison is complete; never replace it to
 adopt an unchecked delta.
 
@@ -910,11 +927,10 @@ Close completed worker panes promptly:
    pane — with `pane_ctl.py close` (it records `pane.closed`). Its report is already captured
    and snapshotted (steps 1-2). Sending the prompt first and closing afterwards is the documented trap:
    with stacked splits the new pane may be unable to show its composer until the old pane is gone.
-7. Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`, judge the echoed
-   screen, then follow the observe/assess/dialog protocol before recording
-   `run_state.py snapshot --label "launched <role>-<pass>"` right before prompt delivery.
-   Send the prompt with `pane_ctl.py deliver --prompt` and
-   confirm the worker started (see the send/Enter rule below).
+7. Record `run_state.py snapshot --label "launched <role>-<pass>"` right before `start-agent`.
+   Start the new pane's worker with `pane_ctl.py start-agent --role <role> --pass <n>`.
+   It attaches the rendered assignment. Immediately arm the watcher; no observe, assess, deliver,
+   or started judgment is needed on the normal path.
 8. On final completion, HITL, blocker, or run abort, close all completed worker panes after their reports
    and gate decisions are documented.
 
@@ -952,7 +968,7 @@ rendered report handoff path before returning the same report body in the consol
 is the worker's only lifecycle-state write exception. The assigned artifact directory is separately
 worker-writable; workers must not edit any other lifecycle-state file.
 
-Send any instruction, prompt, or follow-up text to a worker with `pane_ctl.py deliver` — never with a
+Send re-delivery or follow-up text to a worker with `pane_ctl.py deliver` — never with a
 bare `cmux send`. The underlying trap: `cmux send --help` documents `\n` and `\r` as Enter, but a
 trailing `\n` does not submit in either the Codex or the Claude Code TUI; the text lands in the composer
 and waits there unsent. `deliver` therefore always sends the text and an explicit `send-key enter` as two
@@ -970,22 +986,17 @@ python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> \
 that line by hand. A framing like "Read `<path>` and report back" is what a Claude worker answers with a
 summary of the prompt, which is why the wording lives in the skill and not in the turn.
 
-Do not send text and rely on noticing later that it is still waiting at the prompt. Judge the echoed
-screen (or a later injector `read-screen`) to confirm the worker actually started before treating the
-prompt as delivered, then record `worker.started`.
+After exit 9, take one `observe` and `assess` and follow this exception path:
+- `prompt`: use `respond` for the assessed dialog, then re-arm without re-delivery. The assignment
+  is already attached to the launch. Resolve further dialogs individually under the readiness protocol.
+- `failed`: follow the existing blocker/recovery rules.
+- Idle after a recap or line unsent: perform one readiness-gated `deliver --prompt`, then re-arm.
+  A worker that never started does not consume the stage's one deadline extension.
+- Visibly working: record `run_state.py event --type worker.started` with `evidence: "screen"`,
+  the current `launch_id`, `role`, `pass`, and `surface_id`, then re-arm.
 
-Two distinct not-started screens exist, and they need different handling:
-
-- **Text unsent**: the prompt sits in the composer. `deliver` already sends the explicit Enter, so this
-  means the send itself failed — diagnose the pane before resending.
-- **Summarized and waiting**: the worker answered with a recap of the prompt ("the prompt is ready to
-  execute; I only read it") and went idle. This is the Claude failure mode — the delivery line was read
-  as a documentation request. The worker is not started: no `worker.started`. Re-deliver the same prompt
-  with `deliver --prompt` (which carries the task framing), judge the screen again, and arm the watcher
-  from the re-delivery. A worker that never started does not consume the stage's one deadline extension.
-
-An empty or working-looking pane after `--prompt` delivery is neither case; that pane is working and the
-armed watcher owns it.
+A re-armed watcher keeps the same launch identity and can accept a refreshed marker. Screen-based
+confirmation is reserved for this exception path; normal starts are confirmed by the watcher.
 
 Do not use hidden subagents as worker substitutes during a live run. If CMUX cannot launch the visible worker, stop and report the CMUX failure. This rule covers the workers themselves; the internal subagents a worker spawns inside its own TUI (e.g. `/code-review` review agents) are part of that worker, not substitutes for it.
 
@@ -1004,9 +1015,10 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
 | `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
 | `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
-| `worker.launch_sent`                                     | Worker launch command sent verbatim; written by `pane_ctl.py start-agent`                                                                         |
+| `worker.launch_sent`                                     | Worker launch command with assignment attached; written by `pane_ctl.py start-agent`                                                                         |
+| `worker.observed`, `worker.ready`, `worker.startup_status`, `worker.dialog_response`, `worker.readiness_consumed`, `worker.delivery_attempted` | Readiness events for exception-path and follow-up only |
 | `worker.prompt_sent`                                     | Text sent and submitted; written by `pane_ctl.py deliver`                                                                                        |
-| `worker.started`                                         | Prompt delivered and confirmed via read-screen — the orchestrator's judgment, after `worker.prompt_sent`                                         |
+| `worker.started`                                         | Assignment start confirmed by the watcher from marker or report, or by the orchestrator on the exception path                                         |
 | `worker.waiting`                                         | Watcher heartbeat while the report is pending; written by `await_report.py` while armed                                                          |
 | `worker.finished`                                        | Report captured; data carries `{role, pass, surface_id, runtime}`                                                                                |
 | `worker.launch_blocked`                                  | A worker launch was denied (permissions, environment)                                                                                            |
@@ -1097,7 +1109,7 @@ recorded prompt adopts it (`run.invocation`):
 ```bash
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --probe-profiles
-python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "prompt delivered and confirmed via read-screen" --data '{"role":"review","pass":1,"pane_id":"<pane-id>","surface_id":"<surface-id>"}'
+python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "assignment visibly working on exception path" --data '{"role":"review","pass":1,"surface_id":"<surface-id>","launch_id":"<launch-id>","evidence":"screen"}'
 ```
 
 After every advance gate, prepare the next stage before `pane_ctl.py launch`. This reloads the run's pinned
@@ -1178,7 +1190,8 @@ python3 scripts/parse_report.py path/to/worker-report.md --json
 ```
 
 Await a worker report deterministically (see Worker Wait Policy for the Monitor invocation). The deadline
-defaults to the role's minimum wait; exit 0 = report exists, 7 = pane dead, 8 = deadline exceeded.
+defaults to the role's minimum wait; exit 0 = report exists, 7 = pane dead, 8 = deadline exceeded, 9 = not started.
+`--start-minutes` defaults to 5; the role deadline keeps counting from arming.
 Heartbeats go to `events.jsonl` as `worker.waiting`. Health checks are scoped to the run's pinned
 `workspace_id` from `state.json`; there is no env fallback:
 
