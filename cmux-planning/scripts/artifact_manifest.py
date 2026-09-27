@@ -110,6 +110,7 @@ def stage_paths(run_dir: Path, stage: str, pass_num: int, attempt: int) -> dict[
         }
     else:
         raise ArtifactIntegrityError(f"unknown planning stage: {stage}")
+    relative["started"] = f"artifacts/{stage}-{pass_num}{suffix}/started"
     relative["prompt"] = f"prompts/{stage}-{pass_num}{suffix}.md"
     return {key: str((run_dir / value).resolve()) for key, value in relative.items()}
 
@@ -405,6 +406,11 @@ def audit_artifacts(state: dict[str, Any], run_dir: Path) -> dict[str, list[str]
             if isinstance(value, str):
                 _, relative = _relative_path(run_dir, value)
                 declared.add(relative)
+    for previous in state.get("attempt_history", []):
+        marker = previous.get("paths", {}).get("started")
+        if isinstance(marker, str):
+            _, relative = _relative_path(run_dir, marker)
+            declared.add(relative)
     seen: set[str] = set()
     for path in run_dir.rglob("*"):
         if not (path.is_file() or path.is_symlink()):

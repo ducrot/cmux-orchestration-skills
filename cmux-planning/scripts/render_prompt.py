@@ -144,6 +144,15 @@ def resumed_context(run_dir: Path, state: dict) -> str:
     return "\n\n".join(blocks)
 
 
+def first_step(marker: str) -> str:
+    return f"""## First Step
+
+Before anything else, use the harness's file-writing tool to create or overwrite
+`{marker}` (create its parent directory if necessary). Rewrite an existing marker
+so its modification time is refreshed, then execute this assignment.
+"""
+
+
 def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
     task_path = (run_dir / state["task"]["path"]).resolve()
     verify_entry(
@@ -158,6 +167,7 @@ def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
     feedback = state.get("spec_revision_feedback") or "None recorded for this specification pass."
     return f"""# Planning Worker Prompt: specification author (pass {pass_num})
 
+{first_step(paths['started'])}
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
 Harness: {snapshot['selected_worker']['harness']}
@@ -200,6 +210,7 @@ prefer observable behavior over implementation details, and justify any new seam
 You may inspect the repository read-only. Physically write only these exact files:
 
 - Complete draft: `{paths['draft']}`
+- Started marker: `{paths['started']}`
 - Structured report: `{paths['report']}`
 
 Do not edit product code, configuration, lifecycle state, prompts, snapshots, or any other path. The
@@ -263,6 +274,7 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
     paths = snapshot["allowed_worker_writes"]
     return f"""# Planning Worker Prompt: independent specification review (pass {pass_num})
 
+{first_step(paths['started'])}
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
 Harness: {snapshot['selected_worker']['harness']}
@@ -319,6 +331,7 @@ Return exactly one verdict:
 
 You may physically write only:
 
+- Started marker: `{paths['started']}`
 - Review report: `{paths['report']}`
 - Complete corrected candidate only for `pass_with_fixes`: `{paths['candidate']}`
 
@@ -412,6 +425,7 @@ def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) ->
     feedback = state.get("ticket_revision_feedback") or "None recorded for this tickets pass."
     return f"""# Planning Worker Prompt: tickets author (pass {pass_num})
 
+{first_step(paths['started'])}
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
 Harness: {snapshot['selected_worker']['harness']}
@@ -471,6 +485,7 @@ You may physically write only these exact files:
 
 - Machine-readable proposal: `{paths['proposal']}`
 - Human-readable numbered summary: `{paths['summary']}`
+- Started marker: `{paths['started']}`
 - Structured report: `{paths['report']}`
 
 Do not edit the approved spec, product code, configuration, lifecycle state, or any other path. Mandatory
@@ -560,6 +575,7 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
     )
     return f"""# Planning Worker Prompt: independent ticket review (pass {pass_num})
 
+{first_step(paths['started'])}
 Prepared: {snapshot['resolved_at']}
 Stage snapshot: {snapshot['snapshot_id']}
 Harness: {snapshot['selected_worker']['harness']}
@@ -624,6 +640,7 @@ Return exactly one verdict:
 
 You may physically write only:
 
+- Started marker: `{paths['started']}`
 - Review report: `{paths['report']}`
 - Complete corrected machine proposal only for `pass_with_fixes`: `{paths['candidate']}`
 

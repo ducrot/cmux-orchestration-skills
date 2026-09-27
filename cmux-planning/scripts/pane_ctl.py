@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from worker_readiness import Gate, VERBS, add_commands, begin_start
+from worker_readiness import Gate, VERBS, add_commands, begin_start, context
 
 from artifact_manifest import ArtifactIntegrityError, current_attempt, require_current_format, verify_or_gate
 from orchestrator_lib import (
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--anchor", required=True)
     launch.add_argument("--direction", choices=("left", "right", "up", "down"), default="right")
     start = subparsers.add_parser("start-agent", parents=[launched_pane])
-    start.add_argument("--settle-seconds", type=float, default=8)
+    start.add_argument("--settle-seconds", type=float, default=0)
     deliver = subparsers.add_parser("deliver", parents=[launched_pane])
     deliver.add_argument("--prompt", required=True)
     deliver.add_argument("--settle-seconds", type=float, default=3)
@@ -84,19 +85,23 @@ def event(run_dir: Path, kind: str, message: str, data: dict) -> None:
     append_event(run_dir, kind, message, data)
 
 
-def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dict) -> None:
+def send(args: argparse.Namespace, surface: str, text: str, kind: str, data: dict) -> dict:
     run_dir = Path(args.run_dir)
     target = ["--workspace", workspace(run_dir), "--surface", surface]
     if kind == "worker.launch_sent":
+        data["start_time_ns"] = time.time_ns()
         data = begin_start(args, event, data)
     if kind == "worker.prompt_sent":
         event(run_dir, "worker.delivery_attempted", "task input about to be sent", data)
     cmux(args, ["send", *target, text])
     cmux(args, ["send-key", *target, "enter"])
     event(run_dir, kind, "sent and submitted text to stable planning pane", data)
-    time.sleep(args.settle_seconds)
-    screen = cmux(args, ["read-screen", *target, "--lines", "40"])
-    print(screen.stdout, end="")
+    if kind != "worker.launch_sent" or args.settle_seconds > 0:
+        time.sleep(args.settle_seconds)
+        screen = cmux(args, ["read-screen", *target, "--lines", "40"])
+        if kind != "worker.launch_sent":
+            print(screen.stdout, end="")
+    return data
 
 
 def run(args: argparse.Namespace) -> int:
@@ -164,14 +169,26 @@ def run(args: argparse.Namespace) -> int:
         load_prepared_snapshot(run_dir, args.stage, args.pass_num)
         return Gate(args, workspace(run_dir), cmux, event).run()
     if args.command == "start-agent":
-        snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
-        send(
+        snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num, require_baseline=True)
+        prompt = Path(snapshot["prompt_path"])
+        baseline = state["tree_baseline"]
+        if prompt.resolve() != Path(baseline["prompt_path"]).resolve():
+            raise SnapshotError("snapshot prompt is not the baseline-verified prompt")
+        relative = os.path.relpath(prompt.resolve(), Path(state["repository"]).resolve())
+        text = delivery_text(relative)
+        launch = send(
             args,
             surface,
-            snapshot_shell_command(snapshot),
+            snapshot_shell_command(snapshot, text),
             "worker.launch_sent",
-            {"stage": args.stage, "pass": args.pass_num, "surface_id": surface, **snapshot_launch_record(snapshot)},
+            {"stage": args.stage, "pass": args.pass_num, "surface_id": surface,
+             **snapshot_launch_record(snapshot), "prompt_path": str(prompt),
+             "prompt_path_relative": relative, "text": text,
+             "marker_path": attempt["paths"]["started"]},
         )
+        print(json.dumps({key: launch[key] for key in
+                          ("launch_id", "surface_id", "prompt_path", "marker_path")} |
+                         {"next_step": "await_report.py"}, sort_keys=True))
         return 0
     if args.command == "deliver":
         load_prepared_snapshot(run_dir, args.stage, args.pass_num)
@@ -191,10 +208,15 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "mark-started":
         snapshot = load_prepared_snapshot(run_dir, args.stage, args.pass_num)
-        already_recorded = surface_event_recorded(
-            events, "worker.started", args.stage, args.pass_num, surface
-        )
-        if not surface_event_recorded(events, "worker.prompt_sent", args.stage, args.pass_num, surface):
+        launch_id, later = context(events, {"stage": args.stage, "pass": args.pass_num}, surface)
+        launch = next((e["data"] for e in reversed(events)
+                      if e.get("type") == "worker.launch_sent"
+                      and e.get("data", {}).get("launch_id") == launch_id), {})
+        already_recorded = any(e.get("type") == "worker.started"
+                               and e.get("data", {}).get("launch_id") == launch_id
+                               and e["data"].get("attempt_id") == attempt["attempt_id"] for e in later)
+        delivered = surface_event_recorded(later, "worker.prompt_sent", args.stage, args.pass_num, surface)
+        if not delivered and launch.get("prompt_path") != snapshot["prompt_path"]:
             raise SnapshotError("cannot mark-started before the assignment was delivered")
         if not already_recorded:
             event(
@@ -206,6 +228,9 @@ def run(args: argparse.Namespace) -> int:
                     "pass": args.pass_num,
                     "surface_id": surface,
                     **snapshot_launch_record(snapshot),
+                    "launch_id": launch_id,
+                    "evidence": "screen",
+                    "marker_path": attempt["paths"]["started"],
                 },
             )
         print(

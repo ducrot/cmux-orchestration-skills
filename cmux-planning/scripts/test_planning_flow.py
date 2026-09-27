@@ -10,6 +10,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -621,14 +623,10 @@ sha256 {resulting_digest or digest}
 
         surface = json.loads(pane("launch", "--anchor", "CALLER").stdout)["surface_id"]
         pane("start-agent", "--surface", surface, "--settle-seconds", "0")
-        self.confirm_ready(stage, pass_num, surface)
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
-        pane(
-            "deliver",
-            "--surface", surface,
-            "--prompt", state["tree_baseline"]["prompt_path"],
-            "--settle-seconds", "0",
-        )
+        marker = Path(state["current_attempt"]["paths"]["started"])
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("started")
 
     def ticket_approval(
         self, decision: str, reason: str, *, target: Path | None = None, scope: str | None = None
@@ -693,6 +691,11 @@ sha256 {resulting_digest or digest}
                     encoding="utf-8"
                 )
                 self.assertIn(expected_boundary, " ".join(prompt.split()))
+                marker = str(self.run_dir.resolve() / "artifacts" / f"{stage}-1" / "started")
+                self.assertEqual(prompt.splitlines()[2], "## First Step")
+                self.assertIn(marker, prompt.split("Prepared:")[0])
+                self.assertIn(marker, prompt.split("## Write Boundary")[1])
+                self.assertIn("Rewrite an existing marker", prompt)
 
     def test_direct_task_runs_end_to_end_through_review_and_explicit_approval(self):
         initialized = self.init_direct()
@@ -2025,6 +2028,9 @@ sha256 {resulting_digest or digest}
     def test_pi_snapshot_requires_no_approve(self):
         self.check_startup_snapshot_policy("pi")
 
+    def test_start_prompt_snapshot_rejects_restamped_marker_substitution(self):
+        self.check_startup_snapshot_policy("marker")
+
     def check_startup_snapshot_policy(self, mutation):
         from agents_config import snapshot_identity
         from stage_snapshot import load_prepared_snapshot, stage_argv, SnapshotError
@@ -2036,7 +2042,10 @@ sha256 {resulting_digest or digest}
         path = self.run_dir / pointer["path"]
         snapshot = json.loads(path.read_text())
         entry = snapshot["selected_worker"]
-        if mutation == "trust":
+        if mutation == "marker":
+            snapshot["allowed_worker_writes"]["started"] = str(self.run_dir / "artifacts/wrong/started")
+            expected = "substituted handoff paths"
+        elif mutation == "trust":
             entry["preflight"].pop("trust", None)
             expected = "trust preflight"
         else:
@@ -2054,6 +2063,228 @@ sha256 {resulting_digest or digest}
         with self.assertRaisesRegex(SnapshotError, expected):
             load_prepared_snapshot(self.run_dir, "spec", 1, require_baseline=False)
         self.assertFalse(self.cmux_log.exists())
+
+    def start_prompt_fixture(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        common = ["--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"]
+        launched = self.cli(PANE, "--cmux-cmd", str(self.cmux), "launch", *common, "--anchor", "CALLER")
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        return common + ["--surface", "SURF-1"]
+
+    def start_prompt_launch(self, common):
+        result = self.cli(PANE, "--cmux-cmd", str(self.cmux), "start-agent", *common)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("{"), result.stdout)
+        return json.loads(result.stdout)
+
+    def start_prompt_watch(self, common, *tail, env=None):
+        return self.cli(AWAIT, *common, "--cmux-cmd", str(self.cmux),
+                        "--start-minutes", "0.003", "--deadline-minutes", "0.02",
+                        "--poll-seconds", "0.01", "--health-seconds", "0.01", *tail, env=env)
+
+    def run_events(self):
+        return [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+
+    def test_start_prompt_command_shape_and_mark_started(self):
+        from agents_config import shell_command
+        common = self.start_prompt_fixture()
+        state = json.loads((self.run_dir / "state.json").read_text())
+        snapshot = json.loads((self.run_dir / state["prepared_stage"]["path"]).read_text())
+        selected = snapshot["selected_worker"]
+        before = len(self.cmux_log.read_text().splitlines())
+        output = self.start_prompt_launch(common)
+        calls = [json.loads(line) for line in self.cmux_log.read_text().splitlines()[before:]]
+        self.assertEqual([c[0] for c in calls], ["send", "send-key"])
+        relative = str(Path(snapshot["prompt_path"]).relative_to(self.repo.resolve()))
+        text = orchestrator_lib.delivery_text(relative)
+        self.assertEqual(calls[0][-1], shell_command(selected["environment"], selected["argv"] + [text]))
+        self.assertEqual(shlex.split(calls[0][-1])[-1], text)
+        self.assertEqual(json.loads((self.run_dir / state["prepared_stage"]["path"]).read_text())["selected_worker"]["argv"], selected["argv"])
+        starting, sent = [e["data"] for e in self.run_events() if e["type"] in {"worker.starting", "worker.launch_sent"}]
+        self.assertEqual(starting["start_time_ns"], sent["start_time_ns"])
+        self.assertGreater(sent["start_time_ns"], 0)
+        self.assertEqual(sent["prompt_path_relative"], relative)
+        self.assertEqual(sent["text"], text)
+        self.assertEqual(output["launch_id"], sent["launch_id"])
+        self.assertEqual(output["marker_path"], snapshot["allowed_worker_writes"]["started"])
+        for already in (False, True):
+            marked = self.cli(PANE, "mark-started", *common)
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+            self.assertEqual(json.loads(marked.stdout)["already_recorded"], already)
+        event = next(e["data"] for e in self.run_events() if e["type"] == "worker.started")
+        self.assertEqual(event["launch_id"], sent["launch_id"])
+        self.assertEqual(event["attempt_id"], state["current_attempt"]["attempt_id"])
+        self.assertEqual(event["evidence"], "screen")
+
+    def test_start_prompt_restart_after_delivery_recommends_watcher(self):
+        common = self.start_prompt_fixture()
+        first = self.start_prompt_launch(common)
+        self.confirm_ready()
+        delivered = self.cli(PANE, "--cmux-cmd", str(self.cmux), "deliver", *common,
+                             "--prompt", str(self.run_dir / "prompts/spec-1.md"),
+                             "--settle-seconds", "0")
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        current = self.start_prompt_launch(common)
+        self.assertNotEqual(current["launch_id"], first["launch_id"])
+        self.assertEqual(current["surface_id"], first["surface_id"])
+        status = self.cli(STATE, "status", "--run-dir", str(self.run_dir),
+                          "--cmux-cmd", str(self.cmux))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        result = json.loads(status.stdout)
+        self.assertIn("await_report.py", result["recommended_next"]["command"])
+        self.assertIn("--extension 0", result["recommended_next"]["command"])
+        self.assertFalse(result["pane"]["delivery_attempted"])
+
+    def test_start_prompt_legacy_launch_mark_started_refuses_without_traceback(self):
+        common = self.start_prompt_fixture()
+        self.start_prompt_launch(common)
+        events = self.run_events()
+        for event in events:
+            if event["type"] == "worker.launch_sent":
+                event["data"].pop("launch_id")
+                event["data"].pop("prompt_path")
+        (self.run_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        result = self.cli(PANE, "mark-started", *common)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot mark-started before the assignment was delivered", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_start_prompt_changed_or_missing_refused_before_cmux(self):
+        common = self.start_prompt_fixture()
+        prompt = self.run_dir / "prompts/spec-1.md"
+        before = self.cmux_log.read_text()
+        prompt.write_text(prompt.read_text() + "changed")
+        result = self.cli(PANE, "--cmux-cmd", str(self.cmux), "start-agent", *common)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.cmux_log.read_text(), before)
+        prompt.unlink()
+        result = self.cli(PANE, "--cmux-cmd", str(self.cmux), "start-agent", *common)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.cmux_log.read_text(), before)
+
+    def test_start_prompt_substituted_marker_refused(self):
+        common = self.start_prompt_fixture()
+        path = self.run_dir / "state.json"
+        state = json.loads(path.read_text())
+        state["current_attempt"]["paths"]["started"] = str(self.run_dir / "artifacts/other-started")
+        path.write_text(json.dumps(state))
+        before = self.cmux_log.read_text()
+        result = self.cli(PANE, "--cmux-cmd", str(self.cmux), "start-agent", *common)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("substituted", result.stderr)
+        self.assertEqual(self.cmux_log.read_text(), before)
+
+    def test_start_prompt_stale_markers_and_older_launch_do_not_confirm(self):
+        common = self.start_prompt_fixture()
+        first = self.start_prompt_launch(common)
+        marked = self.cli(PANE, "mark-started", *common)
+        self.assertEqual(marked.returncode, 0, marked.stderr)
+        current = self.start_prompt_launch(common)
+        self.assertNotEqual(first["launch_id"], current["launch_id"])
+        sent = [e["data"] for e in self.run_events() if e["type"] == "worker.launch_sent"][-1]
+        marker = Path(current["marker_path"])
+        marker.parent.mkdir(parents=True)
+        marker.write_text("old")
+        for age in (2_000_000_000, 1):
+            with self.subTest(age_ns=age):
+                stamp = sent["start_time_ns"] - age
+                os.utime(marker, ns=(stamp, stamp))
+                result = self.start_prompt_watch(common)
+                self.assertEqual(result.returncode, 9, result.stderr)
+                last = self.run_events()[-1]["data"]
+                self.assertEqual(last["outcome"], "not_started")
+                self.assertEqual(last["launch_id"], current["launch_id"])
+                self.assertEqual(last["extension"], 0)
+        self.assertEqual(len([e for e in self.run_events() if e["type"] == "worker.started"]), 1)
+
+    def test_start_prompt_marker_mid_wait_and_report_first(self):
+        common = self.start_prompt_fixture()
+        launch = self.start_prompt_launch(common)
+        marker = Path(launch["marker_path"])
+        report = self.run_dir / "reports/spec-1.md"
+        def worker():
+            time.sleep(0.25)
+            marker.parent.mkdir(parents=True)
+            marker.write_text("started")
+            time.sleep(0.1)
+            report.write_text("handoff")
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            result = self.start_prompt_watch(common, "--start-minutes", "0.03")
+        finally:
+            thread.join()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [e["data"] for e in self.run_events() if e["type"] == "worker.started"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["evidence"], "marker")
+        self.assertEqual(events[0]["launch_id"], launch["launch_id"])
+        # Rejoining the captured handoff never records a second start.
+        self.assertEqual(self.start_prompt_watch(common).returncode, 0)
+        self.assertEqual(len([e for e in self.run_events() if e["type"] == "worker.started"]), 1)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertFalse(any(e["path"].endswith("/started") for e in state["artifact_manifest"].values()))
+        from artifact_manifest import audit_artifacts, close_attempt
+        self.assertNotIn(str(marker.relative_to(self.run_dir.resolve())), audit_artifacts(state, self.run_dir)["unexpected"])
+        close_attempt(state, "closed", "fixture")
+        self.assertNotIn(str(marker.relative_to(self.run_dir.resolve())), audit_artifacts(state, self.run_dir)["unexpected"])
+
+    def test_start_prompt_report_first_and_pane_death(self):
+        common = self.start_prompt_fixture()
+        launch = self.start_prompt_launch(common)
+        dead_env = {**self.env(), "FAKE_CMUX_DEAD": "1"}
+        result = self.start_prompt_watch(common, env=dead_env)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        report = self.run_dir / "reports/spec-1.md"
+        report.write_text("handoff")
+        result = self.start_prompt_watch(common)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [e["data"] for e in self.run_events() if e["type"] == "worker.started"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["evidence"], "report")
+        self.assertEqual(events[0]["launch_id"], launch["launch_id"])
+
+    def test_start_prompt_timeout_dialog_response_and_redelivery_recovery(self):
+        common = self.start_prompt_fixture()
+        self.start_prompt_launch(common)
+        def status():
+            result = self.cli(STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertIn("await_report.py", status()["recommended_next"]["command"])
+        self.assertEqual(self.start_prompt_watch(common).returncode, 9)
+        self.assertIn("observe", status()["recommended_next"]["command"])
+        observed = self.cli(PANE, "--cmux-cmd", str(self.cmux), "observe", *common)
+        observation = json.loads(observed.stdout)["observation_id"]
+        assessed = self.cli(PANE, "--cmux-cmd", str(self.cmux), "assess", *common,
+                            "--observation", observation, "--state", "prompt", "--reason", "fixture dialog")
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        self.assertEqual(status()["pane"]["startup_state"], "prompt")
+        self.assertIn("observe", status()["recommended_next"]["command"])
+        responded = self.cli(PANE, "--cmux-cmd", str(self.cmux), "respond", *common,
+                            "--observation", observation, "--key", "enter", "--reason", "authorized fixture dialog")
+        self.assertEqual(responded.returncode, 0, responded.stderr)
+        self.assertIn("await_report.py", status()["recommended_next"]["command"])
+        self.assertIn("--extension 0", status()["recommended_next"]["command"])
+        self.assertEqual(self.start_prompt_watch(common).returncode, 9)
+        self.confirm_ready()
+        self.assertIn("observe", status()["recommended_next"]["command"])
+        delivered = self.cli(PANE, "--cmux-cmd", str(self.cmux), "deliver", *common,
+                             "--prompt", str(self.run_dir / "prompts/spec-1.md"), "--settle-seconds", "0")
+        self.assertEqual(delivered.returncode, 0, delivered.stderr)
+        self.assertIn("await_report.py", status()["recommended_next"]["command"])
+        self.assertIn("--extension 0", status()["recommended_next"]["command"])
+        # A later interrupted delivery must not inherit the earlier successful delivery.
+        self.confirm_ready()
+        original = self.cmux.read_text()
+        self.cmux.write_text(original.replace('elif "read-screen" in sys.argv:',
+            'elif "send-key" in sys.argv: raise SystemExit(1)\nelif "read-screen" in sys.argv:'))
+        interrupted = self.cli(PANE, "--cmux-cmd", str(self.cmux), "deliver", *common,
+                               "--prompt", str(self.run_dir / "prompts/spec-1.md"), "--settle-seconds", "0")
+        self.assertNotEqual(interrupted.returncode, 0)
+        self.assertIn("read-screen", status()["recommended_next"]["command"])
+        self.assertIn("HITL", status()["recommended_next"]["action"])
 
     def test_stage_cannot_launch_before_baseline_then_uses_stable_visible_pane(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -2242,6 +2473,7 @@ sha256 {resulting_digest or digest}
             "--anchor", "CALLER",
         )
         self.assertEqual(launched.returncode, 0, launched.stderr)
+        self.start_prompt_launch(["--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1", "--surface", "SURF-1"])
         cmux_before = self.cmux_log.read_text(encoding="utf-8")
         events_before = (self.run_dir / "events.jsonl").read_text(encoding="utf-8")
         mismatched = self.cli(
@@ -2271,6 +2503,9 @@ sha256 {resulting_digest or digest}
             (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
         )
         self.assertEqual(dead_event["data"]["surface_id"], "SURF-1")
+        marked = self.cli(PANE, "mark-started", "--run-dir", str(self.run_dir),
+                          "--stage", "spec", "--pass", "1", "--surface", "SURF-1")
+        self.assertEqual(marked.returncode, 0, marked.stderr)
         waiting_before = len(
             (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         )
@@ -3073,7 +3308,8 @@ Option?
         interrupted = status()
         self.assertIn("HITL", interrupted["recommended_next"]["action"])
         self.assertIn("read-screen", interrupted["recommended_next"]["command"])
-        self.assertFalse(interrupted["pane"]["prompt_sent"])
+        self.assertTrue(interrupted["pane"]["prompt_sent"])
+        self.assertFalse(interrupted["pane"]["delivery_sent"])
 
     def test_live_worker_is_rejoined_never_started_work_is_redelivered_and_dead_worker_needs_fresh_pass(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -3113,8 +3349,8 @@ Option?
             ).stdout
         )
         self.assertTrue(status["pane"]["agent_launch_sent"])
-        self.assertFalse(status["pane"]["prompt_sent"])
-        self.assertIn("observe", status["recommended_next"]["command"])
+        self.assertTrue(status["pane"]["prompt_sent"])
+        self.assertIn("await_report.py", status["recommended_next"]["command"])
         self.confirm_ready()
 
         delivered = pane(
@@ -3133,7 +3369,7 @@ Option?
             ).stdout
         )
         self.assertNotEqual(status["classification"], "pending-report")
-        self.assertIn("mark-started", status["recommended_next"]["command"])
+        self.assertIn("await_report.py", status["recommended_next"]["command"])
 
         # The visible pane showed the known summarized-and-waiting case, so the same immutable
         # prompt may be re-delivered without creating a new worker or pass.
@@ -3726,10 +3962,21 @@ Option?
         self.assertTrue(draft.is_file(), "the rejected author handoff remains preserved")
 
     def test_offline_smoke_runs_all_visible_stages_with_safe_correction_and_issue_chain_handoff(self):
+        def capture(stage):
+            result = self.cli(AWAIT, "--run-dir", str(self.run_dir), "--stage", stage,
+                              "--pass", "1", "--surface", "SURF-1", "--cmux-cmd", str(self.cmux),
+                              "--poll-seconds", "0.01", "--start-minutes", "0.01")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            events = [e["data"] for e in self.run_events()
+                      if e["type"] == "worker.started" and e["data"]["stage"] == stage]
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["evidence"], "marker")
+
         self.assertEqual(self.init_direct().returncode, 0)
         self.render_and_baseline("spec")
         self.launch_prepared_stage("spec")
         draft = self.write_author_handoff()
+        capture("spec")
         accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
@@ -3751,6 +3998,7 @@ Option?
             ),
             encoding="utf-8",
         )
+        capture("spec-review")
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
         approved = self.cli(
@@ -3768,11 +4016,13 @@ Option?
         self.render_and_baseline("tickets")
         self.launch_prepared_stage("tickets")
         proposal = self.write_tickets_handoff()
+        capture("tickets")
         accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.render_and_baseline("tickets-review")
         self.launch_prepared_stage("tickets-review")
         self.write_tickets_review()
+        capture("tickets-review")
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
 
@@ -3786,6 +4036,11 @@ Option?
         status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
         self.assertEqual(status["classification"], "completed")
         self.assertEqual(status["publication"]["phase"], "completed")
+        from artifact_manifest import audit_artifacts
+        final_state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(audit_artifacts(final_state, self.run_dir)["unexpected"], [])
+        self.assertFalse(any(e["path"].endswith("/started")
+                             for e in final_state["artifact_manifest"].values()))
 
         downstream = self.cli(
             ISSUE_CHAIN_STATE,

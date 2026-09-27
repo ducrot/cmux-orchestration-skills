@@ -305,11 +305,12 @@ A genuinely diverse resolution prepares normally with no warning or extra prompt
 
 ## Worker input readiness
 
-Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
-After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
-startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
-start and task delivery. The gate applies to Codex, Claude Code and Pi, all roles/lanes, and follow-ups.
-`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+The normal start attaches the baseline-verified assignment to `start-agent`; the armed watcher
+confirms its first-step marker without a screen judgment. For exception-path input and follow-ups,
+use [Interactive worker readiness](references/worker-readiness.md): `observe`, explicitly `assess`,
+resolve pending dialogs, then use one readiness-gated delivery. Read each result before the next
+input. The gate applies to Codex, Claude Code and Pi. `worker.ready` permits one delivery and is
+distinct from `worker.started`; observe again before recovery input.
 
 ## Run one stage
 
@@ -323,16 +324,7 @@ python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n
   --anchor <caller-surface>
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <launch-surface-id>
-# Read the start output; run observe and assess separately before delivery.
-python3 scripts/pane_ctl.py observe --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
-python3 scripts/pane_ctl.py assess --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id> --observation <observation-id> --state ready \
-  --reason "<evidence that the expected agent is fully loaded and idle>"
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id> --prompt <rendered-prompt>
-python3 scripts/pane_ctl.py mark-started --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
+# Watcher exits: 0 report, 7 pane dead, 8 deadline, 9 assignment not started.
 python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
   --surface <launch-surface-id>
 ```
@@ -351,6 +343,36 @@ labels the pane, and records lifecycle events under that UUID. Every interactive
 in `auto` permission mode; the safe, tool-disabled live provider probe remains in `plan` mode. The
 armed watcher treats missing reports as pending, emits heartbeats, detects pane death, and does not
 treat a transient health-command failure as worker failure.
+
+`start-agent` emits one JSON line with the launch and marker identity; its default
+`--settle-seconds 0` performs no screen read. The watcher has a five-minute `--start-minutes`
+window for the current attempt's `started` marker, whose nanosecond modification time must be at
+least the launch's `start_time_ns`. A report arriving first also confirms the start. Markers are
+mutable declared writes, never immutable manifest artifacts. The report deadline counts from arming.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Report captured; validate and gate it. |
+| 7 | Pane dead; stop at the existing HITL recovery boundary. |
+| 8 | Report deadline; use the existing human-approved extension rules. |
+| 9 | Assignment not started; inspect the exception path below. |
+
+After exit 9, take one `observe` and `assess` using the current launch identity:
+
+- A startup dialog: authorize the specific `respond` key, then re-arm without re-delivery.
+- `failed`: stop and follow the existing failure/HITL rules; do not blindly restart.
+- A confirmed summarized-and-waiting or idle assignment: use one readiness-gated `deliver --prompt`
+  with the same baseline-bound prompt, then re-arm.
+- Visibly working: use `mark-started` with screen evidence, then re-arm.
+
+Re-arm with `--extension 0`; startup recovery does not consume the stage's one deadline extension.
+Unresolved assessed dialogs continue to recommend `observe`. Never send a second assignment merely
+because its marker has not appeared.
+
+Event vocabulary: `worker.starting` and `worker.launch_sent` bind launch time and assignment identity;
+`worker.started` confirms assignment execution with marker, report, or exception-path
+`evidence: "screen"`. Readiness events are exception-path and follow-up only.
+`worker.waiting` includes `not_started` (exit 9) as well as report, pending, pane_dead, and deadline.
 
 Use the prompt and handoff paths recorded under the current attempt in `state.json`; do not construct
 them from stage/pass alone. The watcher accepts a report only after observing identical non-empty bytes
@@ -423,11 +445,11 @@ Follow the status command exactly for active work:
 
 - A live pane whose deterministic prompt was sent and whose report is pending is rejoined with the
   armed `await_report.py` command. Never launch a duplicate worker.
-- A recorded pane in which the worker or prompt was never started uses the reported `start-agent` or
-  readiness protocol and the same baseline-bound prompt. Always observe again on recovery before input.
-  After delivery, inspect the visible screen:
-  re-deliver only for the known summarized-and-waiting case, otherwise record `mark-started` before
-  arming the watcher. A stage with no pane uses the launch command.
+- A normally launched pane, even before start confirmation, uses the armed watcher. An unanswered
+  exit 9 or assessed unresolved startup dialog recommends `observe` and the exception procedure.
+  A recorded dialog response or authorized re-delivery recommends the watcher again with
+  `--extension 0`. A stage with no pane uses `launch`; a pane without launch input uses `start-agent`.
+  Interrupted launch or delivery input stops at HITL with `read-screen`, never blind input.
 - A non-empty handoff is gated or inspected and never overwritten as an uncertain retry.
 - A first live-pane deadline may receive the run's one human-reasoned `resume --decision extend`
   watcher extension. Pane death, expiry of that extension, snapshot tampering, an integrity violation,
@@ -514,7 +536,7 @@ approval.
 
 ## Ticket author and independent review
 
-Run the prepared `tickets` stage with the same render, baseline, pane, delivery, and watcher commands.
+Run the prepared `tickets` stage with the same render → baseline → `launch` → `start-agent` → `await_report.py` sequence.
 The author receives only the immutable approved spec, task, repository identity, tracker ground rules,
 vertical-slice policy, native proposal schema, revision feedback, and exact handoff paths. Its JSON
 proposal is the source of truth; `tracker_contract.py render-summary` creates the exact human-readable

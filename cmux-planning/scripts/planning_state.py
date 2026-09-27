@@ -1244,7 +1244,7 @@ def capture_current_handoffs(
     optional = optional or set()
     captured: dict[str, dict[str, Any]] = {}
     for name, expected in attempt["paths"].items():
-        if name == "prompt":
+        if name in {"prompt", "started"}:
             continue
         if name not in HANDOFF_KINDS:
             raise ArtifactIntegrityError(f"armed attempt declares an unknown handoff role: {name}")

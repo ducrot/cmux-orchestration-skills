@@ -367,9 +367,9 @@ def load_prepared_snapshot(
     return snapshot
 
 
-def snapshot_shell_command(snapshot: dict[str, Any]) -> str:
+def snapshot_shell_command(snapshot: dict[str, Any], *extra_args: str) -> str:
     selected = snapshot["selected_worker"]
-    return shell_command(selected["environment"], selected["argv"])
+    return shell_command(selected["environment"], [*selected["argv"], *extra_args])
 
 
 def snapshot_launch_record(snapshot: dict[str, Any]) -> dict[str, Any]:

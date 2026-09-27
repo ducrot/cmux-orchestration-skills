@@ -163,17 +163,43 @@ def pane_status(
     surface = data.get("surface_id")
     later = events[events.index(launch) + 1 :]
     relevant = [event for event in later if matching_event(event, stage, pass_num)]
-    agent_launch_sent = surface_event_recorded(relevant, "worker.launch_sent", stage, pass_num, surface)
-    prompt_sent = surface_event_recorded(relevant, "worker.prompt_sent", stage, pass_num, surface)
-    assignment_start_confirmed = surface_event_recorded(
-        relevant, "worker.started", stage, pass_num, surface
-    )
-    waits = [
-        event
-        for event in relevant
-        if event.get("type") == "worker.waiting"
-        and event.get("data", {}).get("surface_id") == surface
-    ]
+    launches_sent = [e for e in relevant if e.get("type") == "worker.launch_sent"
+                     and e.get("data", {}).get("surface_id") == surface]
+    agent_launch_sent = bool(launches_sent)
+    worker_launch = launches_sent[-1] if launches_sent else None
+    launch_data = worker_launch["data"] if worker_launch else {}
+    launch_id = launch_data.get("launch_id")
+    launch_events = relevant[relevant.index(worker_launch) + 1:] if worker_launch else relevant
+    delivery_sent = surface_event_recorded(launch_events, "worker.prompt_sent", stage, pass_num, surface)
+    start_prompt = bool(launch_data.get("prompt_path"))
+    prompt_sent = delivery_sent or start_prompt
+    assignment_start_confirmed = any(
+        e.get("type") == "worker.started" and e.get("data", {}).get("surface_id") == surface
+        and e["data"].get("launch_id") == launch_id
+        and e["data"].get("attempt_id") == data.get("attempt_id") for e in launch_events)
+    waits = [e for e in launch_events if e.get("type") == "worker.waiting"
+             and e.get("data", {}).get("surface_id") == surface]
+    # A timeout or unresolved assessed dialog needs inspection until a response, delivery,
+    # or positive start evidence resolves it. Observing/assessing alone does not clear it.
+    needs_inspection = False
+    for e in launch_events:
+        payload = e.get("data", {})
+        if payload.get("surface_id") != surface:
+            continue
+        if ((e.get("type") == "worker.waiting" and payload.get("outcome") == "not_started"
+             and payload.get("launch_id") == launch_id)
+                or (e.get("type") == "worker.startup_status" and payload.get("state") == "prompt"
+                    and payload.get("launch_id") == launch_id)):
+            needs_inspection = True
+        elif (e.get("type") in {"worker.dialog_response", "worker.started"}
+              and payload.get("launch_id") == launch_id) or e.get("type") == "worker.prompt_sent":
+            needs_inspection = False
+    input_boundaries = [e["type"] for e in relevant
+                        if e.get("data", {}).get("surface_id") == surface
+                        and e.get("type") in {"worker.starting", "worker.launch_sent",
+                                              "worker.delivery_attempted", "worker.prompt_sent"}]
+    input_interrupted = bool(input_boundaries) and input_boundaries[-1] in {
+        "worker.starting", "worker.delivery_attempted"}
     wait_outcome = waits[-1].get("data", {}).get("outcome") if waits else None
     extension = waits[-1].get("data", {}).get("extension", 0) if waits else 0
     if wait_outcome == "pane_dead":
@@ -195,8 +221,12 @@ def pane_status(
         "pane_id": data.get("pane_id"),
         "startup_state": readiness_status(events, {"stage": stage, "pass": pass_num}, surface),
         "launch_attempted": surface_event_recorded(relevant, "worker.starting", stage, pass_num, surface),
-        "delivery_attempted": surface_event_recorded(relevant, "worker.delivery_attempted", stage, pass_num, surface),
+        "delivery_attempted": surface_event_recorded(launch_events, "worker.delivery_attempted", stage, pass_num, surface),
         "agent_launch_sent": agent_launch_sent,
+        "start_prompt": start_prompt,
+        "needs_start_inspection": needs_inspection,
+        "delivery_sent": delivery_sent,
+        "input_interrupted": input_interrupted,
         "assignment_start_confirmed": assignment_start_confirmed,
         "prompt_sent": prompt_sent,
         "last_wait_outcome": wait_outcome,
@@ -637,8 +667,8 @@ def recommended_next(
                 ),
             }
         interrupted_start = pane.get("launch_attempted") and not pane.get("agent_launch_sent")
-        interrupted_delivery = pane.get("delivery_attempted") and not pane.get("prompt_sent")
-        if interrupted_start or interrupted_delivery:
+        interrupted_delivery = pane.get("delivery_attempted") and not pane.get("delivery_sent")
+        if pane.get("input_interrupted") or interrupted_start or interrupted_delivery:
             return {
                 "action": "HITL: inspect interrupted input; do not blindly restart or redeliver",
                 "command": shell_join([
@@ -652,6 +682,11 @@ def recommended_next(
                 "command": shell_join(
                     [*pane_base, "start-agent", *common, "--surface", str(surface)]
                 ),
+            }
+        if pane.get("needs_start_inspection"):
+            return {
+                "action": "observe startup and use the exception procedure; assess and resolve any dialog",
+                "command": shell_join([*pane_base, "observe", *common, "--surface", str(surface)]),
             }
         if not pane.get("prompt_sent") and pane.get("startup_state") != "ready":
             return {
@@ -673,7 +708,7 @@ def recommended_next(
                     ]
                 ),
             }
-        if not pane.get("assignment_start_confirmed"):
+        if not pane.get("assignment_start_confirmed") and not pane.get("start_prompt"):
             return {
                 "action": (
                     "inspect the visible pane; redeliver the same prompt only for a confirmed "

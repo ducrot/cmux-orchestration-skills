@@ -33,6 +33,7 @@ from stage_snapshot import load_prepared_snapshot
 EXIT_REPORT = 0
 EXIT_PANE_DEAD = 7
 EXIT_DEADLINE = 8
+EXIT_NOT_STARTED = 9
 # 1 = crash, 2 = argparse usage. Outcomes stay clear of both so a usage error is never
 # mistaken for a deadline.
 
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--surface", required=True)
     parser.add_argument("--cmux-cmd", default="cmux")
     parser.add_argument("--deadline-minutes", type=float)
+    parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-seconds", type=float, default=60)
     parser.add_argument("--heartbeat-seconds", type=float, default=300)
@@ -92,12 +94,11 @@ def watch(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     state = verify_or_gate(run_dir, stage=args.stage)
     attempt = current_attempt(state, args.stage, args.pass_num)
-    surface = validate_recorded_surface(
-        planning_events(run_dir), args.stage, args.pass_num, args.surface
-    )
+    events = planning_events(run_dir)
+    surface = validate_recorded_surface(events, args.stage, args.pass_num, args.surface)
     report = report_path(run_dir, args.stage, args.pass_num)
     minutes = args.deadline_minutes if args.deadline_minutes is not None else MINIMUM_WAIT_MINUTES[args.stage]
-    if minutes <= 0 or args.poll_seconds <= 0:
+    if minutes <= 0 or args.poll_seconds <= 0 or args.start_minutes <= 0:
         raise ValueError("wait durations must be positive")
     state = read_planning_state(run_dir / "state.json")
     workspace = state.get("workspace_id")
@@ -110,6 +111,17 @@ def watch(args: argparse.Namespace) -> int:
     deadline = started + minutes * 60
     next_health = started
     next_heartbeat = started + args.heartbeat_seconds
+    launches = [e["data"] for e in events if e.get("type") == "worker.launch_sent"
+                and all(e.get("data", {}).get(k) == v for k, v in
+                        {"stage": args.stage, "pass": args.pass_num, "surface_id": surface,
+                         "attempt_id": attempt["attempt_id"]}.items())]
+    launch = launches[-1] if launches else {}
+    launch_id = launch.get("launch_id")
+    start_pending = bool(launch.get("prompt_path")) and not any(
+        e.get("type") == "worker.started" and e.get("data", {}).get("launch_id") == launch_id
+        and e["data"].get("attempt_id") == attempt["attempt_id"] for e in events)
+    marker = Path(attempt["paths"]["started"])
+    start_deadline = started + args.start_minutes * 60
     settled: str | None = None
     while True:
         elapsed = round(time.monotonic() - started, 1)
@@ -122,7 +134,18 @@ def watch(args: argparse.Namespace) -> int:
             "elapsed_seconds": elapsed,
             "deadline_minutes": minutes,
             "extension": args.extension,
+            "launch_id": launch_id,
         }
+        if start_pending:
+            fresh_marker = marker.is_file() and marker.stat().st_mtime_ns >= launch["start_time_ns"]
+            report_present = report.is_file() and report.stat().st_size > 0
+            if fresh_marker or report_present:
+                append_event(run_dir, "worker.started", "planning assignment start confirmed", {
+                    **{key: data[key] for key in ("stage", "pass", "attempt", "attempt_id",
+                                                   "surface_id", "launch_id")},
+                    "evidence": "marker" if fresh_marker else "report", "marker_path": str(marker),
+                })
+                start_pending = False
         # Workers write the report with their own non-atomic tools, so existence alone can mean
         # a half-written file. Requiring identical non-empty bytes twice avoids gating on a prefix.
         digest = sha256_file(report) if report.is_file() and report.stat().st_size else None
@@ -159,7 +182,7 @@ def watch(args: argparse.Namespace) -> int:
             return EXIT_REPORT
         settled = digest
         now = time.monotonic()
-        if now >= deadline:
+        if not start_pending and now >= deadline:
             event(run_dir, "planning report deadline exceeded", {**data, "outcome": "deadline"})
             print("outcome=deadline")
             return EXIT_DEADLINE
@@ -169,10 +192,14 @@ def watch(args: argparse.Namespace) -> int:
                 print("outcome=pane_dead")
                 return EXIT_PANE_DEAD
             next_health = now + args.health_seconds
+        if start_pending and now >= start_deadline:
+            event(run_dir, "planning assignment did not start", {**data, "outcome": "not_started"})
+            print("outcome=not_started")
+            return EXIT_NOT_STARTED
         if now >= next_heartbeat:
             event(run_dir, "planning report pending", {**data, "outcome": "pending"})
             next_heartbeat = now + args.heartbeat_seconds
-        time.sleep(min(args.poll_seconds, max(deadline - time.monotonic(), 0.01)))
+        time.sleep(min(args.poll_seconds, max((start_deadline if start_pending else deadline) - time.monotonic(), 0.01)))
 
 
 def main() -> int:

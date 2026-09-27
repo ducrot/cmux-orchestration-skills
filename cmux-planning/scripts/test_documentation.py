@@ -449,6 +449,22 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_planning_start_sequence_and_recovery_safety(self):
+        text = normalized(PLANNING)
+        procedure = text.split("## run one stage", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+        commands = ("render_prompt.py", "tree_integrity.py baseline", "pane_ctl.py launch",
+                    "pane_ctl.py start-agent", "await_report.py")
+        positions = [procedure.index(command) for command in commands]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("pane_ctl.py deliver", procedure)
+        self.assertNotIn("pane_ctl.py observe", procedure)
+        for phrase in ("| 9 | assignment not started", "after exit 9, take one `observe` and `assess`",
+                       "then re-arm without re-delivery", "one readiness-gated `deliver --prompt`",
+                       '`evidence: "screen"`', "exception-path and follow-up only",
+                       "`--extension 0`", "interrupted launch or delivery input stops at hitl",
+                       "report deadline counts from arming", "never immutable manifest artifacts"):
+            self.assertIn(phrase, text)
+
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
         text = PLANNING.read_text(encoding="utf-8")
         start = "- Two explicit integrity boundaries apply."
