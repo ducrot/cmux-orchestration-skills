@@ -19,6 +19,7 @@ from agents_config import (
     WORKFLOW_WORKERS,
     adapter_argv,
     audit_workers,
+    git_root,
     parse_overrides,
     positive_finite,
     probe_options,
@@ -29,6 +30,7 @@ from agents_config import (
     snapshot_identity,
     valid_executable_syntax,
     valid_probe_record,
+    valid_trust_record,
 )
 from orchestrator_lib import read_json, read_run_state, utc_now, write_json
 
@@ -83,8 +85,9 @@ def build_stage_snapshot(
         raise SnapshotError(f"unknown issue-chain stage: {stage}")
     if pass_num < 1:
         raise SnapshotError("stage pass must be a positive integer")
+    repository = str(git_root(Path.cwd()))
     resolved = resolve_workers(data, source, overrides, workflow=WORKFLOW)
-    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=stage_argv)
+    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=stage_argv, repository=repository)
     if probe_profiles:
         probe_workers(
             audited, source, workflow=WORKFLOW, timeout_seconds=probe_timeout_seconds
@@ -92,6 +95,7 @@ def build_stage_snapshot(
 
     resolved_at = utc_now()
     snapshot: dict[str, Any] = {
+        "repository": repository,
         "snapshot_version": SNAPSHOT_VERSION,
         "run_id": run_id,
         "stage": stage,
@@ -244,6 +248,8 @@ def load_launchable_snapshot(run_dir: Path, role: str, pass_num: int) -> dict[st
         raise SnapshotError("prepared stage snapshot has no successful selected-worker preflight")
     if not selected.get("resolved_executable") or not selected.get("detected_version"):
         raise SnapshotError("prepared stage snapshot has no executable audit record")
+    if not valid_trust_record(selected, snapshot.get("repository")):
+        raise SnapshotError("prepared stage snapshot has no valid trust preflight; prepare again")
     argv = selected.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and value for value in argv):
         raise SnapshotError("prepared stage snapshot has an invalid final argument vector")

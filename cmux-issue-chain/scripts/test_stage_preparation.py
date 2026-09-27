@@ -121,6 +121,14 @@ class PreparedStageCli(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.trust_home = self.root / "trust-home"
+        self.trust_home.mkdir()
+        (self.trust_home / ".claude.json").write_text(json.dumps({
+            "projects": {str(self.repo.resolve()): {"hasTrustDialogAccepted": True}}
+        }))
+        (self.trust_home / "config.toml").write_text(
+            f'[projects.{json.dumps(str(self.repo.resolve()))}]\ntrust_level = "trusted"\n'
+        )
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         issue_dir = self.repo / ".scratch" / "tracker" / "issues"
         issue_dir.mkdir(parents=True)
@@ -150,6 +158,9 @@ class PreparedStageCli(unittest.TestCase):
     def env(self, **changes: str) -> dict[str, str]:
         return {
             **os.environ,
+            "HOME": str(self.trust_home),
+            "CLAUDE_CONFIG_DIR": str(self.trust_home),
+            "CODEX_HOME": str(self.trust_home),
             "PATH": str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_HARNESS_LOG": str(self.harness_log),
             "FAKE_CMUX_LOG": str(self.cmux_log),
@@ -576,6 +587,16 @@ class PreparedStageCli(unittest.TestCase):
                 target = tracker / "issues" / "ISSUE-002-new-status-view.md"
                 if target.is_dir():
                     target.rmdir()
+
+    def test_missing_trust_fails_before_snapshot_or_pane(self):
+        (self.trust_home / "config.toml").write_text("")
+        result = self.init()
+        self.assertNotEqual(result.returncode, 0)
+        for value in ("codex", str(self.repo.resolve()), str(self.trust_home / "config.toml"), "field=preflight"):
+            self.assertIn(value, result.stderr)
+        self.assertFalse((self.run_dir / "state.json").exists())
+        self.assertFalse((self.run_dir / "stage-snapshots").exists())
+        self.assertFalse(self.cmux_log.exists())
 
     def test_init_uses_config_preflights_all_roles_and_prepares_implement(self):
         proc = self.init()

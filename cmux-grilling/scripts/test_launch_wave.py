@@ -87,6 +87,14 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.trust_home = self.root / "trust-home"
+        self.trust_home.mkdir()
+        (self.trust_home / ".claude.json").write_text(json.dumps({
+            "projects": {str(self.repo.resolve()): {"hasTrustDialogAccepted": True}}
+        }))
+        (self.trust_home / "config.toml").write_text(
+            f'[projects.{json.dumps(str(self.repo.resolve()))}]\ntrust_level = "trusted"\n'
+        )
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
 
         self.bin_dir = self.root / "bin"
@@ -112,6 +120,9 @@ class PreparedLaunchWaveCli(unittest.TestCase):
     def env(self, **changes: str) -> dict[str, str]:
         return {
             **os.environ,
+            "HOME": str(self.trust_home),
+            "CLAUDE_CONFIG_DIR": str(self.trust_home),
+            "CODEX_HOME": str(self.trust_home),
             "PATH": str(self.bin_dir) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_HARNESS_LOG": str(self.harness_log),
             "FAKE_CMUX_LOG": str(self.cmux_log),

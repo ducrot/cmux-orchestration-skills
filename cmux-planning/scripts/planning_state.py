@@ -488,6 +488,7 @@ def prepare_stage(args: argparse.Namespace, run_dir: Path, stage: str, pass_num:
         args,
         run_dir=run_dir,
         run_id=state["run_id"],
+        repository=state["repository"],
         stage=stage,
         pass_num=pass_num,
         attempt=attempt,
@@ -535,6 +536,7 @@ def decide_diversity(args: argparse.Namespace) -> int:
     _, snapshot = snapshot_from_settings(
         run_dir=run_dir,
         run_id=state["run_id"],
+        repository=state["repository"],
         stage=stage,
         pass_num=diversity_pass,
         attempt=next_attempt(state, stage, diversity_pass),
@@ -792,6 +794,7 @@ def init_run(args: argparse.Namespace) -> int:
             args,
             run_dir=run_dir,
             run_id=run_id,
+            repository=str(repository),
             stage="spec",
             pass_num=1,
             config_source=str(configuration_source),

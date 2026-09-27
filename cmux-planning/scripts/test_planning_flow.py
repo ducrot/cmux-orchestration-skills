@@ -81,6 +81,14 @@ class PlanningFlow(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        self.trust_home = self.root / "trust-home"
+        self.trust_home.mkdir()
+        (self.trust_home / ".claude.json").write_text(json.dumps({
+            "projects": {str(self.repo.resolve()): {"hasTrustDialogAccepted": True}}
+        }))
+        (self.trust_home / "config.toml").write_text(
+            f'[projects.{json.dumps(str(self.repo.resolve()))}]\ntrust_level = "trusted"\n'
+        )
         git_env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         git_env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         environment = patch.dict(os.environ, git_env, clear=True)
@@ -114,6 +122,9 @@ class PlanningFlow(unittest.TestCase):
     def env(self) -> dict[str, str]:
         return {
             **os.environ,
+            "HOME": str(self.trust_home),
+            "CLAUDE_CONFIG_DIR": str(self.trust_home),
+            "CODEX_HOME": str(self.trust_home),
             "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_CMUX_LOG": str(self.cmux_log),
         }
@@ -2007,6 +2018,42 @@ sha256 {resulting_digest or digest}
             "too soon",
         )
         self.assertNotEqual(premature.returncode, 0)
+
+    def test_snapshot_requires_trust_preflight(self):
+        self.check_startup_snapshot_policy("trust")
+
+    def test_pi_snapshot_requires_no_approve(self):
+        self.check_startup_snapshot_policy("pi")
+
+    def check_startup_snapshot_policy(self, mutation):
+        from agents_config import snapshot_identity
+        from stage_snapshot import load_prepared_snapshot, stage_argv, SnapshotError
+        result = self.init_direct()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        pointer = state["prepared_stage"]
+        path = self.run_dir / pointer["path"]
+        snapshot = json.loads(path.read_text())
+        entry = snapshot["selected_worker"]
+        if mutation == "trust":
+            entry["preflight"].pop("trust", None)
+            expected = "trust preflight"
+        else:
+            entry.update(harness="pi", requested_executable="pi", model="google/test", effort="high")
+            entry["preflight"]["trust"] = {"status": "not-applicable", "repository": state["repository"], "source": None}
+            entry["argv"] = [value for value in stage_argv("spec", entry) if value != "--no-approve"]
+            expected = "violates adapter policy"
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        path.write_text(json.dumps(snapshot))
+        payload = path.read_bytes()
+        pointer.update(sha256=hashlib.sha256(payload).hexdigest(), snapshot_id=snapshot["snapshot_id"])
+        state["artifact_manifest"][pointer["manifest_id"]].update(
+            sha256=pointer["sha256"], byte_size=len(payload))
+        state_path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(SnapshotError, expected):
+            load_prepared_snapshot(self.run_dir, "spec", 1, require_baseline=False)
+        self.assertFalse(self.cmux_log.exists())
 
     def test_stage_cannot_launch_before_baseline_then_uses_stable_visible_pane(self):
         self.assertEqual(self.init_direct().returncode, 0)

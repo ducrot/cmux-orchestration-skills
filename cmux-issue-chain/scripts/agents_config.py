@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1050,7 +1051,7 @@ PREFLIGHT_RULES = {
         "probe_tokens": ("--safe-mode", "--print", "--no-session-persistence", "--permission-mode", "--tools"),
     },
     "pi": {
-        "help_tokens": ("--model", "--thinking", "--provider", "auth"),
+        "help_tokens": ("--model", "--thinking", "--provider", "--no-approve", "auth"),
         "auth_help": ("auth", "--help"),
         "auth_tokens": ("check",),
         # Pi has no provider-wide status command: the check is scoped to one provider or model,
@@ -1216,14 +1217,14 @@ def adapter_argv(profile: dict[str, Any], *, codex_arguments: list[str]) -> list
             f"model_reasoning_effort={profile['effort']}",
         ]
     if profile["harness"] == "pi":
-        # Pi ships no sandbox and no approval gate, so there is nothing here to pin: a Pi worker
-        # runs its read/bash/edit/write tools unconfined, without Codex's .git carve-out.
+        # Suppress Pi's startup trust dialog for unattended workers.
         return [
             executable,
             "--model",
             profile["model"],
             "--thinking",
             profile["effort"],
+            "--no-approve",
         ]
     raise HarnessError(f"no launch adapter for harness {profile['harness']!r}")
 
@@ -1540,25 +1541,89 @@ def resolve_workers(
     return resolved
 
 
+# Where each harness records startup trust per exact repository root; None means no trust dialog.
+TRUST_RULES: dict[str, dict[str, Any] | None] = {
+    "claude-code": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "default_dir": (),
+        "filename": ".claude.json",
+        "parse": json.loads,
+        "trusted": lambda entry: entry.get("hasTrustDialogAccepted") is True,
+        "command": "claude",
+    },
+    "codex": {
+        "env": "CODEX_HOME",
+        "default_dir": (".codex",),
+        "filename": "config.toml",
+        "parse": tomllib.loads,
+        "trusted": lambda entry: entry.get("trust_level") == "trusted",
+        "command": "codex",
+    },
+    "pi": None,
+}
+
+
+def repository_trust(harness: str, repository: str) -> dict[str, Any]:
+    """Read exact-root startup trust without changing the harness configuration."""
+    if harness not in TRUST_RULES:
+        raise HarnessError(f"no trust adapter for harness {harness!r}")
+    rule = TRUST_RULES[harness]
+    if rule is None:
+        return {"status": "not-applicable", "repository": repository, "source": None}
+    source = Path(os.environ.get(rule["env"], str(Path.home().joinpath(*rule["default_dir"])))) / rule["filename"]
+    try:
+        data = rule["parse"](source.read_text(encoding="utf-8"))
+        projects = data.get("projects", {}) if isinstance(data, dict) else {}
+        entry = projects.get(repository, {}) if isinstance(projects, dict) else {}
+        trusted = isinstance(entry, dict) and rule["trusted"](entry)
+    except (OSError, ValueError):
+        trusted = False
+    if not trusted:
+        raise HarnessError(
+            f"{harness} does not trust repository {repository!r} in {source}; "
+            f"start {rule['command']} once in {repository!r}, accept the trust dialog, exit, then prepare again"
+        )
+    return {"status": "passed", "repository": repository, "source": str(source.absolute())}
+
+
+def valid_trust_record(entry: dict[str, Any], repository: object) -> bool:
+    preflight = entry.get("preflight")
+    trust = preflight.get("trust") if isinstance(preflight, dict) else None
+    if not isinstance(trust, dict) or not isinstance(repository, str) or not repository:
+        return False
+    if trust.get("repository") != repository:
+        return False
+    harness = entry.get("harness")
+    if isinstance(harness, str) and harness in TRUST_RULES and TRUST_RULES[harness] is None:
+        return trust.get("status") == "not-applicable" and "source" in trust and trust["source"] is None
+    return (trust.get("status") == "passed" and isinstance(trust.get("source"), str)
+            and Path(trust["source"]).is_absolute())
+
+
 def audit_workers(
     resolved: dict[str, dict[str, str]],
     source: Path,
     *,
     workflow: str,
     argv_for: Callable[[str, dict[str, Any]], list[str]],
+    repository: str,
 ) -> dict[str, dict[str, Any]]:
     """Preflight each unique assigned harness executable once, fan its audit out over the workers
-    sharing it, then stamp every worker's final argv and launch environment. The audit depends
-    only on (harness, executable), so repeated assignments cost no extra subprocesses."""
+    sharing it, then stamp every worker's final argv and launch environment. Repository trust
+    is read once per assigned harness; executable checks run once per (harness, executable)."""
     assigned: dict[tuple[str, str], list[str]] = {}
     for worker in WORKFLOW_WORKERS[workflow]:
         profile = resolved[worker]
         assigned.setdefault((profile["harness"], profile["executable"]), []).append(worker)
 
+    trust: dict[str, dict[str, Any]] = {}
     audits: dict[tuple[str, str], dict[str, Any]] = {}
     for key, workers in assigned.items():
         try:
+            if key[0] not in trust:
+                trust[key[0]] = repository_trust(key[0], repository)
             audits[key] = preflight_executable(resolved[workers[0]])
+            audits[key]["preflight"]["trust"] = trust[key[0]]
         except HarnessError as error:
             raise HarnessError(
                 context_error(

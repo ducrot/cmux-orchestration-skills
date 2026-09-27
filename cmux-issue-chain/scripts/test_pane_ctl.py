@@ -79,13 +79,14 @@ class PaneCtlCase(unittest.TestCase):
             # Deliberately different from argv[0]: the realpath is audit data, not the launch identity.
             "resolved_executable": f"/audit/realpath/{profile['requested_executable']}",
             "detected_version": "99.1-test",
-            "preflight": {"status": "passed"},
+            "preflight": {"status": "passed", "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
             "entitlement": {"status": "unverified"},
             "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
         }
         # Derived, so the fixture cannot drift from the safety policy the loader re-derives.
         selected["argv"] = stage_argv(role, selected)
         snapshot = {
+            "repository": "/test/repo",
             "snapshot_version": 1,
             "run_id": "RUN-1",
             "stage": role,

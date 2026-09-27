@@ -16,6 +16,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import agents_config
 from pathlib import Path
 
 
@@ -1070,6 +1073,76 @@ class ProbeArguments(unittest.TestCase):
         self.assertEqual(parsed.model, "openrouter/z-ai/glm-5.3")
         self.assertEqual(parsed.thinking, "high")
 
+    def test_exact_repository_trust_is_read_only(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name)
+        self.repo = self.tmp / "repo"
+        repository = str(self.repo.resolve())
+        for overrides in (False, True):
+            home = self.tmp / ("override-home" if overrides else "home")
+            home.mkdir()
+            claude_dir = home / "claude" if overrides else home
+            codex_dir = home / "codex" if overrides else home / ".codex"
+            claude_dir.mkdir(exist_ok=True)
+            codex_dir.mkdir()
+            env = {"HOME": str(home)}
+            if overrides:
+                env.update(CLAUDE_CONFIG_DIR=str(claude_dir), CODEX_HOME=str(codex_dir))
+            with patch.dict(os.environ, env, clear=True):
+                for case in ("exact", "parent", "home", "untrusted", "missing", "unreadable", "malformed"):
+                    key = repository if case not in {"parent", "home"} else str(self.repo.parent if case == "parent" else home)
+                    claude = claude_dir / ".claude.json"
+                    codex = codex_dir / "config.toml"
+                    claude.write_text(json.dumps({"projects": {} if case == "missing" else {key: {"hasTrustDialogAccepted": case != "untrusted"}}}))
+                    codex.write_text("" if case == "missing" else f'[projects.{json.dumps(key)}]\ntrust_level = "{ "untrusted" if case == "untrusted" else "trusted" }"\n')
+                    if case == "malformed":
+                        claude.write_text("{")
+                        codex.write_text("[")
+                    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in (claude, codex)]
+                    for harness, path in (("claude-code", claude), ("codex", codex)):
+                        with self.subTest(overrides=overrides, case=case, harness=harness):
+                            def check():
+                                return agents_config.repository_trust(harness, repository)
+                            if case == "exact":
+                                self.assertEqual(check(), {"status": "passed", "repository": repository, "source": str(path)})
+                            else:
+                                with self.assertRaises(agents_config.HarnessError) as caught:
+                                    if case == "unreadable":
+                                        with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+                                            check()
+                                    else:
+                                        check()
+                                for value in (harness, repository, str(path), "accept the trust dialog"):
+                                    self.assertIn(value, str(caught.exception))
+                    self.assertEqual(before, [(p.read_bytes(), p.stat().st_mtime_ns) for p in (claude, codex)])
+                with patch.object(Path, "read_text", side_effect=AssertionError("Pi must not read trust files")):
+                    self.assertEqual(agents_config.repository_trust("pi", repository),
+                                     {"status": "not-applicable", "repository": repository, "source": None})
+
+    def test_audit_checks_trust_once_per_harness_and_records_each_worker(self):
+        source = Path("/test/agents.json")
+        resolved = agents_config.resolve_workers(agents_config.DEFAULT_CONFIG, source, {}, workflow="issue-chain")
+        # Different executable paths for the same harness still share one trust read.
+        resolved["test"]["executable"] = "/test/codex"
+        trust = {"status": "passed", "repository": "/exact/repo", "source": "/test/config"}
+        with patch.object(agents_config, "repository_trust", return_value=trust) as check, patch.object(
+            agents_config, "preflight_executable", side_effect=lambda profile: {"preflight": {"status": "passed"}}
+        ):
+            audited = agents_config.audit_workers(resolved, source, workflow="issue-chain",
+                                                  repository="/exact/repo", argv_for=lambda worker, profile: [])
+        self.assertEqual(check.call_count, 2)
+        self.assertEqual({call.args for call in check.call_args_list},
+                         {("codex", "/exact/repo"), ("claude-code", "/exact/repo")})
+        for entry in audited.values():
+            self.assertEqual(entry["preflight"]["trust"], trust)
+
+    def test_pi_requires_no_approve_capability(self):
+        self.assertIn("--no-approve", agents_config.PREFLIGHT_RULES["pi"]["help_tokens"])
+        with patch.object(agents_config, "_help_page", return_value="--model --thinking --provider auth"):
+            with self.assertRaisesRegex(agents_config.HarnessError, "--no-approve"):
+                agents_config._capability_probe(["pi", "--help"], agents_config.PREFLIGHT_RULES["pi"]["help_tokens"], label="test")
+
     def test_pi_launch_maps_effort_onto_thinking(self):
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
@@ -1088,7 +1161,7 @@ class ProbeArguments(unittest.TestCase):
         )
 
         self.assertEqual(
-            argv, ["pi", "--model", "google/gemini-3.1-pro-preview", "--thinking", "xhigh"]
+            argv, ["pi", "--model", "google/gemini-3.1-pro-preview", "--thinking", "xhigh", "--no-approve"]
         )
 
 

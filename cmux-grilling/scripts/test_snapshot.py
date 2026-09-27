@@ -23,6 +23,47 @@ from run_state import untracked_content
 RUN_STATE = Path(__file__).resolve().with_name("run_state.py")
 
 
+class StartupSnapshotPolicy(unittest.TestCase):
+    def setUp(self):
+        from test_pane_ctl import PaneCtlCase
+        self.fixture = PaneCtlCase()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.tearDown)
+
+    def test_snapshot_requires_trust_preflight(self):
+        self.check_policy("trust")
+
+    def test_pi_snapshot_requires_no_approve(self):
+        self.check_policy("pi")
+
+    def check_policy(self, mutation):
+        fixture = self.fixture
+        from launch_wave import snapshot_identity, lane_argv
+        path = fixture.run_dir / "launch-waves" / "wave.json"
+        snapshot = json.loads(path.read_text())
+        entry = snapshot["resolved_profiles"]["codebase2"]
+        if mutation == "trust":
+            del entry["preflight"]["trust"]
+            expected = "trust preflight"
+        else:
+            entry.update(harness="pi", requested_executable="pi", model="google/test", effort="high")
+            entry["preflight"]["trust"] = {"status": "not-applicable", "repository": "/test/repo", "source": None}
+            entry["argv"] = [value for value in lane_argv("codebase2", entry) if value != "--no-approve"]
+            expected = "violates adapter policy"
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        path.write_text(json.dumps(snapshot))
+        state_path = fixture.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        pointer = state["launch_wave"]
+        pointer.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), snapshot_id=snapshot["snapshot_id"])
+        state_path.write_text(json.dumps(state))
+        result = fixture.run_ctl("launch", "--run-dir", str(fixture.run_dir),
+                                 "--lane", "codebase2", "--anchor", "surface:5")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(expected, result.stderr)
+        self.assertEqual(fixture.cmux_calls(), [])
+
+
 class SnapshotCli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

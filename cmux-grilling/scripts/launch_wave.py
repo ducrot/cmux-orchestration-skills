@@ -18,6 +18,7 @@ from agents_config import (
     WORKFLOW_WORKERS,
     adapter_argv,
     audit_workers,
+    git_root,
     positive_finite,
     probe_workers,
     resolve_workers,
@@ -25,6 +26,7 @@ from agents_config import (
     snapshot_identity,
     valid_executable_syntax,
     valid_probe_record,
+    valid_trust_record,
 )
 from orchestrator_lib import read_json, read_run_state, utc_now, write_json
 
@@ -74,9 +76,9 @@ def lane_argv(lane: str, profile: dict[str, Any]) -> list[str]:
 
 
 def audit_lanes(
-    resolved: dict[str, dict[str, str]], source: Path
+    resolved: dict[str, dict[str, str]], source: Path, repository: str
 ) -> dict[str, dict[str, Any]]:
-    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=lane_argv)
+    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=lane_argv, repository=repository)
     for lane, entry in audited.items():
         # The loader refuses an entry whose lane does not match where it was found.
         entry["lane"] = lane
@@ -94,13 +96,15 @@ def build_launch_wave(
     probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     resolved = resolve_workers(data, source, overrides, workflow=WORKFLOW)
-    audited = audit_lanes(resolved, source)
+    repository = str(git_root(Path.cwd()))
+    audited = audit_lanes(resolved, source, repository)
     if probe_profiles:
         probe_workers(
             audited, source, workflow=WORKFLOW, timeout_seconds=probe_timeout_seconds
         )
     resolved_at = utc_now()
     snapshot: dict[str, Any] = {
+        "repository": repository,
         "snapshot_version": SNAPSHOT_VERSION,
         "run_id": run_id,
         "status": "passed",
@@ -156,11 +160,13 @@ def _load_wave_bytes(run_dir: Path, pointer: dict[str, Any]) -> bytes:
     return payload
 
 
-def _validate_lane_entry(lane: str, entry: object, probe_state: dict[str, Any]) -> None:
+def _validate_lane_entry(lane: str, entry: object, probe_state: dict[str, Any], repository: object) -> None:
     if not isinstance(entry, dict):
         raise LaunchWaveError(f"prepared launch wave has no valid entry for lane {lane}")
     if entry.get("lane") != lane:
         raise LaunchWaveError(f"prepared launch-wave lane mismatch for {lane}")
+    if not valid_trust_record(entry, repository):
+        raise LaunchWaveError(f"prepared launch-wave lane {lane} has no valid trust preflight; prepare again")
     preflight = entry.get("preflight")
     if not isinstance(preflight, dict) or preflight.get("status") != "passed":
         raise LaunchWaveError(f"prepared launch-wave lane {lane} has no successful preflight")
@@ -243,7 +249,7 @@ def load_launchable_lane(run_dir: Path, lane: str) -> tuple[dict[str, Any], dict
     if not positive_finite(probe_state.get("timeout_seconds")):
         raise LaunchWaveError("prepared launch wave has invalid live-probe timeout state")
     for prepared_lane in GRILLING_LANES:
-        _validate_lane_entry(prepared_lane, resolved[prepared_lane], probe_state)
+        _validate_lane_entry(prepared_lane, resolved[prepared_lane], probe_state, snapshot.get("repository"))
     return snapshot, copy.deepcopy(resolved[lane])
 
 

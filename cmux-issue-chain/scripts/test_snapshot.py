@@ -23,6 +23,30 @@ from run_state import untracked_content
 RUN_STATE = Path(__file__).resolve().with_name("run_state.py")
 
 
+class StartupSnapshotPolicy(unittest.TestCase):
+    def setUp(self):
+        from test_pane_ctl import PaneCtlCase
+        self.fixture = PaneCtlCase()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.tearDown)
+        self.path = self.fixture.prepare_snapshot("implement")
+        self.snapshot = json.loads(self.path.read_text())
+
+    def test_snapshot_requires_trust_preflight(self):
+        del self.snapshot["selected_worker"]["preflight"]["trust"]
+        self.fixture.restamp(self.path, self.snapshot)
+        self.fixture.assert_launch_refused("trust preflight")
+
+    def test_pi_snapshot_requires_no_approve(self):
+        from worker_snapshot import stage_argv
+        entry = self.snapshot["selected_worker"]
+        entry.update(harness="pi", requested_executable="pi", model="google/test", effort="high")
+        entry["preflight"]["trust"] = {"status": "not-applicable", "repository": "/test/repo", "source": None}
+        entry["argv"] = [value for value in stage_argv("implement", entry) if value != "--no-approve"]
+        self.fixture.restamp(self.path, self.snapshot)
+        self.fixture.assert_launch_refused("violates adapter policy")
+
+
 class SnapshotCli(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

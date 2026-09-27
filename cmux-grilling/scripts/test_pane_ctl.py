@@ -56,12 +56,13 @@ class PaneCtlCase(unittest.TestCase):
                 "requested_executable": entry["executable"],
                 "resolved_executable": f"/test/bin/{entry['executable']}",
                 "detected_version": f"{entry['executable']} test",
-                "preflight": {"status": "passed"},
+                "preflight": {"status": "passed", "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
                 "entitlement": {"status": "unverified"},
                 "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
             })
             entry["argv"] = lane_argv(lane, entry)
         wave = {
+            "repository": "/test/repo",
             "snapshot_version": 1,
             "run_id": "test-run",
             "status": "passed",

@@ -63,6 +63,8 @@ handoffs.
 
 ## First-use configuration checkpoint
 
+> **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
+
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v3 CLI.

@@ -35,6 +35,7 @@ from agents_config import (
     shell_command,
     snapshot_identity,
     valid_executable_syntax,
+    valid_trust_record,
 )
 from orchestrator_lib import (
     integrity_boundary,
@@ -108,6 +109,7 @@ def build_stage_snapshot(
     *,
     run_dir: Path,
     run_id: str,
+    repository: str,
     stage: str,
     pass_num: int,
     attempt: int = 1,
@@ -123,12 +125,13 @@ def build_stage_snapshot(
     if pass_num < 1:
         raise SnapshotError("stage pass must be a positive integer")
     resolved = resolve_workers(data, source, overrides, workflow=WORKFLOW)
-    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=stage_argv)
+    audited = audit_workers(resolved, source, workflow=WORKFLOW, argv_for=stage_argv, repository=repository)
     if probe_profiles:
         probe_workers(audited, source, workflow=WORKFLOW, timeout_seconds=probe_timeout_seconds)
     selected_role = STAGE_ROLE[stage]
     paths = stage_paths(run_dir, stage, pass_num, attempt)
     snapshot: dict[str, Any] = {
+        "repository": repository,
         "snapshot_version": SNAPSHOT_VERSION,
         "run_id": run_id,
         "stage": stage,
@@ -161,6 +164,7 @@ def snapshot_from_args(
     *,
     run_dir: Path,
     run_id: str,
+    repository: str,
     stage: str,
     pass_num: int,
     attempt: int = 1,
@@ -171,6 +175,7 @@ def snapshot_from_args(
     return snapshot_from_settings(
         run_dir=run_dir,
         run_id=run_id,
+        repository=repository,
         stage=stage,
         pass_num=pass_num,
         attempt=attempt,
@@ -185,6 +190,7 @@ def snapshot_from_settings(
     *,
     run_dir: Path,
     run_id: str,
+    repository: str,
     stage: str,
     pass_num: int,
     attempt: int = 1,
@@ -198,6 +204,7 @@ def snapshot_from_settings(
     return source, build_stage_snapshot(
         run_dir=run_dir,
         run_id=run_id,
+        repository=repository,
         stage=stage,
         pass_num=pass_num,
         attempt=attempt,
@@ -322,6 +329,8 @@ def load_prepared_snapshot(
         raise SnapshotError("prepared stage snapshot has no successful selected-worker preflight")
     if selected.get("environment") != {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE}:
         raise SnapshotError("prepared stage lost its managed-subagent launch environment")
+    if not valid_trust_record(selected, state.get("repository")):
+        raise SnapshotError("prepared stage snapshot has no valid trust preflight; prepare again")
     argv = selected.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and value for value in argv):
         raise SnapshotError("prepared stage snapshot has an invalid final argument vector")
