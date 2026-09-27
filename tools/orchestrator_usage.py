@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Token usage analysis for cmux-issue-chain orchestrator sessions.
+"""Token usage analysis for cmux orchestrator sessions.
 
 Scans Claude Code and Codex transcripts, keeps only sessions that actually
-executed a cmux-issue-chain orchestration script, and reports per-session and
-per-run cost metrics grouped by the skill commit that was live at the time.
+executed an orchestration script of the selected workflow (issue-chain,
+planning or grilling), and reports per-session and per-run cost metrics
+grouped by the skill commit that was live at the time.
 
 Stdlib only. Writes orchestrator-usage-sessions.csv and
 orchestrator-usage-runs.csv, plus a median-based terminal summary.
@@ -24,29 +25,56 @@ from pathlib import Path
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS = Path.home() / ".codex" / "sessions"
 SKILL_REPO = Path.home() / "Sites" / "agentic-workflows" / "cmux-orchestration-skills"
-SKILL_SUBDIR = "cmux-issue-chain"
-CACHE_PATH = Path.home() / ".cache" / "orchestrator-usage" / "index.json"
-CACHE_VERSION = 11
+CACHE_DIR = Path.home() / ".cache" / "orchestrator-usage"
+CACHE_VERSION = 12
 
-FOREIGN_SUBDIRS = ("cmux-planning", "cmux-grilling")
-# Scripts only the issue-chain skill ships: executing one identifies the workflow
-# even when the path came from a shell variable.
-CHAIN_ONLY_SCRIPTS = ("adopt_tracker", "issue_state")
-# Names the sibling skills ship too - an execution through a variable is ambiguous.
+
+class Workflow:
+    """What identifies one workflow's orchestrator: its skill directory, the scripts
+    only that skill ships (executing one identifies the workflow even when the path
+    came from a shell variable), and the prefix of its run ids."""
+
+    def __init__(self, name: str, subdir: str, only_scripts: tuple[str, ...],
+                 run_prefix: str | None):
+        self.name = name
+        self.subdir = subdir
+        self.only_scripts = only_scripts
+        self.run_prefix = run_prefix
+        self.only_re = re.compile(r"(?:" + "|".join(only_scripts) + r")\.py")
+
+    def owns_run(self, run_id: str) -> bool:
+        if self.run_prefix:
+            return run_id.startswith(self.run_prefix)
+        return not run_id.startswith(tuple(p for w in WORKFLOWS.values()
+                                           if (p := w.run_prefix)))
+
+
+WORKFLOWS = {w.name: w for w in (
+    Workflow("issue-chain", "cmux-issue-chain", ("adopt_tracker", "issue_state"), None),
+    Workflow("planning", "cmux-planning",
+             ("planning_state", "stage_snapshot", "tree_integrity", "spec_contract",
+              "tracker_contract", "artifact_manifest", "grilling_input", "planning_recovery",
+              "planning_diversity"), "plan-"),
+    Workflow("grilling", "cmux-grilling", ("launch_wave", "parse_research_report"), "grill-"),
+)}
+
+# Names more than one skill ships - an execution through a variable is ambiguous.
+# `stage`, `wave` and `baseline_delta` are the planned composite-verb scripts.
 SHARED_SCRIPTS = ("run_state", "pane_ctl", "render_prompt", "agents_config",
-                  "await_report", "await_reports", "worker_readiness")
+                  "await_report", "await_reports", "worker_readiness",
+                  "stage", "wave", "baseline_delta")
 
 # An execution is an interpreter followed by the script, or the script itself at the
 # start of a command segment. The directory part may be a variable or quoted, but must
 # not contain '=' so that `S=/path/run_state.py` stays an assignment. A quoted path
 # without an interpreter (grep pattern, prose) never matches.
-_SCRIPT = r"(?:" + "|".join(CHAIN_ONLY_SCRIPTS + SHARED_SCRIPTS) + r")\.py"
+_SCRIPT = r"(?:" + "|".join(
+    [s for w in WORKFLOWS.values() for s in w.only_scripts] + list(SHARED_SCRIPTS)) + r")\.py"
 ORCHESTRATOR_CALL = re.compile(
     r"(?:(?:^|[\n;&|(`])\s*(?:python3?|uv\s+run(?:\s+python3?)?)\s+(?:-\S+\s+)*"
     r"[\"']?(?:[^\s'\";|&=]*/)?"
     r"|(?:^|[\n;&|(`])\s*(?:\./)?[^\s'\";|&=]*/)" + _SCRIPT
 )
-CHAIN_ONLY_RE = re.compile(r"(?:" + "|".join(CHAIN_ONLY_SCRIPTS) + r")\.py")
 RUN_ID_RE = re.compile(r"orchestrator/runs/([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 WORKER_MARKER = "Your task assignment is in"
@@ -88,15 +116,16 @@ def run_ids_in(text: str) -> list[str]:
 
 
 def new_evidence() -> dict:
-    return {"hard": False, "soft": False, "chain_path": False, "foreign_path": False,
-            "chain_run": False}
+    return {"hard": False, "soft": False, "own_path": False, "foreign_path": False,
+            "own_run": False}
 
 
 QUOTED_SPAN = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 INTERPRETER_IN_SPAN = re.compile(r"(?:python3?|uv\s+run)\s")
 
 
-def scan_command(command: str, evidence: dict, quoted_spans: bool = False) -> None:
+def scan_command(command: str, evidence: dict, workflow: Workflow,
+                 quoted_spans: bool = False) -> None:
     """Record what an executed shell command says about the session's workflow.
 
     A quoted span that carries its own interpreter is an example being discussed, not
@@ -107,42 +136,54 @@ def scan_command(command: str, evidence: dict, quoted_spans: bool = False) -> No
         command = QUOTED_SPAN.sub(
             lambda mo: "" if INTERPRETER_IN_SPAN.search(mo.group(0)) else mo.group(0),
             command)
+    siblings = [w for w in WORKFLOWS.values() if w is not workflow]
     for match in ORCHESTRATOR_CALL.finditer(command):
         text = match.group(0)
-        if SKILL_SUBDIR + "/" in text or CHAIN_ONLY_RE.search(text):
+        if workflow.subdir + "/" in text or workflow.only_re.search(text):
             evidence["hard"] = True
-        elif any(sub + "/" in text for sub in FOREIGN_SUBDIRS):
+        elif any(w.subdir + "/" in text or w.only_re.search(text) for w in siblings):
             pass  # a sibling skill's script, not ours
         else:
             evidence["soft"] = True  # path came from a variable - needs corroboration
-    if SKILL_SUBDIR + "/" in command:
-        evidence["chain_path"] = True
-    if any(sub + "/" in command for sub in FOREIGN_SUBDIRS):
+    if workflow.subdir + "/" in command:
+        evidence["own_path"] = True
+    if any(w.subdir + "/" in command for w in siblings):
         evidence["foreign_path"] = True
-    if any(not run.startswith(("grill-", "plan-")) for run in run_ids_in(command)):
-        evidence["chain_run"] = True
+    if any(workflow.owns_run(run) for run in run_ids_in(command)):
+        evidence["own_run"] = True
 
 
-def is_chain_orchestrator(evidence: dict) -> bool:
+def is_orchestrator(evidence: dict) -> bool:
     """A variable-path execution needs corroboration: the session must name the skill
-    directory, and a sibling workflow in the mix is only disqualifying when no
-    issue-chain run was touched (skill development drives all three side by side)."""
+    directory, and a sibling workflow in the mix is only disqualifying when no run of
+    this workflow was touched (skill development drives all three side by side)."""
     if evidence["hard"]:
         return True
-    if not (evidence["soft"] and evidence["chain_path"]):
+    if not (evidence["soft"] and evidence["own_path"]):
         return False
-    return evidence["chain_run"] or not evidence["foreign_path"]
+    return evidence["own_run"] or not evidence["foreign_path"]
 
 
 WAIT_COMMAND = re.compile(r"await_reports?\.py|tail -f|(?:^|[\n;&|(]\s*)sleep\s+\d")
 SCREEN_READ = re.compile(r"read-screen|capture")
 WAIT_CATEGORIES = ("wait", "reply-after-wait")
+# Composite verbs go by their verb: `stage.py capture` right after a watcher wake-up
+# collects a finished report and must not fall into the screen-read rule below.
+COMPOSITE_VERB = re.compile(
+    r"(?:stage|wave)\.py[\"']?\s+(open|round|deliver|started|mark-started|capture|gate)(?![\w-])")
+COMPOSITE_CATEGORY = {"open": "pane-lifecycle", "round": "pane-lifecycle",
+                      "deliver": "pane-lifecycle", "started": "pane-lifecycle",
+                      "mark-started": "pane-lifecycle", "capture": "bookkeeping",
+                      "gate": "bookkeeping"}
 
 
 def classify_bash(command: str, prev_category: str | None = None) -> str:
     c = command
     if WAIT_COMMAND.search(c):
         return "wait"
+    verb = COMPOSITE_VERB.search(c)
+    if verb:
+        return COMPOSITE_CATEGORY[verb.group(1)]
     # A screen read is lifecycle when it judges a start or delivery, and waiting when
     # it follows a sleep or a watcher - the sleep-and-look loop of a harness without
     # a blocking wait.
@@ -150,7 +191,8 @@ def classify_bash(command: str, prev_category: str | None = None) -> str:
         return "wait" if prev_category in WAIT_CATEGORIES else "pane-lifecycle"
     if "pane_ctl" in c:
         return "pane-lifecycle"
-    if "run_state" in c or "render_prompt" in c or "agents_config" in c or "gate_" in c:
+    if "run_state" in c or "render_prompt" in c or "agents_config" in c or "gate_" in c \
+            or "baseline_delta" in c:
         return "bookkeeping"
     if WORD_TOOLS.search(c):
         return "code/verify"
@@ -215,7 +257,7 @@ def iso(ts: str | None) -> datetime | None:
 # --------------------------------------------------------------------------- #
 
 
-def parse_claude(path: Path) -> dict | None:
+def parse_claude(path: Path, workflow: Workflow) -> dict | None:
     requests: dict[str, dict] = {}
     order: list[str] = []
     evidence = new_evidence()
@@ -265,14 +307,14 @@ def parse_claude(path: Path) -> dict | None:
                 tool_input = block.get("input") or {}
                 command = tool_input.get("command") if isinstance(tool_input, dict) else None
                 if name == "Bash" and isinstance(command, str):
-                    scan_command(command, evidence)
+                    scan_command(command, evidence, workflow)
                 if rec["tool"] is None:
                     rec["tool"] = name
                     rec["cmd"] = command if isinstance(command, str) else None
                 blob = json.dumps(tool_input) if isinstance(tool_input, (dict, list)) else str(tool_input)
                 rec["runs"].extend(run_ids_in(blob))
 
-    if not is_chain_orchestrator(evidence) or is_worker or not order:
+    if not is_orchestrator(evidence) or is_worker or not order:
         return None
 
     calls = []
@@ -364,7 +406,7 @@ def codex_commands(payload: dict):
         yield unwrap_shell(args.get("command") or args.get("cmd") or "")
 
 
-def parse_codex(path: Path) -> dict | None:
+def parse_codex(path: Path, workflow: Workflow) -> dict | None:
     session_id = None
     cwd = None
     evidence = new_evidence()
@@ -412,7 +454,7 @@ def parse_codex(path: Path) -> dict | None:
                 got_command = False
                 for command in codex_commands(payload):
                     got_command = True
-                    scan_command(command, evidence)
+                    scan_command(command, evidence, workflow)
                     pending_tools.append(("Bash", command))
                     pending_runs.extend(run_ids_in(command))
                 if not got_command:
@@ -456,7 +498,7 @@ def parse_codex(path: Path) -> dict | None:
                 pending_tools = []
                 pending_runs = []
 
-    if not is_chain_orchestrator(evidence) or is_worker or not calls or not session_id:
+    if not is_orchestrator(evidence) or is_worker or not calls or not session_id:
         return None
     return build_session("codex", session_id, str(path), cwd, calls)
 
@@ -476,8 +518,10 @@ def build_session(harness: str, session_id: str, path: str, cwd: str | None,
             current = call.run_id
         key = current or "(unassigned)"
         bucket = per_run.setdefault(key, {"calls": 0, "tokens": 0, "effective": 0.0,
-                                          "waits": 0, "start": None, "end": None})
+                                          "waits": 0, "start": None, "end": None,
+                                          "timeline": []})
         bucket["calls"] += 1
+        bucket["timeline"].append([call.ts, call.total, effective(call)])
         bucket["tokens"] += call.total
         bucket["effective"] += effective(call)
         if call.category in WAIT_CATEGORIES:
@@ -538,7 +582,7 @@ def merge_prefix_runs(per_run: dict[str, dict]) -> None:
         if not longer:
             continue
         target, source = per_run[longer[0]], per_run.pop(short)
-        for field in ("calls", "tokens", "effective", "waits"):
+        for field in ("calls", "tokens", "effective", "waits", "timeline"):
             target[field] += source[field]
         if source["start"]:
             target["start"] = min(target["start"] or source["start"], source["start"])
@@ -574,10 +618,15 @@ def project_root(cwd: str | None) -> Path | None:
 ATTEMPT_SUFFIX = re.compile(r"-attempt-\d+$")
 
 
-def read_run_state(run_dir: Path) -> dict:
-    """Stage instances, wall clock and issue metadata for one run."""
+ROUND_REPORT = re.compile(r"^(round-\d+)-")
+
+
+def read_run_state(run_dir: Path, workflow: Workflow | None = None) -> dict:
+    """Stage instances, wall clock and issue metadata for one run. For grilling the
+    stage unit is the round, and the first `grill.question` ends the session start."""
     info = {"stages_completed": 0, "stages_prepared": 0, "stages_reported": 0,
-            "start": None, "end": None, "issue": "", "workflow": ""}
+            "start": None, "end": None, "issue": "", "workflow": "",
+            "first_question": None}
     events = run_dir / "events.jsonl"
     gates: list[str | None] = []
     prepared: set[tuple] = set()
@@ -600,6 +649,8 @@ def read_run_state(run_dir: Path) -> dict:
             elif etype == "stage.prepared":
                 data = ev.get("data") or {}
                 prepared.add((data.get("stage"), data.get("pass")))
+            elif etype == "grill.question" and time:
+                info["first_question"] = min(info["first_question"] or time, time)
     state_file = run_dir / "state.json"
     if state_file.is_file():
         try:
@@ -616,9 +667,15 @@ def read_run_state(run_dir: Path) -> dict:
     # `<stage>-<pass>-attempt-N.md` and fold into it.
     reported = set()
     reports = run_dir / "reports"
+    grilling = workflow is not None and workflow.name == "grilling"
     if reports.is_dir():
         for report in reports.glob("*.md"):
-            reported.add(ATTEMPT_SUFFIX.sub("", report.stem))
+            if grilling:
+                match = ROUND_REPORT.match(report.stem)
+                if match:
+                    reported.add(match.group(1))
+            else:
+                reported.add(ATTEMPT_SUFFIX.sub("", report.stem))
     advanced = [d for d in gates if d in ("advance", "complete", "done")]
     info["stages_reported"] = len(reported)
     info["stages_prepared"] = len(prepared)
@@ -639,9 +696,9 @@ def git(repo: Path, *args: str) -> str:
     return out.stdout
 
 
-def skill_commits(repo: Path) -> list[tuple[str, datetime]]:
+def skill_commits(repo: Path, subdir: str) -> list[tuple[str, datetime]]:
     """Commits touching the skill directory, newest first."""
-    raw = git(repo, "log", "--format=%H\t%cI", "--", f"{SKILL_SUBDIR}/")
+    raw = git(repo, "log", "--format=%H\t%cI", "--", f"{subdir}/")
     commits = []
     for line in raw.splitlines():
         sha, _, date = line.partition("\t")
@@ -651,11 +708,11 @@ def skill_commits(repo: Path) -> list[tuple[str, datetime]]:
     return commits
 
 
-def skill_md_bytes(repo: Path, rev: str, cache: dict) -> int:
+def skill_md_bytes(repo: Path, subdir: str, rev: str, cache: dict) -> int:
     if rev in cache:
         return cache[rev]
     total = 0
-    for line in git(repo, "ls-tree", "-r", "-l", rev, "--", f"{SKILL_SUBDIR}/").splitlines():
+    for line in git(repo, "ls-tree", "-r", "-l", rev, "--", f"{subdir}/").splitlines():
         head, _, name = line.partition("\t")
         if not name.endswith(".md"):
             continue
@@ -666,8 +723,8 @@ def skill_md_bytes(repo: Path, rev: str, cache: dict) -> int:
     return total
 
 
-def assign_skill_version(sessions: list[dict], repo: Path) -> None:
-    commits = skill_commits(repo)
+def assign_skill_version(sessions: list[dict], repo: Path, subdir: str) -> None:
+    commits = skill_commits(repo, subdir)
     size_cache: dict[str, int] = {}
     for session in sessions:
         start = iso(session["start_ts"])
@@ -680,7 +737,7 @@ def assign_skill_version(sessions: list[dict], repo: Path) -> None:
             if when <= start:
                 session["skill_commit"] = sha[:8]
                 session["skill_commit_date"] = when.date().isoformat()
-                session["skill_md_bytes"] = skill_md_bytes(repo, sha, size_cache)
+                session["skill_md_bytes"] = skill_md_bytes(repo, subdir, sha, size_cache)
                 break
 
 
@@ -689,11 +746,15 @@ def assign_skill_version(sessions: list[dict], repo: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def load_cache(enabled: bool) -> dict:
-    if not enabled or not CACHE_PATH.is_file():
+def cache_path(workflow: Workflow) -> Path:
+    return CACHE_DIR / f"index-{workflow.name}.json"
+
+
+def load_cache(enabled: bool, path: Path) -> dict:
+    if not enabled or not path.is_file():
         return {"version": CACHE_VERSION, "files": {}}
     try:
-        data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {"version": CACHE_VERSION, "files": {}}
     if data.get("version") != CACHE_VERSION:
@@ -701,14 +762,14 @@ def load_cache(enabled: bool) -> dict:
     return data
 
 
-def save_cache(cache: dict, enabled: bool) -> None:
+def save_cache(cache: dict, enabled: bool, path: Path) -> None:
     if not enabled:
         return
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache), encoding="utf-8")
 
 
-def scan(paths, parser, cache: dict, use_cache: bool) -> list[dict]:
+def scan(paths, parser, cache: dict, use_cache: bool, workflow: Workflow) -> list[dict]:
     sessions = []
     for path in paths:
         try:
@@ -729,7 +790,7 @@ def scan(paths, parser, cache: dict, use_cache: bool) -> list[dict]:
                 blob = fh.read()
         except OSError:
             continue
-        session = parser(path) if SKILL_SUBDIR.encode() in blob else None
+        session = parser(path, workflow) if workflow.subdir.encode() in blob else None
         cache["files"][key] = {"stamp": stamp, "session": session}
         if session:
             sessions.append(session)
@@ -746,7 +807,8 @@ def median(values):
     return statistics.median(values) if values else None
 
 
-def aggregate_runs(sessions: list[dict]) -> list[dict]:
+def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-chain"]) -> list[dict]:
+    chain = workflow.name == "issue-chain"
     runs: dict[tuple[str, str], dict] = {}
     # Where each run actually lives, so sessions driving a run from another checkout
     # do not split it into a second, stage-less row.
@@ -774,7 +836,7 @@ def aggregate_runs(sessions: list[dict]) -> list[dict]:
             run = runs.setdefault(key, {
                 "run_id": run_id, "project": run_project, "harnesses": set(),
                 "sessions": [], "calls": 0, "tokens_total": 0, "effective_input_equiv": 0.0,
-                "waits": 0, "start": None, "end": None, "root": run_root,
+                "waits": 0, "start": None, "end": None, "root": run_root, "timeline": [],
                 "skill_commit": session.get("skill_commit", ""),
                 "skill_commit_date": session.get("skill_commit_date", ""),
                 "skill_md_bytes": session.get("skill_md_bytes", ""),
@@ -785,6 +847,7 @@ def aggregate_runs(sessions: list[dict]) -> list[dict]:
             run["tokens_total"] += bucket["tokens"]
             run["effective_input_equiv"] += bucket["effective"]
             run["waits"] += bucket["waits"]
+            run["timeline"].extend(bucket.get("timeline", []))
             for field, value in (("start", bucket["start"]), ("end", bucket["end"])):
                 if value:
                     run[field] = min(run[field] or value, value) if field == "start" \
@@ -801,16 +864,20 @@ def aggregate_runs(sessions: list[dict]) -> list[dict]:
         for run_dir in sorted((root / ".scratch" / "orchestrator" / "runs").glob("*")):
             if not run_dir.is_dir():
                 continue
-            if read_run_state(run_dir)["workflow"] not in ("issue-chain", ""):
-                continue
-            if run_dir.name.startswith(("grill-", "plan-")):
-                continue
+            if chain:
+                if read_run_state(run_dir)["workflow"] not in ("issue-chain", ""):
+                    continue
+                if run_dir.name.startswith(("grill-", "plan-")):
+                    continue
+            elif not workflow.owns_run(run_dir.name) or not (
+                    (run_dir / "events.jsonl").is_file() or (run_dir / "state.json").is_file()):
+                continue  # another workflow's run, or a stray directory from a truncated id
             key = (project, run_dir.name)
             if key not in runs:
                 runs[key] = {"run_id": run_dir.name, "project": project, "harnesses": set(),
                              "sessions": [], "calls": 0, "tokens_total": 0,
                              "effective_input_equiv": 0.0, "waits": 0, "start": None,
-                             "end": None, "root": root, "skill_commit": "",
+                             "end": None, "root": root, "timeline": [], "skill_commit": "",
                              "skill_commit_date": "", "skill_md_bytes": ""}
 
     for (project, short) in sorted(runs, key=lambda k: -len(k[1])):
@@ -820,26 +887,43 @@ def aggregate_runs(sessions: list[dict]) -> list[dict]:
         if not longer:
             continue
         target, source = runs[longer[0]], runs.pop((project, short))
-        for field in ("calls", "tokens_total", "effective_input_equiv", "waits"):
+        for field in ("calls", "tokens_total", "effective_input_equiv", "waits", "timeline"):
             target[field] += source[field]
         target["harnesses"].update(source["harnesses"])
         target["sessions"].extend(source["sessions"])
 
     rows = []
     for (_, run_id), run in sorted(runs.items()):
+        if not chain and not workflow.owns_run(run_id):
+            continue  # a sibling workflow's run the session also touched
         state = {"stages_completed": 0, "stages_prepared": 0, "stages_reported": 0,
-                 "start": None, "end": None, "issue": "", "workflow": ""}
+                 "start": None, "end": None, "issue": "", "workflow": "",
+                 "first_question": None}
         have_state = False
         if run["root"]:
             run_dir = run["root"] / ".scratch" / "orchestrator" / "runs" / run_id
             if run_dir.is_dir():
-                state = read_run_state(run_dir)
+                state = read_run_state(run_dir, workflow)
                 have_state = True
         start = iso(state["start"] or run["start"])
         end = iso(state["end"] or run["end"])
         minutes = (end - start).total_seconds() / 60 if start and end else None
         stages = state["stages_completed"]
-        rows.append({
+        # Grilling reports the session start (everything before the first question)
+        # apart from the rounds, so the per-round columns cover rounds only.
+        start_calls = start_tokens = start_effective = 0
+        if workflow.name == "grilling":
+            first = iso(state["first_question"])
+            for ts, total, eff in run["timeline"]:
+                when = iso(ts)
+                if first is None or (when and when < first):
+                    start_calls += 1
+                    start_tokens += total
+                    start_effective += eff
+        round_calls = run["calls"] - start_calls
+        round_tokens = run["tokens_total"] - start_tokens
+        round_effective = run["effective_input_equiv"] - start_effective
+        row = {
             "run_id": run_id,
             "project": run["project"],
             "issue": state["issue"],
@@ -861,13 +945,17 @@ def aggregate_runs(sessions: list[dict]) -> list[dict]:
             "tokens_total": run["tokens_total"],
             "effective_input_equiv": round(run["effective_input_equiv"]),
             "wait_calls": run["waits"],
-            "calls_per_stage": round(run["calls"] / stages, 2) if stages else "",
-            "tokens_per_stage": round(run["tokens_total"] / stages) if stages else "",
-            "effective_tokens_per_stage": round(run["effective_input_equiv"] / stages) if stages else "",
+            "calls_per_stage": round(round_calls / stages, 2) if stages else "",
+            "tokens_per_stage": round(round_tokens / stages) if stages else "",
+            "effective_tokens_per_stage": round(round_effective / stages) if stages else "",
             "tokens_per_call": round(run["tokens_total"] / run["calls"]) if run["calls"] else "",
             "waits_per_worker_hour": round(run["waits"] / (minutes / 60), 2)
             if minutes and minutes > 0 else "",
-        })
+        }
+        if workflow.name == "grilling":
+            row["session_start_calls"] = start_calls
+            row["session_start_tokens"] = start_tokens
+        rows.append(row)
     return rows
 
 
@@ -910,14 +998,23 @@ def write_runs_csv(rows: list[dict], out_dir: Path) -> Path:
     return target
 
 
-def print_summary(sessions: list[dict], runs: list[dict]) -> None:
+def print_summary(sessions: list[dict], runs: list[dict],
+                  workflow: Workflow = WORKFLOWS["issue-chain"]) -> None:
     # Sessions that never touched a run directory are skill development or smoke
     # tests; they would distort the per-commit medians.
     scored = [s for s in sessions if s["run_ids"]]
+    if workflow.name != "issue-chain":
+        # A skill-development session can drive several workflows; it counts where it
+        # touched a run of this one, and only with those runs.
+        scored = [dict(s, run_ids=[r for r in s["run_ids"] if workflow.owns_run(r)])
+                  for s in scored]
+        scored = [s for s in scored if s["run_ids"]]
     header = (f"{'commit':<10}{'date':<12}{'skill_md':>9}{'n':>4}{'runs':>6}"
               f"{'start_ctx':>11}{'calls/stg':>11}{'ctx/call':>10}{'tok/stage':>12}{'wait%':>7}{'pane%':>7}")
     print()
-    print("cmux-issue-chain orchestrator usage, medians per skill commit")
+    print(f"{workflow.subdir} orchestrator usage, medians per skill commit")
+    if workflow.name == "grilling":
+        print("calls/stg and tok/stage are per round; the session start is reported below")
     print("harnesses are reported separately - their context levels are not comparable")
 
     for harness in sorted({s["harness"] for s in scored}):
@@ -942,7 +1039,8 @@ def print_summary(sessions: list[dict], runs: list[dict]) -> None:
         for run in runs:
             if run["calls_per_stage"] != "" and run["skill_commit"] \
                     and run["harnesses"] == harness \
-                    and run["workflow"] in ("issue-chain", ""):
+                    and (run["workflow"] in ("issue-chain", "") if workflow.name == "issue-chain"
+                         else workflow.owns_run(run["run_id"])):
                 per_run_stage.setdefault(run["skill_commit"], []).append(run)
 
         print()
@@ -962,13 +1060,23 @@ def print_summary(sessions: list[dict], runs: list[dict]) -> None:
                 f"{fmt(median(group['pane_share']) * 100 if group['pane_share'] else None, 1):>7}"
             )
 
+    if workflow.name == "grilling":
+        started = [r for r in runs if r["calls"] and r["stages_completed"]]
+        print()
+        print(f"session start, medians over {len(started)} runs with at least one round: "
+              f"{fmt(median([r['session_start_calls'] for r in started]), 1)} calls, "
+              f"{fmt(median([r['session_start_tokens'] for r in started]))} tokens")
+
     missing = [r for r in runs if r["coverage"] == "missing"]
     print()
     print(f"sessions: {len(sessions)}  "
           f"(claude {sum(1 for s in sessions if s['harness'] == 'claude')}, "
           f"codex {sum(1 for s in sessions if s['harness'] == 'codex')})")
     print(f"medians above cover {len(scored)} sessions attached to a run; "
-          f"{len(sessions) - len(scored)} run-less sessions are in the CSV only")
+          f"{len(sessions) - len(scored)} run-less sessions are in the CSV only"
+          if workflow.name == "issue-chain" else
+          f"medians above cover {len(scored)} sessions attached to a {workflow.name} run; "
+          f"{len(sessions) - len(scored)} other sessions are in the CSV only")
     staged = [r for r in runs if r["calls_per_stage"] != "" and r["skill_commit"]]
     mixed = [r for r in staged if "+" in r["harnesses"]]
     print(f"runs: {len(runs)}  with transcript: {len(runs) - len(missing)}  "
@@ -995,6 +1103,8 @@ def fmt(value, digits: int = 0) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--workflow", choices=list(WORKFLOWS), default="issue-chain",
+                    help="orchestrator workflow to measure (default: issue-chain)")
     ap.add_argument("--since", help="only sessions starting on or after YYYY-MM-DD")
     ap.add_argument("--project", help="substring filter on the project slug / cwd")
     ap.add_argument("--harness", choices=["claude", "codex", "all"], default="all")
@@ -1002,15 +1112,19 @@ def main(argv=None) -> int:
     ap.add_argument("--no-cache", action="store_true", help="ignore and rewrite the parse cache")
     args = ap.parse_args(argv)
 
+    workflow = WORKFLOWS[args.workflow]
     use_cache = not args.no_cache
-    cache = load_cache(use_cache)
+    cache_file = cache_path(workflow)
+    cache = load_cache(use_cache, cache_file)
 
     sessions: list[dict] = []
     if args.harness in ("claude", "all") and CLAUDE_PROJECTS.is_dir():
-        sessions += scan(sorted(CLAUDE_PROJECTS.glob("*/*.jsonl")), parse_claude, cache, use_cache)
+        sessions += scan(sorted(CLAUDE_PROJECTS.glob("*/*.jsonl")), parse_claude, cache,
+                         use_cache, workflow)
     if args.harness in ("codex", "all") and CODEX_SESSIONS.is_dir():
-        sessions += scan(sorted(CODEX_SESSIONS.glob("*/*/*/*.jsonl")), parse_codex, cache, use_cache)
-    save_cache(cache, use_cache)
+        sessions += scan(sorted(CODEX_SESSIONS.glob("*/*/*/*.jsonl")), parse_codex, cache,
+                         use_cache, workflow)
+    save_cache(cache, use_cache, cache_file)
 
     if args.since:
         sessions = [s for s in sessions if s["start_ts"][:10] >= args.since]
@@ -1022,15 +1136,15 @@ def main(argv=None) -> int:
         print("no orchestrator sessions matched", file=sys.stderr)
         return 1
 
-    assign_skill_version(sessions, SKILL_REPO)
-    runs = aggregate_runs(sessions)
+    assign_skill_version(sessions, SKILL_REPO, workflow.subdir)
+    runs = aggregate_runs(sessions, workflow)
 
     out_dir = Path(args.out).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     s_csv = write_sessions_csv(sessions, out_dir)
     r_csv = write_runs_csv(runs, out_dir)
 
-    print_summary(sessions, runs)
+    print_summary(sessions, runs, workflow)
     print(f"\nwrote {s_csv}")
     print(f"wrote {r_csv}")
     return 0

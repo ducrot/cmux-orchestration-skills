@@ -137,6 +137,23 @@ All three workflows store prompts, reports, events, snapshots, and task artifact
 
 Legacy run layouts remain inspectable read-only. Follow the relevant skill's recovery guidance before continuing an older run.
 
+## Tokenverbrauch messen
+
+`tools/orchestrator_usage.py` measures what the orchestrator itself spends, not the workers. It reads the local Claude Code and Codex transcripts, keeps the sessions that executed the selected workflow's scripts, and groups the medians by the skill commit that was live at the time:
+
+```sh
+python3 tools/orchestrator_usage.py --workflow issue-chain|planning|grilling --harness all --out <dir>
+```
+
+`--workflow` defaults to `issue-chain`. The tool writes `orchestrator-usage-sessions.csv` and `orchestrator-usage-runs.csv` to `<dir>` and prints one table per harness:
+
+- `calls/stg`: orchestrator API calls per stage. A stage is a reported stage pass for issue-chain and planning, and a round for grilling. Grilling reports the session start (all calls before the first question) separately, below the table.
+- `ctx/call`: average context size per call. Each call re-reads the whole context, so this drives cost.
+- `tok/stage`: tokens per stage (context plus output, summed over the stage's calls).
+- `wait%`: share of tokens spent waiting for workers (watchers, sleeps and the replies that follow them).
+- `pane%`: share of tokens spent on the pane lifecycle (start, readiness, delivery, close).
+- `start_ctx`: context size of the first call, that is, the fixed cost of the loaded skill and system prompt.
+
 ## Acknowledgments
 
 These skills build in part on [Matt Pocock’s skills](https://github.com/mattpocock/skills). In particular, `cmux-grilling` adapts the questioning approach from [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me) into an autonomous research workflow with visible workers and a human decision review.
