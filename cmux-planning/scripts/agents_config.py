@@ -1541,7 +1541,9 @@ def resolve_workers(
     return resolved
 
 
-# Where each harness records startup trust per exact repository root; None means no trust dialog.
+# Where each harness records startup trust per repository root; None means no trust dialog.
+# "main_checkout": verified live (Claude Code 2.1.283, Codex 0.157.1) that the harness records and
+# resolves trust for a linked Git worktree under its main checkout.
 TRUST_RULES: dict[str, dict[str, Any] | None] = {
     "claude-code": {
         "env": "CLAUDE_CONFIG_DIR",
@@ -1550,6 +1552,7 @@ TRUST_RULES: dict[str, dict[str, Any] | None] = {
         "parse": json.loads,
         "trusted": lambda entry: entry.get("hasTrustDialogAccepted") is True,
         "command": "claude",
+        "main_checkout": True,
     },
     "codex": {
         "env": "CODEX_HOME",
@@ -1558,29 +1561,51 @@ TRUST_RULES: dict[str, dict[str, Any] | None] = {
         "parse": tomllib.loads,
         "trusted": lambda entry: entry.get("trust_level") == "trusted",
         "command": "codex",
+        "main_checkout": True,
     },
     "pi": None,
 }
 
 
+def main_checkout(repository: str) -> str | None:
+    """Return the main checkout when the repository root is a linked Git worktree."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    common = Path(result.stdout.strip())
+    if result.returncode != 0 or not common.is_absolute() or common.name != ".git":
+        return None
+    main = common.parent.resolve()
+    return str(main) if main != Path(repository).resolve() else None
+
+
 def repository_trust(harness: str, repository: str) -> dict[str, Any]:
-    """Read exact-root startup trust without changing the harness configuration."""
+    """Read startup trust for the repository root, or for its main checkout where the harness
+    resolves linked-worktree trust there, without changing the harness configuration."""
     if harness not in TRUST_RULES:
         raise HarnessError(f"no trust adapter for harness {harness!r}")
     rule = TRUST_RULES[harness]
     if rule is None:
         return {"status": "not-applicable", "repository": repository, "source": None}
+    main = main_checkout(repository) if rule.get("main_checkout") else None
     source = Path(os.environ.get(rule["env"], str(Path.home().joinpath(*rule["default_dir"])))) / rule["filename"]
     try:
         data = rule["parse"](source.read_text(encoding="utf-8"))
         projects = data.get("projects", {}) if isinstance(data, dict) else {}
-        entry = projects.get(repository, {}) if isinstance(projects, dict) else {}
-        trusted = isinstance(entry, dict) and rule["trusted"](entry)
+        entries = [projects.get(key, {}) for key in (repository, main) if key] if isinstance(projects, dict) else []
+        trusted = any(isinstance(entry, dict) and rule["trusted"](entry) for entry in entries)
     except (OSError, ValueError):
         trusted = False
     if not trusted:
+        required = f"main checkout {main!r} of linked worktree {repository!r}" if main else f"repository {repository!r}"
         raise HarnessError(
-            f"{harness} does not trust repository {repository!r} in {source}; "
+            f"{harness} does not trust {required} in {source}; "
             f"start {rule['command']} once in {repository!r}, accept the trust dialog, exit, then prepare again"
         )
     return {"status": "passed", "repository": repository, "source": str(source.absolute())}

@@ -1120,6 +1120,42 @@ class ProbeArguments(unittest.TestCase):
                     self.assertEqual(agents_config.repository_trust("pi", repository),
                                      {"status": "not-applicable", "repository": repository, "source": None})
 
+    def test_linked_worktree_trust_accepts_main_checkout_only_for_verified_harnesses(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        tmp = Path(temporary.name).resolve()
+        main, worktree, home = tmp / "main", tmp / "worktree", tmp / "home"
+        git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+        subprocess.run(git + ["init", "-q", str(main)], check=True)
+        subprocess.run(git + ["-C", str(main), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        subprocess.run(git + ["-C", str(main), "worktree", "add", "-q", str(worktree)], check=True)
+        (home / ".codex").mkdir(parents=True)
+        self.assertEqual(agents_config.main_checkout(str(worktree)), str(main))
+        self.assertIsNone(agents_config.main_checkout(str(main)))
+        self.assertIsNone(agents_config.main_checkout(str(home)))
+        unverified = {name: rule and {**rule, "main_checkout": False} for name, rule in agents_config.TRUST_RULES.items()}
+        with patch.dict(os.environ, {"HOME": str(home)}, clear=True):
+            for verified in (True, False):
+                for case in ("main", "worktree", "parent", "missing"):
+                    key = {"main": main, "worktree": worktree, "parent": tmp, "missing": home}[case]
+                    (home / ".claude.json").write_text(json.dumps({"projects": {str(key): {"hasTrustDialogAccepted": True}}}))
+                    (home / ".codex" / "config.toml").write_text(f'[projects.{json.dumps(str(key))}]\ntrust_level = "trusted"\n')
+                    for harness in ("claude-code", "codex"):
+                        with self.subTest(verified=verified, case=case, harness=harness), patch.dict(
+                            agents_config.TRUST_RULES, {} if verified else unverified
+                        ):
+                            if case == "worktree" or (case == "main" and verified):
+                                self.assertEqual(agents_config.repository_trust(harness, str(worktree))["repository"], str(worktree))
+                                continue
+                            with self.assertRaises(agents_config.HarnessError) as caught:
+                                agents_config.repository_trust(harness, str(worktree))
+                            message = str(caught.exception)
+                            self.assertIn(f"start {agents_config.TRUST_RULES[harness]['command']} once in {str(worktree)!r}", message)
+                            if verified:
+                                self.assertIn(f"main checkout {str(main)!r} of linked worktree {str(worktree)!r}", message)
+                            else:
+                                self.assertIn(f"does not trust repository {str(worktree)!r}", message)
+
     def test_audit_checks_trust_once_per_harness_and_records_each_worker(self):
         source = Path("/test/agents.json")
         resolved = agents_config.resolve_workers(agents_config.DEFAULT_CONFIG, source, {}, workflow="issue-chain")

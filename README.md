@@ -36,7 +36,7 @@ Each skill includes its own runtime helpers and works without the sibling direct
 
 - **cmux** for visible worker panes, with its CLI available to the orchestrator.
 - **Git and Python 3.11 or newer** in the target repository. The bundled Python helpers use only the standard library, including `tomllib` for Codex trust configuration.
-- **One-time repository trust:** Before preparation, start each assigned `claude` or `codex` harness in the exact repository root, accept the trust dialog, then exit. Preparation reads Claude Code trust from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) and Codex trust from `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`); parent or home-directory trust is insufficient. Pi must support `--no-approve`, which worker launches append.
+- **One-time repository trust:** Before preparation, start each assigned `claude` or `codex` harness in the exact repository root, accept the trust dialog, then exit. Preparation reads Claude Code trust from `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) and Codex trust from `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`); for a linked Git worktree, both harnesses record the trust under the main checkout, which preparation accepts; parent or home-directory trust is insufficient. Pi must support `--no-approve`, which worker launches append.
 - **An orchestrating agent** that can load skills and operate cmux, such as Claude Code or Codex.
 - **Authenticated Claude Code and Codex CLIs** for the shipped worker defaults. The configured models must be available to your account. The Pi CLI is supported too, but no default assignment uses it.
 
