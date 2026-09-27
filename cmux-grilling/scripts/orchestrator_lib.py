@@ -51,6 +51,14 @@ def delivery_text(kind: str, prompt_path: str) -> str:
     return DELIVERY_TEMPLATES[kind].format(prompt_path=prompt_path)
 
 
+def session_prompt_path(run_dir: Path, lane: str) -> Path:
+    return run_dir / "prompts" / f"session-{lane}.md"
+
+
+def session_marker_path(run_dir: Path, lane: str) -> Path:
+    return run_dir / "artifacts" / f"session-{lane}" / "started"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 

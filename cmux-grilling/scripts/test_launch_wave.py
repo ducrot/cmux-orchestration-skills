@@ -74,6 +74,7 @@ else:
     raise SystemExit("unexpected fake harness invocation: " + repr(args))
 '''
 
+from orchestrator_lib import delivery_text
 from test_support import FAKE_CMUX
 
 
@@ -176,6 +177,14 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             text=True,
             timeout=30,
         )
+
+    def render_session(self, run_dir: Path, lane: str):
+        rendered = subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "render_prompt.py"), "session",
+             "--run-dir", str(run_dir), "--lane", lane],
+            cwd=self.repo, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
 
     def run_dir(self, run_id: str) -> Path:
         return self.runs_root / run_id
@@ -397,6 +406,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 "launch", "--run-dir", str(run_dir), "--lane", lane, "--anchor", "anchor"
             )
             self.assertEqual(launched.returncode, 0, launched.stderr)
+            self.render_session(run_dir, lane)
             started = self.pane(
                 "start-agent", "--run-dir", str(run_dir), "--surface", f"surface-{lane}",
                 "--lane", lane, "--settle-seconds", "0",
@@ -408,7 +418,9 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         for lane, command in zip(("codebase", "codebase2", "docs", "web"), sent):
             self.assertEqual(
                 shlex.split(command),
-                ["CMUX_AGENT_MANAGED_SUBAGENT=1", *wave["resolved_profiles"][lane]["argv"]],
+                ["CMUX_AGENT_MANAGED_SUBAGENT=1", *wave["resolved_profiles"][lane]["argv"],
+                 delivery_text("session", str(
+                     (self.run_dir("commands") / "prompts" / f"session-{lane}.md").relative_to(self.repo)))],
             )
 
         self.assertEqual(
@@ -682,6 +694,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         run_dir = self.run_dir("immutable")
+        self.render_session(run_dir, "codebase2")
         started = self.pane(
             "start-agent", "--run-dir", str(run_dir), "--surface", "persistent-surface",
             "--lane", "codebase2", "--settle-seconds", "0",

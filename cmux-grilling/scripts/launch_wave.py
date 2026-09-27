@@ -253,8 +253,8 @@ def load_launchable_lane(run_dir: Path, lane: str) -> tuple[dict[str, Any], dict
     return snapshot, copy.deepcopy(resolved[lane])
 
 
-def lane_shell_command(entry: dict[str, Any]) -> str:
-    return shell_command(entry["environment"], entry["argv"])
+def lane_shell_command(entry: dict[str, Any], *extra_args: str) -> str:
+    return shell_command(entry["environment"], [*entry["argv"], *extra_args])
 
 
 def lane_launch_record(snapshot: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:

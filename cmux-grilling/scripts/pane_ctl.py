@@ -8,21 +8,22 @@ focused workspace or an environment fallback. Verbs:
   workspace  print the pinned workspace id
   cmux       generic passthrough that injects --workspace into any cmux command
   launch      launch-wave check + new-split + deterministic label + pane lifecycle events
-  start-agent send the lane's prepared launch-wave command + worker.launch_sent event
+  start-agent send the prepared launch-wave command with session prompt + worker.launch_sent
   observe/assess/respond  screen-bound readiness and individually assessed dialog keys
   deliver     consume readiness + send + send-key enter + screen + worker.prompt_sent
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
   close       close-surface + pane.closed event
 
-The readiness gate enforces observation and assessment before input. Judging what a
-lane's screen means (started? stuck at a prompt?) stays with the orchestrator.
+The session watcher confirms normal starts from markers. The readiness gate enforces
+observation and assessment for exception-path input, round delivery, and follow-ups.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from launch_wave import (
     LaunchWaveError,
     lane_launch_record,
     lane_shell_command,
+    git_root,
     load_launchable_lane,
 )
 from orchestrator_lib import (
@@ -42,8 +44,9 @@ from orchestrator_lib import (
     LANES,
     append_jsonl,
     delivery_text,
-    read_json,
     read_run_state,
+    session_marker_path,
+    session_prompt_path,
     utc_now,
 )
 
@@ -76,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--run-dir", required=True)
     start.add_argument("--surface", required=True)
     start.add_argument("--lane", required=True, choices=sorted(LANES))
-    start.add_argument("--settle-seconds", type=float, default=8.0, help="Wait before read-screen")
+    start.add_argument("--settle-seconds", type=float, default=0.0, help="Optional diagnostic wait before read-screen")
     start.add_argument("--read-lines", type=int, default=40)
 
     deliver = subparsers.add_parser("deliver", help="Send text to a pane, submit with Enter, echo the screen")
@@ -218,38 +221,62 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 
 def send_submit_echo(
-    args: argparse.Namespace, text: str, event_type: str, message: str, data: dict
+    args: argparse.Namespace,
+    workspace_id: str,
+    text: str,
+    event_type: str,
+    message: str,
+    data: dict,
+    echo: str | None = "stdout",
 ) -> None:
     run_dir = Path(args.run_dir)
-    target = ["--workspace", pinned_workspace(run_dir), "--surface", args.surface]
-    if event_type == "worker.launch_sent":
-        data = begin_start(args, record_event, data)
+    target = ["--workspace", workspace_id, "--surface", args.surface]
     if event_type == "worker.prompt_sent":
         record_event(run_dir, "worker.delivery_attempted", "task input about to be sent", data)
     run_cmux(args, ["send", *target, text])
     # A trailing \n does not submit in the Codex/Claude TUIs; Enter must be its own key event.
     run_cmux(args, ["send-key", *target, "enter"])
     record_event(run_dir, event_type, message, data)
-    time.sleep(args.settle_seconds)
-    screen = run_cmux(args, ["read-screen", *target, "--lines", str(args.read_lines)])
-    print(screen.stdout, end="")
+    if echo:
+        time.sleep(args.settle_seconds)
+        screen = run_cmux(args, ["read-screen", *target, "--lines", str(args.read_lines)])
+        print(screen.stdout, end="", file=sys.stderr if echo == "stderr" else sys.stdout)
 
 
 def cmd_start_agent(args: argparse.Namespace) -> int:
-    snapshot, lane_entry = load_launchable_lane(Path(args.run_dir), args.lane)
-    command = lane_shell_command(lane_entry)
+    run_dir = Path(args.run_dir).resolve()
+    snapshot, lane_entry = load_launchable_lane(run_dir, args.lane)
+    prompt = session_prompt_path(run_dir, args.lane)
+    if not prompt.is_file():
+        raise SystemExit(f"Missing session prompt: {prompt}")
+    relative = os.path.relpath(prompt, git_root(Path.cwd()))
+    marker = session_marker_path(run_dir, args.lane)
+    text = delivery_text("session", relative)
+    command = lane_shell_command(lane_entry, text)
+    workspace_id = pinned_workspace(run_dir)
+    data = begin_start(args, record_event, {
+        "lane": args.lane,
+        "surface_id": args.surface,
+        "command": command,
+        **lane_launch_record(snapshot, lane_entry),
+        "prompt_path": str(prompt),
+        "prompt_path_relative": relative,
+        "text": text,
+        "marker_path": str(marker),
+        "start_time_ns": time.time_ns(),
+    })
     send_submit_echo(
         args,
+        workspace_id,
         command,
         "worker.launch_sent",
-        "launch command sent; started-confirmation is the orchestrator's call",
-        {
-            "lane": args.lane,
-            "surface_id": args.surface,
-            "command": command,
-            **lane_launch_record(snapshot, lane_entry),
-        },
+        "session attached; arm the session watcher",
+        data,
+        echo="stderr" if args.settle_seconds > 0 else None,
     )
+    print(json.dumps({key: data[key] for key in
+                      ("launch_id", "surface_id", "prompt_path", "marker_path")} |
+                     {"next": "arm await_reports.py --session"}))
     return 0
 
 
@@ -258,10 +285,12 @@ def cmd_readiness(args: argparse.Namespace) -> int:
 
 
 def cmd_deliver(args: argparse.Namespace) -> int:
-    Gate(args, pinned_workspace(Path(args.run_dir)), run_cmux, record_event).consume()
+    workspace_id = pinned_workspace(Path(args.run_dir))
+    Gate(args, workspace_id, run_cmux, record_event).consume()
     text = delivery_text(args.kind, args.prompt) if args.prompt else args.text
     send_submit_echo(
         args,
+        workspace_id,
         text,
         "worker.prompt_sent",
         "text sent and submitted; started-confirmation is the orchestrator's call",

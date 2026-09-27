@@ -57,9 +57,12 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, procedure)
         self.assertLess(procedure.index('snapshot --label "launched session"'),
-                        procedure.index('pane_ctl.py deliver'))
-        self.assertLess(procedure.index('pane_ctl.py deliver'),
+                        procedure.index('pane_ctl.py start-agent'))
+        self.assertLess(procedure.index('await_reports.py --session'),
                         procedure.index('snapshot --label "adopted session"'))
+        self.assertLess(procedure.index('pane_ctl.py start-agent'),
+                        procedure.index('await_reports.py --session'))
+        self.assertIn('| 9 | session lanes not started', text)
 
     def test_issue_chain_start_sequence_and_exception_path(self):
         path = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
@@ -91,7 +94,8 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             with self.subTest(guide="issue-chain", phrase=phrase):
                 self.assertIn(phrase, chain)
         for phrase in (
-            'baseline snapshot before initial lane delivery', 'after all lanes adopt',
+            'baseline snapshot before initial lane delivery, before the first `start-agent`', 'after all lanes adopt',
+            'await_reports.py --session', '| 9 | session lanes not started',
             'compare the session baseline before arming the first round',
             'before each round delivery', '`reports-captured round-<n>` snapshot',
             'never replace a baseline before checking the interval it covers',

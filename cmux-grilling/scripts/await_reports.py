@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch a round's lane reports; exit 0=all reports exist, 7=lane pane dead, 8=deadline.
+"""Watch session starts or round reports; exit 0=ready, 7=pane dead, 8=deadline, 9=not started.
 
 Designed to run under the harness Monitor tool (persistent), so the orchestrator is
 re-invoked deterministically when the watch ends. One watcher per round, not per lane:
@@ -19,18 +19,20 @@ import subprocess
 import time
 from pathlib import Path
 
-from orchestrator_lib import LANES, append_jsonl, read_json, read_run_state, round_wait_minutes, utc_now
+from worker_readiness import ReadinessError, context, read_events
+from orchestrator_lib import LANES, append_jsonl, read_run_state, round_wait_minutes, session_marker_path, utc_now
 
-EXIT_REPORTS = 0    # every lane report exists — parse them next; NOT an advance verdict
+EXIT_REPORTS = 0    # session lanes started, or round reports exist; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # a lane surface with a pending report is gone per surface-health
 EXIT_DEADLINE = 8   # deadline exceeded with the pending panes alive/unknown
-# 1 = crash, 2 = argparse usage; 3-6 belong to parse_research_report.py. Skill-wide unique.
+EXIT_NOT_STARTED = 9  # session start window elapsed with lanes unconfirmed
+# 1 = crash, 2 = argparse usage; 3-6 = report gates; 7-9 = watchers. Skill-wide unique.
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
-    parser.add_argument("--round", dest="round_number", type=int, required=True)
+    parser.add_argument("--round", dest="round_number", type=int)
     parser.add_argument(
         "--lanes",
         default=",".join(LANES),
@@ -51,7 +53,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--questions",
         type=int,
-        required=True,
         help="Questions in the round; scales the default deadline (15 min + 5 per extra question)",
     )
     parser.add_argument(
@@ -59,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Override the round minimum wait (the one documented extension)",
     )
+    parser.add_argument("--session", action="store_true", help="Wait for the given lane surfaces to adopt their sessions")
+    parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-interval-seconds", type=float, default=60)
     parser.add_argument("--heartbeat-seconds", type=float, default=300)
@@ -168,9 +171,91 @@ def join(lanes: list[str]) -> str:
     return ",".join(lanes) if lanes else "none"
 
 
+def watch_session(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    run_dir = Path(args.run_dir)
+    surfaces = parse_lane_surfaces(args.lane_surface, parse_lanes(args))
+    if not surfaces:
+        parser.error("--session requires at least one --lane-surface")
+    if any(surface.startswith("surface:") for surface in surfaces.values()):
+        parser.error("--session requires stable surface UUIDs, not positional surface:N refs")
+    lanes = list(surfaces)
+    cmd = health_command(args, parser)
+    start = time.monotonic()
+    deadline = start + args.start_minutes * 60
+    next_health = start
+    next_heartbeat = start + args.heartbeat_seconds
+    health_status, health_detail, dead_lanes = "unchecked", "", []
+
+    def started() -> list[str]:
+        events = read_events(run_dir)
+        done = []
+        for lane, surface in surfaces.items():
+            identity = {"lane": lane}
+            try:
+                launch_id, later = context(events, identity, surface)
+            except ReadinessError:
+                continue
+            if any(event.get("type") == "worker.started" and
+                   event.get("data", {}).get("launch_id") == launch_id for event in later):
+                done.append(lane)
+                continue
+            launch = next((event["data"] for event in reversed(events)
+                           if event.get("type") == "worker.launch_sent" and
+                           event.get("data", {}).get("launch_id") == launch_id), {})
+            marker = session_marker_path(run_dir, lane)
+            start_ns = launch.get("start_time_ns")
+            try:
+                fresh = isinstance(start_ns, int) and marker.is_file() and marker.stat().st_mtime_ns >= start_ns
+            except FileNotFoundError:
+                fresh = False
+            if fresh:
+                append_jsonl(run_dir / "events.jsonl", {
+                    "time": utc_now(), "type": "worker.started", "message": "session start marker captured",
+                    "data": {**identity, "surface_id": surface, "launch_id": launch_id,
+                             "evidence": "marker", "marker_path": str(marker)},
+                })
+                done.append(lane)
+        return done
+
+    while True:
+        done = started()
+        pending = [lane for lane in lanes if lane not in done]
+        now = time.monotonic()
+        outcome, code = None, None
+        if not pending:
+            outcome, code = "started", EXIT_REPORTS
+        elif now >= next_health:
+            health_status, dead_lanes, health_detail = check_health(cmd, {lane: surfaces[lane] for lane in pending})
+            next_health = now + args.health_interval_seconds
+            if health_status == "dead":
+                outcome, code = "pane_dead", EXIT_PANE_DEAD
+        if outcome is None and now >= deadline:
+            outcome, code = "not_started", EXIT_NOT_STARTED
+        data = {"session": True, "lanes": lanes, "started_lanes": done, "not_started": pending,
+                "surface_ids": surfaces, "elapsed_seconds": round(now - start, 1),
+                "start_minutes": args.start_minutes, "health": health_status,
+                "health_detail": health_detail, "dead_lanes": dead_lanes}
+        if outcome:
+            waiting_event(run_dir, f"session watch: {outcome}", {**data, "outcome": outcome})
+            print(f"outcome={outcome} session=true elapsed_seconds={data['elapsed_seconds']} "
+                  f"started={join(done)} not_started={join(pending)} dead={join(dead_lanes)}")
+            return code
+        if now >= next_heartbeat:
+            waiting_event(run_dir, "session markers pending", data)
+            next_heartbeat = now + args.heartbeat_seconds
+        time.sleep(min(args.poll_seconds, max(deadline - time.monotonic(), 0.01)))
+
+
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     run_dir = Path(args.run_dir)
+    if args.session:
+        if args.round_number is not None or args.questions is not None:
+            parser.error("--session refuses --round and --questions")
+    elif args.round_number is None or args.questions is None:
+        parser.error("round watches require --round and --questions")
     read_run_state(run_dir)
+    if args.session:
+        return watch_session(args, parser)
     if args.questions < 1:
         raise SystemExit("--questions must be >= 1")
     lanes = parse_lanes(args)

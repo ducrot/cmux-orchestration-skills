@@ -11,7 +11,15 @@ import argparse
 import shlex
 from pathlib import Path
 
-from orchestrator_lib import LANES, read_json, read_run_state, read_text, utc_now
+from orchestrator_lib import (
+    LANES,
+    read_json,
+    read_run_state,
+    read_text,
+    session_marker_path,
+    session_prompt_path,
+    utc_now,
+)
 
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
 
@@ -115,7 +123,7 @@ def main() -> int:
     run_dir = Path(args.run_dir)
     state = read_run_state(run_dir)
     if args.command == "session":
-        out = Path(args.out) if args.out else run_dir / "prompts" / f"session-{args.lane}.md"
+        out = Path(args.out) if args.out else session_prompt_path(run_dir, args.lane)
         prompt = render_session(args.lane, state, run_dir)
     else:
         if args.round_number > int(state["max_rounds"]):
@@ -147,7 +155,13 @@ def main() -> int:
 
 def render_session(lane: str, state: dict, run_dir: Path) -> str:
     task = read_text(run_dir / str(state["task_file"])).rstrip()
+    marker = session_marker_path(run_dir, lane)
     return f"""# Research Lane Prompt: {lane} ({LANES[lane]["label"]})
+
+## First Step
+
+Before doing anything else, create or overwrite `{marker}`. Create its parent directory
+if necessary and refresh its modification time even if it already exists.
 
 This file is your standing contract for the session, not a document to summarize. Adopt it,
 confirm in one line, then wait for round prompts.
@@ -176,6 +190,8 @@ Max rounds: {state["max_rounds"]}
 
 - Read-only research: never create, edit, or delete repository files, and never run
   state-changing commands.
+- The one write outside the per-round draft and report is the session start marker
+  `{marker}`, created or overwritten as the first step above.
 - You may write exactly two files per round: the draft path and the report handoff path
   named in each round prompt (draft validation and report capture are explicitly delegated
   to you). The default draft template is `{run_dir}/drafts/round-<N>-{lane}.md`;
@@ -211,7 +227,7 @@ def render_round(
     # Keeps an override off run state, prompts, and other lanes' reports.
     if (run_dir / "drafts").resolve() not in resolved_draft.parents:
         raise ValueError("Draft path must be inside the run-local drafts directory")
-    session_prompt = run_dir / "prompts" / f"session-{lane}.md"
+    session_prompt = session_prompt_path(run_dir, lane)
     count = len(questions)
     listing = "\n\n".join(f"### Q{number}\n\n{question}" for number, question in enumerate(questions, start=1))
     return f"""# Round {round_number} Questions — lane {lane}

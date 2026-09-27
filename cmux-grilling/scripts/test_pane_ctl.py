@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from orchestrator_lib import delivery_text
 from launch_wave import (
     SUBAGENT_MARKER_ENV,
     SUBAGENT_MARKER_VALUE,
+    git_root,
     lane_argv,
     snapshot_identity,
 )
@@ -30,7 +32,7 @@ from test_support import FAKE_CMUX
 class PaneCtlCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.run_dir = Path(self._tmp.name) / "run"
+        self.run_dir = Path(self._tmp.name).resolve() / "run"
         self.run_dir.mkdir()
         profiles = {
             "codebase": {
@@ -89,6 +91,12 @@ class PaneCtlCase(unittest.TestCase):
             }),
             encoding="utf-8",
         )
+        from render_prompt import render_session
+        (self.run_dir / "task.md").write_text("Research task")
+        (self.run_dir / "prompts").mkdir()
+        for lane in profiles:
+            (self.run_dir / "prompts" / f"session-{lane}.md").write_text(render_session(
+                lane, {"run_id": "test-run", "max_rounds": 4, "task_file": "task.md"}, self.run_dir))
         self.log = Path(self._tmp.name) / "cmux-calls.jsonl"
         fake = Path(self._tmp.name) / "fake_cmux.py"
         fake.write_text(FAKE_CMUX, encoding="utf-8")
@@ -226,7 +234,7 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
         verbs = [call[0] for call in self.cmux_calls()]
-        self.assertEqual(verbs, ["send", "send-key", "read-screen"])
+        self.assertEqual(verbs, ["send", "send-key"])
         command = self.cmux_calls()[0][-1]
         # The marker is what keeps the lane pane out of the human's notification centre.
         self.assertTrue(command.startswith("CMUX_AGENT_MANAGED_SUBAGENT=1 codex "), command)
@@ -237,6 +245,69 @@ class StartAgent(PaneCtlCase):
         self.assertEqual([event["type"] for event in events], ["worker.starting", "worker.launch_sent"])
         self.assertEqual(events[0]["data"]["command"], command)
 
+    def test_prompt_attached_as_single_last_argument_and_launch_fields(self):
+        for lane in ("codebase", "codebase2", "docs", "web"):
+            proc = self.run_ctl("start-agent", "--run-dir", str(self.run_dir),
+                                "--surface", "SURF-UUID", "--lane", lane)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            result = json.loads(proc.stdout)
+            self.assertEqual(len(proc.stdout.splitlines()), 1)
+            starting, launch = self.events()[-2:]
+            self.assertEqual(starting["data"], launch["data"])
+            data = launch["data"]
+            wave = json.loads((self.run_dir / "launch-waves/wave.json").read_text())
+            expected = wave["resolved_profiles"][lane]["argv"]
+            self.assertEqual(shlex.split(data["command"]),
+                             ["CMUX_AGENT_MANAGED_SUBAGENT=1", *expected, data["text"]])
+            self.assertEqual(data["text"], delivery_text("session", data["prompt_path_relative"]))
+            self.assertEqual((git_root(Path.cwd()) / data["prompt_path_relative"]).resolve(), Path(data["prompt_path"]))
+            self.assertGreater(data["start_time_ns"], 0)
+            for key in ("launch_id", "surface_id", "prompt_path", "marker_path"):
+                self.assertEqual(result[key], data[key])
+            self.assertIn("--session", result["next"])
+            self.assertEqual(Path(data["marker_path"]), self.run_dir / "artifacts" / f"session-{lane}" / "started")
+        self.assertEqual([call[0] for call in self.cmux_calls()], ["send", "send-key"] * 4)
+
+    def test_missing_session_prompt_refuses_before_cmux(self):
+        (self.run_dir / "prompts/session-web.md").unlink()
+        proc = self.run_ctl("start-agent", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID", "--lane", "web")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Missing session prompt", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
+        self.assertEqual(self.events(), [])
+
+    def test_four_lane_session_cli_flow(self):
+        scripts = Path(__file__).parent
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["task_file"] = "task.md"
+        state_path.write_text(json.dumps(state))
+        launch_ids = {}
+        for lane in ("codebase", "codebase2", "docs", "web"):
+            rendered = subprocess.run([sys.executable, str(scripts / "render_prompt.py"), "session",
+                "--run-dir", str(self.run_dir), "--lane", lane], capture_output=True, text=True)
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            started = self.run_ctl("start-agent", "--run-dir", str(self.run_dir),
+                                  "--lane", lane, "--surface", f"UUID-{lane}")
+            self.assertEqual(started.returncode, 0, started.stderr)
+            data = json.loads(started.stdout)
+            launch_ids[lane] = data["launch_id"]
+            # Simulate each worker following the actual rendered First Step.
+            prompt = Path(data["prompt_path"]).read_text()
+            marker = Path(prompt.split("create or overwrite `", 1)[1].split("`", 1)[0])
+            self.assertEqual(str(marker), data["marker_path"])
+            marker.parent.mkdir(parents=True)
+            marker.write_text("adopted")
+        args = [sys.executable, str(scripts / "await_reports.py"), "--run-dir", str(self.run_dir), "--session"]
+        for lane in launch_ids:
+            args += ["--lane-surface", f"{lane}=UUID-{lane}"]
+        watched = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        self.assertEqual(watched.returncode, 0, watched.stderr)
+        self.assertIn("not_started=none", watched.stdout)
+        confirmed = [e["data"] for e in self.events() if e["type"] == "worker.started"]
+        self.assertEqual({e["lane"]: e["launch_id"] for e in confirmed}, launch_ids)
+        self.assertEqual([call[0] for call in self.cmux_calls()], ["send", "send-key"] * 4)
+
     def test_claude_lane_gets_the_marker_too(self):
         proc = self.run_ctl(
             "start-agent", "--run-dir", str(self.run_dir),
@@ -246,7 +317,8 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(
             self.cmux_calls()[0][-1],
             "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model sonnet --effort medium "
-            "--permission-mode auto",
+            "--permission-mode auto " + shlex.quote(delivery_text("session", os.path.relpath(
+                self.run_dir / "prompts" / "session-web.md", git_root(Path.cwd())))),
         )
 
 

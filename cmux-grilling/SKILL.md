@@ -236,7 +236,7 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 
 ## Delivery baselines and staged deltas
 
-Capture a baseline snapshot before initial lane delivery:
+Capture a baseline snapshot before initial lane delivery, before the first `start-agent`:
 `run_state.py snapshot --label "launched session"`. After all lanes adopt their session
 contracts, capture `run_state.py snapshot --label "adopted session"` and compare the session
 baseline before arming the first round. Before each round delivery, capture
@@ -443,13 +443,14 @@ round wait — do not substitute it.
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.
 
-The watcher ends on exactly three conditions and nothing else:
+The watcher uses these exit codes (session mode waits for starts; round mode waits for reports):
 
 | Exit | Condition                                               | Orchestrator action                                                                               |
 |------|---------------------------------------------------------|---------------------------------------------------------------------------------------------------|
-| 0    | All awaited lane reports exist                          | Snapshot, parse each lane, gate — exit 0 is not an advance verdict                                |
+| 0    | All session lanes started, or all awaited round reports exist                          | Session: capture adopted snapshot; round: snapshot, parse each lane, gate — exit 0 is not an advance verdict                                |
 | 7    | A pending lane's pane is dead per `cmux surface-health` | Stop as HITL for that lane; a dead pane with no report is orchestration uncertainty, not findings |
-| 8    | Deadline exceeded, pending panes alive/unknown          | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL          |
+| 8    | Round deadline exceeded, pending panes alive/unknown          | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL          |
+| 9    | Session lanes not started within the start window | Inspect only `not_started` lanes using the session exception path, then re-arm |
 
 The stdout line carries the detail the exit code cannot:
 `outcome=… round=1 elapsed_seconds=… delivered=codebase,docs missing=codebase2,web dead=codebase2`
@@ -656,11 +657,14 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 
 ## Worker input readiness
 
-Before starting or messaging any worker, follow [Interactive worker readiness](references/worker-readiness.md).
-After `start-agent`, inspect with `observe`, explicitly `assess` the current screen, resolve pending
-startup dialogs, and only then `deliver`. Read each tool result before the next input; never batch
-start and task delivery. The gate applies to Codex, Claude Code and Pi, all roles/lanes, and follow-ups.
-`worker.ready` permits one delivery and is distinct from `worker.started`. On recovery, observe again.
+Normal session starts attach the rendered session prompt to `start-agent` and confirm all lanes
+with one `await_reports.py --session` marker watch. Readiness observations are exception-path
+and follow-up only: after exit 9, or before round delivery and follow-up input, follow
+[Interactive worker readiness](references/worker-readiness.md). Use `observe`, explicitly
+`assess` the current screen, resolve dialogs with `respond`, then consume one fresh
+`worker.ready` with `deliver`. Read each tool result before the next input. The gate applies
+to Codex, Claude Code and Pi. `worker.ready` permits one delivery and is distinct from
+`worker.started`; on recovery, observe again.
 
 ## CMUX Control
 
@@ -767,8 +771,12 @@ python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <s
 `launch` first validates the prepared launch wave, then splits from the anchor without stealing focus, labels the pane, records
 `pane.launched` + `pane.labeled`, and prints the new surface's stable UUID — use that UUID in
 every later command; positional refs like `surface:465` shift when panes close. `start-agent`
-revalidates that same wave and sends only the requested lane's prepared launch command
-(configuration is never re-read), records `worker.launch_sent`, and echoes the screen.
+revalidates that same wave and appends the session delivery line as the single last argument
+of the requested lane's prepared command (configuration is never re-read). It refuses a missing
+`prompts/session-<lane>.md` before any cmux call, records `worker.starting` and
+`worker.launch_sent` with `start_time_ns`, and prints one JSON line with `launch_id`,
+`surface_id`, `prompt_path`, `marker_path`, and the next step. Default settle time is zero;
+`--settle-seconds` above zero enables a diagnostic screen read on stderr.
 `deliver` requires a fresh, screen-bound readiness assessment, consumes it, then
 sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
 in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
@@ -802,17 +810,32 @@ Session start:
    `Researcher Docs`, `Researcher Web`, each suffixed `- grill-<slug>`. Optional status
    pills via `set-status` through the injector (not pane colors): Codebase `#0a84ff`,
    Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
-4. Start each lane's agent with `pane_ctl.py start-agent --lane <lane>`; judge the echoed
-   screen, then complete the observe/assess/dialog protocol before sending it any text.
-5. Before sending any session prompt, capture
-   `run_state.py snapshot --label "launched session"` under Delivery baselines and staged deltas.
-   Send each lane its session prompt with `pane_ctl.py deliver --lane <lane> --kind session
-   --prompt .scratch/orchestrator/runs/<run-id>/prompts/session-<lane>.md`. Judge the echoed
-   screen, then record `worker.started`. A lane that confirms in one line and goes idle here is
-   correct — the session prompt is a contract, not work.
-   After all lanes adopt their session contracts, capture
+4. Before sending any session prompt, capture
+   `run_state.py snapshot --label "launched session"` under Delivery baselines and staged deltas,
+   before the first `start-agent`.
+5. Start each lane with `pane_ctl.py start-agent --run-dir <run-dir> --surface <lane-surface-id>
+   --lane <lane>`. Each launch attaches its rendered `prompts/session-<lane>.md`; the worker's
+   first step creates or overwrites `artifacts/session-<lane>/started` and refreshes its mtime.
+6. Arm one `await_reports.py --session --run-dir <run-dir>
+   --lane-surface codebase=<codebase-surface-id> --lane-surface codebase2=<codebase2-surface-id>
+   --lane-surface docs=<docs-surface-id> --lane-surface web=<web-surface-id>` watch via Monitor.
+   The default `--start-minutes 5` window accepts only markers at least as new as the matching
+   current launch's `start_time_ns`, records one `worker.started` per lane with marker evidence,
+   and exits 0 only when all given lanes have started. No screen judgment is needed normally.
+   After exit 9, for each lane named in `not_started`, take one `observe` and `assess`:
+   - Dialog: `respond` with the assessed action, then re-arm without re-delivery.
+   - `failed`: follow the existing failure rules and stop as HITL/blocker.
+   - Ready but no session adopted: one readiness-gated `deliver --kind session --prompt
+     <run-dir>/prompts/session-<lane>.md`, then re-arm the session watch.
+   - Visibly working or session adopted: record `run_state.py event --type worker.started`
+     with data `{lane, surface_id, launch_id, evidence: "screen"}` from the current launch,
+     then re-arm. A lane that confirms in one line and goes idle is correct for a session.
+   Exit 7 means a pending lane pane died: stop as HITL for that lane.
+7. After the session watch exits 0, after all lanes adopt their session contracts, capture
    `run_state.py snapshot --label "adopted session"` and compare it with the session baseline
-   before arming the first round, following Delivery baselines and staged deltas.
+   before arming the first round, following Delivery baselines and staged deltas. Round prompts
+   continue through readiness-gated `deliver --kind round`; round watches await reports only,
+   without a new start phase for lanes whose latest launch already has `worker.started`.
 
 Lane panes stay open across rounds; they are closed only at session end, HITL stop, blocker
 stop, or run abort — after their reports and gate decisions are documented (`pane_ctl.py
@@ -835,10 +858,12 @@ consistently within a run.
 | `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |
-| `worker.launch_sent`                                   | Lane agent launch command sent verbatim; written by `pane_ctl.py start-agent`                                                       |
+| `worker.starting`                                    | Launch about to be sent; invalidates earlier readiness, includes launch_id and start_time_ns |
+| `worker.observed`, `worker.ready`, `worker.startup_status`, `worker.readiness_consumed`, `worker.dialog_response` | Readiness events: exception-path and follow-up only; observe/assess/respond before gated input |
+| `worker.launch_sent`                                   | Lane agent launch command with attached session prompt; written by `pane_ctl.py start-agent`                                                       |
 | `worker.prompt_sent`                                   | Text sent and submitted; written by `pane_ctl.py deliver`                                                                          |
-| `worker.started`                                       | Session prompt delivered and confirmed via read-screen — the orchestrator's judgment, after `worker.prompt_sent`                   |
-| `worker.waiting`                                       | Written by the armed round watcher only: heartbeats plus its final outcome                                                         |
+| `worker.started`                                       | Current launch confirmed by session marker (`evidence: "marker"`), or exception-path screen evidence (`evidence: "screen"`); data binds lane, surface_id, launch_id                   |
+| `worker.waiting`                                       | Written by the armed session or round watcher only: heartbeats plus its final outcome                                                         |
 | `worker.finished`                                      | Round report captured; data carries `{lane, round, surface_id}`                                                                    |
 | `worker.launch_blocked`                                | A lane launch was denied (permissions, environment)                                                                                |
 | `gate`                                                 | Only via `run_state.py gate`                                                                                                       |
@@ -896,7 +921,8 @@ python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run
 ```
 
 Await a round's reports. One watcher per round, armed through `Monitor` (see Lane Wait
-Policy); exits 0 = all reports, 7 = pending lane's pane dead, 8 = deadline. Health checks are
+Policy); exits 0 = all reports (or session starts), 7 = pending lane's pane dead,
+8 = round deadline, 9 = session not started. Health checks are
 scoped to the run's pinned `workspace_id` from `state.json`; there is no env fallback:
 
 ```bash

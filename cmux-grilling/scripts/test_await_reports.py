@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -14,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from await_reports import (  # noqa: E402
+    EXIT_NOT_STARTED,
     EXIT_DEADLINE,
     EXIT_PANE_DEAD,
     EXIT_REPORTS,
@@ -41,8 +44,10 @@ class ReportPath(unittest.TestCase):
 
 class ExitCodeVocabulary(unittest.TestCase):
     def test_watcher_codes_disjoint_from_gate_codes(self):
-        """Skill-wide unique vocabulary: 0 ok, 1 crash, 2 usage, 3-6 gate, 7-8 watcher."""
-        watcher = {EXIT_PANE_DEAD, EXIT_DEADLINE}
+        """Skill-wide unique vocabulary: 0 ok, 1 crash, 2 usage, 3-6 gate, 7-9 watcher."""
+        watcher = {EXIT_PANE_DEAD, EXIT_DEADLINE, EXIT_NOT_STARTED}
+        self.assertEqual(len(watcher), 3)
+        self.assertEqual(EXIT_NOT_STARTED, 9)
         self.assertFalse(watcher & set(GATE_EXIT_CODES.values()))
         self.assertFalse(watcher & {1, 2})
         self.assertEqual(EXIT_REPORTS, 0)  # "reports exist", intentionally shared with success
@@ -292,6 +297,141 @@ class Cli(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
 
 
+class SessionWatch(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.run_dir = Path(tmp.name)
+        write_state(tmp.name, workspace_id="WS")
+        self.start_ns = time.time_ns()
+        self.events = self.run_dir / "events.jsonl"
+        self.events.write_text("".join(json.dumps({"type": "worker.launch_sent", "data": {
+            "lane": lane, "surface_id": f"UUID-{lane}", "launch_id": f"launch-{lane}",
+            "start_time_ns": self.start_ns}}) + "\n" for lane in LANES))
+
+    def marker(self, lane, ns=None):
+        path = self.run_dir / "artifacts" / f"session-{lane}" / "started"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+        ns = self.start_ns if ns is None else ns
+        os.utime(path, ns=(ns, ns))
+        return path
+
+    def watch(self, *extra, lanes=None, dead=False):
+        lanes = list(LANES) if lanes is None else lanes
+        health = self.run_dir / "health.py"
+        health.write_text("print(" + repr(json.dumps({"surfaces": [] if dead else [
+            {"id": f"UUID-{lane}"} for lane in lanes]})) + ")")
+        argv = [sys.executable, str(Path(__file__).parent / "await_reports.py"),
+                "--run-dir", str(self.run_dir), "--session", "--start-minutes", "0.002",
+                "--poll-seconds", "0.01", "--health-cmd", f"{sys.executable} {health}"]
+        for lane in lanes:
+            argv += ["--lane-surface", f"{lane}=UUID-{lane}"]
+        return subprocess.run(argv + list(extra), capture_output=True, text=True, timeout=10)
+
+    def recorded(self):
+        return [json.loads(line) for line in self.events.read_text().splitlines()]
+
+    def test_all_four_markers_required_and_recorded_once(self):
+        for lane in LANES:
+            self.marker(lane)
+        for _ in range(2):
+            proc = self.watch()
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+        events = [e["data"] for e in self.recorded() if e["type"] == "worker.started"]
+        self.assertEqual(len(events), 4)
+        for data in events:
+            lane = data["lane"]
+            self.assertEqual(data, {"lane": lane, "surface_id": f"UUID-{lane}",
+                "launch_id": f"launch-{lane}", "evidence": "marker",
+                "marker_path": str(self.run_dir / "artifacts" / f"session-{lane}" / "started")})
+
+    def test_missing_lanes_named(self):
+        self.marker("codebase")
+        self.marker("docs")
+        proc = self.watch()
+        self.assertEqual(proc.returncode, 9, proc.stderr)
+        self.assertIn("not_started=codebase2,web", proc.stdout)
+        self.assertEqual(self.recorded()[-1]["data"]["outcome"], "not_started")
+
+    def test_stale_and_same_second_older_markers_ignored(self):
+        self.start_ns = (self.start_ns // 1_000_000_000) * 1_000_000_000 + 500_000_000
+        events = self.recorded()
+        for event in events:
+            event["data"]["start_time_ns"] = self.start_ns
+        self.events.write_text("".join(json.dumps(e) + "\n" for e in events))
+        for age in (1, 2_000_000_000):
+            with self.subTest(age=age):
+                self.marker("web", self.start_ns - age)
+                proc = self.watch(lanes=["web"])
+                self.assertEqual(proc.returncode, 9, proc.stderr)
+
+    def test_replaced_or_unconfirmed_launch_cannot_accept_marker(self):
+        self.marker("web")
+        baseline = self.events.read_text()
+        replacements = (
+            {"type": "worker.launch_sent", "data": {"lane": "web", "surface_id": "UUID-web", "launch_id": "new", "start_time_ns": self.start_ns + 1}},
+            {"type": "worker.starting", "data": {"lane": "web", "surface_id": "UUID-web", "launch_id": "pending"}},
+            {"type": "pane.launched", "data": {"lane": "web", "surface_id": "replacement-surface"}},
+        )
+        for event in replacements:
+            with self.subTest(event=event["type"]):
+                previous = {"type": "worker.started", "data": {
+                    "lane": "web", "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "marker"}}
+                self.events.write_text(baseline + json.dumps(previous) + "\n" + json.dumps(event) + "\n")
+                self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
+
+    def test_legacy_launch_without_timestamp_stays_pending(self):
+        self.marker("web")
+        self.events.write_text(json.dumps({"type": "worker.launch_sent", "data": {
+            "lane": "web", "surface_id": "UUID-web"}}) + "\n")
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
+
+    def test_default_start_window_and_surface_requirement(self):
+        from await_reports import build_parser
+        args = build_parser().parse_args(["--run-dir", str(self.run_dir), "--session"])
+        self.assertEqual(args.start_minutes, 5)
+        proc = self.watch(lanes=[])
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--lane-surface", proc.stderr)
+
+    def test_screen_confirmation_allows_rearming_without_marker(self):
+        with self.events.open("a") as stream:
+            stream.write(json.dumps({"type": "worker.started", "data": {
+                "lane": "web", "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "screen"}}) + "\n")
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 0)
+
+    def test_pane_death(self):
+        self.assertEqual(self.watch(lanes=["web"], dead=True).returncode, 7)
+
+    def test_session_refuses_round_arguments(self):
+        for flag in ("--round", "--questions"):
+            proc = self.watch(flag, "1")
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("--session refuses", proc.stderr)
+
+    def test_session_refuses_positional_surface_refs(self):
+        proc = self.watch("--lane-surface", "codebase=surface:465", lanes=[])
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn(
+            "--session requires stable surface UUIDs, not positional surface:N refs",
+            proc.stderr,
+        )
+
+    def test_round_watch_skips_start_phase_for_started_launch(self):
+        self.marker("web")
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 0)
+        reports = self.run_dir / "reports"
+        reports.mkdir()
+        (reports / "round-1-web.md").write_text("report")
+        proc = subprocess.run([sys.executable, str(Path(__file__).parent / "await_reports.py"),
+            "--run-dir", str(self.run_dir), "--round", "1", "--questions", "1", "--lanes", "web"],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("outcome=reports", proc.stdout)
+        self.assertEqual(sum(e["type"] == "worker.started" for e in self.recorded()), 1)
+
+
 class WorkspaceResolution(unittest.TestCase):
     script = str(Path(__file__).parent / "await_reports.py")
 
@@ -302,7 +442,7 @@ class WorkspaceResolution(unittest.TestCase):
             proc = subprocess.run(
                 [
                     sys.executable, self.script,
-                    "--run-dir", tmp, "--round", "1",
+                    "--run-dir", tmp, "--round", "1", "--questions", "1",
                     "--lane-surface", "web=surface:465",
                     "--deadline-minutes", "0.01",
                 ],

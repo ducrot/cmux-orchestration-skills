@@ -54,6 +54,18 @@ class RenderFunction(unittest.TestCase):
                 self.assertIn(f"{self.run_dir}/drafts/round-<N>-{lane}.md", boundaries)
                 self.assertIn("report handoff path", boundaries)
 
+    def test_session_first_step_and_marker_boundary(self):
+        for lane in render_prompt.LANES:
+            prompt = render_prompt.render_session(lane, self.state, self.run_dir)
+            marker = str(self.run_dir / "artifacts" / f"session-{lane}" / "started")
+            self.assertEqual(prompt.splitlines()[2], "## First Step")
+            first = prompt.split("## First Step", 1)[1].split("## Session Shape", 1)[0]
+            for phrase in (marker, "create or overwrite", "parent directory", "modification time"):
+                self.assertIn(phrase, first)
+            boundary = prompt.split("## Boundaries", 1)[1].split("## Task", 1)[0]
+            self.assertIn(marker, boundary)
+            self.assertIn("one write outside the per-round draft and report", boundary)
+
     def test_session_and_round_forbid_index_changes(self):
         for lane in render_prompt.LANES:
             with self.subTest(lane=lane):
