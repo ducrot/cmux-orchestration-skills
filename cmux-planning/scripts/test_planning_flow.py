@@ -459,7 +459,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         state = json.loads((selected / "state.json").read_text())
         prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
-        self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', prompt.split("## Write Boundary", 1)[1])
+        self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.', prompt.split("## Write Boundary", 1)[1])
         self.assertIn("untracked paths and their content", prompt)
         self.assertIn("8 MiB size cap and symlink target bytes", prompt)
         self.assertIn("skipped untracked content", prompt)

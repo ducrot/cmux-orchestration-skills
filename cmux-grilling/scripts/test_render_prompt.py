@@ -12,7 +12,7 @@ import unittest
 import render_prompt
 
 
-EXPECTED_INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+EXPECTED_INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
 
 class RenderFunction(unittest.TestCase):

@@ -33,7 +33,7 @@ files and skipped untracked content (files above the size cap or unsupported typ
 contents of unreadable untracked directories that Git omits with a warning. Git-ignored run
 handoff artifacts are gated by digest instead."""
 
-INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
 
 REVIEW_HANDOFF_CONTRACT = """Empty sections are machine-readable sentinels: their entire body must be

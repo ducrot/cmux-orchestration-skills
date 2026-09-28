@@ -11,7 +11,7 @@ from pathlib import Path
 from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
 from worker_snapshot import SnapshotError, load_launchable_snapshot
 
-INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.'
+INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
 
 ROLES = ("implement", "simplify", "review", "test", "triage")
@@ -388,7 +388,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 - If the issue plan is stale or wrong, include `PLAN DRIFT` with the smallest accurate correction.
 - Finish with the Worker Report Contract below.
 - A gate can advance only on `NO FINDINGS` plus concrete tests/checks.
-- The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes and belong to the human.
+- The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes, outside the worker.
 - Use the canonical check commands declared in the tracker ground rules as the baseline suite. Narrower targeted checks may be added, but never substitute a different suite.
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
 {contract_lines}

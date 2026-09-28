@@ -209,12 +209,19 @@ class RenderFunction(unittest.TestCase):
             with self.subTest(role=role), self.assertRaises(ValueError):
                 render_prompt.render(role, "ISSUE-001", ISSUE, {}, followup=FOLLOWUP_ITEMS)
 
-    def test_every_role_forbids_index_changes(self):
+    def test_every_role_forbids_index_changes_and_stays_neutral_about_who_commits(self):
+        uncommitted_tree_rule = (
+            "The chain runs on a deliberately uncommitted working tree. Never report the "
+            "uncommitted state or a missing commit, push, PR, or CI run as a finding; "
+            "commit and push happen after the chain completes, outside the worker."
+        )
         for role in render_prompt.ROLES:
             for harness in ("claude-code", "codex"):
                 with self.subTest(role=role, harness=harness):
-                    contract = self.render(role, harness).split("## Orchestrator Contract", 1)[1]
-                    self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing belong to the human after the run.', contract)
+                    text = self.render(role, harness)
+                    contract = text.split("## Orchestrator Contract", 1)[1]
+                    self.assertIn('Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.', contract)
+                    self.assertIn(uncommitted_tree_rule, text)
 
     def test_implement_and_test_are_identical_across_harnesses(self):
         for role in ("implement", "test"):
