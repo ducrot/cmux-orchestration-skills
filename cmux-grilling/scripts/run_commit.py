@@ -288,7 +288,8 @@ def commit(args, run_dir):
             files = changed_paths(root, parent, head)
             return record("created", sha=head, subject=commit_subject(root, head), files=files, recovered=True,
                           hook_modified=[], hook_side_effects=side_effects(attempt["pre_status"], status_snapshot(root), files))
-        return failed("unverifiable", detail="recovery-mismatch", head=head, parent=parent, tree=tree,
+        detail = "recovery-no-commit" if head == parent else "recovery-mismatch"
+        return failed("unverifiable", detail=detail, head=head, parent=parent, tree=tree,
                       staged=paths_from(staged_paths(root)) if head else [])
 
     files = proposal["files"]

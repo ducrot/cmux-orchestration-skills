@@ -524,6 +524,8 @@ python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Describe wh
 ```
 
 In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
+Use a background or long-timeout invocation with enough time for the repository's commit hooks;
+a killed call leaves a `commit.attempted` without an outcome.
 Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.
 Never commit after `hitl`, `blocked`, or `stop`. In propose mode, show the recorded proposal.
 The orchestrator commits in commit mode; the human commits otherwise. Push, PR, and CI stay with the

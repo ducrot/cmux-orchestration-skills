@@ -107,10 +107,11 @@ LABELS = {
         "not-a-leaf": "not a single file: {paths}",
         "stage-error": "staging failed: {summary}",
         "commit-error": "{summary}",
-        "staged-set-mismatch": "staged paths differ from the run files: {paths}",
+        "staged-set-mismatch": "staged paths differ from the run files: extra: {extra}; missing: {missing}",
         "hook-added-paths": "a hook added {paths}",
         "commit_kept": " (commit kept)",
         "unverifiable": "could not be verified (HEAD {head7} may be the run commit, please check)",
+        "recovery-no-commit": "no commit on HEAD {head7}; still staged: {staged}, please check git status",
         "no-head": "the repository has no commit yet",
         "commit": "Commit",
         "tracker": "Tracker",
@@ -199,10 +200,11 @@ LABELS = {
         "not-a-leaf": "keine einzelne Datei: {paths}",
         "stage-error": "Vormerken fehlgeschlagen: {summary}",
         "commit-error": "{summary}",
-        "staged-set-mismatch": "vorgemerkte Pfade weichen von den Run-Dateien ab: {paths}",
+        "staged-set-mismatch": "vorgemerkte Pfade weichen von den Run-Dateien ab: zusätzlich: {extra}; fehlend: {missing}",
         "hook-added-paths": "ein Hook hat {paths} hinzugefügt",
         "commit_kept": " (Commit behalten)",
         "unverifiable": "nicht verifizierbar (HEAD {head7} könnte der Run-Commit sein, bitte prüfen)",
+        "recovery-no-commit": "kein Commit auf HEAD {head7}; noch vorgemerkt: {staged}, bitte git status prüfen",
         "no-head": "das Repository hat noch keinen Commit",
         "commit": "Commit",
         "tracker": "Tracker",
@@ -668,10 +670,16 @@ def commit_recap(events, labels):
             line += "; " + labels["hook_side_effects"].format(paths=", ".join(data["hook_side_effects"]))
         return [line]
     reason = data["reason"]
-    paths = ", ".join(data.get("paths", []))
-    if reason == "staged-set-mismatch":
-        paths = "extra: " + ", ".join(data.get("extra", [])) + "; missing: " + ", ".join(data.get("missing", []))
-    error = labels[reason].format(paths=paths, summary=data.get("summary", ""), head7=(data.get("head") or "?")[:7])
+    if reason == "unverifiable" and data.get("detail") == "recovery-no-commit":
+        reason = "recovery-no-commit"
+    error = labels[reason].format(
+        paths=", ".join(data.get("paths", [])),
+        extra=", ".join(data.get("extra", [])),
+        missing=", ".join(data.get("missing", [])),
+        staged=", ".join(data.get("staged", [])) or labels["none"],
+        summary=data.get("summary", ""),
+        head7=(data.get("head") or "?")[:7],
+    )
     if reason == "hook-added-paths" and data.get("reset") is False:
         error += labels["commit_kept"]
     if kind == "commit.skipped":

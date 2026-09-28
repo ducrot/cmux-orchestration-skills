@@ -649,6 +649,19 @@ class CommitCli(CliCase):
         self.env['PATH'] = os.environ['PATH']
         return proposal, self.last()['data']
 
+    def git_state(self):
+        return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
+
+    def recover_without_git_write(self):
+        before = self.git_state()
+        data = self.commit()
+        self.assertEqual(data['reason'], 'unverifiable')
+        events = self.events()
+        self.assertIn('no retry', self.commit(success=False).stderr)
+        self.assertEqual(self.events(), events)
+        self.assertEqual(self.git_state(), before)
+        return data, before[0].decode().strip()
+
     def test_interrupted_recovery_accepts_exact_parent_tree(self):
         proposal, attempt = self.pending_attempt()
         before = self.events()
@@ -667,7 +680,7 @@ class CommitCli(CliCase):
         self.assertEqual(self.index(), b'')
 
     def test_recovery_mismatches_never_write_git(self):
-        for kind in ('same-subject', 'autofixer', 'different-parent', 'still-parent'):
+        for kind in ('same-subject', 'autofixer', 'different-parent'):
             with self.subTest(kind=kind):
                 if kind != 'same-subject':
                     self.setUp()
@@ -682,14 +695,25 @@ class CommitCli(CliCase):
                 elif kind == 'different-parent':
                     self.git('commit', '-qm', 'First')
                     self.git('commit', '--allow-empty', '-qm', proposal['subject'])
-                head = self.git('rev-parse', 'HEAD')
-                index = (self.repo/'.git/index').read_bytes()
-                data = self.commit()
+                data, head = self.recover_without_git_write()
                 self.assertEqual(data['detail'], 'recovery-mismatch')
                 self.assertEqual(data['tree'], attempt['tree'])
-                self.assertEqual(data['head'], head.decode().strip())
-                self.assertEqual(self.git('rev-parse', 'HEAD'), head)
-                self.assertEqual((self.repo/'.git/index').read_bytes(), index)
+                self.assertEqual(data['head'], head)
+
+    def test_interrupted_recovery_still_at_parent_preserves_staged_paths(self):
+        proposal, attempt = self.pending_attempt()
+        # Preserve unstaged edits too; recovery must not re-stage the planned file.
+        self.dirty(content='later unstaged edit')
+        self.assertEqual(self.index(), b'f*\0')
+        data, head = self.recover_without_git_write()
+        self.assertEqual(self.last()['type'], 'commit.failed')
+        self.assertEqual(data['detail'], 'recovery-no-commit')
+        self.assertEqual(data['head'], head)
+        self.assertEqual(data['parent'], head)
+        self.assertEqual(attempt['parent'], head)
+        self.assertEqual(data['tree'], attempt['tree'])
+        self.assertEqual(data['staged'], ['f*'])
+        self.assertEqual(data['subject'], proposal['subject'])
 
 
 if __name__ == '__main__':

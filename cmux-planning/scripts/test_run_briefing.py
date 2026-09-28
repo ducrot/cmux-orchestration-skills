@@ -628,7 +628,7 @@ class CommitRecap(unittest.TestCase):
             ('index-not-empty', 'staged changes outside the run in a', 'vorgemerkte Änderungen außerhalb des Laufs in a'),
             ('not-a-leaf', 'not a single file: a', 'keine einzelne Datei: a'),
             ('stage-error', 'staging failed: Failed', 'Vormerken fehlgeschlagen: Failed'),
-            ('staged-set-mismatch', 'staged paths differ from the run files: extra: x; missing: y', 'vorgemerkte Pfade weichen von den Run-Dateien ab: extra: x; missing: y'),
+            ('staged-set-mismatch', 'staged paths differ from the run files: extra: x; missing: y', 'vorgemerkte Pfade weichen von den Run-Dateien ab: zusätzlich: x; fehlend: y'),
             ('hook-added-paths', 'a hook added a', 'ein Hook hat a hinzugefügt'),
             ('unverifiable', 'could not be verified (HEAD abcdef0 may be the run commit, please check)', 'nicht verifizierbar (HEAD abcdef0 könnte der Run-Commit sein, bitte prüfen)'),
             ('no-head', 'the repository has no commit yet', 'das Repository hat noch keinen Commit'),
@@ -646,6 +646,24 @@ class CommitRecap(unittest.TestCase):
                         data['reset']=False
                         text = run_briefing.commit_recap([{'type':'commit.failed','data':data}], run_briefing.LABELS[lang])[0]
                         self.assertEqual(text, prefix + expected + (' (commit kept)' if lang=='en' else ' (Commit behalten)') + suffix)
+
+    def test_recovery_no_commit_both_languages_and_empty_index(self):
+        for lang, prefix, message, empty, suffix in (
+            ('en', 'Commit failed', 'no commit on HEAD abcdef0; still staged: {paths}, please check git status', 'none', 'proposal'),
+            ('de', 'Commit fehlgeschlagen', 'kein Commit auf HEAD abcdef0; noch vorgemerkt: {paths}, bitte git status prüfen', 'keine', 'Vorschlag')):
+            for staged in (['a', 'dir/b'], []):
+                with self.subTest(lang=lang, staged=staged):
+                    data = dict(reason='unverifiable', detail='recovery-no-commit',
+                                head='abcdef012345', staged=staged, subject='Draft')
+                    text = run_briefing.render_recap(DONE_ISSUE_STATE, [{'type': 'commit.failed', 'data': data}], lang)
+                    error = message.format(paths=', '.join(staged) or empty)
+                    self.assertIn(f'- {prefix}: {error}, {suffix}: Draft', text)
+            error = run_briefing.LABELS[lang]['unverifiable'].format(head7='abcdef0')
+            for detail in ('recovery-mismatch', 'head-moved', 'cas-failed'):
+                with self.subTest(lang=lang, detail=detail):
+                    data = dict(reason='unverifiable', detail=detail, head='abcdef012345', staged=['a'], subject='Draft')
+                    text = run_briefing.commit_recap([{'type': 'commit.failed', 'data': data}], run_briefing.LABELS[lang])
+                    self.assertEqual(text, [f'- {prefix}: {error}, {suffix}: Draft'])
 
     def test_pending_attempt_uses_proposal_and_absent_commit_is_silent(self):
         for lang in ('en', 'de'):
