@@ -341,7 +341,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                        "created by triage:", "commit.proposed", "wait"):
             self.assertIn(phrase, summary)
         commit = text.split("## branch and commit policy", 1)[1].split("## reporting to the human", 1)[0]
-        self.assertIn("tracker files published by triage (new issue files, `decisions.md`) separately from the product diff", commit)
+        self.assertIn("tracker changes published by triage (new issue files, `decisions.md`) with `--tracker-file`", commit)
         self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> run recap + final summary -> wait", text)
 
     def test_issue_chain_relevant_prior_pass_context_and_example(self):
@@ -389,7 +389,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
     def test_vendored_run_briefing_files_are_byte_identical(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")
-        for filename in ("run_briefing.py", "test_run_briefing.py"):
+        for filename in ("run_briefing.py", "test_run_briefing.py", "run_commit.py", "test_run_commit.py"):
             contents = [(guide.parent / "scripts" / filename).read_bytes() for guide in SIBLINGS]
             self.assertEqual(contents, [contents[0]] * 3, filename)
 
@@ -399,6 +399,21 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             self.assertIn("## run briefing", text, guide)
             self.assertIn("run_briefing.py draft", text, guide)
             self.assertIn("run_briefing.py show", text, guide)
+
+    def test_proposals_use_the_helper_and_literal_leaf_paths(self):
+        for guide in SIBLINGS:
+            text = normalized(guide)
+            self.assertIn("run_commit.py propose", text)
+            self.assertIn("literal leaf paths", text)
+            for heading in ("## scripts", "## event vocabulary"):
+                section = text.split(heading, 1)[1].split("## ", 1)[0]
+                self.assertIn("run_commit.py propose", section)
+                self.assertIn("commit.proposed", section)
+            if guide.parent.name == "cmux-issue-chain":
+                self.assertIn("commit.proposed", text.split("## reporting to the human", 1)[1].split("## run recap", 1)[0])
+        text = normalized(PLANNING)
+        self.assertLess(text.index("## ticket approval, staging, and publication"), text.index("## commit after"))
+        self.assertLess(text.index("## commit after"), text.index("## run recap"))
 
     def test_every_guide_closes_the_run_with_a_recap(self):
         for guide in SIBLINGS:

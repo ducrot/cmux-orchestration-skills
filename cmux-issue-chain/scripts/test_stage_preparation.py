@@ -375,14 +375,22 @@ class PreparedStageCli(unittest.TestCase):
             run_dir = self.runs_root / run_id
             state_path = run_dir / "state.json"
             state = json.loads(state_path.read_text())
+            self.assertEqual(set(state["commit_baseline"]), {"head", "captured_at", "paths"})
+            self.assertIsInstance(state["commit_baseline"]["paths"], list)
             effective = mode or "propose"
             self.assertEqual(state["commit_mode"], effective)
             for legacy in (False, True):
                 if legacy:
                     state.pop("commit_mode")
+                    state.pop("commit_baseline")
                     state_path.write_text(json.dumps(state))
                     effective = "propose"
                 before = file_contents(run_dir)
+                for event_type in ("commit.proposed", "commit.created", "commit.anything"):
+                    refused_event = self.run_state("event", "--run-dir", str(run_dir), "--type", event_type, "--message", "forbidden")
+                    self.assertNotEqual(refused_event.returncode, 0)
+                    self.assertIn("commit events are recorded by run_commit.py", refused_event.stderr)
+                    self.assertEqual(file_contents(run_dir), before)
                 shown = self.run_state("status", "--run-dir", str(run_dir))
                 self.assertEqual(shown.returncode, 0, shown.stderr)
                 self.assertEqual(json.loads(shown.stdout)["state"]["commit_mode"], effective)

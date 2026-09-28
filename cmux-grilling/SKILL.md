@@ -638,13 +638,18 @@ walked away": at the next contact, not on a clock.
 
 ## Commit Proposal
 
-Always propose a commit for the artifact pair as a `commit.proposed` event: the exact file
-list (the two artifact files; anything else
-is a ride-along and excluded) plus a draft commit message (English, what + why) whose subject line
-goes into the event data as `subject`. Name
-explicitly which decisions are being committed unresolved (`open` or `deferred`), so the
-human sees what is still outstanding. The human reviews, commits, and pushes. Never run
-`git push`.
+After `complete`, always record the artifact pair with `run_commit.py propose`. Supply the two recorded
+markdown/json deliverables as repository-relative literal leaf paths with repeated `--file`; anything
+else is a ride-along, excluded from `--file` and listed with `--ride-along`. Use an English one-line
+subject explaining what changed and why, an optional body, and no trailers. Name each decision still
+`open` or `deferred` with `--unresolved` so the human sees what is outstanding.
+
+```bash
+python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Record decisions and assumptions" --file <markdown-leaf> --file <json-leaf> --unresolved <decision-id>
+```
+
+The helper records the replay-safe `commit.proposed` event and classifies ignored and pre-run dirty
+files. The human reviews, commits, and pushes. Never run `git push`.
 
 ## Run Recap
 
@@ -863,6 +868,8 @@ While a round is in flight, the four reports belong to the lanes: do not edit an
 
 ## Event Vocabulary
 
+`commit.proposed` is written only by `run_commit.py propose`.
+
 Use these exact event types. New ad-hoc types must be dot-namespaced, lower-case, and used
 consistently within a run.
 
@@ -900,6 +907,8 @@ consistently within a run.
 | `orchestrator.halted`, `orchestrator.unverified_input` | Orchestrator-side anomalies                                                                                                        |
 
 ## Scripts
+
+`run_commit.py propose` is the only writer of `commit.proposed`; generic `event` refuses `commit.*`.
 
 The scripts are deterministic helpers. Run them from the repo root.
 

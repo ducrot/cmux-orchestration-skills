@@ -308,11 +308,14 @@ class PlanningFlow(unittest.TestCase):
             run_dir = self.runs / run_id
             state_path = run_dir / "state.json"
             state = json.loads(state_path.read_text())
+            self.assertEqual(set(state["commit_baseline"]), {"head", "captured_at", "paths"})
+            self.assertIsInstance(state["commit_baseline"]["paths"], list)
             effective = mode or "propose"
             self.assertEqual(state["commit_mode"], effective)
             for legacy in (False, True):
                 if legacy:
                     state.pop("commit_mode")
+                    state.pop("commit_baseline")
                     state_path.write_text(json.dumps(state))
                     effective = "propose"
                 before = file_contents(run_dir)
@@ -1681,6 +1684,15 @@ sha256 {resulting_digest or digest}
         event = json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
         self.assertEqual(event["data"]["deliverables"], final["deliverables"])
         self.assertEqual(final["published_tracker"]["ready_frontier"], ["ISSUE-001"])
+
+        leaves = sorted(str(path.relative_to(self.repo)) for path in target.rglob("*") if path.is_file())
+        proposal_args = ["propose", "--run-dir", str(self.run_dir), "--subject", "Publish approved tracker"]
+        for leaf in leaves:
+            proposal_args += ["--file", leaf]
+        commit_proposal = self.cli(STATE.with_name("run_commit.py"), *proposal_args)
+        self.assertEqual(commit_proposal.returncode, 0, commit_proposal.stderr)
+        self.assertEqual(json.loads(commit_proposal.stdout)["files"], leaves)
+        self.assertEqual(len(leaves), 6)
 
         duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
         self.assertNotEqual(duplicate.returncode, 0)

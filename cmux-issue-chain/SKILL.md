@@ -498,14 +498,24 @@ changes) are the normal case and are why the branch is shared across the tracker
 
 The orchestrator never commits product code, and the chain runs on a dirty working tree — the simplify and
 review passes operate on the working diff, so nothing is committed until the chain completes. After
-the final `advance` gate and `run_state.py complete`, prepare a commit proposal for the human and record it
-as a `commit.proposed` event:
+the final `advance` gate and `run_state.py complete`, prepare a commit proposal for the human and record it with `run_commit.py propose`:
 
-- the exact file list of the issue diff (`git diff --stat`, `git status --short`) — anything the issue did
-  not cause is flagged as ride-along and excluded from the proposal;
-- list tracker files published by triage (new issue files, `decisions.md`) separately from the product diff;
+- build the product and Git-tracked tracker file lists as literal leaf paths from
+  `git status --porcelain=v1 -z --untracked-files=all`, including both rename paths and tracked deletions;
+  anything the issue did not cause is excluded from `--file` and listed with `--ride-along`;
+- pass each proposed leaf with `--file`, grouping product changes with `--product-file` and Git-tracked
+  tracker changes published by triage (new issue files, `decisions.md`) with `--tracker-file`; each group
+  is a subset of `--file`. Never pass a directory or expand a filename as a glob;
 - a draft commit message: English, what + why in the subject, optional body. Record the subject line as
   `subject` in the event data; the run recap reads it from there.
+
+A completed HITL issue run always ends with `run_commit.py propose`; its proposal mode is `propose`.
+The helper validates the message (one-line subject, no trailers), classifies ignored and pre-run dirty
+files, and records the replay-safe `commit.proposed` event. Call it only after completion:
+
+```bash
+python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Describe what changed and why" --file <leaf> --product-file <leaf>
+```
 
 The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
 active; the tree belongs to the worker until its report is captured and snapshotted.
@@ -1023,6 +1033,8 @@ Do not use hidden subagents as worker substitutes during a live run. If CMUX can
 
 ## Event Vocabulary
 
+`commit.proposed` is written only by `run_commit.py propose`.
+
 Use these exact event types so runs stay comparable and greppable. New ad-hoc types are allowed, but they
 must be dot-namespaced, lower-case, and used consistently within a run — do not spell the same event two
 ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
@@ -1058,6 +1070,8 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `orchestrator.halted`, `orchestrator.unverified_input`   | Orchestrator-side anomalies                                                                                                                      |
 
 ## Scripts
+
+`run_commit.py propose` is the only writer of `commit.proposed`; generic `event` refuses `commit.*`.
 
 `collect_recommendations.py --run-dir <run-dir> --pass <1|2>` writes the immutable recommendations list.
 `run_state.py publish-triage --run-dir <run-dir> --pass <1|2>` publishes a passing triage report;

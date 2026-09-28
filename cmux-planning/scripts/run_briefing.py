@@ -94,6 +94,7 @@ LABELS = {
         "triage_pass": "triage {num}",
         "commit_mode_commit": "automatic",
         "commit_mode_propose": "proposal",
+        "commit_proposal": "Commit proposal",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} issues, ready now: {ready}",
@@ -168,6 +169,7 @@ LABELS = {
         "triage_pass": "Triage {num}",
         "commit_mode_commit": "automatisch",
         "commit_mode_propose": "Vorschlag",
+        "commit_proposal": "Commit-Vorschlag",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} Issues, sofort startbar: {ready}",
@@ -628,9 +630,12 @@ def render_recap(state: dict[str, Any], events: list[dict[str, Any]], lang: str)
     lines.append(f"{labels['result']}: **{status}**")
     lines.append("")
     lines += RECAP_BODIES[state["workflow"]](state, events, labels)
-    commit = last_data(events, "commit.proposed")
+    outcome_event = next((event for event in reversed(events)
+                          if event.get("type") in {"commit.created", "commit.failed", "commit.skipped"}), None)
+    commit = outcome_event.get("data", {}) if outcome_event else last_data(events, "commit.proposed")
+    commit_label = labels["commit"] if outcome_event else labels["commit_proposal"]
     if commit and commit.get("subject"):
-        lines.append(f"- {labels['commit']}: {commit['subject']}")
+        lines.append(f"- {commit_label}: {commit['subject']}")
     # A halted run's next step is resolving the halt; the outcome sentence names it.
     if outcome["status"] == "done":
         lines += next_step_lines(state, labels)

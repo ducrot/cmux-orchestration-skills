@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from run_commit import capture_baseline
+
 from artifact_manifest import (
     ArtifactIntegrityError,
     HANDOFF_KINDS,
@@ -846,6 +848,7 @@ def init_run(args: argparse.Namespace) -> int:
         "artifact_audit": {"unexpected": [], "stale": [], "checked_at": now},
         "run_id": run_id,
         "workflow": "planning",
+        "commit_baseline": capture_baseline(repository),
         "commit_mode": args.commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {},

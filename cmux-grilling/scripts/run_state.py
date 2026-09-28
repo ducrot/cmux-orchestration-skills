@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from run_commit import capture_baseline
 from agents_config import (
     ConfigError,
     add_override_options,
@@ -332,6 +333,10 @@ def init_run(args: argparse.Namespace) -> int:
 
     # Publish only after every lane has resolved and every unique assigned executable has
     # passed local preflight. A failure above leaves no launchable state for pane_ctl.py.
+    try:
+        commit_baseline = capture_baseline(Path.cwd())
+    except ValueError as error:
+        raise SystemExit(f"cannot record the commit baseline: {error}") from error
     ensure_runs_root_ignored(runs_root)
     run_dir.mkdir(parents=True, exist_ok=True)
     for name in RUN_SUBDIRS:
@@ -341,6 +346,8 @@ def init_run(args: argparse.Namespace) -> int:
     state = {
         "run_id": run_id,
         "workflow": "grilling",
+        "commit_baseline": commit_baseline,
+        "working_directory": str(Path.cwd()),
         "commit_mode": args.commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {},
@@ -388,6 +395,8 @@ def init_run(args: argparse.Namespace) -> int:
 
 
 def append_event(args: argparse.Namespace) -> int:
+    if args.type.startswith("commit."):
+        raise SystemExit("commit events are recorded by run_commit.py")
     read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):

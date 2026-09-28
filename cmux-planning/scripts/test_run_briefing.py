@@ -252,7 +252,25 @@ class RunRecap(RunDirTestCase):
         self.assertIn("- Stages: implement ✓ · test ✓", text)
         self.assertIn("- Triage: 2 Empfehlungen → 1 follow-up, 1 ledger only", text)
         self.assertIn("- Offen für den Menschen: R2 (Triage 1) – Pick a name", text)
-        self.assertIn("- Commit: Harden triage inputs", text)
+        self.assertIn("- Commit-Vorschlag: Harden triage inputs", text)
+
+    def test_commit_recap_selection_and_legacy(self):
+        run_dir = self.run_dir(DONE_ISSUE_STATE)
+        for language, label in (("en", "Commit proposal"), ("de", "Commit-Vorschlag")):
+            proposal = event("commit.proposed", data={"subject": "Latest proposal"})
+            for events in ([proposal], [proposal, event("commit.attempted", data={})]):
+                (run_dir / "recap.md").unlink(missing_ok=True)
+                self.write_events(run_dir, events)
+                self.assertIn(f"- {label}: Latest proposal", self.recap(run_dir, lang=language))
+            for kind in ("created", "failed", "skipped"):
+                (run_dir / "recap.md").unlink(missing_ok=True)
+                self.write_events(run_dir, [event("commit." + kind, data={"subject": "Outcome"}), proposal])
+                text = self.recap(run_dir, lang=language)
+                self.assertIn("- Commit: Outcome", text)
+                self.assertNotIn(f"- {label}:", text)
+            (run_dir / "recap.md").unlink(missing_ok=True)
+            self.write_events(run_dir, [])
+            self.assertNotIn("- Commit", self.recap(run_dir, lang=language))
 
     def test_recap_refuses_an_active_run(self):
         run_dir = self.run_dir({**DONE_ISSUE_STATE, "current_stage": "review"})
@@ -267,6 +285,7 @@ class RunRecap(RunDirTestCase):
         self.write_events(run_dir, [event("gate", stage="review", decision="hitl", reason="r")])
         text = self.recap(run_dir, lang="en")
         self.assertIn("Status: **halted at review: hitl**", text)
+        self.assertNotIn("- Commit", text)
         self.assertIn("review ✗ hitl", text)
         self.assertNotIn("Triage", text)
         self.assertNotIn("Commit", text)
@@ -340,7 +359,7 @@ class RunRecap(RunDirTestCase):
         self.assertIn("- Fragen: 7 in 2 von 4 Runden · Stop: griller-done", text)
         self.assertIn("- Annahmen: 3 · Entscheidungen: 2 entschieden, 1 zurückgestellt, 0 offen", text)
         self.assertIn("briefing.json`", text)
-        self.assertIn("- Commit: Record grilling result", text)
+        self.assertIn("- Commit-Vorschlag: Record grilling result", text)
 
 
 def issue_file(issue_id: str, status: str = "todo", blockers: tuple = (), issue_type: str = "AFK", checked: int = 0) -> str:

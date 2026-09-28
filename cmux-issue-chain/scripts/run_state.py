@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from run_commit import capture_baseline
 from git_status import porcelain_entries
 from agents_config import (
     ConfigError,
@@ -257,6 +258,10 @@ def init_run(args: argparse.Namespace) -> int:
         )
         configuration_source = str(source)
 
+    try:
+        commit_baseline = capture_baseline(Path.cwd())
+    except ValueError as error:
+        raise SystemExit(f"cannot record the commit baseline: {error}") from error
     ensure_runs_root_ignored(runs_root)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompts").mkdir(exist_ok=True)
@@ -265,6 +270,8 @@ def init_run(args: argparse.Namespace) -> int:
     state = {
         "run_id": run_id,
         "workflow": "issue-chain",
+        "commit_baseline": commit_baseline,
+        "working_directory": str(Path.cwd()),
         "commit_mode": commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {"tracker": str(tracker), "issue": issue.path},
@@ -379,6 +386,8 @@ def prepare_stage(args: argparse.Namespace) -> int:
 
 
 def append_event(args: argparse.Namespace) -> int:
+    if args.type.startswith("commit."):
+        raise SystemExit("commit events are recorded by run_commit.py")
     read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):

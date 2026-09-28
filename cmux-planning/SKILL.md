@@ -628,9 +628,25 @@ ticket set, and staged artifact identities before completing state. If both stag
 identities differ, or the run is already complete, publication refuses to duplicate or partially
 overwrite anything.
 
+## Commit
+
+After successful `publish`, record a proposal with `run_commit.py propose` for the published
+`README.md`, `spec.md`, `map.md`, `decisions.md`, and `issues/<file>` leaf files. Build the file list as
+repository-relative literal leaf paths from `git status --porcelain=v1 -z --untracked-files=all` under
+`published_tracker.path`, never a directory or an expanded glob. Pass each leaf with `--file`, and
+exclude unrelated changes from the proposal while listing them with `--ride-along`. Use an English
+one-line subject explaining what changed and why, an optional body, and no trailers.
+
+```bash
+python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Publish approved implementation tracker" --file <tracker>/README.md --file <tracker>/spec.md --file <tracker>/map.md --file <tracker>/decisions.md --file <tracker>/issues/<file>
+```
+
+The helper records the replay-safe proposal, including ignored and pre-run dirty classifications.
+The human reviews, commits, and pushes.
+
 ## Run recap
 
-The counterpart to the Run briefing. After a successful `publish`, or after a halting gate that ends
+The counterpart to the Run briefing. After the Commit step following successful `publish`, or after a halting gate that ends
 the run (`hitl`, `blocked`, or `stop`):
 
 ```bash
@@ -694,6 +710,17 @@ product copy keeps its actual language, and human questions and walkthroughs use
 
 Upgrade note: affected in-flight planning runs with pre-change untracked baselines must restart after
 upgrading. Do not migrate those baselines or bypass their seals.
+
+## Scripts
+
+`run_commit.py propose` validates published literal leaf paths and is the only writer of
+`commit.proposed`. Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing
+and recap generation.
+
+## Event Vocabulary
+
+`commit.proposed` is written only by `run_commit.py propose` after publication and carries the exact
+file list, message draft, proposal ID, and ignored/preexisting classifications.
 
 ## Verification
 
