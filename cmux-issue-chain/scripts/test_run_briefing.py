@@ -108,6 +108,26 @@ class RunBriefing(RunDirTestCase):
         self.assertIn("implement → simplify → review → test → triage (Triage autonom)", text)
         self.assertNotIn("Checks", text)
 
+    def test_commit_mode_last_line_all_workflows_and_languages(self):
+        for base in (ISSUE_STATE, PLANNING_STATE, GRILLING_STATE, {**ISSUE_STATE, "chain": []}):
+            for mode in (None, "propose", "commit"):
+                state = dict(base)
+                if mode is not None:
+                    state["commit_mode"] = mode
+                for lang in ("en", "de"):
+                    expected = {"en": ("automatic", "proposal"), "de": ("automatisch", "Vorschlag")}[lang][mode != "commit"]
+                    text = run_briefing.render_briefing(state, [], lang)
+                    self.assertEqual(text.splitlines()[-1], f"- Commit: {expected}")
+
+    def test_next_prompt_preserves_commit_mode(self):
+        invocation = "/cmux-issue-chain ISSUE-003 --commit-mode commit"
+        prompt, unchanged = run_briefing.next_prompt(
+            {**ISSUE_STATE, "invocation": invocation},
+            {"id": "ISSUE-004", "path": "ISSUE-004-next.md"},
+        )
+        self.assertFalse(unchanged)
+        self.assertEqual(prompt, "/cmux-issue-chain ISSUE-004 --commit-mode commit")
+
     def test_hitl_issue_names_empty_chain(self):
         run_dir = self.run_dir({**ISSUE_STATE, "chain": [], "blocker_status": {"blockers": []}})
         self.draft(run_dir, lang="en")

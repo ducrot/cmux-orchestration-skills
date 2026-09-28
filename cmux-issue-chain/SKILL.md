@@ -11,6 +11,27 @@ All `scripts/…` and `references/…` paths in this skill are relative to the s
 base directory (the directory containing this SKILL.md); resolve them against that
 directory, not the working directory.
 
+
+## Commit mode at initialization
+
+Before a fresh init whose invocation does not already name `--commit-mode`, ask one
+`AskUserQuestion` single-select question in the human's language: "How should this run
+handle its commit?" / "Wie soll dieser Lauf mit seinem Commit umgehen?"
+Offer `propose` first and recommended: "Show proposal only" / "Nur Vorschlag zeigen";
+offer `commit` second: "Commit automatically" / "Automatisch committen".
+Pass the chosen mode to `init --commit-mode commit|propose`. When the invocation already
+names the mode, use it without asking. Never on resume, on re-init, in planning's exit-3
+unfinished-run path, or in smoke tests: reuse the stored choice. For planning, inspect
+existing unfinished runs before asking; ask only after the human chooses a fresh run.
+Omitting the flag at fresh init (including smoke tests) records `commit_mode: propose`.
+Legacy runs without the field read as `propose`; an existing run's mode cannot change.
+The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+
+Append an asked answer to `--invocation` as ` --commit-mode <mode>` so the next-run
+prompt carries it. A prompt already naming the mode is recorded unchanged. The question
+is still asked for a HITL issue even though it has no worker chain. Init derives the mode
+from `--invocation` when the direct flag is omitted and refuses contradictory values.
+
 ## Worker Profile Configuration
 
 > **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.

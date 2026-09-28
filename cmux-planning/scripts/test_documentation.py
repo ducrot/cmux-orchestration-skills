@@ -483,6 +483,18 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 self.assertNotIn("migrates a schema-v1 file as a side effect", text)
 
 
+class CommitModeDocumentation(unittest.TestCase):
+    def test_question_only_at_fresh_init(self):
+        for guide in SIBLINGS:
+            text = normalized(guide)
+            for phrase in ("--commit-mode", "askuserquestion", "single-select", "fresh init",
+                           "invocation does not already name", "never on resume", "re-init",
+                           "exit-3", "smoke tests", "show proposal only", "nur vorschlag zeigen",
+                           "commit automatically", "automatisch committen", "recommended"):
+                self.assertIn(phrase, text, guide)
+
+
+
 class PlanningOperatorDocumentation(unittest.TestCase):
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)

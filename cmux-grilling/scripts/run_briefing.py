@@ -92,6 +92,8 @@ LABELS = {
         "triage_value_one": "1 recommendation → {parts}",
         "for_human": "Open for the human",
         "triage_pass": "triage {num}",
+        "commit_mode_commit": "automatic",
+        "commit_mode_propose": "proposal",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} issues, ready now: {ready}",
@@ -164,6 +166,8 @@ LABELS = {
         "triage_value_one": "1 Empfehlung → {parts}",
         "for_human": "Offen für den Menschen",
         "triage_pass": "Triage {num}",
+        "commit_mode_commit": "automatisch",
+        "commit_mode_propose": "Vorschlag",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} Issues, sofort startbar: {ready}",
@@ -315,6 +319,8 @@ def render_briefing(state: dict[str, Any], events: list[dict[str, Any]], lang: s
     labels = LABELS[lang]
     lines = [f"**{labels['heading']} · {state['run_id']}**", ""]
     lines += BRIEFING_BODIES[state["workflow"]](state, labels)
+    mode = state.get("commit_mode", "propose")
+    lines.append(f"- {labels['commit']}: {labels['commit_mode_' + mode]}")
     return "\n".join(lines) + "\n"
 
 

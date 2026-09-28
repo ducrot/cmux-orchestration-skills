@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Create run directory and initial state")
+    init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
     task_source = init.add_mutually_exclusive_group(required=True)
     task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
@@ -155,6 +156,8 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command == "status":
         run_dir = Path(args.run_dir)
         state = read_json(run_dir / "state.json")
+        if isinstance(state, dict):
+            state.setdefault("commit_mode", "propose")
         try:
             read_run_state(run_dir)
             diagnostic = None
@@ -293,7 +296,13 @@ def init_run(args: argparse.Namespace) -> int:
     overrides = parse_overrides(args, workflow=WORKFLOW)
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
-        read_run_state(run_dir)
+        existing = read_run_state(run_dir)
+        stored_mode = existing.get("commit_mode", "propose")
+        if args.commit_mode is not None and args.commit_mode != stored_mode:
+            raise SystemExit(
+                f"run {run_id} already exists with commit mode {stored_mode}; "
+                f"--commit-mode {args.commit_mode} cannot change it"
+            )
         # A grilling run has one immutable wave. Accepting these inputs here would pretend
         # to apply them while retaining the old cohort, so require a new run instead.
         if supplied_configuration_inputs(args, workflow=WORKFLOW):
@@ -332,6 +341,7 @@ def init_run(args: argparse.Namespace) -> int:
     state = {
         "run_id": run_id,
         "workflow": "grilling",
+        "commit_mode": args.commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {},
         "created_at": now,

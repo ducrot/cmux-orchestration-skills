@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Persist planning input and prepare direct-task spec work")
+    init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
     task = init.add_mutually_exclusive_group(required=True)
     task.add_argument("--task")
     task.add_argument("--task-file")
@@ -734,6 +735,12 @@ def init_run(args: argparse.Namespace) -> int:
         require_current_format(existing, source=run_dir / "state.json")
         if Path(existing["repository"]).resolve() != repository:
             raise ConfigError(f"planning run belongs to another repository: {run_dir}")
+        stored_mode = existing.get("commit_mode", "propose")
+        if args.commit_mode is not None and args.commit_mode != stored_mode:
+            raise SystemExit(
+                f"run {run_id} already exists with commit mode {stored_mode}; "
+                f"--commit-mode {args.commit_mode} cannot change it"
+            )
         if supplied_configuration_inputs(args, workflow=WORKFLOW) or args.accept_config:
             raise ConfigError(
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
@@ -839,6 +846,7 @@ def init_run(args: argparse.Namespace) -> int:
         "artifact_audit": {"unexpected": [], "stale": [], "checked_at": now},
         "run_id": run_id,
         "workflow": "planning",
+        "commit_mode": args.commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {},
         "tracker_slug": slug,

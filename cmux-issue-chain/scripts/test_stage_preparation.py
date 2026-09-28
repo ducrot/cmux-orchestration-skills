@@ -366,6 +366,55 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(captured.returncode, 0)
         return tracker
 
+    def test_commit_modes_and_legacy_default(self):
+        for mode in (None, "commit", "propose"):
+            run_id = "mode-" + str(mode)
+            extra = [] if mode is None else ["--commit-mode", mode]
+            result = self.init_for(run_id, *extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_dir = self.runs_root / run_id
+            state_path = run_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            effective = mode or "propose"
+            self.assertEqual(state["commit_mode"], effective)
+            for legacy in (False, True):
+                if legacy:
+                    state.pop("commit_mode")
+                    state_path.write_text(json.dumps(state))
+                    effective = "propose"
+                before = file_contents(run_dir)
+                shown = self.run_state("status", "--run-dir", str(run_dir))
+                self.assertEqual(shown.returncode, 0, shown.stderr)
+                self.assertEqual(json.loads(shown.stdout)["state"]["commit_mode"], effective)
+                for extra in ([], ["--commit-mode", effective]):
+                    repeated = self.init_for(run_id, *extra)
+                    self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                extra = ["--commit-mode", "commit" if effective == "propose" else "propose"]
+                refused = self.init_for(run_id, *extra)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(f"run {run_id} already exists with commit mode {effective}; --commit-mode {extra[-1]} cannot change it", refused.stderr)
+                self.assertEqual(file_contents(run_dir), before)
+
+    def test_commit_invocation_and_hitl(self):
+        for mode in ("commit", "propose"):
+            invocation = f"/cmux-issue-chain ISSUE-001 --commit-mode {mode}"
+            result = self.init_for(mode, "--invocation", invocation)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = json.loads((self.runs_root / mode / "state.json").read_text())
+            self.assertEqual(state["commit_mode"], mode)
+            self.assertEqual(state["invocation"], invocation)
+            before = file_contents(self.runs_root)
+            other = "propose" if mode == "commit" else "commit"
+            for run_id in (mode, "conflict"):
+                result = self.init_for(run_id, "--invocation", invocation, "--commit-mode", other)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(file_contents(self.runs_root), before)
+        issue = self.repo / ".scratch/tracker/issues/ISSUE-001-prepared.md"
+        issue.write_text(ISSUE.replace("type: AFK", "type: HITL"))
+        self.assertEqual(self.init("--commit-mode", "commit").returncode, 0)
+        self.assertEqual(self.read_state()["commit_mode"], "commit")
+        self.assertEqual(self.read_state()["chain"], [])
+
     def test_triage_modes_and_legacy_default(self):
         self.assertEqual(self.init().returncode, 0)
         state = self.read_state()

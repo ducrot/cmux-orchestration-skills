@@ -296,6 +296,41 @@ class PlanningFlow(unittest.TestCase):
                 after = file_contents(self.run_dir)
                 self.assertEqual(after, before)
 
+    def test_commit_modes_and_legacy_default(self):
+        def init(run_id, *extra):
+            return self.cli(STATE, "init", "--task", "Mode test", "--run-id", run_id, "--no-workspace", "--new-run", *extra)
+
+        for mode in (None, "commit", "propose"):
+            run_id = "mode-" + str(mode)
+            extra = [] if mode is None else ["--commit-mode", mode]
+            result = init(run_id, *extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_dir = self.runs / run_id
+            state_path = run_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            effective = mode or "propose"
+            self.assertEqual(state["commit_mode"], effective)
+            for legacy in (False, True):
+                if legacy:
+                    state.pop("commit_mode")
+                    state_path.write_text(json.dumps(state))
+                    effective = "propose"
+                before = file_contents(run_dir)
+                shown = self.cli(STATE, "status", "--run-dir", str(run_dir))
+                self.assertEqual(shown.returncode, 0, shown.stderr)
+                self.assertEqual(json.loads(shown.stdout)["commit_mode"], effective)
+                context = self.cli(STATE, "context", "--run-dir", str(run_dir))
+                self.assertEqual(context.returncode, 0, context.stderr)
+                self.assertEqual(json.loads(context.stdout)["commit_mode"], effective)
+                for extra in ([], ["--commit-mode", effective]):
+                    repeated = init(run_id, *extra)
+                    self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                extra = ["--commit-mode", "commit" if effective == "propose" else "propose"]
+                refused = init(run_id, *extra)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(f"run {run_id} already exists with commit mode {effective}; --commit-mode {extra[-1]} cannot change it", refused.stderr)
+                self.assertEqual(file_contents(run_dir), before)
+
     def test_reinitialization_refuses_configuration_inputs_without_changing_run(self):
         self.assertEqual(self.init_direct().returncode, 0)
         before = (self.run_dir / "state.json").read_bytes()
@@ -3973,6 +4008,7 @@ Option?
             self.assertEqual(events[0]["evidence"], "marker")
 
         self.assertEqual(self.init_direct().returncode, 0)
+        self.assertEqual(json.loads((self.run_dir / "state.json").read_text())["commit_mode"], "propose")
         self.render_and_baseline("spec")
         self.launch_prepared_stage("spec")
         draft = self.write_author_handoff()

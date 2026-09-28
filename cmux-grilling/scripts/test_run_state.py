@@ -17,6 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import test_launch_wave as wave_tests  # noqa: E402
+from test_launch_wave import file_contents  # noqa: E402
+
 from run_state import (  # noqa: E402
     DECISION_STATUSES,
     DECISION_WHY_OPEN,
@@ -45,6 +48,44 @@ def run_quietly(command, args: argparse.Namespace) -> str:
 def make_tracker(root: Path, name: str) -> Path:
     (root / ".scratch" / name / "issues").mkdir(parents=True)
     return root / ".scratch" / name
+
+
+class CommitModes(unittest.TestCase):
+    setUp = wave_tests.PreparedLaunchWaveCli.setUp
+    tearDown = wave_tests.PreparedLaunchWaveCli.tearDown
+    env = wave_tests.PreparedLaunchWaveCli.env
+    run_state = wave_tests.PreparedLaunchWaveCli.run_state
+    initialize_config = wave_tests.PreparedLaunchWaveCli.initialize_config
+    init_for = wave_tests.PreparedLaunchWaveCli.init_for
+
+    def test_commit_modes_and_legacy_default(self):
+        for mode in (None, "commit", "propose"):
+            run_id = "mode-" + str(mode)
+            extra = [] if mode is None else ["--commit-mode", mode]
+            result = self.init_for(run_id, *extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_dir = self.runs_root / run_id
+            state_path = run_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            effective = mode or "propose"
+            self.assertEqual(state["commit_mode"], effective)
+            for legacy in (False, True):
+                if legacy:
+                    state.pop("commit_mode")
+                    state_path.write_text(json.dumps(state))
+                    effective = "propose"
+                before = file_contents(run_dir)
+                shown = self.run_state("status", "--run-dir", str(run_dir))
+                self.assertEqual(shown.returncode, 0, shown.stderr)
+                self.assertEqual(json.loads(shown.stdout)["state"]["commit_mode"], effective)
+                for extra in ([], ["--commit-mode", effective]):
+                    repeated = self.init_for(run_id, *extra)
+                    self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                extra = ["--commit-mode", "commit" if effective == "propose" else "propose"]
+                refused = self.init_for(run_id, *extra)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn(f"run {run_id} already exists with commit mode {effective}; --commit-mode {extra[-1]} cannot change it", refused.stderr)
+                self.assertEqual(file_contents(run_dir), before)
 
 
 class OutputPathDerivation(unittest.TestCase):

@@ -502,6 +502,7 @@ def recovery_context(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
                 if path.is_file()
             )
     return {
+        "commit_mode": state.get("commit_mode", "propose"),
         "paths": paths,
         "history": files,
         "resume_context": state.get("resume_context"),
@@ -1001,6 +1002,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
             errors.append(f"unknown current_stage {stage!r}")
 
     payload = {
+        "commit_mode": state.get("commit_mode", "propose"),
         "run_id": state.get("run_id"),
         "run_dir": str(run_dir),
         "repository": state.get("repository"),

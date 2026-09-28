@@ -21,6 +21,22 @@ input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
       -> awaiting-ticket-approval -> ready-to-publish -> complete
 ```
 
+
+## Commit mode at initialization
+
+Before a fresh init whose invocation does not already name `--commit-mode`, ask one
+`AskUserQuestion` single-select question in the human's language: "How should this run
+handle its commit?" / "Wie soll dieser Lauf mit seinem Commit umgehen?"
+Offer `propose` first and recommended: "Show proposal only" / "Nur Vorschlag zeigen";
+offer `commit` second: "Commit automatically" / "Automatisch committen".
+Pass the chosen mode to `init --commit-mode commit|propose`. When the invocation already
+names the mode, use it without asking. Never on resume, on re-init, in planning's exit-3
+unfinished-run path, or in smoke tests: reuse the stored choice. For planning, inspect
+existing unfinished runs before asking; ask only after the human chooses a fresh run.
+Omitting the flag at fresh init (including smoke tests) records `commit_mode: propose`.
+Legacy runs without the field read as `propose`; an existing run's mode cannot change.
+The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+
 ## Ground rules
 
 - Persist exactly one run-scoped `task.md`. Preserve explicit task text or file content in its

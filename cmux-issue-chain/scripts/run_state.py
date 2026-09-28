@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -51,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Create run directory and initial state")
+    init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
     init.add_argument("--tracker", required=True, help="Tracker directory, e.g. .scratch/<tracker>")
     init.add_argument("--issue", required=True)
     init.add_argument("--run-id", help="Stable run id. Defaults to chain-issue-NNN-<YYYY-MM-DD>-<HHMM> (UTC)")
@@ -121,6 +123,7 @@ def run_command(args: argparse.Namespace) -> int:
         state = read_json(run_dir / "state.json")
         if isinstance(state, dict):
             state.setdefault("triage_mode", "human")
+            state.setdefault("commit_mode", "propose")
         try:
             read_run_state(run_dir)
             diagnostic = None
@@ -190,6 +193,12 @@ def resolve_workspace_id(args: argparse.Namespace) -> str | None:
 
 
 def init_run(args: argparse.Namespace) -> int:
+    commit_mode = args.commit_mode
+    invocation_modes = re.findall(r"(?:^|\s)--commit-mode(?:\s+|=)(commit|propose)(?=\s|$)", args.invocation or "")
+    if invocation_modes:
+        if len(set(invocation_modes)) != 1 or (commit_mode is not None and commit_mode != invocation_modes[0]):
+            raise SystemExit("--commit-mode contradicts --invocation commit mode")
+        commit_mode = invocation_modes[0]
     tracker = Path(args.tracker)
     workspace_id = resolve_workspace_id(args)
     issues = load_issues(tracker)
@@ -204,6 +213,12 @@ def init_run(args: argparse.Namespace) -> int:
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
         existing = read_run_state(run_dir)
+        stored_mode = existing.get("commit_mode", "propose")
+        if commit_mode is not None and commit_mode != stored_mode:
+            raise SystemExit(
+                f"run {run_id} already exists with commit mode {stored_mode}; "
+                f"--commit-mode {commit_mode} cannot change it"
+            )
         stored_invocation = existing.get("invocation")
         if args.invocation is not None and stored_invocation is not None and args.invocation != stored_invocation:
             raise SystemExit(f"run {run_id} already exists with a different --invocation")
@@ -250,6 +265,7 @@ def init_run(args: argparse.Namespace) -> int:
     state = {
         "run_id": run_id,
         "workflow": "issue-chain",
+        "commit_mode": commit_mode or "propose",
         "layout_version": 1,
         "deliverables": {"tracker": str(tracker), "issue": issue.path},
         "created_at": now,
