@@ -17,7 +17,7 @@ from run_commit import capture_baseline, porcelain_entries
 SCRIPT = Path(__file__).with_name('run_commit.py')
 
 
-class ProposalCli(unittest.TestCase):
+class CliCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -70,6 +70,8 @@ class ProposalCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+
+class ProposalCli(CliCase):
     def test_literal_and_classification_and_digest(self):
         (self.repo / 'f*').write_text('changed')
         (self.repo / 'fx').write_text('changed')
@@ -254,6 +256,440 @@ class ProposalCli(unittest.TestCase):
         for raw in (b'?? missing-nul', b'R  dest\0', b'ZZ bad\0', b'   bad\0', b'?? \0'):
             with self.assertRaises(ValueError):
                 porcelain_entries(raw)
+
+
+class CommitCli(CliCase):
+    def commit(self, success=True):
+        result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def dirty(self, path='f*', content='changed'):
+        (self.repo / path).write_text(content)
+
+    def hook(self, name, body):
+        path = self.repo / '.git/hooks' / name
+        path.write_text('#!/bin/sh\nset -e\n' + body + '\n')
+        path.chmod(0o755)
+
+    def wrapper(self, body):
+        binary = shutil.which('git')
+        directory = self.root / 'bin'
+        directory.mkdir(exist_ok=True)
+        path = directory / 'git'
+        path.write_text('#!' + sys.executable + '\nimport os, sys, subprocess, json\n'
+                        + 'real = ' + repr(binary) + '\na = sys.argv[1:]\n'
+                        + 'run_dir = ' + repr(str(self.run)) + '\n'
+                        + 'repo = ' + repr(str(self.repo)) + '\n'
+                        + body + '\nos.execv(real, [real] + a)\n')
+        path.chmod(0o755)
+        self.env['PATH'] = str(directory) + os.pathsep + os.environ['PATH']
+
+    def last(self):
+        return json.loads(self.events().splitlines()[-1])
+
+    def index(self):
+        return self.git('diff', '--cached', '--name-only', '-z')
+
+    def test_literal_scope_unchanged_and_ride_along(self):
+        self.dirty()
+        self.dirty('fx')
+        result = self.cli('--ride-along', 'fx', files=['f*', 'd/file'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = self.commit()
+        self.assertEqual(data['files'], ['f*'])
+        self.assertEqual(data['unchanged'], ['d/file'])
+        self.assertEqual(data['hook_side_effects'], [])
+        self.assertEqual(self.git('show', 'HEAD:fx'), b'original')
+        self.assertEqual((self.repo/'fx').read_text(), 'changed')
+        self.assertEqual(self.index(), b'')
+        self.assertEqual(self.last()['type'], 'commit.created')
+
+    def test_descendant_scope(self):
+        self.dirty('d/a')
+        self.dirty('d/b')
+        self.ok(files=['d/a'])
+        data = self.commit()
+        self.assertEqual(data['files'], ['d/a'])
+        self.assertEqual(self.git('ls-tree', '--name-only', 'HEAD', 'd/b'), b'')
+        self.assertEqual((self.repo/'d/b').read_text(), 'changed')
+        self.assertEqual(self.index(), b'')
+
+    def test_deletions_and_run_wide_replay(self):
+        files = ['f*', 'link', 'tab\tline\nname']
+        for path in files:
+            (self.repo/path).unlink()
+        proposal = self.ok(files=files)
+        data = self.commit()
+        head = self.git('rev-parse', 'HEAD')
+        self.assertEqual(data['files'], sorted(files))
+        self.assertEqual(self.git('diff-tree', '--no-commit-id', '--diff-filter=D', '--name-only', '-r', '-z', 'HEAD'),
+                         b'f*\0link\0tab\tline\nname\0')
+        before = self.events()
+        self.assertEqual(self.ok(files=files), proposal)
+        self.assertEqual(self.commit(), data)
+        self.assertNotEqual(self.cli(files=files, subject='Changed draft').returncode, 0)
+        self.assertEqual(self.events(), before)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual(self.index(), b'')
+
+    def test_read_only_fallbacks_and_no_retry(self):
+        for reason in ('not-a-leaf', 'preexisting-changes', 'index-not-empty', 'no-head'):
+            with self.subTest(reason=reason):
+                # Restore a fresh fixture for each independent completed run.
+                if reason != 'not-a-leaf':
+                    self.setUp()
+                self.dirty()
+                proposal = self.ok()
+                if reason == 'not-a-leaf':
+                    (self.repo/'f*').unlink()
+                    (self.repo/'f*').mkdir()
+                elif reason == 'preexisting-changes':
+                    self.state['commit_baseline']['paths'] = ['f*']
+                    self.save()
+                elif reason == 'index-not-empty':
+                    self.dirty('fx')
+                    self.git('add', 'fx')
+                else:
+                    self.git('symbolic-ref', 'HEAD', 'refs/heads/unborn')
+                index = (self.repo/'.git/index').read_bytes()
+                head = self.git('symbolic-ref', 'HEAD')
+                data = self.commit()
+                self.assertEqual(data['reason'], reason)
+                self.assertIn('head', data)
+                self.assertIn('output', data)
+                self.assertEqual((self.repo/'.git/index').read_bytes(), index)
+                self.assertEqual(self.git('symbolic-ref', 'HEAD'), head)
+                before = self.events()
+                self.assertEqual(self.ok(), proposal)
+                self.commit(success=False)
+                self.assertNotEqual(self.cli(subject='Changed draft').returncode, 0)
+                self.assertEqual(self.events(), before)
+
+    def test_refusals_do_not_write(self):
+        self.ok()
+        for field, value in [('commit_mode', 'propose'), ('chain', []), ('current_stage', 'test'), ('commit_baseline', None)]:
+            with self.subTest(field=field):
+                original = self.state[field]
+                self.state[field] = value
+                self.save()
+                before = {p.name:p.read_bytes() for p in self.run.iterdir()}
+                self.commit(success=False)
+                self.assertEqual({p.name:p.read_bytes() for p in self.run.iterdir()}, before)
+                self.state[field] = original
+                self.save()
+        with (self.run/'commit.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = self.events()
+            self.commit(success=False)
+            self.assertEqual(self.events(), before)
+        (self.run/'events.jsonl').unlink()
+        self.commit(success=False)
+        self.assertEqual(self.events(), b'')
+        self.assertEqual(self.index(), b'')
+
+    def test_skips_and_ignore_reclassification(self):
+        self.ok()
+        data = self.commit()
+        self.assertEqual(data, {'reason':'no-changes', 'unchanged':['f*']})
+        self.commit(success=False)
+        self.setUp()
+        self.dirty('new')
+        self.ok(files=['new'])
+        (self.repo/'.gitignore').write_text('new\n')
+        data = self.commit()
+        self.assertEqual(data, {'reason':'all-ignored', 'ignored':['new']})
+        self.assertEqual(self.index(), b'')
+        self.commit(success=False)
+
+    def test_attempt_is_durable_before_commit_and_no_literal_env(self):
+        self.dirty()
+        self.ok()
+        self.env['GIT_LITERAL_PATHSPECS'] = '1'
+        self.wrapper('''if "commit" in a:
+    events = [json.loads(line) for line in open(run_dir + "/events.jsonl")]
+    event = events[-1]
+    assert event["type"] == "commit.attempted"
+    data = event["data"]
+    assert data["tree"] == subprocess.check_output([real, "-C", repo, "write-tree"]).decode().strip()
+    assert data["parent"] == subprocess.check_output([real, "-C", repo, "rev-parse", "HEAD"]).decode().strip()
+    assert data["paths"] == ["f*"]
+    assert data["pre_status"][0]["sha256"]
+    assert "GIT_LITERAL_PATHSPECS" not in os.environ
+    assert "--literal-pathspecs" not in a
+''')
+        self.assertEqual(self.commit()['files'], ['f*'])
+
+    def test_staged_set_mismatch_leaves_foreign_index(self):
+        self.dirty()
+        self.dirty('fx')
+        self.ok()
+        parent = self.git('rev-parse', 'HEAD')
+        self.wrapper('''if "add" in a:
+    result = subprocess.run([real] + a)
+    subprocess.check_call([real, "-C", repo, "add", "fx"])
+    sys.exit(result.returncode)
+''')
+        data = self.commit()
+        self.assertEqual(data['reason'], 'staged-set-mismatch')
+        self.assertEqual(data['extra'], ['fx'])
+        self.assertEqual(data['missing'], [])
+        self.assertEqual(self.index(), b'fx\0')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), parent)
+        self.assertNotIn(b'commit.attempted', self.events())
+        self.assertEqual((self.repo/'f*').read_text(), 'changed')
+
+    def test_stage_error_restores_only_planned_paths(self):
+        self.dirty()
+        self.dirty('fx')
+        self.ok()
+        self.wrapper('''if "add" in a:
+    subprocess.check_call([real] + a)
+    subprocess.check_call([real, "-C", repo, "add", "fx"])
+    print("stage failed", file=sys.stderr)
+    sys.exit(1)
+''')
+        data = self.commit()
+        self.assertEqual(data['reason'], 'stage-error')
+        self.assertIn('stage failed', data['summary'])
+        self.assertEqual(self.index(), b'fx\0')
+        self.assertNotIn(b'commit.attempted', self.events())
+
+    def test_failed_hook_and_signing_no_retry(self):
+        for signing in (False, True):
+            with self.subTest(signing=signing):
+                if signing:
+                    self.setUp()
+                    self.git('config', 'commit.gpgsign', 'true')
+                    self.git('config', 'gpg.program', 'false')
+                else:
+                    self.hook('pre-commit', 'echo check-failed >&2\nexit 1')
+                self.dirty()
+                self.ok()
+                parent = self.git('rev-parse', 'HEAD')
+                data = self.commit()
+                self.assertEqual(data['reason'], 'commit-error')
+                self.assertTrue(data['output'])
+                self.assertLessEqual(len(data['summary']), 120)
+                self.assertEqual(data['hook_side_effects'], [])
+                self.assertEqual(self.git('rev-parse', 'HEAD'), parent)
+                self.assertEqual(self.index(), b'')
+                self.assertEqual((self.repo/'f*').read_text(), 'changed')
+                before = self.events()
+                self.commit(success=False)
+                self.assertEqual(self.events(), before)
+
+    def test_autofixer_and_unstaged_side_effects(self):
+        self.dirty()
+        self.ok()
+        self.hook('pre-commit', "printf fixed > 'f*'\ngit --literal-pathspecs add -- 'f*'\nprintf foreign > fx\nprintf new > new\nprintf unstaged > 'f*'")
+        data = self.commit()
+        self.assertEqual(data['hook_modified'], ['f*'])
+        self.assertEqual(data['hook_side_effects'], ['f*', 'fx', 'new'])
+        self.assertEqual(self.git('show', 'HEAD:f*'), b'fixed')
+        self.assertEqual((self.repo/'f*').read_text(), 'unstaged')
+        self.assertEqual(self.index(), b'')
+
+    def test_hook_mode_change_is_not_a_modified_blob(self):
+        self.dirty()
+        self.ok()
+        self.git('config', 'core.filemode', 'true')
+        self.hook('pre-commit', "chmod +x 'f*'\ngit --literal-pathspecs add -- 'f*'")
+        data = self.commit()
+        self.assertEqual(data['hook_modified'], [])
+        self.assertIn(b'100755 blob', self.git('ls-tree', 'HEAD', 'f*'))
+        self.assertEqual(self.index(), b'')
+
+    def test_latest_revision_is_committed(self):
+        self.dirty()
+        self.ok()
+        self.dirty('fx')
+        revised = self.ok(files=['fx'], subject='Revised subject')
+        data = self.commit()
+        self.assertEqual(data['subject'], revised['subject'])
+        self.assertEqual(data['files'], ['fx'])
+        self.assertEqual(self.git('show', 'HEAD:f*'), b'original')
+        self.assertEqual(self.index(), b'')
+
+    def test_hook_reverts_one_path_and_rewrites_subject(self):
+        self.dirty()
+        self.dirty('fx')
+        self.ok(files=['f*', 'fx'])
+        self.hook('pre-commit', "git show 'HEAD:f*' > 'f*'\ngit --literal-pathspecs add -- 'f*'")
+        self.hook('commit-msg', 'printf "Hook subject\\n" > "$1"')
+        data = self.commit()
+        self.assertEqual(data['files'], ['fx'])
+        self.assertEqual(data['hook_reverted'], ['f*'])
+        self.assertEqual(data['hook_modified'], ['f*'])
+        self.assertEqual(data['subject'], 'Hook subject')
+
+    def test_hook_foreign_undo_preserves_other_staged_entry(self):
+        self.dirty()
+        self.ok()
+        parent = self.git('rev-parse', 'HEAD')
+        self.hook('pre-commit', 'printf foreign > fx\ngit add fx')
+        self.hook('post-commit', 'printf late > late\ngit add late')
+        data = self.commit()
+        self.assertEqual(data['reason'], 'hook-added-paths')
+        self.assertTrue(data['reset'])
+        self.assertEqual(data['paths'], ['fx'])
+        self.assertEqual(self.git('rev-parse', 'HEAD'), parent)
+        self.assertEqual(self.index(), b'late\0')
+        self.assertEqual((self.repo/'fx').read_text(), 'foreign')
+        self.assertEqual((self.repo/'f*').read_text(), 'changed')
+        self.assertIn(b'run_commit: undo run test commit', self.git('reflog', '-1'))
+
+    def test_remote_tracking_ref_prevents_undo(self):
+        self.dirty()
+        self.ok()
+        parent = self.git('rev-parse', 'HEAD')
+        self.hook('pre-commit', 'printf foreign > fx\ngit add fx')
+        self.hook('post-commit', 'git update-ref refs/remotes/test/main HEAD')
+        data = self.commit()
+        self.assertFalse(data['reset'])
+        self.assertEqual(data['reason'], 'hook-added-paths')
+        self.assertNotEqual(self.git('rev-parse', 'HEAD'), parent)
+        self.assertEqual(self.git('show', 'HEAD:fx'), b'foreign')
+        self.assertEqual(self.index(), b'')
+
+    def test_cas_failure_leaves_foreign_head_and_index(self):
+        self.dirty()
+        self.ok()
+        self.hook('pre-commit', 'printf foreign > fx\ngit add fx')
+        self.wrapper('''if "update-ref" in a:
+    tree = subprocess.check_output([real, "-C", repo, "write-tree"]).decode().strip()
+    foreign = subprocess.check_output([real, "-C", repo, "commit-tree", tree, "-p", "HEAD", "-m", "Foreign"]).decode().strip()
+    subprocess.check_call([real, "-C", repo, "update-ref", "HEAD", foreign])
+''')
+        data = self.commit()
+        self.assertEqual(data['detail'], 'cas-failed')
+        self.assertEqual(self.git('log', '-1', '--format=%s').strip(), b'Foreign')
+        self.assertEqual(self.index(), b'')
+        self.assertEqual(self.git('show', 'HEAD:fx'), b'foreign')
+
+    def test_foreign_commit_and_failure_is_not_undone(self):
+        self.dirty()
+        self.ok()
+        self.wrapper('''if "commit" in a:
+    subprocess.check_call([real, "-C", repo, "commit", "-qm", "Foreign"])
+    sys.exit(1)
+''')
+        data = self.commit()
+        self.assertEqual(data['detail'], 'head-moved')
+        self.assertEqual(self.git('log', '-1', '--format=%s').strip(), b'Foreign')
+        self.assertEqual(self.index(), b'')
+
+    def test_post_commit_second_commit_is_not_undone(self):
+        self.dirty()
+        self.ok()
+        self.hook('post-commit', 'rm .git/hooks/post-commit\ngit commit --allow-empty -qm Second')
+        data = self.commit()
+        self.assertEqual(data['detail'], 'sha-mismatch')
+        self.assertEqual(self.git('log', '-1', '--format=%s').strip(), b'Second')
+        self.assertEqual(self.index(), b'')
+
+    def test_localized_detached_summary(self):
+        self.git('checkout', '--detach', '-q')
+        self.dirty()
+        self.ok()
+        self.env['LANG'] = 'de_DE.UTF-8'
+        # Deterministic even on hosts without installed German Git message catalogs.
+        self.wrapper('''if "commit" in a:
+    result = subprocess.run([real] + a, capture_output=True)
+    import re
+    output = re.sub(rb"^\\[[^\\]\\n]+ ([0-9a-f]+)\\]", lambda m: "[losgelöster HEAD ".encode() + m.group(1) + b"]", result.stdout, flags=re.M)
+    sys.stdout.buffer.write(output)
+    sys.stderr.buffer.write(result.stderr)
+    sys.exit(result.returncode)
+''')
+        self.assertEqual(self.commit()['files'], ['f*'])
+        self.assertEqual(self.index(), b'')
+
+    def test_summary_missing_and_parent_mismatch(self):
+        for detail in ('no-summary-line', 'parent-mismatch'):
+            with self.subTest(detail=detail):
+                if detail == 'parent-mismatch':
+                    self.setUp()
+                self.dirty()
+                self.ok()
+                if detail == 'no-summary-line':
+                    body = '''if "commit" in a:
+    result = subprocess.run([real] + a, capture_output=True)
+    sys.exit(result.returncode)
+'''
+                else:
+                    body = '''if "commit" in a:
+    tree = subprocess.check_output([real, "-C", repo, "write-tree"]).decode().strip()
+    sha = subprocess.check_output([real, "-C", repo, "commit-tree", tree, "-m", "Foreign root"]).decode().strip()
+    subprocess.check_call([real, "-C", repo, "update-ref", "HEAD", sha])
+    print("[branch " + sha + "] Foreign root")
+    sys.exit(0)
+'''
+                self.wrapper(body)
+                data = self.commit()
+                self.assertEqual(data['detail'], detail)
+                self.assertEqual(self.index(), b'')
+                self.assertEqual(self.git('show', 'HEAD:f*'), b'changed')
+
+    def pending_attempt(self):
+        self.dirty()
+        proposal = self.ok()
+        self.wrapper('''if "commit" in a:
+    sys.exit(75)
+''')
+        # Kill the helper itself at the Git boundary so no outcome can be appended.
+        wrapper = self.root/'bin/git'
+        wrapper.write_text(wrapper.read_text().replace('sys.exit(75)', 'import signal\n    os.kill(os.getppid(), signal.SIGKILL)\n    sys.exit(75)'))
+        self.commit(success=False)
+        self.assertEqual(self.last()['type'], 'commit.attempted')
+        self.env['PATH'] = os.environ['PATH']
+        return proposal, self.last()['data']
+
+    def test_interrupted_recovery_accepts_exact_parent_tree(self):
+        proposal, attempt = self.pending_attempt()
+        before = self.events()
+        self.assertEqual(self.ok(), proposal)
+        self.assertNotEqual(self.cli(subject='Changed draft').returncode, 0)
+        self.assertEqual(self.events(), before)
+        self.git('commit', '-qm', proposal['subject'])
+        head = self.git('rev-parse', 'HEAD')
+        data = self.commit()
+        self.assertTrue(data['recovered'])
+        self.assertEqual(data['sha'], head.decode().strip())
+        self.assertEqual(data['files'], ['f*'])
+        self.assertEqual(data['hook_modified'], [])
+        self.assertEqual(data['hook_side_effects'], [])
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual(self.index(), b'')
+
+    def test_recovery_mismatches_never_write_git(self):
+        for kind in ('same-subject', 'autofixer', 'different-parent', 'still-parent'):
+            with self.subTest(kind=kind):
+                if kind != 'same-subject':
+                    self.setUp()
+                proposal, attempt = self.pending_attempt()
+                if kind == 'same-subject':
+                    self.dirty(content='different tree')
+                    self.git('--literal-pathspecs', 'add', 'f*')
+                    self.git('commit', '-qm', proposal['subject'])
+                elif kind == 'autofixer':
+                    self.hook('pre-commit', "printf fixed > 'f*'\ngit --literal-pathspecs add -- 'f*'")
+                    self.git('commit', '-qm', proposal['subject'])
+                elif kind == 'different-parent':
+                    self.git('commit', '-qm', 'First')
+                    self.git('commit', '--allow-empty', '-qm', proposal['subject'])
+                head = self.git('rev-parse', 'HEAD')
+                index = (self.repo/'.git/index').read_bytes()
+                data = self.commit()
+                self.assertEqual(data['detail'], 'recovery-mismatch')
+                self.assertEqual(data['tree'], attempt['tree'])
+                self.assertEqual(data['head'], head.decode().strip())
+                self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+                self.assertEqual((self.repo/'.git/index').read_bytes(), index)
 
 
 if __name__ == '__main__':

@@ -342,7 +342,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             self.assertIn(phrase, summary)
         commit = text.split("## branch and commit policy", 1)[1].split("## reporting to the human", 1)[0]
         self.assertIn("tracker changes published by triage (new issue files, `decisions.md`) with `--tracker-file`", commit)
-        self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> run recap + final summary -> wait", text)
+        self.assertIn("test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> commit (commit mode) -> run recap + final summary -> wait", text)
 
     def test_issue_chain_relevant_prior_pass_context_and_example(self):
         guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
@@ -392,6 +392,18 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         for filename in ("run_briefing.py", "test_run_briefing.py", "run_commit.py", "test_run_commit.py"):
             contents = [(guide.parent / "scripts" / filename).read_bytes() for guide in SIBLINGS]
             self.assertEqual(contents, [contents[0]] * 3, filename)
+
+    def test_commit_transaction_is_documented_in_every_guide(self):
+        for skill in ("cmux-issue-chain", "cmux-grilling", "cmux-planning"):
+            text = (REPOSITORY / skill / "SKILL.md").read_text().lower()
+            vocabulary = text.split("## event vocabulary", 1)[1]
+            for event in ("commit.attempted", "commit.created", "commit.skipped", "commit.failed"):
+                self.assertIn(event, vocabulary, skill)
+            for phrase in ("run_commit.py commit", "hitl always proposes", "commit.attempted",
+                           "commit.created", "commit.skipped", "commit.failed", "never `--no-verify`",
+                           "literal leaf `git add`", "git reset -q --", "git update-ref head <p> <c>",
+                           "never re-propose a changed draft"):
+                self.assertIn(phrase, text, skill)
 
     def test_every_guide_briefs_the_human_before_the_first_worker(self):
         for guide in SIBLINGS:

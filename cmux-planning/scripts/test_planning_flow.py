@@ -165,6 +165,7 @@ class PlanningFlow(unittest.TestCase):
             "WORKSPACE-1",
             "--config",
             str(self.config),
+            *(["--commit-mode", self.commit_mode] if hasattr(self, "commit_mode") else []),
         )
 
     def test_shared_identity_slug_override_and_sibling_discovery(self):
@@ -1651,6 +1652,8 @@ sha256 {resulting_digest or digest}
         self.assertEqual(state["gate_decisions"][-1]["reason"], "run artifact integrity violation")
 
     def test_complete_ticket_flow_publishes_native_tracker_once(self):
+        self.commit_mode = "commit"
+        parent = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"]).decode().strip()
         proposal_result = self.reach_ticket_approval(launch_panes=True)
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
@@ -1667,7 +1670,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(walkthrough["ready_frontier"], ["ISSUE-001"])
         self.assertEqual(walkthrough["blocking_edges"], [{"blocked": "ISSUE-002", "prerequisite": "ISSUE-001"}])
 
-        target = self.repo / ".scratch" / proposal_result["tracker"]["slug"]
+        target = self.repo / "trackers" / proposal_result["tracker"]["slug"]
         approved = self.ticket_approval("approve", "Granularity and dependencies approved", target=target)
         self.assertEqual(approved.returncode, 0, approved.stderr)
         self.assertFalse(target.exists(), "approval stages but does not partially publish")
@@ -1693,6 +1696,15 @@ sha256 {resulting_digest or digest}
         self.assertEqual(commit_proposal.returncode, 0, commit_proposal.stderr)
         self.assertEqual(json.loads(commit_proposal.stdout)["files"], leaves)
         self.assertEqual(len(leaves), 6)
+
+        committed = self.cli(STATE.with_name("run_commit.py"), "commit", "--run-dir", str(self.run_dir))
+        self.assertEqual(committed.returncode, 0, committed.stderr)
+        data = json.loads(committed.stdout)
+        self.assertEqual(data["files"], leaves)
+        self.assertEqual(subprocess.check_output(["git", "-C", str(self.repo), "rev-list", "--count", parent + "..HEAD"]).strip(), b"1")
+        actual = subprocess.check_output(["git", "-C", str(self.repo), "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", parent, "HEAD"])
+        self.assertEqual(sorted(os.fsdecode(path) for path in actual.split(b"\0") if path), leaves)
+        self.assertEqual(subprocess.check_output(["git", "-C", str(self.repo), "diff", "--cached"]), b"")
 
         duplicate = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
         self.assertNotEqual(duplicate.returncode, 0)

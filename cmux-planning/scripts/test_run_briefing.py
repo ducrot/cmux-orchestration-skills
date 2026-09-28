@@ -264,9 +264,10 @@ class RunRecap(RunDirTestCase):
                 self.assertIn(f"- {label}: Latest proposal", self.recap(run_dir, lang=language))
             for kind in ("created", "failed", "skipped"):
                 (run_dir / "recap.md").unlink(missing_ok=True)
-                self.write_events(run_dir, [event("commit." + kind, data={"subject": "Outcome"}), proposal])
+                self.write_events(run_dir, [event("commit." + kind, data={"subject": "Outcome", "sha": "123456789", "reason": "no-changes"}), proposal])
                 text = self.recap(run_dir, lang=language)
-                self.assertIn("- Commit: Outcome", text)
+                self.assertIn("- Commit", text)
+                self.assertNotIn("Latest proposal", text)
                 self.assertNotIn(f"- {label}:", text)
             (run_dir / "recap.md").unlink(missing_ok=True)
             self.write_events(run_dir, [])
@@ -597,6 +598,63 @@ class NextStep(RunDirTestCase):
         afk = [issue["id"] for issue in run_briefing.ranked_candidates(run_briefing.load_tracker(tracker))
                if issue["type"].upper() != "HITL"]
         self.assertEqual(sorted(afk), expected)
+
+
+
+
+class CommitRecap(unittest.TestCase):
+    def test_outcomes_and_hook_suffixes_both_languages(self):
+        for lang, skipped, failed, proposal, modified, effects in (
+            ('en', 'Commit skipped', 'Commit failed', 'proposal', 'modified by hook: 2 files', 'hook side effects: fx'),
+            ('de', 'Commit übersprungen', 'Commit fehlgeschlagen', 'Vorschlag', 'vom Hook geändert: 2 Dateien', 'Hook-Nebeneffekte: fx')):
+            labels = run_briefing.LABELS[lang]
+            created = {'type':'commit.created', 'data':{'sha':'123456789', 'subject':'Subject', 'hook_modified':['a','b'], 'hook_side_effects':['fx']}}
+            events = [created, {'type':'commit.proposed', 'data':{'subject':'Later draft'}}]
+            text = run_briefing.render_recap(DONE_ISSUE_STATE, events, lang)
+            self.assertIn(f'- Commit: 1234567 Subject; {modified}; {effects}', text)
+            self.assertNotIn('Later draft', text)
+            text = run_briefing.commit_recap([{'type':'commit.failed', 'data':{'reason':'commit-error', 'subject':'Subject', 'summary':'Hook said NO'}}], labels)
+            self.assertEqual(text, [f'- {failed}: Hook said NO, {proposal}: Subject'])
+            for reason, english, german in (
+                ('all-ignored', 'all run files are ignored by Git', 'alle Run-Dateien sind von Git ignoriert'),
+                ('no-changes', 'no run file has changes', 'keine Run-Datei hat Änderungen')):
+                data = {'reason':reason}
+                text = run_briefing.commit_recap([{'type':'commit.skipped', 'data':data}], labels)
+                self.assertEqual(text, [f'- {skipped}: ' + (english if lang=='en' else german)])
+
+    def test_every_failure_label_and_recorded_head(self):
+        cases = [
+            ('preexisting-changes', 'pre-run changes in a', 'Änderungen vor dem Lauf in a'),
+            ('index-not-empty', 'staged changes outside the run in a', 'vorgemerkte Änderungen außerhalb des Laufs in a'),
+            ('not-a-leaf', 'not a single file: a', 'keine einzelne Datei: a'),
+            ('stage-error', 'staging failed: Failed', 'Vormerken fehlgeschlagen: Failed'),
+            ('staged-set-mismatch', 'staged paths differ from the run files: extra: x; missing: y', 'vorgemerkte Pfade weichen von den Run-Dateien ab: extra: x; missing: y'),
+            ('hook-added-paths', 'a hook added a', 'ein Hook hat a hinzugefügt'),
+            ('unverifiable', 'could not be verified (HEAD abcdef0 may be the run commit, please check)', 'nicht verifizierbar (HEAD abcdef0 könnte der Run-Commit sein, bitte prüfen)'),
+            ('no-head', 'the repository has no commit yet', 'das Repository hat noch keinen Commit'),
+        ]
+        for lang in ('en','de'):
+            for reason, english, german in cases:
+                with self.subTest(lang=lang, reason=reason):
+                    data = dict(reason=reason, paths=['a'], subject='Draft', head='abcdef012345', summary='Failed', extra=['x'], missing=['y'])
+                    text = run_briefing.commit_recap([{'type':'commit.failed','data':data}], run_briefing.LABELS[lang])[0]
+                    expected = english if lang=='en' else german
+                    prefix = '- Commit failed: ' if lang=='en' else '- Commit fehlgeschlagen: '
+                    suffix = ', proposal: Draft' if lang=='en' else ', Vorschlag: Draft'
+                    self.assertEqual(text, prefix + expected + suffix)
+                    if reason=='hook-added-paths':
+                        data['reset']=False
+                        text = run_briefing.commit_recap([{'type':'commit.failed','data':data}], run_briefing.LABELS[lang])[0]
+                        self.assertEqual(text, prefix + expected + (' (commit kept)' if lang=='en' else ' (Commit behalten)') + suffix)
+
+    def test_pending_attempt_uses_proposal_and_absent_commit_is_silent(self):
+        for lang in ('en', 'de'):
+            labels = run_briefing.LABELS[lang]
+            self.assertEqual(run_briefing.commit_recap([], labels), [])
+            self.assertEqual(run_briefing.commit_recap([
+                {'type':'commit.proposed','data':{'subject':'Draft'}},
+                {'type':'commit.attempted','data':{'subject':'Draft'}}], labels),
+                ['- ' + labels['commit_proposal'] + ': Draft'])
 
 
 if __name__ == "__main__":

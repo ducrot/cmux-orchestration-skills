@@ -95,6 +95,23 @@ LABELS = {
         "commit_mode_commit": "automatic",
         "commit_mode_propose": "proposal",
         "commit_proposal": "Commit proposal",
+        "commit_skipped": "Commit skipped",
+        "commit_failed": "Commit failed",
+        "commit_failed_proposal": "proposal",
+        "hook_modified": "modified by hook: {count} files",
+        "hook_side_effects": "hook side effects: {paths}",
+        "all-ignored": "all run files are ignored by Git",
+        "no-changes": "no run file has changes",
+        "preexisting-changes": "pre-run changes in {paths}",
+        "index-not-empty": "staged changes outside the run in {paths}",
+        "not-a-leaf": "not a single file: {paths}",
+        "stage-error": "staging failed: {summary}",
+        "commit-error": "{summary}",
+        "staged-set-mismatch": "staged paths differ from the run files: {paths}",
+        "hook-added-paths": "a hook added {paths}",
+        "commit_kept": " (commit kept)",
+        "unverifiable": "could not be verified (HEAD {head7} may be the run commit, please check)",
+        "no-head": "the repository has no commit yet",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} issues, ready now: {ready}",
@@ -170,6 +187,23 @@ LABELS = {
         "commit_mode_commit": "automatisch",
         "commit_mode_propose": "Vorschlag",
         "commit_proposal": "Commit-Vorschlag",
+        "commit_skipped": "Commit übersprungen",
+        "commit_failed": "Commit fehlgeschlagen",
+        "commit_failed_proposal": "Vorschlag",
+        "hook_modified": "vom Hook geändert: {count} Dateien",
+        "hook_side_effects": "Hook-Nebeneffekte: {paths}",
+        "all-ignored": "alle Run-Dateien sind von Git ignoriert",
+        "no-changes": "keine Run-Datei hat Änderungen",
+        "preexisting-changes": "Änderungen vor dem Lauf in {paths}",
+        "index-not-empty": "vorgemerkte Änderungen außerhalb des Laufs in {paths}",
+        "not-a-leaf": "keine einzelne Datei: {paths}",
+        "stage-error": "Vormerken fehlgeschlagen: {summary}",
+        "commit-error": "{summary}",
+        "staged-set-mismatch": "vorgemerkte Pfade weichen von den Run-Dateien ab: {paths}",
+        "hook-added-paths": "ein Hook hat {paths} hinzugefügt",
+        "commit_kept": " (Commit behalten)",
+        "unverifiable": "nicht verifizierbar (HEAD {head7} könnte der Run-Commit sein, bitte prüfen)",
+        "no-head": "das Repository hat noch keinen Commit",
         "commit": "Commit",
         "tracker": "Tracker",
         "tracker_value": "`{path}` · {count} Issues, sofort startbar: {ready}",
@@ -617,6 +651,34 @@ def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
 RECAP_BODIES = {"issue-chain": issue_chain_recap, "planning": planning_recap, "grilling": grilling_recap}
 
 
+def commit_recap(events, labels):
+    outcome = next((event for event in reversed(events)
+                    if event.get("type") in {"commit.created", "commit.failed", "commit.skipped"}), None)
+    data = outcome.get("data", {}) if outcome else last_data(events, "commit.proposed")
+    if not data:
+        return []
+    if outcome is None:
+        return [f"- {labels['commit_proposal']}: {data['subject']}"]
+    kind = outcome["type"]
+    if kind == "commit.created":
+        line = f"- {labels['commit']}: {data['sha'][:7]} {data['subject']}"
+        if data.get("hook_modified"):
+            line += "; " + labels["hook_modified"].format(count=len(data["hook_modified"]))
+        if data.get("hook_side_effects"):
+            line += "; " + labels["hook_side_effects"].format(paths=", ".join(data["hook_side_effects"]))
+        return [line]
+    reason = data["reason"]
+    paths = ", ".join(data.get("paths", []))
+    if reason == "staged-set-mismatch":
+        paths = "extra: " + ", ".join(data.get("extra", [])) + "; missing: " + ", ".join(data.get("missing", []))
+    error = labels[reason].format(paths=paths, summary=data.get("summary", ""), head7=(data.get("head") or "?")[:7])
+    if reason == "hook-added-paths" and data.get("reset") is False:
+        error += labels["commit_kept"]
+    if kind == "commit.skipped":
+        return [f"- {labels['commit_skipped']}: {error}"]
+    return [f"- {labels['commit_failed']}: {error}, {labels['commit_failed_proposal']}: {data['subject']}"]
+
+
 def render_recap(state: dict[str, Any], events: list[dict[str, Any]], lang: str) -> str:
     labels = LABELS[lang]
     outcome = run_outcome(state, events)
@@ -630,12 +692,7 @@ def render_recap(state: dict[str, Any], events: list[dict[str, Any]], lang: str)
     lines.append(f"{labels['result']}: **{status}**")
     lines.append("")
     lines += RECAP_BODIES[state["workflow"]](state, events, labels)
-    outcome_event = next((event for event in reversed(events)
-                          if event.get("type") in {"commit.created", "commit.failed", "commit.skipped"}), None)
-    commit = outcome_event.get("data", {}) if outcome_event else last_data(events, "commit.proposed")
-    commit_label = labels["commit"] if outcome_event else labels["commit_proposal"]
-    if commit and commit.get("subject"):
-        lines.append(f"- {commit_label}: {commit['subject']}")
+    lines += commit_recap(events, labels)
     # A halted run's next step is resolving the halt; the outcome sentence names it.
     if outcome["status"] == "done":
         lines += next_step_lines(state, labels)

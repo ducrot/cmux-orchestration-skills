@@ -177,6 +177,11 @@ matters and attacks the open decisions behind them instead.
 
 ## Boundaries
 
+- Only after successful completion, the orchestrator's new Git writes through `run_commit.py commit`
+  are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and compare-and-swap
+  `git update-ref HEAD <P> <C>` to undo its proven commit. Never `--no-verify`; workers retain their
+  index and HEAD prohibition. A HITL issue run always proposes.
+
 - The orchestrator never edits product code and never performs the research itself. It may
   write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, run logs, prompts,
   gate decisions, snapshots, synthesis files, and the final artifact pair in the output
@@ -509,7 +514,7 @@ before `init` — resolves by the same table. First match wins:
 ## Finalize and Artifact
 
 The order of the closing steps is fixed: finalize (below) → assumptions review → decision
-walkthrough → update both artifacts → commit proposal → run recap. The sections after this one expand
+walkthrough → update both artifacts → complete → commit proposal → commit (commit mode) → run recap. The sections after this one expand
 the steps past finalize.
 
 When the loop ends cleanly (`max-rounds` or `griller-done`):
@@ -649,11 +654,24 @@ python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Record deci
 ```
 
 The helper records the replay-safe `commit.proposed` event and classifies ignored and pre-run dirty
-files. The human reviews, commits, and pushes. Never run `git push`.
+files.
+
+In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
+Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.
+Never commit after `hitl`, `blocked`, or `stop`. In propose mode, show the recorded proposal.
+The orchestrator commits in commit mode; the human commits otherwise. Push, PR, and CI stay with the
+human. Never run `git push` and never `--no-verify`.
+
+On resume, if `commit.attempted` has no outcome, run `run_commit.py commit` once before the recap;
+never re-propose a changed draft. Recovery accepts only a matching parent and tree. The helper never
+retries a commit: `commit.created` replays, and `commit.failed` or `commit.skipped` refuses another
+attempt. A hook may fix planned files; the recap reports its changes and side effects. Foreign paths
+in a proven commit cause a compare-and-swap undo unless a remote-tracking ref contains that commit.
+An unverified outcome leaves Git untouched and names HEAD for human inspection.
 
 ## Run Recap
 
-The counterpart to the Run Briefing and the last message of a session. After the commit proposal,
+The counterpart to the Run Briefing and the last message of a session. After the commit proposal and `run_commit.py commit` in commit mode,
 or after a `hitl`, `blocked`, or `stop` gate that ends the session:
 
 ```bash
@@ -869,6 +887,8 @@ While a round is in flight, the four reports belong to the lanes: do not edit an
 ## Event Vocabulary
 
 `commit.proposed` is written only by `run_commit.py propose`.
+`commit.attempted`, `commit.created`, `commit.skipped`, and `commit.failed` are written only by
+`run_commit.py commit`: attempt before Git, proven success, nothing to commit, or proposal fallback.
 
 Use these exact event types. New ad-hoc types must be dot-namespaced, lower-case, and used
 consistently within a run.

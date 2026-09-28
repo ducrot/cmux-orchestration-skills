@@ -170,6 +170,11 @@ prompt delivery, or other runtime safety overrides.
 
 ## Boundaries
 
+- Only after successful completion, the orchestrator's new Git writes through `run_commit.py commit`
+  are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and compare-and-swap
+  `git update-ref HEAD <P> <C>` to undo its proven commit. Never `--no-verify`; workers retain their
+  index and HEAD prohibition. A HITL issue run always proposes.
+
 - Treat product code as worker-owned. Do not modify application, extension, frontend, deployment, or test implementation files from the orchestrator role.
 - Write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, local issue frontmatter/checklists, run logs, prompt files, worker reports, gate decisions, snapshots, documented plan changes, the tracker `decisions.md` triage ledger, and issue files from human acceptance or gated triage-worker acceptance in recommendations triage.
 - Require workers to write structured reports to their exact rendered report handoff paths and return the
@@ -207,7 +212,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
    decides the collected items, then at most one follow-up pass applies accepted eligible items (see
    Follow-up Pass). Full flow:
-   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> run recap + final summary -> wait`.
+   `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> commit (commit mode) -> run recap + final summary -> wait`.
    Triage-2 runs only for new follow-up recommendations. Opt out at init with `--human-triage`.
    A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
 
@@ -334,7 +339,8 @@ entries to `## Recommendations` unchanged, record `report.reformat_requested`, a
 A report mixing them with any other finding is a plain `stop`.
 
 The same re-emission path covers stage-ownership findings. The chain runs on a deliberately uncommitted
-working tree, and commit, push, PR, and CI belong to the human after `complete` — a finding whose sole
+working tree. After `complete`, the orchestrator commits in commit mode and the human commits otherwise;
+push, PR, and CI stay with the human. A finding whose sole
 claim is that the tree is uncommitted or that a commit, push, PR, or CI run is missing reports a deferral
 as if it were a defect. Ask the worker for one re-emission without that finding, record
 `report.reformat_requested`, and gate on the new report; substantive findings in the same report keep
@@ -496,9 +502,9 @@ every rendered prompt carries it. Before launching the first worker of a run, ve
 starting the chain. Workers never switch branches. Dependent issues (later issues consuming earlier ones'
 changes) are the normal case and are why the branch is shared across the tracker.
 
-The orchestrator never commits product code, and the chain runs on a dirty working tree — the simplify and
+The chain runs on a dirty working tree — the simplify and
 review passes operate on the working diff, so nothing is committed until the chain completes. After
-the final `advance` gate and `run_state.py complete`, prepare a commit proposal for the human and record it with `run_commit.py propose`:
+the final `advance` gate and `run_state.py complete`, prepare a commit proposal and record it with `run_commit.py propose`:
 
 - build the product and Git-tracked tracker file lists as literal leaf paths from
   `git status --porcelain=v1 -z --untracked-files=all`, including both rename paths and tracked deletions;
@@ -517,7 +523,20 @@ files, and records the replay-safe `commit.proposed` event. Call it only after c
 python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Describe what changed and why" --file <leaf> --product-file <leaf>
 ```
 
-The human reviews, commits, and pushes. Never start preparing a commit while a worker pass is still
+In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
+Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.
+Never commit after `hitl`, `blocked`, or `stop`. In propose mode, show the recorded proposal.
+The orchestrator commits in commit mode; the human commits otherwise. Push, PR, and CI stay with the
+human. Never run `git push` and never `--no-verify`.
+
+On resume, if `commit.attempted` has no outcome, run `run_commit.py commit` once before the recap;
+never re-propose a changed draft. Recovery accepts only a matching parent and tree. The helper never
+retries a commit: `commit.created` replays, and `commit.failed` or `commit.skipped` refuses another
+attempt. A hook may fix planned files; the recap reports its changes and side effects. Foreign paths
+in a proven commit cause a compare-and-swap undo unless a remote-tracking ref contains that commit.
+An unverified outcome leaves Git untouched and names HEAD for human inspection.
+
+Never start preparing a commit while a worker pass is still
 active; the tree belongs to the worker until its report is captured and snapshotted.
 
 ## Run Briefing
@@ -570,7 +589,7 @@ After the recap, details, and proposal, the orchestrator waits for the human.
 
 ## Run Recap
 
-The counterpart to the Run Briefing. After `run_state.py complete` and the `commit.proposed` event, or
+The counterpart to the Run Briefing. After `run_state.py complete`, `run_commit.py propose`, and `run_commit.py commit` in commit mode, or
 after a `hitl`, `blocked`, or `stop` gate that ends the run:
 
 ```bash
@@ -1034,6 +1053,8 @@ Do not use hidden subagents as worker substitutes during a live run. If CMUX can
 ## Event Vocabulary
 
 `commit.proposed` is written only by `run_commit.py propose`.
+`commit.attempted`, `commit.created`, `commit.skipped`, and `commit.failed` are written only by
+`run_commit.py commit`: attempt before Git, proven success, nothing to commit, or proposal fallback.
 
 Use these exact event types so runs stay comparable and greppable. New ad-hoc types are allowed, but they
 must be dot-namespaced, lower-case, and used consistently within a run — do not spell the same event two
