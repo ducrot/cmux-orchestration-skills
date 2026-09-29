@@ -513,9 +513,9 @@ before `init` — resolves by the same table. First match wins:
 
 ## Finalize and Artifact
 
-The order of the closing steps is fixed: finalize (below) → assumptions review → decision
-walkthrough → update both artifacts → complete → commit proposal → commit (commit mode) → run recap. The sections after this one expand
-the steps past finalize.
+The order of the closing steps is fixed: finalize, ending with `complete` (below) → assumptions
+review → decision walkthrough → transcribe outcomes into the Markdown → commit proposal → commit
+(commit mode) → run recap. The sections after this one expand the steps past finalize.
 
 When the loop ends cleanly (`max-rounds` or `griller-done`):
 
