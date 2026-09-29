@@ -517,7 +517,8 @@ PASS
         self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
         self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
         self.assertIn("Put explanatory context in Methods", reviewer_prompt)
-        self.assertIn("rerun until it exits 0", reviewer_prompt)
+        self.assertIn("exit 2 with `\"gate\": \"blocked\"` validates `blocked`", reviewer_prompt)
+        self.assertIn("do not touch the report again after that final run", reviewer_prompt)
         self.assertIn("exact bytes handed off", reviewer_prompt)
         digest = validate_spec(draft)["sha256"]
         (self.run_dir / "reports" / "spec-review-1.md").write_text(
@@ -705,7 +706,8 @@ sha256 {resulting_digest or digest}
         self.assertIn("A `blocked` verdict is\nthe only exception to coverage", reviewer_prompt)
         self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
         self.assertIn("Put explanatory context in Methods", reviewer_prompt)
-        self.assertIn("rerun until it exits 0", reviewer_prompt)
+        self.assertIn("exit 2 with `\"gate\": \"blocked\"` validates `blocked`", reviewer_prompt)
+        self.assertIn("do not touch the report again after that final run", reviewer_prompt)
         self.assertIn("exact bytes handed off", reviewer_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets-review")

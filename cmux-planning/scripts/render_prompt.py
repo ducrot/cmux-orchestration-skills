@@ -43,11 +43,14 @@ Plan Drift must remain exactly `- None`. Put explanatory context in Methods, not
 For example, `- None. The proposal remains unchanged.` is invalid.
 
 Run the self-validation command below on the final saved report and inspect its exit code and output.
-If it fails, fix the report within your write boundary and rerun until it exits 0. Never remove a real
-finding, blocker, or drift merely to pass validation; use the appropriate verdict. Any subsequent
-report or candidate edit invalidates that check and requires another run. Claim successful
-self-validation only after exit code 0 for the exact bytes handed off. If validation cannot complete,
-report the failure honestly instead of claiming a validated handoff."""
+Exit 0 validates `pass` or `pass_with_fixes`; exit 2 with `"gate": "blocked"` validates `blocked` and
+is a complete handoff, not a failure. Exit 1 means the report or candidate is malformed: fix it within
+your write boundary and rerun until it validates. Never remove a real finding, blocker, or drift
+merely to pass validation; use the appropriate verdict. Any subsequent report or candidate edit
+invalidates that check and requires another run. Claim successful self-validation only for the
+exact bytes handed off, and do not touch the report again after that final run: the orchestrator may
+capture it at any moment. If validation cannot complete, report the failure honestly instead of
+claiming a validated handoff."""
 
 
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
