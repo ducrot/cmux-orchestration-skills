@@ -28,6 +28,7 @@ from orchestrator_lib import (
     write_json,
 )
 from stage_snapshot import load_prepared_snapshot
+from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
 
 
 EXIT_REPORT = 0
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--surface", required=True)
     parser.add_argument("--cmux-cmd", default="cmux")
     parser.add_argument("--deadline-minutes", type=float)
+    parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-seconds", type=float, default=60)
@@ -108,7 +110,6 @@ def watch(args: argparse.Namespace) -> int:
         "--json", "--id-format", "both", "surface-health", "--workspace", workspace,
     ]
     started = time.monotonic()
-    deadline = started + minutes * 60
     next_health = started
     next_heartbeat = started + args.heartbeat_seconds
     launches = [e["data"] for e in events if e.get("type") == "worker.launch_sent"
@@ -121,7 +122,27 @@ def watch(args: argparse.Namespace) -> int:
         e.get("type") == "worker.started" and e.get("data", {}).get("launch_id") == launch_id
         and e["data"].get("attempt_id") == attempt["attempt_id"] for e in events)
     marker = Path(attempt["paths"]["started"])
-    start_deadline = started + args.start_minutes * 60
+    identity = {"stage": args.stage, "pass": args.pass_num, "surface_id": surface}
+    reason = None
+    # Planning extensions stay behind the human-approved `resume --decision extend` boundary.
+    if args.extension or args.deadline_reason is not None:
+        approvals = [e["data"] for e in events if e.get("type") == "worker.waiting"
+                     and e.get("data", {}).get("outcome") == "extension_approved"
+                     and all(e.get("data", {}).get(k) == v for k, v in identity.items())]
+        if not approvals:
+            raise ValueError("a deadline extension requires a recorded extension approval and reason")
+        reason = approvals[-1]["reason"]
+        if args.deadline_reason is not None and args.deadline_reason != reason:
+            raise ValueError("--deadline-reason must match the recorded extension approval")
+    clock = arm(events, wait_key(events, {**identity, "attempt_id": attempt["attempt_id"]},
+                                [identity]),
+                minutes, args.start_minutes, reason,
+                lambda data: event(run_dir, "watch deadlines recorded", {
+                    **identity, "attempt_id": attempt["attempt_id"], "attempt": attempt["attempt"],
+                    "launch_id": launch_id, "elapsed_seconds": 0, "deadline_minutes": minutes, **data}))
+    deadline, start_deadline = monotonic_deadlines(clock)
+    minutes = clock["minutes"]
+    report_launch = launch if launch.get("prompt_path") else None
     settled: str | None = None
     while True:
         elapsed = round(time.monotonic() - started, 1)
@@ -133,12 +154,12 @@ def watch(args: argparse.Namespace) -> int:
             "surface_id": surface,
             "elapsed_seconds": elapsed,
             "deadline_minutes": minutes,
-            "extension": args.extension,
+            "extension": clock["extension"],
             "launch_id": launch_id,
         }
         if start_pending:
             fresh_marker = marker.is_file() and marker.stat().st_mtime_ns >= launch["start_time_ns"]
-            report_present = report.is_file() and report.stat().st_size > 0
+            report_present = fresh_report(report, report_launch)
             if fresh_marker or report_present:
                 append_event(run_dir, "worker.started", "planning assignment start confirmed", {
                     **{key: data[key] for key in ("stage", "pass", "attempt", "attempt_id",
@@ -148,7 +169,7 @@ def watch(args: argparse.Namespace) -> int:
                 start_pending = False
         # Workers write the report with their own non-atomic tools, so existence alone can mean
         # a half-written file. Requiring identical non-empty bytes twice avoids gating on a prefix.
-        digest = sha256_file(report) if report.is_file() and report.stat().st_size else None
+        digest = sha256_file(report) if fresh_report(report, report_launch) else None
         if digest is not None and digest == settled:
             state = verify_or_gate(run_dir, stage=args.stage)
             attempt = current_attempt(state, args.stage, args.pass_num)
@@ -180,9 +201,10 @@ def watch(args: argparse.Namespace) -> int:
             )
             print(f"outcome=report report={report}")
             return EXIT_REPORT
-        settled = digest
         now = time.monotonic()
-        if not start_pending and now >= deadline:
+        # Even an expired re-arm must capture a fresh handoff already on disk. Allow
+        # its one settling poll, but never renew the wait for a continually changing file.
+        if not start_pending and now >= deadline and (digest is None or settled is not None):
             event(run_dir, "planning report deadline exceeded", {**data, "outcome": "deadline"})
             print("outcome=deadline")
             return EXIT_DEADLINE
@@ -199,6 +221,7 @@ def watch(args: argparse.Namespace) -> int:
         if now >= next_heartbeat:
             event(run_dir, "planning report pending", {**data, "outcome": "pending"})
             next_heartbeat = now + args.heartbeat_seconds
+        settled = digest
         time.sleep(min(args.poll_seconds, max((start_deadline if start_pending else deadline) - time.monotonic(), 0.01)))
 
 

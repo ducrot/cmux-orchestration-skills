@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -257,6 +258,26 @@ class Cli(unittest.TestCase):
             event = json.loads((Path(tmp) / "events.jsonl").read_text().splitlines()[-1])
         self.assertEqual(event["data"]["deadline_minutes"], 30)
 
+    def test_cli_extension_and_rearm_move_deadline_only_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.run_cli(tmp, "--deadline-minutes", ".001")
+            self.assertEqual(first.returncode, 8, first.stderr)
+            def clocks():
+                return [e["data"]["watch_clock"] for e in
+                        map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines())
+                        if "watch_clock" in e.get("data", {})]
+            self.assertEqual(len(clocks()), 1, "first-arm clock was not persisted")
+            original = clocks()[-1]
+            flags = ("--deadline-minutes", ".002", "--deadline-reason", "still making progress")
+            extended = self.run_cli(tmp, *flags)
+            self.assertEqual(extended.returncode, 8, extended.stderr)
+            current = clocks()[-1]
+            self.assertGreater(current["deadline"], original["deadline"])
+            self.assertEqual(current["reason"], "still making progress")
+            repeated = self.run_cli(tmp, *flags)
+            self.assertEqual(repeated.returncode, 8, repeated.stderr)
+            self.assertEqual(clocks(), [original, current])
+
     def test_questions_flag_is_required(self):
         with tempfile.TemporaryDirectory() as tmp:
             write_state(tmp)
@@ -331,6 +352,41 @@ class SessionWatch(unittest.TestCase):
 
     def recorded(self):
         return [json.loads(line) for line in self.events.read_text().splitlines()]
+
+    def test_stale_report_does_not_confirm_session_start(self):
+        report = self.run_dir / "reports/round-1-web.md"
+        report.parent.mkdir()
+        report.write_text("leftover report")
+        os.utime(report, ns=(self.start_ns - 1, self.start_ns - 1))
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
+        self.assertFalse(any(e["type"] == "worker.started" for e in self.recorded()))
+
+    def test_rearm_after_elapsed_time_reaches_original_deadline(self):
+        from await_reports import build_parser, watch
+        parser = build_parser()
+        args = parser.parse_args(["--run-dir", str(self.run_dir), "--round", "1", "--questions", "1",
+                                  "--deadline-minutes", "1"])
+        with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
+                patch("time.sleep", side_effect=InterruptedError):
+            with self.assertRaises(InterruptedError):
+                watch(args, parser)
+        with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
+                patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
+            self.assertEqual(watch(args, parser), 8)
+
+    def test_session_rearm_retains_original_start_window(self):
+        from await_reports import build_parser, watch
+        parser = build_parser()
+        args = parser.parse_args(["--run-dir", str(self.run_dir), "--session", "--start-minutes", "1",
+                                  "--lane-surface", "web=UUID-web", "--health-cmd", "unused"])
+        with patch("await_reports.check_health", return_value=("alive", [], "")):
+            with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
+                    patch("time.sleep", side_effect=InterruptedError):
+                with self.assertRaises(InterruptedError):
+                    watch(args, parser)
+            with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
+                    patch("time.sleep", side_effect=AssertionError("start window moved on re-arm")):
+                self.assertEqual(watch(args, parser), 9)
 
     def test_all_four_markers_required_and_recorded_once(self):
         for lane in LANES:

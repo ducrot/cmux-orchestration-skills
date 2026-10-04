@@ -292,7 +292,7 @@ For each round `N` (1-based), in order:
    (send + Enter + screen echo). Judge the echoed screen per lane before treating the round as
    started; a lane that answers with a summary of the prompt and goes idle has not started (see
    CMUX Control).
-3. Arm the round watcher (`await_reports.py --questions <n>` under `Monitor`) per the Lane Wait
+3. Arm the round watcher (`await_reports.py --questions <n>` using the watcher host below) per the Lane Wait
    Policy before ending the turn. Reports land at
    `.scratch/orchestrator/runs/<run-id>/reports/round-<N>-<lane>.md`.
 4. When all four reports exist, record one tree snapshot:
@@ -448,20 +448,30 @@ ending a turn with lanes running and no armed watcher is a policy violation. The
 `await_reports.py`: **one watcher per round, not per lane**, because a round synthesizes only
 when all four lanes delivered. It blocks on the four report handoff paths (the ground truth),
 checks `cmux surface-health` for dead panes, and writes the `worker.waiting` heartbeats
-itself. Arm it through the harness `Monitor` tool:
+itself. For a local interactive Claude Code orchestrator (2.1.288 or later), use Bash
+`run_in_background`: background tasks have no time limit and produce one wake-up at exit.
+For other hosts and unattended sessions, use Monitor with re-arm (30 minutes by default,
+up to 2 hours). If Monitor expires before the watcher exits, re-arm the same command;
+this resumes the persisted deadline and does not grant more time.
 
 ```
-Monitor(
+Bash(
   command: "python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 3 --lane-surface codebase=<surface-id> --lane-surface codebase2=<surface-id> --lane-surface docs=<surface-id> --lane-surface web=<surface-id>",
-  description: "await round-1 lane reports",
-  persistent: true
+  run_in_background: true
 )
 ```
 
-`persistent: true` is the safe choice: `Monitor`'s `timeout_ms` caps at 60 minutes and is
-ignored when persistent, so the script's own deadline ends the watch. `Bash` with
-`run_in_background` caps at 600000 ms = 10 minutes and is therefore too short for the
-round wait — do not substitute it.
+Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
+current launch IDs and stage/pass or round. Every invocation computes the remaining time;
+re-arming, including after a host timeout, never moves either deadline. Initial
+`--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
+pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
+the watcher records the reason and grants that duration from the later of the existing
+deadline and extension arm. Repeating the same extension is idempotent; a second extension
+is refused. The start window is not extended by this flag. A recorded exit-9 recovery
+(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
+without spending the extension; merely observing, assessing, or re-arming does not.
+New launch IDs also start new windows. Never run two watchers for the same work concurrently.
 
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.
@@ -488,8 +498,8 @@ their reviewer agent rather than to the human, so a quiet pane is a lane still t
 one already finished, and the watcher correctly keeps waiting either way. Only
 `surface-health` reporting the surface gone counts as dead.
 
-- Exactly one deadline extension per round; record its reason as a `worker.waiting` or
-  `decision.human` event before re-arming. Before spending it on a silent lane, check the
+- Exactly one deadline extension per round; pass `--deadline-reason` so the watcher records its reason
+  when re-arming. Before spending it on a silent lane, check the
   screen for the not-started case in CMUX Control: re-delivering a round prompt to a lane that
   never started restarts the wait clock and is not an extension.
 - After an exhausted extension with no report, or a dead pane: record a `hitl` gate for
@@ -865,7 +875,7 @@ Session start:
    first step creates or overwrites `artifacts/session-<lane>/started` and refreshes its mtime.
 6. Arm one `await_reports.py --session --run-dir <run-dir>
    --lane-surface codebase=<codebase-surface-id> --lane-surface codebase2=<codebase2-surface-id>
-   --lane-surface docs=<docs-surface-id> --lane-surface web=<web-surface-id>` watch via Monitor.
+   --lane-surface docs=<docs-surface-id> --lane-surface web=<web-surface-id>` watch via background Bash (or Monitor with re-arm).
    The default `--start-minutes 5` window accepts only markers at least as new as the matching
    current launch's `start_time_ns`, records one `worker.started` per lane with marker evidence,
    and exits 0 only when all given lanes have started. No screen judgment is needed normally.
@@ -973,7 +983,7 @@ python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/<r
 python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run-id> --lane web --round 1 --question "Which HTTP client does the frontend use?" --question "Which API base URL does it use?"
 ```
 
-Await a round's reports. One watcher per round, armed through `Monitor` (see Lane Wait
+Await a round's reports. One watcher per round, armed through background Bash or Monitor with re-arm (see Lane Wait
 Policy); exits 0 = all reports (or session starts), 7 = pending lane's pane dead,
 8 = round deadline, 9 = session not started. Health checks are
 scoped to the run's pinned `workspace_id` from `state.json`; there is no env fallback:

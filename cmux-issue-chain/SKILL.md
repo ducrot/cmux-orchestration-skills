@@ -423,20 +423,30 @@ The orchestrator only exists within a turn; between turns nothing polls. Before 
 worker pane is running, the orchestrator MUST arm a watcher that re-invokes it — ending a turn with a
 worker running and no armed watcher is a policy violation. The watcher is `await_report.py`; it blocks on
 the report handoff path (the ground truth), checks `cmux surface-health` for a dead pane, derives its
-deadline from the role's minimum wait, and writes the `worker.waiting` heartbeats itself. Arm it through
-the harness `Monitor` tool:
+deadline from the role's minimum wait, and writes the `worker.waiting` heartbeats itself. For a local interactive Claude Code orchestrator (2.1.288 or later), use Bash
+`run_in_background`: background tasks have no time limit and produce one wake-up at exit.
+For other hosts and unattended sessions, use Monitor with re-arm (30 minutes by default,
+up to 2 hours). If Monitor expires before the watcher exits, re-arm the same command;
+this resumes the persisted deadline and does not grant more time.
 
 ```
-Monitor(
+Bash(
   command: "python3 scripts/await_report.py --run-dir .scratch/orchestrator/runs/<run-id> --role review --pass 1 --surface <surface-id>",
-  description: "await review-1 report",
-  persistent: true
+  run_in_background: true
 )
 ```
 
-`persistent: true` is required: Monitor's `timeout_ms` caps at 60 minutes and the review minimum wait is
-90; the script's own role-derived deadline ends the watch. `Bash` with `run_in_background` is an
-acceptable substitute only when the remaining wait is at most 10 minutes (Bash timeout caps at 600000 ms).
+Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
+current launch IDs and stage/pass or round. Every invocation computes the remaining time;
+re-arming, including after a host timeout, never moves either deadline. Initial
+`--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
+pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
+the watcher records the reason and grants that duration from the later of the existing
+deadline and extension arm. Repeating the same extension is idempotent; a second extension
+is refused. The start window is not extended by this flag. A recorded exit-9 recovery
+(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
+without spending the extension; merely observing, assessing, or re-arming does not.
+New launch IDs also start new windows. Never run two watchers for the same work concurrently.
 
 Exit vocabulary: 0 = report, 1 = crash, 2 = usage, 3–6 = report gates, 7 = pane dead,
 8 = deadline, 9 = not started. The watcher ends on exactly four conditions:
@@ -450,17 +460,17 @@ Exit vocabulary: 0 = report, 1 = crash, 2 = usage, 3–6 = report gates, 7 = pan
 
 The start window applies only to the latest matching `worker.launch_sent` carrying `prompt_path`
 without a `worker.started` for that launch ID. The watcher accepts a marker only with a matching
-`worker.starting` and marker `st_mtime_ns >= start_time_ns`; a report arriving first also confirms
-start. It writes one `worker.started` with `evidence: "marker"` or `"report"` and continues the
+`worker.starting` and marker `st_mtime_ns >= start_time_ns`; a non-empty report arriving first also confirms
+start only when its `st_mtime_ns >= start_time_ns`. Stale reports remain pending. It writes one `worker.started` with `evidence: "marker"` or `"report"` and continues the
 report wait. Legacy launches and already-confirmed launches skip this phase. The role deadline
-counts from arming, including time spent waiting for start.
+counts from the persisted first arm, including time spent waiting for start.
 
 While a watcher is armed it is the sole emitter of `worker.waiting`; the orchestrator does not hand-write
 waiting events in parallel. Silence is never success — only the report file is ground truth. A
 static-looking pane may be a worker at an approval/confirmation prompt; that pane is alive, and the
 watcher correctly keeps waiting. Only `surface-health` reporting the pane gone counts as dead. Do not
 close the worker pane, and do not launch the next stage, until the report has been captured and parsed.
-Exactly one deadline extension per stage; record its reason in a `decision.human` or `worker.waiting`
+Exactly one deadline extension per stage; pass `--deadline-reason` so the watcher records its reason in a `worker.waiting`
 event. Before spending it on a silent pane, check the screen for the not-started cases in CMUX Control:
 re-delivering to a worker that never started restarts the wait clock and is not an extension.
 
@@ -480,7 +490,7 @@ Handle an infrastructure blocker in this order:
 2. Never restart shared infrastructure (Docker, ddev, databases) without explicit human consent when other
    projects may be affected — other projects' active containers or syncs make a restart the human's call.
 3. Wait for recovery with a bounded, armed watcher — same mechanism as the Worker Wait Policy: hand the
-   wait to the harness (`Monitor`, or `Bash run_in_background` for waits up to 10 minutes) with a stated
+   wait to the harness (`Bash run_in_background`, or Monitor with re-arm) with a stated
    deadline, and stop as HITL when the deadline passes without recovery. Never wait without an armed
    watcher and never poll indefinitely.
 4. After recovery, verify before advancing: the orchestrator re-runs the issue's checks over the changes the
@@ -854,7 +864,7 @@ python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <prev-worker-surface-id> --role <previous-role> --pass <previous-pass>
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "launched review-1"
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
-# Arm via the harness Monitor tool as described above.
+# Arm via background Bash (or Monitor with re-arm) as described above.
 python3 scripts/await_report.py --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 ```
 
@@ -1252,7 +1262,7 @@ Parse worker reports. Exit code carries the gate; a missing report is `pending` 
 python3 scripts/parse_report.py path/to/worker-report.md --json
 ```
 
-Await a worker report deterministically (see Worker Wait Policy for the Monitor invocation). The deadline
+Await a worker report deterministically (see Worker Wait Policy for the background Bash invocation). The deadline
 defaults to the role's minimum wait; exit 0 = report exists, 7 = pane dead, 8 = deadline exceeded, 9 = not started.
 `--start-minutes` defaults to 5; the role deadline keeps counting from arming.
 Heartbeats go to `events.jsonl` as `worker.waiting`. Health checks are scoped to the run's pinned

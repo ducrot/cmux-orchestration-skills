@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -143,6 +144,26 @@ class CliHarness(unittest.TestCase):
 
 
 class Cli(CliHarness):
+    def test_cli_extension_and_rearm_move_deadline_only_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.run_cli(tmp, "--deadline-minutes", ".001")
+            self.assertEqual(first.returncode, 8, first.stderr)
+            def clocks():
+                return [e["data"]["watch_clock"] for e in
+                        map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines())
+                        if "watch_clock" in e.get("data", {})]
+            self.assertEqual(len(clocks()), 1, "first-arm clock was not persisted")
+            original = clocks()[-1]
+            flags = ("--deadline-minutes", ".002", "--deadline-reason", "still making progress")
+            extended = self.run_cli(tmp, *flags)
+            self.assertEqual(extended.returncode, 8, extended.stderr)
+            current = clocks()[-1]
+            self.assertGreater(current["deadline"], original["deadline"])
+            self.assertEqual(current["reason"], "still making progress")
+            repeated = self.run_cli(tmp, *flags)
+            self.assertEqual(repeated.returncode, 8, repeated.stderr)
+            self.assertEqual(clocks(), [original, current])
+
     def test_existing_report_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.write_report(tmp)
@@ -233,6 +254,35 @@ class StartWindow(CliHarness):
 
     def started(self, tmp):
         return [e["data"] for e in self.events(tmp) if e["type"] == "worker.started"]
+
+    def test_stale_or_empty_report_cannot_confirm_current_start(self):
+        for empty in (False, True):
+            with self.subTest(empty=empty), tempfile.TemporaryDirectory() as tmp:
+                _, launch = self.launch(tmp)
+                report = self.write_report(tmp)
+                if empty:
+                    report.write_text("")
+                else:
+                    stamp = launch["start_time_ns"] - 1
+                    os.utime(report, ns=(stamp, stamp))
+                proc = self.run_cli(tmp, "--start-minutes", ".001", "--deadline-minutes", ".02")
+                self.assertEqual(proc.returncode, 9, proc.stderr)
+                self.assertEqual(self.started(tmp), [])
+
+    def test_rearm_after_elapsed_time_reaches_original_deadline(self):
+        from await_report import watch
+        with tempfile.TemporaryDirectory() as tmp:
+            write_state(tmp)
+            parser = build_parser()
+            args = parser.parse_args(["--run-dir", tmp, "--role", "review", "--pass", "1",
+                                      "--deadline-minutes", "1"])
+            with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
+                    patch("time.sleep", side_effect=InterruptedError):
+                with self.assertRaises(InterruptedError):
+                    watch(args, parser)
+            with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
+                    patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
+                self.assertEqual(watch(args, parser), 8)
 
     def test_marker_mid_wait_then_report(self):
         with tempfile.TemporaryDirectory() as tmp:

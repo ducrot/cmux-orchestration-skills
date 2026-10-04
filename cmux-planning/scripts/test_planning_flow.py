@@ -2250,6 +2250,45 @@ sha256 {resulting_digest or digest}
         self.assertIn("substituted", result.stderr)
         self.assertEqual(self.cmux_log.read_text(), before)
 
+    def test_stale_report_does_not_confirm_start(self):
+        common = self.start_prompt_fixture()
+        self.start_prompt_launch(common)
+        sent = [e["data"] for e in self.run_events() if e["type"] == "worker.launch_sent"][-1]
+        report = self.run_dir / "reports/spec-1.md"
+        report.write_text("leftover handoff")
+        stamp = sent["start_time_ns"] - 1
+        os.utime(report, ns=(stamp, stamp))
+        result = self.start_prompt_watch(common)
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertFalse(any(e["type"] == "worker.started" for e in self.run_events()))
+
+    def test_deadline_reason_without_recorded_approval_is_refused(self):
+        common = self.start_prompt_fixture()
+        self.start_prompt_launch(common)
+        result = self.start_prompt_watch(common, "--deadline-reason", "self-granted")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("extension approval", result.stderr)
+        self.assertFalse(any("watch_clock" in e.get("data", {}) for e in self.run_events()))
+
+    def test_rearm_after_elapsed_time_reaches_original_deadline(self):
+        from unittest.mock import patch
+        import await_report
+        common = self.start_prompt_fixture()
+        launch = self.start_prompt_launch(common)
+        marker = Path(launch["marker_path"])
+        marker.parent.mkdir(parents=True)
+        marker.write_text("started")
+        args = await_report.build_parser().parse_args([
+            *common, "--cmux-cmd", str(self.cmux), "--deadline-minutes", "1"])
+        with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
+                patch("time.sleep", side_effect=InterruptedError), \
+                patch("await_report.health_says_dead", return_value=False):
+            with self.assertRaises(InterruptedError):
+                await_report.watch(args)
+        with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
+                patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
+            self.assertEqual(await_report.watch(args), 8)
+
     def test_start_prompt_stale_markers_and_older_launch_do_not_confirm(self):
         common = self.start_prompt_fixture()
         first = self.start_prompt_launch(common)
@@ -3764,6 +3803,18 @@ Option?
             "1",
         )
         self.assertEqual(expired.returncode, 8, expired.stderr)
+        clocks = [e["data"]["watch_clock"] for e in self.run_events()
+                  if "watch_clock" in e.get("data", {})]
+        self.assertEqual(len(clocks), 2)
+        self.assertGreater(clocks[1]["deadline"], clocks[0]["deadline"])
+        self.assertEqual(clocks[1]["reason"], "The live worker is still making visible progress")
+        repeated = self.cli(AWAIT, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1",
+                            "--surface", "SURF-1", "--cmux-cmd", str(self.cmux),
+                            "--deadline-minutes", "0.001", "--poll-seconds", "0.01", "--extension", "1")
+        self.assertEqual(repeated.returncode, 8, repeated.stderr)
+        self.assertEqual([e["data"]["watch_clock"] for e in self.run_events()
+                          if "watch_clock" in e.get("data", {})], clocks)
+
         status = json.loads(
             self.cli(
                 STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)

@@ -95,6 +95,18 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                         procedure.index('await_reports.py --session'))
         self.assertIn('| 9 | session lanes not started', text)
 
+    def test_watch_hosting_and_persisted_deadlines(self):
+        for guide in SIBLINGS:
+            text = normalized(guide)
+            with self.subTest(guide=guide):
+                for phrase in ("2.1.288 or later", "run_in_background: true", "no time limit",
+                               "one wake-up at exit", "30 minutes by default", "up to 2 hours",
+                               "persisted on first arm", "--deadline-reason", "idempotent"):
+                    self.assertIn(phrase, text)
+                for obsolete in ("persistent: true", "caps at 60 minutes", "caps at 600000",
+                                 "waits up to 10 minutes"):
+                    self.assertNotIn(obsolete, text)
+
     def test_issue_chain_start_sequence_and_exception_path(self):
         path = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
         if not path.exists():
@@ -106,7 +118,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         for phrase in ('| 9 | assignment not started', 'after exit 9, take one `observe` and `assess`',
                        'then re-arm without re-delivery', 'one readiness-gated `deliver --prompt`',
                        '`evidence: "screen"`', 'exception-path and follow-up only',
-                       'role deadline counts from arming'):
+                       'role deadline counts from the persisted first arm'):
             self.assertIn(phrase, text)
 
     def test_sibling_guides_gate_staged_deltas_at_every_delivery_boundary(self):
@@ -536,7 +548,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                        "then re-arm without re-delivery", "one readiness-gated `deliver --prompt`",
                        '`evidence: "screen"`', "exception-path and follow-up only",
                        "`--extension 0`", "interrupted launch or delivery input stops at hitl",
-                       "report deadline counts from arming", "never immutable manifest artifacts"):
+                       "report deadline counts from the persisted first arm", "never immutable manifest artifacts"):
             self.assertIn(phrase, text)
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):

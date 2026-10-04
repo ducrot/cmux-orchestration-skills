@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Watch for a worker report; exit 0=report exists, 7=pane dead, 8=deadline exceeded, 9=not started.
 
-Designed to run under the harness Monitor tool (persistent), so the orchestrator is
-re-invoked deterministically when the watch ends. The report file is ground truth;
-the pane state only matters when it is affirmatively dead. No screen-content
-heuristics: a static-looking pane (a worker mid-thought, or one already finished) is alive.
+Run in background Bash, or Monitor with re-arm, to wake the orchestrator at exit.
+The report file is ground truth; the pane state only matters when it is affirmatively
+dead. No screen-content heuristics: a static-looking pane (a worker mid-thought, or one
+already finished) is alive.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 
 from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_run_state, utc_now
 from worker_readiness import read_events
+from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
 
 EXIT_REPORT = 0     # report file exists — parse it next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # surface affirmatively gone/dead per surface-health
@@ -40,8 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deadline-minutes",
         type=float,
-        help="Override the role-derived minimum wait (the one documented extension)",
+        help="Initial wait duration, or additional minutes with --deadline-reason",
     )
+    parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-interval-seconds", type=float, default=60)
@@ -123,16 +125,21 @@ def waiting_event(run_dir: Path, message: str, data: dict) -> None:
     )
 
 
-def pending_launch(run_dir: Path, role: str, pass_num: int, surface: str | None) -> dict | None:
-    matching = [event for event in read_events(run_dir) if all(
-        event.get("data", {}).get(key) == value
-        for key, value in {"role": role, "pass": pass_num, "surface_id": surface}.items()
-    )]
-    launches = [event["data"] for event in matching if event["type"] == "worker.launch_sent"]
-    if not launches:
+def current_launch(events: list[dict], identity: dict) -> dict | None:
+    """Return the latest prompt-attached launch for the identity, started or not."""
+    launches = [event["data"] for event in events if event.get("type") == "worker.launch_sent"
+                and all(event.get("data", {}).get(key) == value for key, value in identity.items())]
+    return launches[-1] if launches and launches[-1].get("prompt_path") else None
+
+
+def pending_launch(events: list[dict], identity: dict) -> dict | None:
+    launch = current_launch(events, identity)
+    if launch is None:
         return None
-    launch = launches[-1]
-    if not launch.get("prompt_path") or any(
+    matching = [event for event in events if all(
+        event.get("data", {}).get(key) == value for key, value in identity.items()
+    )]
+    if any(
         event["type"] == "worker.started" and event["data"].get("launch_id") == launch.get("launch_id")
         for event in matching
     ):
@@ -166,9 +173,16 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     # File-only mode (no --surface) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if args.surface else []
     start = time.monotonic()
-    deadline = start + deadline_minutes * 60
-    start_deadline = start + args.start_minutes * 60
-    launch = pending_launch(run_dir, args.role, args.pass_num, args.surface)
+    events = read_events(run_dir)
+    identity = {"role": args.role, "pass": args.pass_num, "surface_id": args.surface}
+    launch = pending_launch(events, identity)
+    report_launch = current_launch(events, identity)
+    clock = arm(events, wait_key(events, identity, [identity]), deadline_minutes,
+                args.start_minutes, args.deadline_reason,
+                lambda data: waiting_event(run_dir, "watch deadlines recorded", {
+                    **identity, "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data}))
+    deadline, start_deadline = monotonic_deadlines(clock)
+    deadline_minutes = clock["minutes"]
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
     health_status, health_detail = "unchecked", ""
@@ -193,7 +207,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return code
 
     while True:
-        has_report = report.is_file()
+        has_report = fresh_report(report, report_launch)
         if launch and (has_report or marker_ready(launch)):
             append_jsonl(run_dir / "events.jsonl", {
                 "time": utc_now(), "type": "worker.started", "message": "assignment start confirmed",

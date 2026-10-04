@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Watch session starts or round reports; exit 0=ready, 7=pane dead, 8=deadline, 9=not started.
 
-Designed to run under the harness Monitor tool (persistent), so the orchestrator is
-re-invoked deterministically when the watch ends. One watcher per round, not per lane:
-a round synthesizes only when all four lanes delivered, so a per-lane wake-up would
-mostly mean "keep waiting". The report files are ground truth; a pane's state only
-matters while its report is still missing — a lane whose pane exits right after writing
-its report has delivered, not died. No screen-content heuristics: a static-looking pane
+Run in background Bash, or Monitor with re-arm, to wake the orchestrator at exit.
+One watcher per round, not per lane: a round synthesizes only when all four lanes
+delivered, so a per-lane wake-up would mostly mean "keep waiting". The report files are
+ground truth; a pane's state only matters while its report is still missing — a lane
+whose pane exits right after writing its report has delivered, not died. No screen-content heuristics: a static-looking pane
 (a lane mid-thought, or one already finished) is alive.
 """
 
@@ -20,6 +19,7 @@ import time
 from pathlib import Path
 
 from worker_readiness import ReadinessError, context, read_events
+from watch_deadlines import arm, monotonic_deadlines, wait_key
 from orchestrator_lib import LANES, append_jsonl, read_run_state, round_wait_minutes, session_marker_path, utc_now
 
 EXIT_REPORTS = 0    # session lanes started, or round reports exist; NOT an advance verdict
@@ -58,9 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deadline-minutes",
         type=float,
-        help="Override the round minimum wait (the one documented extension)",
+        help="Initial wait duration, or additional minutes with --deadline-reason",
     )
     parser.add_argument("--session", action="store_true", help="Wait for the given lane surfaces to adopt their sessions")
+    parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-interval-seconds", type=float, default=60)
@@ -181,7 +182,14 @@ def watch_session(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     lanes = list(surfaces)
     cmd = health_command(args, parser)
     start = time.monotonic()
-    deadline = start + args.start_minutes * 60
+    events = read_events(run_dir)
+    identity = {"session": True, "lanes": sorted(lanes), "surface_ids": surfaces}
+    clock = arm(events, wait_key(events, identity, [
+        {"lane": lane, "surface_id": surfaces[lane]} for lane in sorted(lanes)]),
+        args.start_minutes, args.start_minutes, None,
+        lambda data: waiting_event(run_dir, "session start deadline recorded", {
+            **identity, "elapsed_seconds": 0, **data}))
+    _, deadline = monotonic_deadlines(clock)
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
     health_status, health_detail, dead_lanes = "unchecked", "", []
@@ -265,7 +273,16 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     # File-only mode (no lane surfaces) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if surfaces else []
     start = time.monotonic()
-    deadline = start + deadline_minutes * 60
+    events = read_events(run_dir)
+    identity = {"round": args.round_number, "lanes": sorted(lanes), "surface_ids": surfaces}
+    clock = arm(events, wait_key(events, identity, [
+        {"lane": lane, **({"surface_id": surfaces[lane]} if lane in surfaces else {})}
+        for lane in sorted(lanes)]), deadline_minutes, args.start_minutes, args.deadline_reason,
+        lambda data: waiting_event(run_dir, "round deadline recorded", {
+            **identity, "delivered_lanes": [], "missing_lanes": lanes,
+            "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data}))
+    deadline, _ = monotonic_deadlines(clock)
+    deadline_minutes = clock["minutes"]
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
     health_status, health_detail, dead_lanes = "unchecked", "", []

@@ -375,8 +375,39 @@ treat a transient health-command failure as worker failure.
 `start-agent` emits one JSON line with the launch and marker identity; its default
 `--settle-seconds 0` performs no screen read. The watcher has a five-minute `--start-minutes`
 window for the current attempt's `started` marker, whose nanosecond modification time must be at
-least the launch's `start_time_ns`. A report arriving first also confirms the start. Markers are
-mutable declared writes, never immutable manifest artifacts. The report deadline counts from arming.
+least the launch's `start_time_ns`. A non-empty report arriving first also confirms the start only when its
+`st_mtime_ns >= start_time_ns`; stale reports remain pending. Markers are
+mutable declared writes, never immutable manifest artifacts. The report deadline counts from the persisted first arm.
+
+For a local interactive Claude Code orchestrator (2.1.288 or later), use Bash
+`run_in_background`: background tasks have no time limit and produce one wake-up at exit.
+For other hosts and unattended sessions, use Monitor with re-arm (30 minutes by default,
+up to 2 hours). If Monitor expires before the watcher exits, re-arm the same command;
+this resumes the persisted deadline and does not grant more time.
+
+```
+Bash(
+  command: "python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> --surface <launch-surface-id>",
+  run_in_background: true
+)
+```
+
+Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
+current launch IDs and stage/pass or round. Every invocation computes the remaining time;
+re-arming, including after a host timeout, never moves either deadline. Initial
+`--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
+pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
+the watcher records the reason and grants that duration from the later of the existing
+deadline and extension arm. Repeating the same extension is idempotent; a second extension
+is refused. The start window is not extended by this flag. A recorded exit-9 recovery
+(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
+without spending the extension; merely observing, assessing, or re-arming does not.
+New launch IDs also start new windows. Never run two watchers for the same work concurrently.
+
+Planning keeps its human-approved `resume --decision extend --reason "<reason>"` boundary.
+An explicit `--deadline-reason` requires that recorded approval and must match its reason.
+The recommended `--extension 1` consumes that recorded approval and persists one extension
+using `--deadline-minutes` (or the stage minimum when omitted); rejoining it cannot renew it.
 
 | Exit | Meaning |
 | --- | --- |
