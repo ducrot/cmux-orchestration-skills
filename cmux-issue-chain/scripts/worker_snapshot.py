@@ -31,6 +31,7 @@ from agents_config import (
     valid_executable_syntax,
     valid_probe_record,
     valid_trust_record,
+    valid_hook_trust_record,
 )
 from orchestrator_lib import read_json, read_run_state, utc_now, write_json
 
@@ -252,6 +253,8 @@ def load_launchable_snapshot(run_dir: Path, role: str, pass_num: int) -> dict[st
         raise SnapshotError("prepared stage snapshot has no executable audit record")
     if not valid_trust_record(selected, snapshot.get("repository")):
         raise SnapshotError("prepared stage snapshot has no valid trust preflight; prepare again")
+    if not valid_hook_trust_record(selected):
+        raise SnapshotError("prepared stage snapshot has no valid hook trust preflight; prepare again")
     argv = selected.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and value for value in argv):
         raise SnapshotError("prepared stage snapshot has an invalid final argument vector")

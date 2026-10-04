@@ -58,7 +58,7 @@ class PaneCtlCase(unittest.TestCase):
                 "requested_executable": entry["executable"],
                 "resolved_executable": f"/test/bin/{entry['executable']}",
                 "detected_version": f"{entry['executable']} test",
-                "preflight": {"status": "passed", "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
+                "preflight": {"status": "passed", "hook_trust": {"status": "passed", "sources": ["/test/config.toml"], "trusted_keys": 0}, "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
                 "entitlement": {"status": "unverified"},
                 "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
             })

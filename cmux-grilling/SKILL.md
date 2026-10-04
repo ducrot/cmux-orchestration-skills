@@ -38,6 +38,8 @@ The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch
 
 > **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
 
+> **Codex hook trust:** Before preparing, start `codex` once in the repository root, review and trust the hooks (via `/hooks`), then exit and prepare again. Preparation reads `$CODEX_HOME/hooks.json` and `$CODEX_HOME/config.toml` (default `~/.codex`), plus the repository's `.codex/hooks.json` and `.codex/config.toml`. Enabled hooks without a positional trust record stop preparation before any pane exists; `features.hooks = false` and per-hook `[hooks.state."<key>"].enabled = false` are respected. The audit records checked sources and trusted-key counts. Hash values are unverifiable: changed hooks are not detected and remain on the watcher exit-9 exception path. Re-prepare older Codex snapshots and launch waves that lack `preflight.hook_trust`.
+
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
 The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere

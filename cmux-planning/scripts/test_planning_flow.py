@@ -2086,6 +2086,38 @@ sha256 {resulting_digest or digest}
     def test_snapshot_requires_trust_preflight(self):
         self.check_startup_snapshot_policy("trust")
 
+    def test_hook_trust_preparation_cli_refuses_then_accepts(self):
+        hooks = self.trust_home / "hooks.json"
+        hooks.write_text(json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "true"}]}]}}))
+        key = f"{hooks}:session_start:0:0"
+        config = self.trust_home / "config.toml"
+        before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in (hooks, config)]
+        result = self.init_direct("hook-refused")
+        self.assertNotEqual(result.returncode, 0)
+        for text in (key, str(config), "review and trust", "prepare again"):
+            self.assertIn(text, result.stderr)
+        self.assertFalse(self.cmux_log.exists())
+        self.assertEqual(before, [(p.read_bytes(), p.stat().st_mtime_ns) for p in (hooks, config)])
+        with config.open("a") as handle:
+            handle.write(f'\n[hooks.state.{json.dumps(key)}]\ntrusted_hash = "opaque"\n')
+        result = self.init_direct()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        snapshot = json.loads((self.run_dir / state["prepared_stage"]["path"]).read_text())
+        codex = [entry for entry in snapshot["resolved_profiles"].values() if entry["harness"] == "codex"]
+        self.assertTrue(codex)
+        for entry in codex:
+            self.assertEqual(entry["preflight"]["hook_trust"]["trusted_keys"], 1)
+        self.assertFalse(self.cmux_log.exists())
+
+    def test_snapshot_requires_hook_trust_preflight(self):
+        config = json.loads(self.config.read_text())
+        roles = config["workflows"]["planning"]
+        roles["spec"], roles["reviewer"] = roles["reviewer"], roles["spec"]
+        self.config.write_text(json.dumps(config))
+        self.check_startup_snapshot_policy("hook_trust")
+
     def test_pi_snapshot_requires_no_approve(self):
         self.check_startup_snapshot_policy("pi")
 
@@ -2120,9 +2152,9 @@ sha256 {resulting_digest or digest}
         elif mutation == "marker":
             snapshot["allowed_worker_writes"]["started"] = str(self.run_dir / "artifacts/wrong/started")
             expected = "substituted handoff paths"
-        elif mutation == "trust":
-            entry["preflight"].pop("trust", None)
-            expected = "trust preflight"
+        elif mutation in {"trust", "hook_trust"}:
+            entry["preflight"].pop(mutation, None)
+            expected = "hook trust preflight" if mutation == "hook_trust" else "trust preflight"
         else:
             entry.update(harness="pi", requested_executable="pi", model="google/test", effort="high")
             entry["preflight"]["trust"] = {"status": "not-applicable", "repository": state["repository"], "source": None}

@@ -27,6 +27,7 @@ from agents_config import (
     valid_executable_syntax,
     valid_probe_record,
     valid_trust_record,
+    valid_hook_trust_record,
 )
 from orchestrator_lib import read_json, read_run_state, utc_now, write_json
 
@@ -169,6 +170,8 @@ def _validate_lane_entry(lane: str, entry: object, probe_state: dict[str, Any], 
         raise LaunchWaveError(f"prepared launch-wave lane mismatch for {lane}")
     if not valid_trust_record(entry, repository):
         raise LaunchWaveError(f"prepared launch-wave lane {lane} has no valid trust preflight; prepare again")
+    if not valid_hook_trust_record(entry):
+        raise LaunchWaveError(f"prepared launch-wave lane {lane} has no valid hook trust preflight; prepare again")
     preflight = entry.get("preflight")
     if not isinstance(preflight, dict) or preflight.get("status") != "passed":
         raise LaunchWaveError(f"prepared launch-wave lane {lane} has no successful preflight")

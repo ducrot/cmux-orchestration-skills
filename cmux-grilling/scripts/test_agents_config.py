@@ -1196,7 +1196,9 @@ class ProbeArguments(unittest.TestCase):
         trust = {"status": "passed", "repository": "/exact/repo", "source": "/test/config"}
         with patch.object(agents_config, "repository_trust", return_value=trust) as check, patch.object(
             agents_config, "preflight_executable", side_effect=lambda profile: {"preflight": {"status": "passed"}}
-        ):
+        ), patch.object(agents_config, "codex_hook_trust", return_value={
+            "status": "passed", "sources": [], "trusted_keys": 0,
+        }):
             audited = agents_config.audit_workers(resolved, source, workflow="issue-chain",
                                                   repository="/exact/repo", argv_for=lambda worker, profile: [])
         self.assertEqual(check.call_count, 2)
@@ -1231,6 +1233,140 @@ class ProbeArguments(unittest.TestCase):
         self.assertEqual(
             argv, ["pi", "--model", "google/gemini-3.1-pro-preview", "--thinking", "xhigh", "--no-approve"]
         )
+
+
+class HookTrust(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / ".codex"
+        self.repo = self.root / "repo"
+        self.home.mkdir()
+        (self.repo / ".codex").mkdir(parents=True)
+        self.config = self.home / "config.toml"
+        self.config.write_text("")
+        environment = patch.dict(os.environ, {"HOME": str(self.root)}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def check(self):
+        return agents_config.codex_hook_trust(str(self.repo))
+
+    def hooks(self, path, groups=1, handlers=1):
+        path.write_text(json.dumps({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "true"} for _ in range(handlers)]}
+            for _ in range(groups)]}}))
+        return [f"{path}:session_start:{group}:{hook}"
+                for group in range(groups) for hook in range(handlers)]
+
+    def trust(self, keys):
+        with self.config.open("a") as handle:
+            for key in keys:
+                handle.write(f'\n[hooks.state.{json.dumps(key)}]\ntrusted_hash = "opaque-old-hash"\n')
+
+    def test_all_sources_trusted_read_only_and_hashes_unverified(self):
+        paths = [self.home / "hooks.json", self.repo / ".codex/hooks.json"]
+        keys = [key for path in paths for key in self.hooks(path, 2, 2)]
+        for config in (self.config, self.repo / ".codex/config.toml"):
+            config.write_text('[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "true"\n')
+            keys.append(f"{config}:pre_tool_use:0:0")
+            paths.append(config)
+        self.trust(keys)
+        before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
+        result = self.check()
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["trusted_keys"], 10)
+        self.assertEqual(set(result["sources"]), {str(p) for p in paths})
+        self.assertEqual(result["hash_verification"], "unverifiable")
+        self.assertEqual(before, [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths])
+
+    def test_missing_positional_key_has_actionable_context_and_is_read_only(self):
+        path = self.home / "hooks.json"
+        keys = self.hooks(path, 2, 2)
+        self.trust(keys[:-1])
+        before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in (path, self.config)]
+        resolved = agents_config.resolve_workers(agents_config.DEFAULT_CONFIG, self.config, {}, workflow="issue-chain")
+        with patch.object(agents_config, "repository_trust"), patch.object(
+            agents_config, "preflight_executable", return_value={"preflight": {"status": "passed"}}
+        ), self.assertRaises(agents_config.HarnessError) as caught:
+            agents_config.audit_workers(resolved, self.config, workflow="issue-chain",
+                                        repository=str(self.repo), argv_for=lambda *_: [])
+        for text in (keys[-1], str(path), str(self.config), str(self.repo),
+                     "start codex once", "review and trust", "exit", "prepare again", "preflight", "issue-chain"):
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(before, [(p.read_bytes(), p.stat().st_mtime_ns) for p in (path, self.config)])
+
+    def test_repository_only_trusted_hash_is_refused(self):
+        path = self.repo / ".codex/hooks.json"
+        keys = self.hooks(path)
+        project_config = self.repo / ".codex/config.toml"
+        project_config.write_text(
+            f'[hooks.state.{json.dumps(keys[0])}]\ntrusted_hash = "opaque-old-hash"\n'
+        )
+
+        with self.assertRaises(agents_config.HarnessError) as caught:
+            self.check()
+        for text in (keys[0], str(path), f"no trust record in {self.config}"):
+            self.assertIn(text, str(caught.exception))
+
+        self.trust(keys)
+        self.assertEqual(self.check()["trusted_keys"], 1)
+
+    def test_disabled_hooks_and_feature_precedence(self):
+        keys = self.hooks(self.home / "hooks.json", handlers=2)
+        self.config.write_text(f'[hooks.state.{json.dumps(keys[0])}]\nenabled = false\n')
+        self.trust(keys[1:])
+        self.assertEqual(self.check()["trusted_keys"], 1)
+        for feature in ("hooks", "codex_hooks"):
+            self.config.write_text(f'[features]\n{feature} = false\n')
+            self.assertEqual(self.check()["trusted_keys"], 0)
+        project = self.repo / ".codex/config.toml"
+        project.write_text('[features]\nhooks = true\n')
+        with self.assertRaises(agents_config.HarnessError):
+            self.check()
+        self.config.write_text('[features]\nhooks = true\n')
+        project.write_text('[features]\nhooks = false\n')
+        self.assertEqual(self.check()["trusted_keys"], 0)
+
+    def test_missing_files_and_codex_home_override(self):
+        self.assertEqual(self.check()["trusted_keys"], 0)
+        other = self.root / "override"
+        other.mkdir()
+        self.hooks(other / "hooks.json")
+        with patch.dict(os.environ, {"CODEX_HOME": str(other)}):
+            with self.assertRaises(agents_config.HarnessError):
+                self.check()
+
+    def test_unreadable_or_malformed_sources_fail_closed(self):
+        path = self.home / "hooks.json"
+        for value in ("{", "[]", '{"hooks": {"SessionStart": {}}}'):
+            path.write_text(value)
+            with self.subTest(value=value), self.assertRaises(agents_config.HarnessError):
+                self.check()
+        with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+            with self.assertRaises(agents_config.HarnessError):
+                self.check()
+
+    def test_audit_checks_once_and_skips_non_codex_assignments(self):
+        source = self.root / "agents.json"
+        resolved = agents_config.resolve_workers(agents_config.DEFAULT_CONFIG, source, {}, workflow="issue-chain")
+        resolved["test"]["executable"] = "/other/codex"
+        with patch.object(agents_config, "repository_trust"), patch.object(
+            agents_config, "preflight_executable", side_effect=lambda _: {"preflight": {"status": "passed"}}
+        ), patch.object(agents_config, "codex_hook_trust", wraps=agents_config.codex_hook_trust) as check:
+            audited = agents_config.audit_workers(resolved, source, workflow="issue-chain",
+                                                  repository=str(self.repo), argv_for=lambda *_: [])
+            check.assert_called_once_with(str(self.repo))
+            for entry in audited.values():
+                self.assertEqual(entry["preflight"]["hook_trust"]["status"],
+                                 "passed" if entry["harness"] == "codex" else "not-applicable")
+            check.reset_mock()
+            for entry in resolved.values():
+                entry["harness"] = "pi"
+            agents_config.audit_workers(resolved, source, workflow="issue-chain",
+                                         repository=str(self.repo), argv_for=lambda *_: [])
+            check.assert_not_called()
 
 
 class ExecutableResolution(unittest.TestCase):

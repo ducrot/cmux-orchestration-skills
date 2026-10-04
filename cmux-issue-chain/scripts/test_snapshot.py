@@ -37,6 +37,11 @@ class StartupSnapshotPolicy(unittest.TestCase):
         self.fixture.restamp(self.path, self.snapshot)
         self.fixture.assert_launch_refused("trust preflight")
 
+    def test_snapshot_requires_hook_trust_preflight(self):
+        del self.snapshot["selected_worker"]["preflight"]["hook_trust"]
+        self.fixture.restamp(self.path, self.snapshot)
+        self.fixture.assert_launch_refused("hook trust preflight")
+
     def test_pi_snapshot_requires_no_approve(self):
         from worker_snapshot import stage_argv
         entry = self.snapshot["selected_worker"]

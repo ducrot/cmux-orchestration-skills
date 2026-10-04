@@ -36,6 +36,7 @@ from agents_config import (
     snapshot_identity,
     valid_executable_syntax,
     valid_trust_record,
+    valid_hook_trust_record,
 )
 from orchestrator_lib import (
     integrity_boundary,
@@ -333,6 +334,8 @@ def load_prepared_snapshot(
         raise SnapshotError("prepared stage lost its managed-subagent launch environment")
     if not valid_trust_record(selected, state.get("repository")):
         raise SnapshotError("prepared stage snapshot has no valid trust preflight; prepare again")
+    if not valid_hook_trust_record(selected):
+        raise SnapshotError("prepared stage snapshot has no valid hook trust preflight; prepare again")
     argv = selected.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and value for value in argv):
         raise SnapshotError("prepared stage snapshot has an invalid final argument vector")

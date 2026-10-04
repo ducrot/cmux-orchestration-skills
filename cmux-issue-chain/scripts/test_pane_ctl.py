@@ -80,7 +80,7 @@ class PaneCtlCase(unittest.TestCase):
             # Deliberately different from argv[0]: the realpath is audit data, not the launch identity.
             "resolved_executable": f"/audit/realpath/{profile['requested_executable']}",
             "detected_version": "99.1-test",
-            "preflight": {"status": "passed", "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
+            "preflight": {"status": "passed", "hook_trust": {"status": "passed", "sources": ["/test/config.toml"], "trusted_keys": 0}, "trust": {"status": "passed", "repository": "/test/repo", "source": "/test/trust"}},
             "entitlement": {"status": "unverified"},
             "environment": {SUBAGENT_MARKER_ENV: SUBAGENT_MARKER_VALUE},
         }

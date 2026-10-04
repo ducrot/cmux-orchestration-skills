@@ -33,6 +33,9 @@ class StartupSnapshotPolicy(unittest.TestCase):
     def test_snapshot_requires_trust_preflight(self):
         self.check_policy("trust")
 
+    def test_snapshot_requires_hook_trust_preflight(self):
+        self.check_policy("hook_trust")
+
     def test_pi_snapshot_requires_no_approve(self):
         self.check_policy("pi")
 
@@ -42,9 +45,9 @@ class StartupSnapshotPolicy(unittest.TestCase):
         path = fixture.run_dir / "launch-waves" / "wave.json"
         snapshot = json.loads(path.read_text())
         entry = snapshot["resolved_profiles"]["codebase2"]
-        if mutation == "trust":
-            del entry["preflight"]["trust"]
-            expected = "trust preflight"
+        if mutation in {"trust", "hook_trust"}:
+            del entry["preflight"][mutation]
+            expected = "hook trust preflight" if mutation == "hook_trust" else "trust preflight"
         else:
             entry.update(harness="pi", requested_executable="pi", model="google/test", effort="high")
             entry["preflight"]["trust"] = {"status": "not-applicable", "repository": "/test/repo", "source": None}

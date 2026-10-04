@@ -1585,6 +1585,10 @@ def main_checkout(repository: str) -> str | None:
     return str(main) if main != Path(repository).resolve() else None
 
 
+def harness_config_path(rule: dict[str, Any]) -> Path:
+    return Path(os.environ.get(rule["env"], str(Path.home().joinpath(*rule["default_dir"])))) / rule["filename"]
+
+
 def repository_trust(harness: str, repository: str) -> dict[str, Any]:
     """Read startup trust for the repository root, or for its main checkout where the harness
     resolves linked-worktree trust there, without changing the harness configuration."""
@@ -1594,7 +1598,7 @@ def repository_trust(harness: str, repository: str) -> dict[str, Any]:
     if rule is None:
         return {"status": "not-applicable", "repository": repository, "source": None}
     main = main_checkout(repository) if rule.get("main_checkout") else None
-    source = Path(os.environ.get(rule["env"], str(Path.home().joinpath(*rule["default_dir"])))) / rule["filename"]
+    source = harness_config_path(rule)
     try:
         data = rule["parse"](source.read_text(encoding="utf-8"))
         projects = data.get("projects", {}) if isinstance(data, dict) else {}
@@ -1625,6 +1629,107 @@ def valid_trust_record(entry: dict[str, Any], repository: object) -> bool:
             and Path(trust["source"]).is_absolute())
 
 
+CODEX_HOOK_EVENTS = (
+    ("PreToolUse", "pre_tool_use"), ("PermissionRequest", "permission_request"),
+    ("PostToolUse", "post_tool_use"), ("PreCompact", "pre_compact"), ("PostCompact", "post_compact"),
+    ("SessionStart", "session_start"), ("SessionEnd", "session_end"),
+    ("UserPromptSubmit", "user_prompt_submit"), ("SubagentStart", "subagent_start"),
+    ("SubagentStop", "subagent_stop"), ("Stop", "stop"), ("Interrupt", "interrupt"),
+)
+
+
+def codex_hook_trust(repository: str) -> dict[str, Any]:
+    """Check presence of hook trust, read-only. Hash freshness cannot be verified here.
+
+    Codex 0.160 uses source:snake_case_event:group_index:handler_index keys and
+    hooks.state.<key>.enabled for per-hook disabling. Enumerate each source separately:
+    inline hooks and hooks.json are additive, including across user/project layers.
+    """
+    config = harness_config_path(TRUST_RULES["codex"]).absolute()
+    project_config = Path(repository).absolute() / ".codex/config.toml"
+    sources: dict[Path, dict[str, Any]] = {}
+
+    def read(path: Path) -> dict[str, Any]:
+        if path in sources:
+            return sources[path]
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except (OSError, UnicodeError) as error:
+            raise HarnessError(f"cannot inspect Codex hook source {path}: {error}") from error
+        try:
+            data = tomllib.loads(raw) if path.suffix == ".toml" else json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("expected an object")
+            for field in ("hooks", "features"):
+                if field in data and not isinstance(data[field], dict):
+                    raise ValueError(f"{field} must be an object")
+        except ValueError as error:
+            raise HarnessError(f"cannot inspect Codex hook source {path}: {error}") from error
+        sources[path] = data
+        return data
+
+    configs = [read(config), read(project_config)]
+    features: dict[str, Any] = {}
+    states: dict[str, Any] = {}
+    trust_hashes: dict[str, Any] = {}
+    for data in configs:
+        features.update(data.get("features", {}))
+        state = data.get("hooks", {}).get("state", {})
+        if not isinstance(state, dict):
+            raise HarnessError(f"invalid Codex hooks.state in {config} or {project_config}")
+        for key, entry in state.items():
+            if not isinstance(entry, dict):
+                raise HarnessError(f"invalid Codex hook state {key!r} in {config} or {project_config}")
+            states.setdefault(key, {}).update(entry)
+            # A repository-controlled config must not be able to vouch for its own hooks.
+            if data is configs[0] and "trusted_hash" in entry:
+                trust_hashes[key] = entry["trusted_hash"]
+
+    trusted = 0
+    if features.get("hooks", features.get("codex_hooks", True)) is not False:
+        read(config.with_name("hooks.json"))
+        read(project_config.with_name("hooks.json"))
+        for path, data in sources.items():
+            hooks = data.get("hooks", {})
+            for event, name in CODEX_HOOK_EVENTS:
+                groups = hooks.get(event, [])
+                if not isinstance(groups, list):
+                    raise HarnessError(f"invalid Codex hook groups for {event} in {path}")
+                for group_index, group in enumerate(groups):
+                    if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                        raise HarnessError(f"invalid Codex hook group {event}:{group_index} in {path}")
+                    for hook_index, hook in enumerate(group["hooks"]):
+                        if not isinstance(hook, dict):
+                            raise HarnessError(f"invalid Codex hook handler in {path}")
+                        key = f"{path}:{name}:{group_index}:{hook_index}"
+                        state = states.get(key, {})
+                        if state.get("enabled") is False:
+                            continue
+                        trusted_hash = trust_hashes.get(key)
+                        if not isinstance(trusted_hash, str) or not trusted_hash:
+                            raise HarnessError(
+                                f"Codex hook {key!r} from {path} has no trust record in {config}; "
+                                f"start codex once in repository root {repository!r}, review and trust "
+                                "the hooks, exit, then prepare again"
+                            )
+                        trusted += 1
+    return {"status": "passed", "sources": [str(path) for path in sources],
+            "trusted_keys": trusted, "hash_verification": "unverifiable"}
+
+
+def valid_hook_trust_record(entry: dict[str, Any]) -> bool:
+    if entry.get("harness") != "codex":
+        return True
+    preflight = entry.get("preflight")
+    record = preflight.get("hook_trust") if isinstance(preflight, dict) else None
+    return (isinstance(record, dict) and record.get("status") == "passed"
+            and isinstance(record.get("sources"), list)
+            and all(isinstance(path, str) and Path(path).is_absolute() for path in record["sources"])
+            and type(record.get("trusted_keys")) is int and record["trusted_keys"] >= 0)
+
+
 def audit_workers(
     resolved: dict[str, dict[str, str]],
     source: Path,
@@ -1642,13 +1747,18 @@ def audit_workers(
         assigned.setdefault((profile["harness"], profile["executable"]), []).append(worker)
 
     trust: dict[str, dict[str, Any]] = {}
+    hook_trust: dict[str, dict[str, Any]] = {}
     audits: dict[tuple[str, str], dict[str, Any]] = {}
     for key, workers in assigned.items():
         try:
             if key[0] not in trust:
                 trust[key[0]] = repository_trust(key[0], repository)
+                hook_trust[key[0]] = codex_hook_trust(repository) if key[0] == "codex" else {
+                    "status": "not-applicable", "sources": [], "trusted_keys": 0,
+                }
             audits[key] = preflight_executable(resolved[workers[0]])
             audits[key]["preflight"]["trust"] = trust[key[0]]
+            audits[key]["preflight"]["hook_trust"] = hook_trust[key[0]]
         except HarnessError as error:
             raise HarnessError(
                 context_error(
