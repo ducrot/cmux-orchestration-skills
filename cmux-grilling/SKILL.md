@@ -34,6 +34,8 @@ The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch
 
 ## Worker Profile Configuration
 
+> **Codex TUI flags upgrade:** Snapshots and launch waves prepared before this change must be prepared again; loaders reject the old `tui.whimsy` argument vector.
+
 > **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
@@ -723,7 +725,8 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
-  -c tui.whimsy=false \
+  -c tui.animations=false \
+  -c tui.disable_paste_burst=true \
   --model gpt-6-astra \
   -c model_reasoning_effort=high                          # codebase2
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
@@ -731,7 +734,8 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   --ask-for-approval on-request \
   -c approvals_reviewer=auto_review \
   -c check_for_update_on_startup=false \
-  -c tui.whimsy=false \
+  -c tui.animations=false \
+  -c tui.disable_paste_burst=true \
   --model gpt-5.6-luna \
   -c model_reasoning_effort=medium                         # docs
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
@@ -771,8 +775,10 @@ human for startup options at session start. Each flag earns its place:
 - `check_for_update_on_startup=false` suppresses the startup update prompt, which otherwise
   blocks an unattended lane before it reads its task. Set it only here, so interactive Codex
   sessions still get update notices.
-- `tui.whimsy=false` turns off Codex's decorative TUI animations, so the lane screen that
-  readiness checks and `observe` read stays calm and stable.
+- `tui.animations=false` disables decorative motion on the welcome screen, shimmer, and spinner, so
+  the lane screen that readiness checks and `observe` read stays stable.
+- `tui.disable_paste_burst=true` disables Enter suppression after a typed burst, so exception-path
+  `deliver` submits text with a single Enter.
 
 Which lanes may reach the network is declared by `launch_wave.CODEX_NETWORK_LANES`. Only a
 Codex docs lane receives `sandbox_workspace_write.network_access=true`, preserving its

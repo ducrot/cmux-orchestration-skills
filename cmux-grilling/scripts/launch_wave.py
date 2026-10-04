@@ -57,7 +57,9 @@ CODEX_APPROVAL_ARGUMENTS = [
     "-c",
     "check_for_update_on_startup=false",
     "-c",
-    "tui.whimsy=false",
+    "tui.animations=false",
+    "-c",
+    "tui.disable_paste_burst=true",
 ]
 
 

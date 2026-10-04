@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1005,6 +1006,37 @@ class AgentsConfigCli(unittest.TestCase):
 
 
 class ProbeArguments(unittest.TestCase):
+    def test_codex_probe_arguments(self):
+        argv = agents_config.probe_argv(dict(resolved_executable="codex", harness="codex",
+                                             model="test-model", effort="high"))
+        self.assertEqual(argv, [
+            "codex", "exec", "--sandbox", "read-only", "--ephemeral",
+            "--model", "test-model", "--config", "model_reasoning_effort=high",
+            "--config", "check_for_update_on_startup=false",
+            "--config", "tui.animations=false", "--config", 'approval_policy="never"',
+            "--skip-git-repo-check", agents_config.PROBE_PROMPT,
+        ])
+
+    @unittest.skipUnless(shutil.which("codex"), "Codex is not installed")
+    def test_installed_codex_tui_keys_are_booleans(self):
+        codex = shutil.which("codex")
+        with tempfile.TemporaryDirectory() as home:
+            env = dict(os.environ, CODEX_HOME=home)
+
+            def load_config(override):
+                # features list loads configuration without starting a TUI or model request.
+                return subprocess.run([codex, "-c", override, "features", "list"], env=env,
+                                      capture_output=True, text=True, timeout=30)
+
+            for key, value in (("tui.animations", "false"), ("tui.disable_paste_burst", "true")):
+                with self.subTest(key=key):
+                    valid = load_config(f"{key}={value}")
+                    self.assertEqual(valid.returncode, 0, valid.stderr)
+                    invalid = load_config(f'{key}="x"')
+                    self.assertNotEqual(invalid.returncode, 0)
+                    self.assertIn("expected a boolean", invalid.stderr)
+                    self.assertIn(key, invalid.stderr)
+
     def test_claude_probe_passes_a_positional_prompt_and_disables_tools(self):
         sys.path.insert(0, str(SCRIPT_DIR))
         try:

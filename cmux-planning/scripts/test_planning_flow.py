@@ -2092,6 +2092,13 @@ sha256 {resulting_digest or digest}
     def test_start_prompt_snapshot_rejects_restamped_marker_substitution(self):
         self.check_startup_snapshot_policy("marker")
 
+    def test_snapshot_rejects_legacy_codex_flags(self):
+        config = json.loads(self.config.read_text())
+        roles = config["workflows"]["planning"]
+        roles["spec"], roles["reviewer"] = roles["reviewer"], roles["spec"]
+        self.config.write_text(json.dumps(config))
+        self.check_startup_snapshot_policy("legacy-codex")
+
     def check_startup_snapshot_policy(self, mutation):
         from agents_config import snapshot_identity
         from stage_snapshot import load_prepared_snapshot, stage_argv, SnapshotError
@@ -2103,7 +2110,14 @@ sha256 {resulting_digest or digest}
         path = self.run_dir / pointer["path"]
         snapshot = json.loads(path.read_text())
         entry = snapshot["selected_worker"]
-        if mutation == "marker":
+        if mutation == "legacy-codex":
+            load_prepared_snapshot(self.run_dir, "spec", 1, require_baseline=False)
+            argv = entry["argv"]
+            index = argv.index("tui.disable_paste_burst=true")
+            del argv[index - 1:index + 1]
+            argv[argv.index("tui.animations=false")] = "tui.whimsy=false"
+            expected = "violates adapter policy"
+        elif mutation == "marker":
             snapshot["allowed_worker_writes"]["started"] = str(self.run_dir / "artifacts/wrong/started")
             expected = "substituted handoff paths"
         elif mutation == "trust":

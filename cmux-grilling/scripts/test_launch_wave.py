@@ -436,7 +436,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.assertIn("workspace-write", argv)
             self.assertIn("approvals_reviewer=auto_review", argv)
             self.assertIn("check_for_update_on_startup=false", argv)
-            self.assertIn("tui.whimsy=false", argv)
+            self.assertIn("tui.animations=false", argv)
         self.assertNotIn("sandbox_workspace_write.network_access=true", codebase2)
         self.assertIn("sandbox_workspace_write.network_access=true", docs)
 
@@ -466,7 +466,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 self.assertIn("exec", call["argv"])
                 self.assertIn("read-only", call["argv"])
                 self.assertIn('approval_policy="never"', call["argv"])
-                self.assertIn("tui.whimsy=false", call["argv"])
+                self.assertIn("tui.animations=false", call["argv"])
                 self.assertIn("--ephemeral", call["argv"])
             else:
                 self.assertIn("--print", call["argv"])
@@ -724,6 +724,29 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.read_wave("next-run")["resolved_profiles"]["codebase2"]["model"],
             "changed/after-start",
         )
+
+    def test_legacy_codex_flags_are_rejected_after_restamping(self):
+        from agents_config import snapshot_identity
+        from launch_wave import load_launchable_lane, LaunchWaveError
+        result = self.init_for("old-flags")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.run_dir("old-flags")
+        load_launchable_lane(run_dir, "codebase2")
+        state = self.read_state("old-flags")
+        pointer = state["launch_wave"]
+        path = run_dir / pointer["path"]
+        snapshot = self.read_wave("old-flags")
+        argv = snapshot["resolved_profiles"]["codebase2"]["argv"]
+        index = argv.index("tui.disable_paste_burst=true")
+        del argv[index - 1:index + 1]
+        argv[argv.index("tui.animations=false")] = "tui.whimsy=false"
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        path.write_text(json.dumps(snapshot))
+        pointer.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                       snapshot_id=snapshot["snapshot_id"])
+        (run_dir / "state.json").write_text(json.dumps(state))
+        with self.assertRaisesRegex(LaunchWaveError, "violates adapter policy"):
+            load_launchable_lane(run_dir, "codebase2")
 
     def test_missing_failed_or_mismatched_wave_is_refused_without_cmux(self):
         for mode in ("missing", "failed", "mismatched"):

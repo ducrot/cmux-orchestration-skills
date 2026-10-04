@@ -645,6 +645,28 @@ class PreparedStageCli(unittest.TestCase):
                 if target.is_dir():
                     target.rmdir()
 
+    def test_legacy_codex_flags_are_rejected_after_restamping(self):
+        from agents_config import snapshot_identity
+        from worker_snapshot import load_launchable_snapshot, SnapshotError
+        result = self.init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        load_launchable_snapshot(self.run_dir, "implement", 1)
+        state = self.read_state()
+        pointer = state["prepared_stage"]
+        path = self.run_dir / pointer["path"]
+        snapshot = self.read_snapshot()
+        argv = snapshot["selected_worker"]["argv"]
+        index = argv.index("tui.disable_paste_burst=true")
+        del argv[index - 1:index + 1]
+        argv[argv.index("tui.animations=false")] = "tui.whimsy=false"
+        snapshot["snapshot_id"] = snapshot_identity(snapshot)
+        path.write_text(json.dumps(snapshot))
+        pointer.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                       snapshot_id=snapshot["snapshot_id"])
+        (self.run_dir / "state.json").write_text(json.dumps(state))
+        with self.assertRaisesRegex(SnapshotError, "violates adapter policy"):
+            load_launchable_snapshot(self.run_dir, "implement", 1)
+
     def test_missing_trust_fails_before_snapshot_or_pane(self):
         (self.trust_home / "config.toml").write_text("")
         result = self.init()
@@ -685,7 +707,8 @@ class PreparedStageCli(unittest.TestCase):
                 "--ask-for-approval", "on-request",
                 "-c", "approvals_reviewer=auto_review",
                 "-c", "check_for_update_on_startup=false",
-                "-c", "tui.whimsy=false",
+                "-c", "tui.animations=false",
+                "-c", "tui.disable_paste_burst=true",
                 "--model", "gpt-6-astra",
                 "-c", "model_reasoning_effort=xhigh",
             ],
@@ -769,7 +792,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("exec", codex)
         self.assertIn("read-only", codex)
         self.assertIn('approval_policy="never"', codex)
-        self.assertIn("tui.whimsy=false", codex)
+        self.assertIn("tui.animations=false", codex)
         self.assertIn("--ephemeral", codex)
         self.assertIn("--print", claude)
         self.assertIn("--safe-mode", claude)

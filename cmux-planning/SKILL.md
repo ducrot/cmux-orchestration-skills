@@ -84,9 +84,16 @@ handoffs.
 
 ## First-use configuration checkpoint
 
+> **Codex TUI flags upgrade:** Snapshots and launch waves prepared before this change must be prepared again; loaders reject the old `tui.whimsy` argument vector.
+
 > **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
+
+Codex workers use `-c tui.animations=false` to disable decorative motion on the welcome screen,
+shimmer, and spinner, so the screen that readiness checks read stays stable. They also use
+`-c tui.disable_paste_burst=true` to disable Enter suppression after a typed burst, so
+exception-path `deliver` submits text with a single Enter.
 
 All three independently shipped skills vendor the same `scripts/agents_config.py` schema-v3 CLI.
 It requires `planning.spec`, `planning.tickets`, and `planning.reviewer`. Authors default to
