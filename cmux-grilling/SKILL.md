@@ -34,104 +34,11 @@ The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch
 
 ## Worker Profile Configuration
 
-> **Codex TUI flags upgrade:** Snapshots and launch waves prepared before this change must be prepared again; loaders reject the old `tui.whimsy` argument vector.
-
-> **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
-
-> **Codex hook trust:** Before preparing, start `codex` once in the repository root, review and trust the hooks (via `/hooks`), then exit and prepare again. Preparation reads `$CODEX_HOME/hooks.json` and `$CODEX_HOME/config.toml` (default `~/.codex`), plus the repository's `.codex/hooks.json` and `.codex/config.toml`. Enabled hooks without a positional trust record stop preparation before any pane exists; `features.hooks = false` and per-hook `[hooks.state."<key>"].enabled = false` are respected. The audit records checked sources and trusted-key counts. Hash values are unverifiable: changed hooks are not detected and remain on the watcher exit-9 exception path. Re-prepare older Codex snapshots and launch waves that lack `preflight.hook_trust`.
+Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
-The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
-inside the target Git repository; the default path is the repository root's
-`.scratch/orchestrator/agents.json`:
-
-```bash
-python3 scripts/agents_config.py init
-python3 scripts/agents_config.py validate
-python3 scripts/agents_config.py show-resolved
-python3 scripts/agents_config.py migrate
-python3 scripts/agents_config.py migrate --accept
-```
-
-Use `--config <path>` after any command to select an explicit file, including outside Git,
-or `--repo <path>` to resolve the default path from a specific target repository. `init`
-atomically creates the complete shared defaults and never changes an existing file or the
-repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
-not launch workers or contact Claude Code, Codex, or any provider. They are read-only and stop
-on schema v1 or v2 with the exact preview and acceptance commands; run initialization does the same
-before publishing a launch wave.
-
-Treat configuration creation as a first-use human checkpoint, separate from run initialization.
-Before starting any worker-bearing run, resolve the selected configuration path and follow this
-protocol. Never offer profile overrides the human did not ask for.
-
-1. If the file already exists at schema v1 or v2, run `agents_config.py migrate` without `--accept`.
-   Present its coordinated-upgrade warning and complete validated preview in the human's language,
-   including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
-   the displayed fallback profile name, harness, model, and effort without inferring relative quality.
-   Also call out every added required assignment the preview names, such as `issue-chain.triage`.
-   Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
-   On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
-   argument included, then validate and continue.
-2. If the file already exists and is valid schema v3, continue with its assignments.
-   A schema-v3 file needs no migration question.
-   An existing valid schema-v3 file needs no start confirmation either; the start question
-   belongs only to a newly created default (accepted with the **Yes, start now** answer).
-3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
-   `show-resolved`. Do not call `run_state.py init` yet.
-4. Present the created path and all three workflows' resolved assignments, because the file is shared.
-   Ask one single-select question in the human's language: whether to start the current run with
-   these assignments. The choices mean **Yes, start now** and **No, I will edit the file**.
-5. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
-   Code or `request_user_input` in Codex. Do not assume Codex exposes it in the current mode; when
-   no native tool is available, ask the same question in chat and end the turn for the answer.
-6. On yes, reload and validate the current bytes before starting the run. On no, perform no more
-   tool calls, tell the human to edit the file and reply when it is ready, and end the turn. When
-   they return, validate and show the resolved assignments again; start only after validation
-   succeeds. Report validation errors and remain stopped when it fails.
-
-This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
-not emulate it with shell input, a sleeping process, or polling while the human edits the file.
-
-The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
-`claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
-(`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
-`codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
-`gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
-`pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
-`pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`); and `pi-grok-high`
-and `pi-grok-medium` (`pi`, `pi`, `xai/grok-4.7`). Each tuple lists
-harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
-profile by default; Pi is opted into per run or per tracker config. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
-`codebase`, `codebase2`, `docs`, and `web`, respectively. The `fable`, `opus`, and `sonnet`
-strings are intentionally moving provider aliases; deterministic selection of an alias does not
-pin the provider's underlying model version.
-
-Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 and schema-v2 reads never migrate.
-The read-only `migrate` preview validates the complete schema-v3 candidate before displaying it;
-`migrate --accept` is the only shared-CLI path that atomically replaces the file. Existing profiles and
-assignments are preserved. From schema v1, planning roles are selected deterministically and a
-collision-safe Codex reviewer is added only when needed. A missing `issue-chain.triage` is assigned
-`claude-opus-high`, copied from the defaults when the file lacks that profile. The original bytes remain
-untouched if validation or publication fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
-preserved and those same guards apply to its intended target.
-The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
-guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
-For a schema-v1 or schema-v2 refusal, planning initialization leaves stdout empty and writes one complete actionable
-guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
-Unknown fields, versions,
-harnesses, efforts, assignments, or profile references fail rather than falling back. Model
-strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
-provider or model entitlement. `show-resolved` is the inspection command for the complete
-profiles, assignments, sources, models, and efforts. A Pi model must name its provider
-(`provider/id`, such as `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and
-its preflight check is scoped to the model it is given. Hermes remains an explicit unsupported
-entry in the code-owned adapter registry; that registry — rather than JSON — is the implementation
-boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
-preflight rules, the launch and probe adapters, and the override parsing and profile resolution
-all workflows share, so a harness is added in that one file; each workflow keeps its own
-sandbox, approval, and network policy.
+Read when resolving the configuration path before init, creating or migrating configuration, or inspecting profiles: [references/configuration.md](references/configuration.md).
 
 `run_state.py init` requires an existing configuration at the default or explicit path; it never
 creates one. After the first-use checkpoint, it resolves and preflights all four lanes as one
@@ -314,11 +221,11 @@ For each round `N` (1-based), in order:
    `worker.finished` per lane with `{"lane": ..., "round": N, "surface_id": ...}`.
 6. Every question whose four lane gates are `advance` is synthesized: write
    `synthesis/round-<N>.json` (format below) and record `grill.synthesis` per question. Questions
-   that failed on form follow Question failures. Then either open the next round, or stop the
+   that failed on form follow Question failures in `references/gate-recovery.md`. Then either open the next round, or stop the
    loop when the budget is exhausted or the frontier is empty (`grill.done` with the reason;
    `stopReason` is `max-rounds` or `griller-done`).
 7. A `blocked` or `hitl` gate that is not a pure form failure stops the session (see Gate Rule),
-   with one exception: a `hitl` whose sole reason is plan drift goes through Drift Triage and may
+   with one exception: a `hitl` whose sole reason is plan drift goes through Drift Triage in `references/gate-recovery.md` and may
    continue as small-factual. There is no empty-finding degradation and no automatic lane relaunch:
    a failed lane is a session-level `hitl`/`blocked`, resumable only through a human decision
    (`hitl.resolved`, `decision.human`).
@@ -381,9 +288,9 @@ one of five values per question; the report gate is the most severe question gat
 | Gate      | Meaning                                        | Exit code | Orchestrator action                  |
 |-----------|------------------------------------------------|-----------|--------------------------------------|
 | `advance` | Well-formed report (`ANSWERED` or `NO ANSWER`) | 0         | Count the lane as delivered          |
-| `stop`    | Ungrounded or contradictory question           | 3         | Do not synthesize it; Question failures |
+| `stop`    | Ungrounded or contradictory question           | 3         | Do not synthesize it; Question failures in `references/gate-recovery.md` |
 | `blocked` | Lane reported a `BLOCKER`                      | 4         | Stop the session, record the blocker |
-| `hitl`    | Plan drift, or a malformed question or report  | 5         | Form: Question failures; drift: Drift Triage; else stop |
+| `hitl`    | Plan drift, or a malformed question or report  | 5         | Form: Question failures in `references/gate-recovery.md`; drift: Drift Triage in `references/gate-recovery.md`; else stop |
 | `pending` | Report not written yet                         | 6         | Keep waiting per the wait policy     |
 
 The gate is the **most severe** triggered condition: `blocked` > `hitl` > `stop` >
@@ -395,7 +302,7 @@ The gate is the **most severe** triggered condition: `blocked` > `hitl` > `stop`
   the synthesizer.
 - `### Plan Drift` is for a stale or wrong task premise (the plan contradicts what research
   found). The parser gates any drift as `hitl`; the orchestrator then triages it in two
-  classes (see Drift Triage) — only load-bearing drift reaches the human mid-run.
+  classes (see Drift Triage in `references/gate-recovery.md`) — only load-bearing drift reaches the human mid-run.
 - A required section (`### Result`, `### Answer`, `### Sources`, `### Method`, `### Blockers`,
   `### Plan Drift`) that is absent or empty makes its question malformed and yields `hitl`. An
   omitted section never reads as `None`. So does a missing, duplicate, or unexpected `## Q<n>`
@@ -407,49 +314,7 @@ lanes. A `blocked` question, a load-bearing drift, a dead pane, or an exhausted 
 whole session. A form failure (`stop` or malformed `hitl` without blocker or drift) is handled per
 question, below. The one other exception is small-factual drift, triaged next.
 
-### Question failures: re-emit once, then defer
-
-A question whose gate is `stop` or `hitl` purely because of form (ungrounded `ANSWERED`, missing
-method, missing or empty section, unfilled `|` menu, missing question block) does not stop the session:
-
-1. Ask the still-open lane pane once to re-emit the whole report, fixing exactly the named
-   questions ("re-emit the report per the Research Report Contract; fix the format of Q2 and Q3,
-   not the substance"), and record `report.reformat_requested` naming the questions. Re-parse.
-2. A question still failing on any lane is **deferred**: record `grill.question_deferred` with
-   `{round, id, lanes, reason}`, leave it out of the synthesis, and ask it again in a later round as
-   a new question, so all four lanes see it again. The other questions of the round synthesize
-   normally.
-3. A question that cannot be deferred because no round is left is `hitl` for the session; a human
-   decides. Every deferral appears in the final artifact's `## Q&A` protocol.
-
-Never overrule the parser with your own `advance`.
-
-### Drift Triage
-
-When a question's only gate reason is `plan drift present`, the orchestrator — the
-judgment role that reads all four reports — triages the drift in two classes, mirroring the
-issue chain's replanning rule:
-
-- **Small factual** (stale doc wording, a renamed command or path, a premise detail that
-  does not change what would be built): resolve it yourself. Record `plan.drift` with
-  `{"class": "small-factual"}` and `plan.drift.resolved` with
-  `{"resolved_by": "orchestrator"}`, then record the lane gate as `advance` with a reason
-  naming that resolution. Fold the correction into later question texts where relevant.
-- **Load-bearing** (scope, architecture, security, data-safety, acceptance-risk — anything
-  that changes the assumptions being built): record `plan.drift` with
-  `{"class": "load-bearing"}`, gate `hitl`, and stop the session for the human, as before.
-
-When in doubt, the drift is load-bearing. Never rewrite `task.md` silently — corrections
-live in events, later question texts, and the artifact. Every self-resolved drift must
-appear in the final artifact and in the assumptions review, so the human is guaranteed to
-see it, just after the run instead of blocking it.
-
-This triage is the one documented case where the orchestrator's recorded gate may diverge
-from the parser's exit code, and only when drift is the sole reason. A report whose drift
-rides along with findings, blockers, or format failures is not eligible.
-
-The orchestrator never records `advance` for a question or lane while the latest parsed gate says
-otherwise; re-emission and deferral (Question failures) are the only ways past a form failure.
+Read when a question has a form failure or plan drift: [references/gate-recovery.md](references/gate-recovery.md).
 
 ## Lane Wait Policy
 
@@ -638,7 +503,7 @@ unusable.
 ## Assumptions Review
 
 After `complete`, present the defined assumptions — together with any self-resolved premise
-corrections from Drift Triage — to the human for review: confirm, correct, or discard per
+corrections from Drift Triage in `references/gate-recovery.md` — to the human for review: confirm, correct, or discard per
 assumption. Record the outcome per item as a
 `grill.assumptions_triaged` event, including a one-line reason for corrected or discarded
 items. The review never blocks: present it and stop; the decision may stay open until the
@@ -667,18 +532,7 @@ time, in id order.
   blocks of the Markdown in one pass after the last question, so both halves of the pair
   carry the same outcome.
 
-### Resuming an unfinished walkthrough
-
-Check at session start whether the previous walkthrough is unfinished:
-
-```bash
-python3 scripts/run_state.py pending-decisions
-```
-
-It prints the newest artifact's `open` and `deferred` ids separately. Any `open` id means the
-walkthrough was cut short: offer to finish it before starting a new session. `deferred` ids
-are reported for completeness — do not re-ask them. This is the only handling of "the human
-walked away": at the next contact, not on a clock.
+Read when checking for unfinished decisions at session start or resuming a walkthrough: [references/resume-walkthrough.md](references/resume-walkthrough.md).
 
 ## Commit Proposal
 
@@ -753,82 +607,9 @@ Prefer current CLI syntax discovered from `cmux --help` before launching lanes. 
 be visible in CMUX panes. Never type a launch command into a lane pane by hand:
 `pane_ctl.py start-agent` owns it and reads only the lane's matching entry from the immutable
 prepared launch wave. Both `launch` and `start-agent` validate the entire wave first, so a
-missing, failed, mismatched, or tampered lane blocks every pane. The default wave sends:
+missing, failed, mismatched, or tampered lane blocks every pane.
 
-```bash
-CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model opus --effort high \
-  --permission-mode auto                                   # codebase
-CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
-  --ask-for-approval on-request \
-  -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false \
-  -c tui.animations=false \
-  -c tui.disable_paste_burst=true \
-  --model gpt-6-astra \
-  -c model_reasoning_effort=high                          # codebase2
-CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
-  -c sandbox_workspace_write.network_access=true \
-  --ask-for-approval on-request \
-  -c approvals_reviewer=auto_review \
-  -c check_for_update_on_startup=false \
-  -c tui.animations=false \
-  -c tui.disable_paste_burst=true \
-  --model gpt-5.6-luna \
-  -c model_reasoning_effort=medium                         # docs
-CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
-  --model sonnet --effort medium \
-  --permission-mode auto                                   # web
-```
-
-`CMUX_AGENT_MANAGED_SUBAGENT=1` marks the pane as a managed subagent, which is what cmux
-keys its notification suppression on. Without it a session fires a desktop banner with sound
-for every turn end, idle reminder and approval prompt across four lanes, and the human ends
-up muting cmux entirely. The lane still appears in the Feed and in `surface-health`; only the
-banners are gone. Suppression follows `automation.suppressSubagentNotifications` (on by
-default), and the variable is a cmux internal, so the failure mode is noise, never a
-broken run.
-
-Use plain `claude` / `codex`, not `cmux claude-teams` / `cmux codex-teams`. The teams
-wrappers open lane-spawned subagents as extra cmux panes, and those splits anchor to the
-focused workspace instead of the lane's workspace — while the human works in another
-workspace, subagent panes land there. Plain launches keep subagents internal to the lane's
-Claude Code process. Every interactive Claude lane starts in `auto` permission mode; the safe,
-tool-disabled live provider probe remains in `plan` mode.
-own TUI; the lane pane stays the visible unit, and cmux pane integration (hooks,
-notifications, `surface-health`) comes from the per-pane CLI shims, so it is unaffected.
-
-The configured harness, executable, model, and effort come from the wave. Codebase,
-codebase2, and docs accept Claude Code or Codex; web remains Claude Code-only because that
-is the existing tested network policy. The Codex flags are fixed lane policy; do not ask the
-human for startup options at session start. Each flag earns its place:
-
-- `-s workspace-write` lets a Codex lane write its draft and report handoff files without a per-write
-  confirmation (in the first pilot, a lane stuck at that prompt cost most of a round).
-- `--ask-for-approval on-request` pins the escalation policy explicitly: the lane runs
-  sandboxed and requests approval only when the sandbox blocks something.
-- `approvals_reviewer=auto_review` routes those approval requests to Codex's automated
-  reviewer agent instead of a human prompt, so an unattended lane does not stall at the
-  sandbox boundary. It is a reviewer swap, not a permission grant.
-- `check_for_update_on_startup=false` suppresses the startup update prompt, which otherwise
-  blocks an unattended lane before it reads its task. Set it only here, so interactive Codex
-  sessions still get update notices.
-- `tui.animations=false` disables decorative motion on the welcome screen, shimmer, and spinner, so
-  the lane screen that readiness checks and `observe` read stays stable.
-- `tui.disable_paste_burst=true` disables Enter suppression after a typed burst, so exception-path
-  `deliver` submits text with a single Enter.
-
-Which lanes may reach the network is declared by `launch_wave.CODEX_NETWORK_LANES`. Only a
-Codex docs lane receives `sandbox_workspace_write.network_access=true`, preserving its
-documentation access; the web lane is Claude Code-only and has no sandbox to grant. Codebase and
-codebase2 remain no-web lanes, and no grilling lane
-receives `writable_roots`; those container grants belong to `cmux-issue-chain` workers. The
-launch command is stored as an argument vector in the wave and converted to shell text with
-safe quoting by `pane_ctl.py start-agent`; its `worker.launch_sent` event records the wave id,
-argument vector, resolved executable, and detected version. With
-`approvals_reviewer=auto_review` a Codex lane decides its
-own escalations, so it does not stop at a human approval prompt; a lane that looks idle is
-either working or done, and only its report file settles which.
+Read when inspecting the default launch wave, harness arguments, sandbox policy, or notification behavior: [references/launch-policy.md](references/launch-policy.md).
 
 ### Pinned workspace, deterministic pane control
 
@@ -874,26 +655,7 @@ It records `worker.starting` and `worker.launch_sent` with round, launch identit
 started and unstarted lanes. It refuses a repeated batch start; use single-lane recovery.
 Default settle time is zero; single-lane `--settle-seconds` enables a diagnostic screen read.
 
-After exit 9, take one `observe` and `assess` for each lane named in `not_started` only:
-
-- Dialog: `respond` with the assessed action, then re-arm without re-delivery. Resolve
-  further dialogs individually.
-- Failed startup: stop as HITL/blocker under the existing failure rules.
-- Ready but assignment idle, summarized, or unsent: one readiness-gated
-  `deliver --round N --kind round --prompt <run-dir>/prompts/round-<N>-<lane>.md`, then re-arm.
-- Visibly working: record `run_state.py event --type worker.started` with
-  `{lane, round, surface_id, launch_id, evidence: "screen", marker_path}` from the current
-  launch, then re-arm. A missing marker alone does not justify re-delivery.
-
-Always re-arm the full round watcher with the same four UUIDs; recovery input targets only
-`not_started` lanes. Existing start confirmations remain valid for their launch IDs.
-`deliver --kind round` is only for exit-9 recovery. `deliver --text` is for the one report
-re-emission or clarifications, also readiness-gated. Before every `deliver`, obtain a fresh
-screen-bound readiness assessment; it is consumed before input. Readiness identity remains
-`{lane}`, so replacing its pane invalidates earlier observations and ready events. Use the
-shared readiness reference for assessment and individual dialog handling. Everything else
-(`read-screen`, `set-status`, diagnosis) runs through `pane_ctl.py cmux`, which injects the
-pinned workspace. Do not route input through raw CMUX commands to bypass readiness.
+Read when the watcher exits 9 or re-delivering a round assignment: [references/startup-recovery.md](references/startup-recovery.md).
 
 Keep current round panes open until the next `open-round` or session end, after reports,
 re-emission, gates, and snapshot are recorded. At session end use `close --round N --lane
@@ -908,41 +670,7 @@ While a round is in flight, the four reports belong to the lanes: do not edit an
 `commit.attempted`, `commit.created`, `commit.skipped`, and `commit.failed` are written only by
 `run_commit.py commit`: attempt before Git, proven success, nothing to commit, or proposal fallback.
 
-Use these exact event types. New ad-hoc types must be dot-namespaced, lower-case, and used
-consistently within a run.
-
-| Event                                                  | When                                                                                                                               |
-|--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
-| `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
-| `run.briefing`                                         | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                 |
-| `run.recap`                                            | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                       |
-| `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
-| `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle with round; written by `open-round`, `launch`, or `close`                                                                     |
-| `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |
-| `worker.starting`                                    | Launch about to be sent; invalidates earlier readiness, includes round, launch_id, prompt_path, marker_path, and start_time_ns |
-| `worker.observed`, `worker.ready`, `worker.startup_status`, `worker.readiness_consumed`, `worker.dialog_response` | Readiness events: exception-path and follow-up only; observe/assess/respond before gated input |
-| `worker.launch_sent`                                   | Lane agent launch command with attached round prompt; written by `pane_ctl.py start-agent`                                                       |
-| `worker.prompt_sent`                                   | Text sent and submitted; written by `pane_ctl.py deliver`                                                                          |
-| `worker.started`                                       | Current launch confirmed by fresh marker or report (`evidence: "marker"|"report"`), or exception-path `"screen"`; data binds lane, round, surface_id, launch_id, marker_path                   |
-| `worker.waiting`                                       | Written by the armed round watcher only: heartbeats plus its final outcome                                                         |
-| `worker.finished`                                      | Round report captured; data carries `{lane, round, surface_id}`                                                                    |
-| `worker.launch_blocked`                                | A lane launch was denied (permissions, environment)                                                                                |
-| `gate`                                                 | Only via `run_state.py gate`                                                                                                       |
-| `tree.snapshot`                                        | Only via `run_state.py snapshot`                                                                                                   |
-| `report.reformat_requested`                            | Re-emission asked for a format-only parse failure                                                                                  |
-| `report.integrity`, `report.integrity.retracted`       | Report-claim accusation and its retraction                                                                                         |
-| `plan.drift`, `plan.drift.resolved`                    | Task-premise drift recorded / resolved; data carries `class` (small-factual, load-bearing) and `resolved_by` (orchestrator, human) |
-| `hitl.resolved`, `decision.human`                      | Human decisions and HITL resolutions                                                                                               |
-| `grill.question`                                       | Round question recorded before delivery, one per question; data `{round, id, question, depends_on}`                               |
-| `grill.question_deferred`                              | Question dropped from a round's synthesis after a failed re-emission; data `{round, id, lanes, reason}`                             |
-| `grill.synthesis`                                      | One question synthesized; data `{round, id, confidence}`                                                                           |
-| `grill.done`                                           | Griller ends the loop (empty frontier or round budget spent); data `{round, reason}`                                                |
-| `grill.assumptions`                                    | Defined assumptions distilled; data `{count}`                                                                                      |
-| `grill.assumptions_triaged`                            | Per-assumption human review outcome                                                                                                |
-| `grill.open_decisions`                                 | Open decisions distilled at finalize; data `{count}`                                                                               |
-| `grill.decision_recorded`                              | One walkthrough answer; written by `run_state.py decision`                                                                         |
-| `commit.proposed`                                      | Artifact commit proposal handed to the human after `complete`                                                                      |
-| `orchestrator.halted`, `orchestrator.unverified_input` | Orchestrator-side anomalies                                                                                                        |
+Read when writing any event with `run_state.py event` (including drift records) or interpreting lifecycle events: [references/event-vocabulary.md](references/event-vocabulary.md).
 
 ## Scripts
 
@@ -966,151 +694,8 @@ python3 scripts/run_state.py init --task-file path/to/task.md --probe-profiles -
 
 `init` also resolves the artifact location; the precedence is in Artifact Location.
 
-Validate the artifact's decisions at finalize, record one outcome during the walkthrough, and
-check for an unfinished walkthrough at session start (see Resuming an unfinished walkthrough):
+Read when using artifact, rendering, parsing, snapshot, gate, completion, or regression-test CLI examples: [references/script-reference.md](references/script-reference.md).
 
-```bash
-python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
-python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
-python3 scripts/run_state.py pending-decisions
-```
+Read when preparing a live lane pilot: [references/smoke-test.md](references/smoke-test.md).
 
-Render self-contained round prompts once per lane per round, with one
-`--question` (or `--question-file`) per frontier question, numbered `Q1..Qn` in order:
-
-```bash
-python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run-id> --lane web --round 1 --question "Which HTTP client does the frontend use?" --question "Which API base URL does it use?"
-```
-
-Await a round's reports. One watcher per round, armed through background Bash or Monitor with re-arm (see Lane Wait
-Policy); exits 0 = all reports, 7 = pending lane's pane dead,
-8 = round deadline, 9 = round not started. Health checks are
-scoped to the run's pinned `workspace_id` from `state.json`; there is no env fallback:
-
-```bash
-python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 2 --lane-surface codebase=<UUID> --lane-surface codebase2=<UUID> --lane-surface docs=<UUID> --lane-surface web=<UUID>
-```
-
-Parse lane reports. `--questions <n>` demands blocks `Q1..Qn`. The exit code carries the most severe
-question gate, `--json` the gate of every question; a missing report is `pending` (exit 6):
-
-```bash
-python3 scripts/parse_research_report.py .scratch/orchestrator/runs/<run-id>/reports/round-1-web.md --questions 2 --json
-```
-
-Record events, snapshots, gates; close the run. An unreadable or vanished untracked path fails the snapshot
-with a diagnostic naming it and records no event; restore access or remove the path and retry. Git only
-warns about an unreadable untracked directory, so its contents stay invisible rather than failing capture.
-Then:
-
-```bash
-python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 Q1" --data '{"round":1,"id":"Q1","question":"...","depends_on":[]}'
-python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "reports-captured round-1"
-python3 scripts/run_state.py gate --run-dir <run-dir> --stage round-1-web --decision advance --reason "well-formed ANSWERED, sources cited"
-python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <output-dir>/<slug>.md --json <output-dir>/<slug>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
-```
-
-Control lane panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints
-the pinned id, `cmux` is the generic `--workspace` injector, `open-round`/`start-round` own normal round lifecycle;
-`launch`/`start-agent`/`close` remain for recovery and final close.
-
-Run the regression tests after touching `parse_research_report.py`, `await_reports.py`,
-`pane_ctl.py`, `run_state.py`, `launch_wave.py`, or `agents_config.py`:
-
-```bash
-python3 scripts/test_parse_research_report.py
-python3 scripts/test_await_reports.py
-python3 scripts/test_pane_ctl.py
-python3 scripts/test_worker_readiness.py
-python3 scripts/test_run_state.py
-python3 scripts/test_agents_config.py
-python3 scripts/test_launch_wave.py
-```
-
-## Smoke Test
-
-Before a live lane pilot, run the canonical baseline suites from the repository root:
-
-```bash
-python3 -m unittest discover -s cmux-issue-chain/scripts -p 'test_*.py'
-python3 -m unittest discover -s cmux-planning/scripts -p 'test_*.py'
-python3 -m unittest discover -s cmux-grilling/scripts -p 'test_*.py'
-python3 tools/test_orchestrator_usage.py
-```
-
-`test_fresh_rounds.py` executes two rounds through the real CLIs with fake cmux and simulated
-workers: frontier rendering, open-round, launched snapshot, start-round, markers/reports,
-watching, parser gates, reports-captured snapshot, replacement anchoring, and final close.
-It also verifies stale readiness cannot authorize input after pane replacement. The watcher
-suite covers missing starts (exit 9), dead pending panes (7), stale artifacts, and re-armed
-deadlines (8). `test_round_context.py` verifies the dependency projection and UTF-8 cap.
-`references/sample-research-report.md` remains the clean-report fixture for live pilots.
-Live usage comparison is a separate human-assisted rollout task.
-
-## Research Report Contract
-
-Ask every lane to finish each round with one `## Q<n>` block per round question, numbered as in
-the round prompt (`Q1..Qn`, also for a round of a single question). Inside a block the sections are
-`###` headings. `### Result`, `### Answer`, `### Sources`, `### Method`, `### Blockers`, and
-`### Plan Drift` are required: absent or empty, they make the question malformed and its gate
-`hitl`. Under `### Result`, emit exactly one of `ANSWERED`, `NO ANSWER`, `BLOCKER` — a literal
-`ANSWERED | NO ANSWER | BLOCKER` line is an unfilled template and is rejected. A missing, duplicate,
-or unexpected question block is malformed too. Each question is gated independently; the parser
-takes the expected count as the required `--questions <n>`, so a report that leaves out a
-question never passes as clean.
-
-```markdown
-## Q1
-### Result
-ANSWERED
-
-### Answer
-The finding in prose. For NO ANSWER: why this lane cannot answer the question.
-
-### Sources
-- relative/repo/path or URL
-
-### Method
-- what was searched, read, or run: outcome
-
-### Blockers
-- None
-
-### Plan Drift
-- None
-
-### Notes
-- Optional: caveats, confidence hints, context. Never load-bearing evidence.
-
-## Q2
-### Result
-...
-```
-
-The bare-`None` rule: in `### Sources`, `### Blockers`, and `### Plan Drift`, an empty section
-is exactly the line `- None` — no prose on or after that line. Explanations belong in
-`### Answer` or `### Notes`, which the gate does not parse for content. Question blocks end at the
-next `##` heading, so a trailing `## Notes` never joins a section.
-
-Research-specific gate requirements:
-
-- `ANSWERED` needs at least one real source; without one the gate is `stop`.
-- `NO ANSWER` needs an explanation under `### Answer`; `### Sources` may be `- None`.
-- `### Method` must be substantive in every report, including `NO ANSWER` — what was searched
-  and found nothing is evidence too.
-
-Lanes may write only their round marker, draft path, and report handoff path
-named in the round prompt. `init` creates `drafts/` alongside `prompts/`, `reports/`, and
-`synthesis/`. Rendered prompts name `<run-dir>/drafts/round-<N>-<lane>.md` and instruct lanes
-to self-validate that exact file with `parse_research_report.py` before writing the handoff
-file. `render_prompt.py round --draft-path <path>` overrides the draft location; it must
-resolve strictly inside the run-local `drafts/` directory (never run state, prompts,
-synthesis, or any lane's report) and differ from the report handoff path.
-
-Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, `max_rounds`, and `slug` (at most 30
-characters; override with `init --slug <value>` using lowercase words separated by hyphens).
-`complete` requires `--markdown` and `--json` paths resolving under the recorded `output_dir` and
-records them in `deliverables`. Artifact JSON and `pending-decisions` discovery remain unchanged.
-Before continuing an existing run, inspect it with `run_state.py status --run-dir <run-dir>`.
-An unsupported legacy layout — including a run whose state has `max_questions` instead of
-`max_rounds` — must be restarted; never infer its identity or continue it.
+Read when checking research report structure or requesting re-emission: [references/research-report-contract.md](references/research-report-contract.md).

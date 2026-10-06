@@ -84,11 +84,7 @@ handoffs.
 
 ## First-use configuration checkpoint
 
-> **Codex TUI flags upgrade:** Snapshots and launch waves prepared before this change must be prepared again; loaders reject the old `tui.whimsy` argument vector.
-
-> **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
-
-> **Codex hook trust:** Before preparing, start `codex` once in the repository root, review and trust the hooks (via `/hooks`), then exit and prepare again. Preparation reads `$CODEX_HOME/hooks.json` and `$CODEX_HOME/config.toml` (default `~/.codex`), plus the repository's `.codex/hooks.json` and `.codex/config.toml`. Enabled hooks without a positional trust record stop preparation before any pane exists; `features.hooks = false` and per-hook `[hooks.state."<key>"].enabled = false` are respected. The audit records checked sources and trusted-key counts. Hash values are unverifiable: changed hooks are not detected and remain on the watcher exit-9 exception path. Re-prepare older Codex snapshots and launch waves that lack `preflight.hook_trust`.
+Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
@@ -110,42 +106,9 @@ commands likewise stop before launchable state and display the exact preview and
 A schema-v3 file needs no migration question.
 An existing valid schema-v3 file needs no start confirmation either; the start question belongs only to a newly created default (accepted with `--accept-config`). Never offer profile overrides the human did not ask for.
 
-`planning_state.py init` creates a missing config or detects a valid schema-v1 or schema-v2 file, then displays
-every resolved workflow. For those it strictly validates and previews the complete schema-v3
-candidate without changing the original bytes, emits the compatibility warning above, and exits
-before a run exists. The shared `agents_config.py migrate` command is the read-only preview interface.
-Present its complete preview in the human's language and ask the human to accept exactly that proposal.
-Its stable output contract writes the complete migration guidance once on stdout; stderr contains only
-the short read-only refusal and does not repeat either command. A schema-v1 or schema-v2 planning initialization leaves
-stdout empty and emits one complete actionable guidance block on stderr, including the candidate digest
-and exact preview and acceptance commands once each.
-On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
-argument, then rerun planning
-initialization; `--accept-config` never authorizes schema migration. When `claude-fable-high` is absent,
-the preview identifies it as unavailable and displays the lexicographically first compatible fallback's
-profile name, harness, model, and effort without inferring relative quality. Migration preserves existing
-profiles and assignments, assigns a missing `issue-chain.triage` to `claude-opus-high`, and leaves
-original bytes untouched on failure. It refuses targets with no
-write bit or more than one hard link, preserves a symlink path, and applies both guards to its resolved
-target. `atomic_initialize` remains create-only.
+Read when init creates configuration or detects schema v1 or v2: [references/configuration-migration.md](references/configuration-migration.md).
 
-## Prerequisites and installation
-
-Install the skill into an agent that can run Python 3 and Git in the target repository. Visible worker
-operation additionally requires cmux, Claude Code for the default author profiles, and Codex CLI
-for the default reviewer profile. Offline tests use fake harnesses and fake CMUX and contact no
-model provider.
-
-Use the skills CLI from this repository or copy the complete `cmux-planning` directory into the agent's
-skills directory. Upgrade installed siblings together before accepting schema migration. Runtime is
-standalone: a direct task needs neither sibling, and vendored contracts validate optional grilling input
-and the native tracker without locating another skill installation.
-
-On first use, let `planning_state.py init` create or preview the shared configuration. For a newly
-created schema-v3 default, inspect `planning.spec`, `planning.tickets`, and `planning.reviewer`,
-then rerun with `--accept-config`. For schema v1 or v2, run the shared read-only preview, obtain explicit
-confirmation, run `agents_config.py migrate --accept`, and only then rerun
-`planning_state.py init`.
+Read when installing planning or setting it up for first use: [references/installation.md](references/installation.md).
 
 ## Initialize
 
@@ -167,24 +130,7 @@ before the run directory, exits with code 2, and leaves `spec` waiting on the co
 below with no snapshot. Grilling input starts at `awaiting-grilling-revalidation` with no
 snapshot.
 
-Every newly initialized run records the creation-only boolean
-`configuration_created_and_accepted` in `state.json`. It is true only when that invocation created a
-missing shared configuration and the operator accepted the new default with `--accept-config`; it is
-false when initialization used an existing configuration. It does not mean that planning initialization
-migrated a shared configuration—migration remains the separate, explicit `agents_config.py migrate
---accept` operation described above. New runs never write the former
-`configuration_created_or_migrated_and_accepted` key.
-
-Durable runs that contain only the legacy key remain readable and resumable. Its recorded boolean is
-used as the compatibility value without rewriting the run merely because it was read. A state containing
-both names is accepted only when their boolean values match; conflicting values are rejected with an
-error that requires the operator to make them agree before the run can continue.
-
-That configuration-field compatibility does not authorize legacy run-artifact trust. A run created
-before run-state schema 3 / artifact-manifest version 1 remains inspectable through `status` and
-`context`, but every state-changing command and worker launch refuses it with guidance to obtain a
-human decision to restart or to use a separately reviewed migration procedure. No automatic migration
-or digest baseline is inferred from files already present in such a run.
+Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
 
 Concrete direct-task and optional grilling-pair starts are:
 
@@ -235,103 +181,9 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 - On resume, run `show` again after `context` and status. `briefing.md` is orchestrator text, not a
   worker artifact: the artifact audit skips it and no prompt attaches it.
 
-## Revalidate optional grilling input
+Read when initialization supplied a grilling input pair: [references/grilling-revalidation.md](references/grilling-revalidation.md).
 
-Show every item that the human must consider:
-
-```bash
-python3 scripts/planning_state.py show-revalidation --run-dir <run-dir>
-```
-
-Explain that freshness is a human judgment. Show the artifact task and repository, current HEAD and
-status identity, Markdown premise corrections, every assumption, and every open, decided, or deferred
-decision. Record a JSON outcomes file with this shape:
-
-```json
-{
-  "accepted": true,
-  "premise_corrections": [
-    {"index": 1, "outcome": "confirmed", "reason": ""}
-  ],
-  "assumptions": [
-    {"index": 1, "outcome": "corrected", "value": "Corrected statement", "reason": "Why"}
-  ],
-  "decisions": [
-    {"id": "D1", "status": "decided", "decision": "Chosen option", "reason": "Why"}
-  ]
-}
-```
-
-Each premise correction and assumption is `confirmed`, `corrected`, or `discarded`; corrected and
-discarded entries need reasons, and corrected entries need replacement text. Cover every source
-decision with `open`, `decided`, or `deferred`; resolved entries need outcome text. Refusal uses
-`{"accepted": false}` and remains at the same stage with no prepared worker. Interruption preserves
-the copied pair plus the latest partial outcomes without creating launchable state.
-
-```bash
-python3 scripts/planning_state.py revalidate --run-dir <run-dir> --outcomes <outcomes.json>
-```
-
-Workers consume only the resulting complete `grilling-input.json`, never the incomplete source pair.
-Every supplied outcomes checkpoint is atomically preserved before normalization, so an interrupted
-walkthrough can resume the same copied pair and recorded partial outcomes. Only a complete normalized
-handoff prepares `spec-1`; partial or refused outcomes never make a worker launchable.
-
-## Confirm author/reviewer model diversity
-
-No role is pinned to a harness, so independent review rests on this gate alone. Before preparing any
-stage, planning compares the resolved `planning.spec` or `planning.tickets` profile with the resolved
-`planning.reviewer`. A reviewer stage is compared against the author it is about to check, so a
-configuration change or typed override between author and review is caught instead of launched. When
-both resolve to the same harness and model, preparation stops before a launchable snapshot exists and
-prints a warning naming both roles, profile names, harnesses, and models. Present that warning and ask
-the confirmation question in the user's language. Never substitute or fall back to another profile
-automatically. One decision covers one harness-and-model combination: an author stage and the reviewer
-stage that checks it share it, so a confirmed combination is never asked twice.
-This expected gate is not a crash: every public command that reaches the blocked preparation
-prints structured JSON with `prepared: null`, the warning, and the exact confirmation command, exits
-with exit code 2, and writes no traceback to stderr. A diverse or already-confirmed resolution remains
-successful and exits 0 with its launchable snapshot and no extra warning.
-
-Exit code 2 is not unique to the diversity gate: argument-usage errors and other precondition
-refusals also use it. Wrappers must inspect stdout and stderr, identifying a gated preparation by
-`prepared: null` and `diversity_warning` in its structured stdout response, rather than treating the
-exit code alone as a request for diversity confirmation.
-
-A non-zero preparation result does not roll back an earlier state transition. For example,
-`approval --decision approve` can persist spec approval and move to `tickets` before ticket author
-preparation exits 2. Revision, revalidation, and relaunch commands can likewise persist progress before
-reaching the gate. A wrapper using `set -e` must handle this outcome explicitly: read `status` and
-`context` for the same run, then follow the recommended next command. Do not blindly retry the original
-transition command; its approval or revision may already be recorded and its original stage guard may
-no longer apply.
-
-If the human knowingly accepts same-harness-and-model operation, translate the recorded decision and
-their human-authored reason into English and run the exact command reported by `status`:
-
-```bash
-python3 scripts/planning_state.py diversity-confirmation --run-dir <run-dir> \
-  --decision confirm --reason <human-reason-in-English>
-```
-
-That decision is persisted in state and events and prepares the waiting author stage. It covers later
-passes and the other author stage only while the resolved author/reviewer harness-and-model combination
-is unchanged. A changed combination invalidates the decision; another collision asks again. Profile
-names or effort may change without invalidation when the resolved harnesses and models remain the same.
-
-Refusal is also explicit and reasoned:
-
-```bash
-python3 scripts/planning_state.py diversity-confirmation --run-dir <run-dir> \
-  --decision refuse --reason <human-reason-in-English>
-```
-
-Refusal leaves the run at its current `spec` or `tickets` stage with no launchable snapshot. Follow the
-printed guidance naming the shared configuration file and the exact
-`workflows.planning.spec` or `workflows.planning.tickets` assignment to change. Refusal never prepares
-a snapshot even when the resolved combination changed meanwhile and is now diverse: the refusal and its
-reason are recorded, the guidance is printed, and launching that stage takes a later explicit `prepare`.
-A genuinely diverse resolution prepares normally with no warning or extra prompt.
+Read when preparation reports a same-harness-and-model diversity warning or a pending diversity decision: [references/model-diversity.md](references/model-diversity.md).
 
 ## Worker input readiness
 
@@ -418,17 +270,7 @@ using `--deadline-minutes` (or the stage minimum when omitted); rejoining it can
 | 8 | Report deadline; use the existing human-approved extension rules. |
 | 9 | Assignment not started; inspect the exception path below. |
 
-After exit 9, take one `observe` and `assess` using the current launch identity:
-
-- A startup dialog: authorize the specific `respond` key, then re-arm without re-delivery.
-- `failed`: stop and follow the existing failure/HITL rules; do not blindly restart.
-- A confirmed summarized-and-waiting or idle assignment: use one readiness-gated `deliver --prompt`
-  with the same baseline-bound prompt, then re-arm.
-- Visibly working: use `mark-started` with screen evidence, then re-arm.
-
-Re-arm with `--extension 0`; startup recovery does not consume the stage's one deadline extension.
-Unresolved assessed dialogs continue to recommend `observe`. Never send a second assignment merely
-because its marker has not appeared.
+Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).
 
 Event vocabulary: `worker.starting` and `worker.launch_sent` bind launch time and assignment identity;
 `worker.started` confirms assignment execution with marker, report, or exception-path
@@ -458,14 +300,7 @@ gate decision are already recorded.
 
 ## Status and context recovery
 
-Status is read-only and derives progress from `state.json`, digest-bound files, structured lifecycle
-events, and optional CMUX surface health. It never treats pane text or a worker narrative as success:
-
-```bash
-python3 scripts/planning_state.py status --run-dir <run-dir>
-python3 scripts/planning_state.py resume --run-dir <run-dir>
-python3 scripts/planning_state.py context --run-dir <run-dir>
-```
+Read when resuming a run, recovering context, or inspecting status: [references/status-commands.md](references/status-commands.md).
 
 Workers must never change the Git index or HEAD. After the run, the orchestrator commits in commit
 mode and the human commits otherwise; push, PR, and CI stay with the human. `compare_tree` compares the whole before/after `staged_diff` independently of
@@ -476,63 +311,7 @@ content writes and an unchanged pre-staged human baseline remain allowed.
 The product-tree integrity boundary includes untracked content (regular files up to 8 MiB and
 symlink target bytes); ignored files and skipped untracked content remain outside coverage.
 
-The status JSON reports the run and repository, task/source digest, copied and normalized grilling
-identities, revalidation progress, exact stage/mode/pass, prepared snapshot validity, live or last-known
-pane, pending report, latest review verdict and candidate digest, both digest-bound approvals, staging
-and publication phase, consistency errors, and one recommended next command. Its classifications
-distinguish awaiting or interrupted grilling revalidation, spec authoring/review, ticket authoring/review,
-pending model-diversity confirmation, pending report, both approval boundaries, requested revision,
-review-blocked, HITL, completed, and inconsistent state. A `pending-diversity-confirmation`
-classification includes the warning, but its decision status controls the recovery guidance. A
-`pending` decision means awaiting confirmation and recommends the exact
-`diversity-confirmation --decision confirm` command. A `refused` decision is a recorded refusal and
-recommends human inspection and configuration recovery through `context`; it never recommends
-confirmation. The short action text refers to a diverse profile in the shared configuration.
-For the exact file and assignment, inspect `shared_configuration_path` and `assignment_path` in the
-`diversity_confirmation` payload returned by `status`; it names the role of the stage that is
-blocked (`workflows.planning.spec`, `workflows.planning.tickets`, or `workflows.planning.reviewer`).
-Initialization persists a validated `input` checkpoint before activating the first
-stage, so an interruption there reports `input-validation` and resumes that same prepared identity. A
-pre-run input or configuration failure has no run state and remains an initialization error rather than
-being inferred as a worker stage.
-
-After context compaction, run `context` and status before acting. The context manifest enumerates the
-persisted task, copied grilling pair, normalized handoff, latest author and review artifacts, approved
-spec, latest ticket proposal, state, events, immutable stage and tree snapshots, reports, and digests.
-Read the applicable artifacts and human diff (`approval-view` or `ticket-approval-view`) plus reported
-pane health; do not reconstruct progress from conversation memory.
-
-Follow the status command exactly for active work:
-
-- A live pane whose deterministic prompt was sent and whose report is pending is rejoined with the
-  armed `await_report.py` command. Never launch a duplicate worker.
-- A normally launched pane, even before start confirmation, uses the armed watcher. An unanswered
-  exit 9 or assessed unresolved startup dialog recommends `observe` and the exception procedure.
-  A recorded dialog response or authorized re-delivery recommends the watcher again with
-  `--extension 0`. A stage with no pane uses `launch`; a pane without launch input uses `start-agent`.
-  Interrupted launch or delivery input stops at HITL with `read-screen`, never blind input.
-- A non-empty handoff is gated or inspected and never overwritten as an uncertain retry.
-- A first live-pane deadline may receive the run's one human-reasoned `resume --decision extend`
-  watcher extension. Pane death, expiry of that extension, snapshot tampering, an integrity violation,
-  an unknown state shape, or an uncertain handoff stops at HITL. None automatically advances or
-  relaunches.
-- At either approval boundary, rerun the corresponding view. It reopens the same reviewed,
-  digest-bound candidate and never invokes a worker.
-
-An explicit human decision may replace a dead or expired worker with one fresh numbered pass:
-
-```bash
-python3 scripts/planning_state.py resume --run-dir <run-dir> \
-  --decision relaunch --reason <human-authored-reason>
-```
-
-The recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback only by
-their finalized manifest identities; failed panes, snapshots, events, and handoffs remain in history.
-Unexpected files are listed as audit information and are never attached implicitly. A dead author gets
-a new author pass. A dead reviewer gets a new reviewer pass over the unchanged author identity. A
-blocked review routes back to an author and cannot be relabeled as another reviewer pass. If ticket
-review found an approved-spec defect, use `ticket-approval --decision revise --scope spec` so the full
-spec author/review/approval sequence repeats.
+Read when resuming a run, recovering context, or following a status recovery recommendation: [references/status-recovery.md](references/status-recovery.md).
 
 ## Gate the author and reviewer
 
@@ -784,23 +563,4 @@ and recap generation.
 `commit.proposed` is written only by `run_commit.py propose` after publication and carries the exact
 file list, message draft, proposal ID, and ignored/preexisting classifications.
 
-## Verification
-
-Run the planning suite and both sibling regression suites:
-
-```bash
-python3 -m unittest discover -s cmux-planning/scripts -p 'test_*.py'
-python3 -m unittest discover -s cmux-issue-chain/scripts -p 'test_*.py'
-python3 -m unittest discover -s cmux-grilling/scripts -p 'test_*.py'
-```
-
-The dependency-free end-to-end smoke path is:
-
-```bash
-python3 scripts/test_planning_flow.py -v -k offline_smoke
-python3 scripts/test_worker_readiness.py
-```
-
-It uses fake workers and fake CMUX to cover a direct task, both author/reviewer stages, a safe
-`pass_with_fixes`, both human approvals, publication, and initialization of the first ready issue
-through the sibling issue-chain source when this development repository contains it.
+Read when changing planning or preparing an offline smoke run: [references/verification.md](references/verification.md).

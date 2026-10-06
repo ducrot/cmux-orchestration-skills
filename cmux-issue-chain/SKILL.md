@@ -34,104 +34,11 @@ from `--invocation` when the direct flag is omitted and refuses contradictory va
 
 ## Worker Profile Configuration
 
-> **Codex TUI flags upgrade:** Snapshots and launch waves prepared before this change must be prepared again; loaders reject the old `tui.whimsy` argument vector.
-
-> **Trust preflight upgrade:** Stage snapshots and launch waves prepared before the trust-preflight upgrade fail validation and must be prepared again. Before preparing, start each assigned `claude` or `codex` harness once in the exact repository root, accept its trust dialog, then exit. In a linked Git worktree, both harnesses record that trust for the main checkout, which preparation accepts. Parent-directory trust does not count. Pi workers require a build supporting `--no-approve`; preparation checks the flag and launch adds it. Python 3.11 or newer is required.
-
-> **Codex hook trust:** Before preparing, start `codex` once in the repository root, review and trust the hooks (via `/hooks`), then exit and prepare again. Preparation reads `$CODEX_HOME/hooks.json` and `$CODEX_HOME/config.toml` (default `~/.codex`), plus the repository's `.codex/hooks.json` and `.codex/config.toml`. Enabled hooks without a positional trust record stop preparation before any pane exists; `features.hooks = false` and per-hook `[hooks.state."<key>"].enabled = false` are respected. The audit records checked sources and trusted-key counts. Hash values are unverifiable: changed hooks are not detected and remain on the watcher exit-9 exception path. Re-prepare older Codex snapshots and launch waves that lack `preflight.hook_trust`.
+Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
-The dependency-free configuration CLI is `scripts/agents_config.py`. Run it from anywhere
-inside the target Git repository; the default path is the repository root's
-`.scratch/orchestrator/agents.json`:
-
-```bash
-python3 scripts/agents_config.py init
-python3 scripts/agents_config.py validate
-python3 scripts/agents_config.py show-resolved
-python3 scripts/agents_config.py migrate
-python3 scripts/agents_config.py migrate --accept
-```
-
-Use `--config <path>` after any command to select an explicit file, including outside Git,
-or `--repo <path>` to resolve the default path from a specific target repository. `init`
-atomically creates the complete shared defaults and never changes an existing file or the
-repository's ignore rules. `validate` and `show-resolved` are local-only operations: they do
-not launch workers or contact Claude Code, Codex, or any provider. They are read-only and stop
-on schema v1 or v2 with the exact preview and acceptance commands; run initialization and stage
-preparation do the same before publishing launchable state.
-
-Treat configuration creation as a first-use human checkpoint, separate from run initialization.
-Before starting any worker-bearing run, resolve the selected configuration path and follow this
-protocol. Never offer profile overrides the human did not ask for.
-
-1. If the file already exists at schema v1 or v2, run `agents_config.py migrate` without `--accept`.
-   Present its coordinated-upgrade warning and complete validated preview in the human's language,
-   including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
-   the displayed fallback profile name, harness, model, and effort without inferring relative quality.
-   Also call out every added required assignment the preview names, such as `issue-chain.triage`.
-   Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
-   On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
-   argument included, then validate and continue.
-2. If the file already exists and is valid schema v3, continue with its assignments.
-   A schema-v3 file needs no migration question.
-   An existing valid schema-v3 file needs no start confirmation either; the start question
-   belongs only to a newly created default (accepted with the **Yes, start now** answer).
-3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run
-   `show-resolved`. Do not call `run_state.py init` yet.
-4. Present the created path and all three workflows' resolved assignments, because the file is shared.
-   Ask one single-select question in the human's language: whether to start the current run with
-   these assignments. The choices mean **Yes, start now** and **No, I will edit the file**.
-5. Use the host's native structured-input tool when it is available: `AskUserQuestion` in Claude
-   Code or `request_user_input` in Codex. Do not assume Codex exposes it in the current mode; when
-   no native tool is available, ask the same question in chat and end the turn for the answer.
-6. On yes, reload and validate the current bytes before starting the run. On no, perform no more
-   tool calls, tell the human to edit the file and reply when it is ready, and end the turn. When
-   they return, validate and show the resolved assignments again; start only after validation
-   succeeds. Report validation errors and remain stopped when it fails.
-
-This checkpoint belongs to the interactive orchestrator, never to a worker pane or subagent. Do
-not emulate it with shell input, a sleeping process, or polling while the human edits the file.
-
-The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
-`claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
-(`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
-`codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
-`gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
-`pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
-`pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`); and `pi-grok-high`
-and `pi-grok-medium` (`pi`, `pi`, `xai/grok-4.7`). Each tuple lists
-harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
-profile by default; Pi is opted into per run or per tracker config. Issue-chain assigns Astra/xhigh to
-`implement`, Opus/high to `simplify`, `review`, and `triage`, and Astra/high to `test`.
-The `fable`, `opus`, and `sonnet` model strings are intentionally moving provider aliases;
-deterministic selection of an alias does not pin the provider's underlying model version.
-
-Configuration is strict and user-owned after its create-only bootstrap. Schema-v1 and schema-v2 reads never migrate.
-The read-only `migrate` preview validates the complete schema-v3 candidate before displaying it;
-`migrate --accept` is the only shared-CLI path that atomically replaces the file. Existing profiles and
-assignments are preserved. From schema v1, planning roles are selected deterministically and a
-collision-safe Codex reviewer is added only when needed. A missing `issue-chain.triage` is assigned
-`claude-opus-high`, copied from the defaults when the file lacks that profile. The original bytes remain
-untouched if validation or publication fails. Migration refuses a resolved target with no write bit or more than one hard link. A symlink is
-preserved and those same guards apply to its intended target.
-The output-stream contract is stable: standalone read-only `migrate` writes the complete migration
-guidance once on stdout, while stderr contains only its short refusal and never repeats either command.
-For a schema-v1 or schema-v2 refusal, planning initialization leaves stdout empty and writes one complete actionable
-guidance block on stderr, with the candidate digest and exact preview and acceptance commands once each.
-Unknown fields, versions,
-harnesses, efforts, assignments, or profile references fail rather than falling back. Model
-strings are syntax-checked, not looked up in a stale catalog, so local validation cannot prove
-provider or model entitlement. `show-resolved` is the inspection command for the complete
-profiles, assignments, sources, models, and efforts. A Pi model must name its provider
-(`provider/id`, such as `openrouter/z-ai/glm-5.3`), because Pi has no provider-wide auth status and
-its preflight check is scoped to the model it is given. Hermes remains an explicit unsupported
-entry in the code-owned adapter registry; that registry — rather than JSON — is the implementation
-boundary for adding future harnesses. It lives in `scripts/agents_config.py` together with the
-preflight rules, the launch and probe adapters, and the override parsing and profile resolution
-all workflows share, so a harness is added in that one file; each workflow keeps its own
-sandbox, approval, and network policy.
+Read when resolving the configuration path before init, creating or migrating configuration, or inspecting profiles: [references/configuration.md](references/configuration.md).
 
 `run_state.py init` requires an existing configuration at that default or explicit path; it never
 creates one. After the first-use checkpoint, it validates and preflights all four issue-chain roles
@@ -215,7 +122,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 5. Final test with Codex.
 6. Recommendations triage is autonomous by default: a fresh visible `Triager 1 - <issue-id>` worker
    decides the collected items, then at most one follow-up pass applies accepted eligible items (see
-   Follow-up Pass). Full flow:
+   Follow-up Pass in `references/follow-up-pass.md`). Full flow:
    `test -> triage-1 -> (follow-up implement -> test -> triage-2) -> issue status -> complete -> commit proposal -> commit (commit mode) -> run recap + final summary -> wait`.
    Triage-2 runs only for new follow-up recommendations. Opt out at init with `--human-triage`.
    A run with nothing to triage completes directly from `test`, although its chain lists `triage`.
@@ -280,18 +187,7 @@ After review self-fix:
 3. If the final Codex test after review changes reports findings, record a `hitl` gate and stop unless the user explicitly authorizes another worker pass.
 4. Review reports that contain only non-blocking recommendations may advance when `## Findings` is `None`.
 
-### Resuming after a confirming HITL
-
-A HITL decision that confirms the tree as the review left it needs no second review pass. When the human
-decision authorizes no product edit, take a fresh `run_state.py snapshot` and compare it with
-`report-captured review-<pass>`: identical tree fingerprint, `head`, `staged_paths`, and
-`staged_diff_sha256` mean nothing is left to review. Record `decision.human` and `hitl.resolved`, append
-the decision to `decisions.md`, record the review gate as `advance` with a reason naming the human
-resolution, and continue with the final test. This is the only case in which the orchestrator records
-`advance` over a parsed `stop`: the human resolved the gate, the orchestrator did not overrule it.
-
-Any authorized product edit, or any snapshot difference, takes the existing path instead: a scoped
-follow-up worker pass for the approved items, then the final test.
+Read when resuming after a confirming HITL: [references/resume-hitl.md](references/resume-hitl.md).
 
 ## Gate Rule
 
@@ -324,31 +220,7 @@ Review reports must separate blocking findings from non-blocking recommendations
 
 Unresolved must-fix or ask-user findings after the review worker's own self-fix pass become HITL. Do not launch another implementer or second reviewer automatically. Any blocker stops the issue chain and must be recorded in the issue and run log. Any major plan drift becomes a HITL blocker.
 
-### Formatting failures: request re-emission, never override
-
-When `parse_report.py` gates `stop` or `hitl` purely because of report format — prose after `- None`, a
-missing required section, the unfilled `|` menu — and the substance looks clean, do not overrule the
-parser with your own `advance`. Ask the still-open worker pane for exactly one contract-conforming
-re-emission ("re-emit the report per the Worker Report Contract; fix the format, not the substance"),
-record a `report.reformat_requested` event, re-parse, and gate on the new report. If the worker pane is
-already gone or the re-emitted report still fails, stop as HITL for the human. The orchestrator never
-records `advance` while the latest parsed gate says otherwise.
-
-The same re-emission path covers quality-only findings. When every entry under `## Findings` is
-`Recommendation: ask-user` with `Scope: other`, `parse_report.py` still gates `stop` but reports
-`quality_only_findings: true` and the reason `quality-only ask-user findings: request re-emission under
-Recommendations`. Such a finding names no acceptance, regression, security, or data-safety concern, so it
-is a recommendation filed in the wrong section. Ask the worker for one re-emission that moves those
-entries to `## Recommendations` unchanged, record `report.reformat_requested`, and gate on the new report.
-A report mixing them with any other finding is a plain `stop`.
-
-The same re-emission path covers stage-ownership findings. The chain runs on a deliberately uncommitted
-working tree. After `complete`, the orchestrator commits in commit mode and the human commits otherwise;
-push, PR, and CI stay with the human. A finding whose sole
-claim is that the tree is uncommitted or that a commit, push, PR, or CI run is missing reports a deferral
-as if it were a defect. Ask the worker for one re-emission without that finding, record
-`report.reformat_requested`, and gate on the new report; substantive findings in the same report keep
-their normal effect.
+Read when a report fails formatting or contains quality-only findings: [references/report-recovery.md](references/report-recovery.md).
 
 ### Diff inspection at code-changing gates
 
@@ -478,26 +350,7 @@ re-delivering to a worker that never started restarts the wait clock and is not 
 
 Use `blocked` only for explicit blockers reported by a worker. Use `hitl` for orchestration uncertainty such as a silent or possibly stuck worker after the wait policy is exhausted.
 
-### Infrastructure blockers
-
-A blocker whose cause is the environment, not the work — Docker/ddev daemon down, network gone, toolchain
-unresponsive — is an infrastructure blocker, not a design blocker. Symptoms: commands hang or fail across
-projects, the worker did nothing wrong, no code or design question is open. Design blockers (scope,
-architecture, migration, data loss) keep the Replanning path.
-
-Handle an infrastructure blocker in this order:
-
-1. Record the outage as `orchestrator.halted`. If the blocked pass had already applied changes it could not
-   verify, record them as `orchestrator.unverified_input` with the affected files.
-2. Never restart shared infrastructure (Docker, ddev, databases) without explicit human consent when other
-   projects may be affected — other projects' active containers or syncs make a restart the human's call.
-3. Wait for recovery with a bounded, armed watcher — same mechanism as the Worker Wait Policy: hand the
-   wait to the harness (`Bash run_in_background`, or Monitor with re-arm) with a stated
-   deadline, and stop as HITL when the deadline passes without recovery. Never wait without an armed
-   watcher and never poll indefinitely.
-4. After recovery, verify before advancing: the orchestrator re-runs the issue's checks over the changes the
-   blocked pass applied but could not verify, and records an `orchestrator.verified` event with commands and
-   outcomes. Only then resume the same stage — the interrupted pass continues; the chain does not skip ahead.
+Read when an environment outage blocks a worker: [references/infrastructure-blockers.md](references/infrastructure-blockers.md).
 
 ## Replanning
 
@@ -642,156 +495,11 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
   `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap
   verbatim as its own message, then the details listed above.
 
-## Recommendations Triage
+Read when the final test report parses advance, before recording that gate, or triaging follow-up recommendations: [references/recommendations-triage.md](references/recommendations-triage.md).
 
-Recommendations triage is autonomous by default. `run_state.py init` records `triage_mode: autonomous`;
-`--human-triage` opts out and records `human`. Runs without that field read as human, including old
-runs with a `decision.human` event. The orchestrator never decides recommendation content.
+Read when triage accepts follow-up items or a follow-up pass is active: [references/follow-up-pass.md](references/follow-up-pass.md).
 
-After the final test report parses `advance` and before that gate event is recorded:
-
-1. Run `python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 1`. It scans every
-   non-triage implement, simplify, review, and test report by pass then chain order, preserving every
-   `## Recommendations` entry verbatim, including duplicates and leading prose. It marks Counter-proposal
-   entries and attaches named same-run `## Not Applied` sections. It writes immutable `triage-items-1.md`
-   with `R1..Rn`, source reports and the issue diff files (both rename paths and untracked files),
-   and records `triage.collected`. A matching repeated collection exits 0 without writes. An orphan
-   items file or digest mismatch refuses; gate `hitl` with the error. Only passes 1 and 2 are supported;
-   higher values refuse without writes.
-2. With zero items, record the test gate `advance` with no `--next-stage`, then complete from `test`.
-3. Otherwise, in autonomous mode record `advance --next-stage triage`, then
-   `prepare --stage triage --pass 1`. Render `--role triage --pass 1 --items-file <run-dir>/triage-items-1.md`
-   with all non-triage run reports supplied as `--context-file`. Keep the issue ready until completion.
-4. Launch a fresh visible Triager pane anchored to the test pane. Snapshot, start-agent, and arm the watcher
-   as for every role. Between `launched triage-<pass>` and `report-captured triage-<pass>`, compare
-   `staged_paths`, `staged_diff_sha256`, `head`, and the full `fingerprint`. Any difference gates `hitl`:
-   triage is read-only, and its diff files were captured before launch.
-5. Parse `reports/triage-1.md` with `--items-file <run-dir>/triage-items-1.md`. The gate requires exactly
-   one verdict per ID, matching sources, present titles and reasons, eligible files inside the captured diff,
-   a Supersedes reference for accepted counter-proposals, and a valid issue draft for each accepted
-   non-follow-up item. `verdicts_malformed` uses the existing single re-emission request: fix the
-   format, not the substance. Quote the offending item and paths for a failed file check without
-   suggesting a verdict. A second failure gates `hitl`.
-6. After a passing gate, run `python3 scripts/run_state.py publish-triage --run-dir <run-dir> --pass 1`.
-   It rechecks the digest, capture snapshot, report, draft blockers and issue path/slug collisions
-   before writing. A failed publication precondition gates `hitl` with the error. Publication creates
-   `todo` issues from accepted non-follow-up drafts, appends `decisions.md`, writes `followup-items.md`
-   when needed, and records `recommendations.triaged` and `triage.published`.
-7. Record the triage gate `advance --next-stage implement` when publication prints `next_stage: implement`;
-   otherwise record `advance` with no next stage and run `complete`.
-
-After the follow-up test report parses `advance` and before that gate event is recorded, run
-`python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 2`. It scans only non-triage
-reports not listed under `Scanned reports` in `triage-items-1.md`, retaining same-run counter-proposal
-context, and writes `triage-items-2.md` with `Triage pass: 2` and `Follow-up pass allowed: no` when nonempty.
-The extraction, immutability, `triage.collected`, and idempotency rules above also apply to pass 2.
-With zero new items, record the test gate `advance` with no next stage and complete. Otherwise record
-`advance --next-stage triage` and repeat steps 3–7 with `--pass 2`, `triage-items-2.md`, and
-`reports/triage-2.md`. Supply every non-triage report plus `reports/triage-1.md` and `followup-items.md`
-as `--context-file`. Launch a fresh Triager 2 anchored to the follow-up test pane; use the same
-snapshot comparison, watcher, parse, and publication steps. Pass 2 forbids `Follow-up eligible: yes`;
-the gate marks it `verdicts_malformed` and `hitl`. `publish-triage --pass 2` writes issues, ledger lines,
-and events, writes no `followup-items.md`, and prints `next_stage: null`. Record the triage-2 gate
-`advance` with no next stage, then complete. Triage-2 never starts another follow-up pass.
-
-The `triage` worker needs an assignment in the configuration like every other worker, even though its
-run is optional; `--human-triage` only decides whether it launches. `init` writes `claude-opus-high`,
-and migration from schema v1 or v2 adds that assignment when it is missing. Every preparation
-resolves, preflights, and optionally probes all five workers, including in human mode.
-
-The triage worker decides every item autonomously and must never ask the human or the orchestrator
-anything. The orchestrator never answers a triage worker's content question; treat a worker that asks
-as a silent worker, following the wait policy until `hitl`. Uncertainty is a reasoned `for-the-human`
-or `deferred` verdict, never a question. The fixed vocabulary is:
-
-- `accepted`: follow-up when eligible, otherwise an issue draft.
-- `rejected`: do not do it; any earlier decision stands.
-- `deferred`: not this run, no issue now.
-- `recorded`: already handled or informational, no action (`resolved` maps here). Write `recorded` in the report, never `resolved`.
-- `for-the-human`: cannot decide or human-only action (`accepted-human` maps here). Write `for-the-human` in the report, never `accepted-human`. It is open, not approval.
-
-`for-the-human` never blocks. Rejected, deferred, and recorded items are ledger only. For a
-Counter-proposal the default is the earlier decision: accept only when the proposal refutes the
-recorded reason with evidence, such as a measurement or concrete failure case.
-After a triage `hitl` or `blocked` gate, the rest of that run's recommendations triage falls back to
-the human procedure; no automatic relaunch is allowed.
-
-In human mode, the human decides the same collector-owned numbered verbatim list. The orchestrator
-never decides. The human may answer "later": complete the run, keep open items pending, and route later
-acceptance to a new issue — a follow-up pass exists only while the issue is uncommitted. Record each
-verdict and reason in `recommendations.triaged` and append a ledger line carrying
-`[human verdict, run <run-id>]`. An open recommendations triage never blocks the next issue chain.
-Only the human's acceptance creates issues in human mode; only `publish-triage` from gated `accepted`
-verdicts creates issues in autonomous mode. An accepted new issue does not by itself authorize changing
-a protected decision in the current issue.
-
-The ledger distinguishes approved, rejected, deferred, recorded, and open items by human or triage-worker
-authority. Explicit recorded supersession approvals identify the earlier decision and the authorized
-replacement or scope; a marker-bearing triage-worker verdict satisfies the recorded approval rule.
-`render_prompt.py` embeds the ledger into every worker prompt. Do not re-report or re-apply rejected,
-deferred, or recorded items unless the code presents a materially different problem. Open items are
-not approvals and must not be applied.
-
-## Follow-up Pass
-
-A follow-up pass applies small accepted triage items to the still uncommitted issue instead of queueing a
-full ticket for them. It runs inside the same run, after triage and before `run_state.py complete`, and
-needs no approval beyond the triage verdict: the orchestrator prepares, launches, gates, and tests it on
-its own.
-
-Entry conditions — all four, otherwise the item becomes a new issue or stays deferred:
-
-- the change is behavior-preserving;
-- it stays inside the files of the issue diff;
-- the proposal is concrete: described precisely or available as an artifact;
-- no acceptance criterion changes.
-
-Procedure:
-
-1. In autonomous mode `publish-triage` records the verdicts and writes `followup-items.md`, one bullet
-   per accepted eligible item with ID, source, supersedes, files, verbatim item text and triage reason.
-   In human mode record the human verdicts and write the same approved item list.
-2. In autonomous mode record the triage gate as `advance` with `--next-stage implement`; the final test
-   gate already moved the run to triage. In human mode the final test gate moves to implement instead.
-3. Prepare `implement` with the next pass number and render with `--followup-file`. Anchor the follow-up
-   implement pane to the triage pane (the test pane in human mode). The variant replaces the implement
-   contract: apply exactly the listed items, prove behavior preservation with the baseline suite before
-   and after instead of a failing regression test, leave existing tests unedited.
-4. Gate the implement report as usual, including diff inspection against the item list, then run the
-   final test for the same pass with the follow-up report and the item list as context files.
-5. In autonomous mode, after the follow-up test report parses `advance` and before that gate event is recorded,
-   run `python3 scripts/collect_recommendations.py --run-dir <run-dir> --pass 2`. With new items record
-   the test gate `advance --next-stage triage`, then run triage pass 2 using the launch, anchoring,
-   snapshot comparison, parse, and publish steps in Recommendations Triage. Otherwise record
-   `advance` with no next stage and complete. After the triage-2 gate, complete the run; triage-2 never
-   starts another follow-up pass. In human mode, relay new recommendations for human triage as above;
-   no further follow-up pass is available. The commit proposal covers the issue and the follow-up together.
-
-Limits: one follow-up pass per issue, all accepted items bundled; no simplify or review stage in it;
-recommendations from its reports go to triage but never start another pass. An item the worker lists
-under `## Not Applied` is not retried. These items do not trigger `triage-2`. For each such item,
-append a factual line to `decisions.md` identifying the run and triage-1 item:
-`accepted in triage-1, not applied in the follow-up pass: <reason verbatim> — OPEN`.
-For example: `- <issue> triage-1 R<n> (<source>): <title> — accepted in triage-1, not applied in the follow-up pass: <reason verbatim> — OPEN. [run <run-id>]`
-List these open items in the final summary; do not turn them into new recommendations or retry them.
-Findings from the follow-up implement or test
-report gate `hitl` like findings after review changes. Select a lighter implement profile for the pass
-with the typed `prepare` overrides when the default is oversized for the items.
-
-## HITL Issues
-
-Issues with `type: HITL` (releases, deploys, anything outward-facing) never get a worker chain.
-`render_prompt.py` refuses them, and `run_state.py init` records `chain: []` with `current_stage: "hitl"`.
-The orchestrator may still assist the human:
-
-- Allowed: write verification checklists and docs (record `artifact.written`), verify results against the
-  acceptance criteria, run read-only probes, record events and gate decisions.
-- Never: deploy, `git push`, flush queues/spools, or send anything outward. Every acting step is the human's.
-- Verify both directions. A guard that blocks the bad path is only half-proven; run a counterproof showing
-  the allowed path still works (`hitl.verified` for the guard, `hitl.counterproof` for the inverse probe).
-- Verification side effects (test orders, spooled mails, test rows) must be recorded in the event data with
-  an `action_required` entry and tracked to closure before `run_state.py complete`. A probe that leaves a
-  live side effect behind is an unresolved blocker, not a passed check.
+Read when the assigned issue is HITL: [references/hitl-issues.md](references/hitl-issues.md).
 
 ## Worker input readiness
 
@@ -1037,35 +745,7 @@ rendered report handoff path before returning the same report body in the consol
 is the worker's only lifecycle-state write exception. The assigned artifact directory is separately
 worker-writable; workers must not edit any other lifecycle-state file.
 
-Send re-delivery or follow-up text to a worker with `pane_ctl.py deliver` — never with a
-bare `cmux send`. The underlying trap: `cmux send --help` documents `\n` and `\r` as Enter, but a
-trailing `\n` does not submit in either the Codex or the Claude Code TUI; the text lands in the composer
-and waits there unsent. `deliver` therefore always sends the text and an explicit `send-key enter` as two
-commands, then echoes the pane screen:
-
-```bash
-# Read each result; ready is a judgment, not an unconditional startup command.
-python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --role test --pass 1
-python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --role test --pass 1 --observation <observation-id> --state ready --reason "<screen evidence>"
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> \
-  --role test --pass 1 --prompt .scratch/orchestrator/runs/<run-id>/prompts/test-1.md
-```
-
-`--role`/`--pass` are required: they bind readiness and the `worker.prompt_sent` event to the worker. `--prompt` builds the delivery line from `orchestrator_lib.delivery_text()` — do not write
-that line by hand. A framing like "Read `<path>` and report back" is what a Claude worker answers with a
-summary of the prompt, which is why the wording lives in the skill and not in the turn.
-
-After exit 9, take one `observe` and `assess` and follow this exception path:
-- `prompt`: use `respond` for the assessed dialog, then re-arm without re-delivery. The assignment
-  is already attached to the launch. Resolve further dialogs individually under the readiness protocol.
-- `failed`: follow the existing blocker/recovery rules.
-- Idle after a recap or line unsent: perform one readiness-gated `deliver --prompt`, then re-arm.
-  A worker that never started does not consume the stage's one deadline extension.
-- Visibly working: record `run_state.py event --type worker.started` with `evidence: "screen"`,
-  the current `launch_id`, `role`, `pass`, and `surface_id`, then re-arm.
-
-A re-armed watcher keeps the same launch identity and can accept a refreshed marker. Screen-based
-confirmation is reserved for this exception path; normal starts are confirmed by the watcher.
+Read when the watcher exits 9 or sending any re-delivery or follow-up text: [references/startup-recovery.md](references/startup-recovery.md).
 
 Do not use hidden subagents as worker substitutes during a live run. If CMUX cannot launch the visible worker, stop and report the CMUX failure. This rule covers the workers themselves; the internal subagents a worker spawns inside its own TUI (e.g. `/code-review` review agents) are part of that worker, not substitutes for it.
 
@@ -1075,39 +755,7 @@ Do not use hidden subagents as worker substitutes during a live run. If CMUX can
 `commit.attempted`, `commit.created`, `commit.skipped`, and `commit.failed` are written only by
 `run_commit.py commit`: attempt before Git, proven success, nothing to commit, or proposal fallback.
 
-Use these exact event types so runs stay comparable and greppable. New ad-hoc types are allowed, but they
-must be dot-namespaced, lower-case, and used consistently within a run — do not spell the same event two
-ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
-
-| Event                                                    | When                                                                                                                                             |
-|----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| `run.init`, `run.completed`                              | Written by `run_state.py init` / `complete`                                                                                                      |
-| `run.briefing`                                           | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                               |
-| `run.recap`                                              | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                                     |
-| `run.invocation`                                         | Initial prompt adopted on re-init by a run that had none; written by `run_state.py init`                                                        |
-| `stage.prepared`                                         | Passed stage snapshot published after full configuration resolution and local preflight; written by `run_state.py init` / `prepare`              |
-| `pane.launched`, `pane.labeled`, `pane.closed`           | Worker pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                                 |
-| `pane.orphans_detected`                                  | A worker's tooling left panes behind; record IDs, then close them                                                                                |
-| `worker.launch_sent`                                     | Worker launch command with assignment attached; written by `pane_ctl.py start-agent`                                                                         |
-| `worker.observed`, `worker.ready`, `worker.startup_status`, `worker.dialog_response`, `worker.readiness_consumed`, `worker.delivery_attempted` | Readiness events for exception-path and follow-up only |
-| `worker.prompt_sent`                                     | Text sent and submitted; written by `pane_ctl.py deliver`                                                                                        |
-| `worker.started`                                         | Assignment start confirmed by the watcher from marker or report, or by the orchestrator on the exception path                                         |
-| `worker.waiting`                                         | Watcher heartbeat while the report is pending; written by `await_report.py` while armed                                                          |
-| `worker.finished`                                        | Report captured; data carries `{role, pass, surface_id, runtime}`                                                                                |
-| `worker.launch_blocked`                                  | A worker launch was denied (permissions, environment)                                                                                            |
-| `gate`                                                   | Only via `run_state.py gate`                                                                                                                     |
-| `tree.snapshot`                                          | Only via `run_state.py snapshot`                                                                                                                 |
-| `report.reformat_requested`                              | Re-emission asked for a format-only parse failure                                                                                                |
-| `report.integrity`, `report.integrity.retracted`         | Report-claim accusation and its explicit retraction                                                                                              |
-| `plan.drift`, `plan.drift.resolved`                      | Drift recorded / resolved per the Replanning rules                                                                                               |
-| `hitl.resolved`, `decision.human`                        | Human decisions and HITL resolutions                                                                                                             |
-| `commit.proposed`                                        | Commit proposal (file list + message draft) handed to the human after `complete`                                                                 |
-| `recommendations.triaged`                                | Per-item verdict, reason, supersedes, consequence, issue and authority (`human` or `triage-worker`)                                                                        |
-| `triage.collected` | Immutable recommendations list: pass, item count, scanned reports, items path and SHA-256 (null for zero items) |
-| `triage.published` | Counts per verdict, created issues, follow-up IDs, for-the-human IDs and follow-up file path |
-| `artifact.written`, `hitl.verified`, `hitl.counterproof` | HITL-issue assistance (see HITL Issues)                                                                                                          |
-| `orchestrator.verified`                                  | Orchestrator-run verification: quick-check test rerun before the simplify gate, or diff inspection at a code-changing gate (commands + outcomes) |
-| `orchestrator.halted`, `orchestrator.unverified_input`   | Orchestrator-side anomalies                                                                                                                      |
+Read when writing any event with `run_state.py event` (including drift records) or interpreting lifecycle events: [references/event-vocabulary.md](references/event-vocabulary.md).
 
 ## Scripts
 
@@ -1139,32 +787,7 @@ files without usable frontmatter, or a tracker with zero loadable issues make `i
 non-zero and name the offending files. `load_issues` enforces this for every script, so `run_state.py init`
 and `render_prompt.py` refuse malformed trackers too.
 
-### Adopting a `to-tickets` tracker
-
-Tickets written by `to-tickets` carry no frontmatter, so the preflight rejects them until they are adopted.
-`adopt_tracker.py` converts them in place — filenames stay untouched, so `to-tickets` and `/implement` keep
-finding their tickets by the paths they expect:
-
-```bash
-python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
-python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> \
-  --branch feature/<slug> --check-command "<canonical test command>"
-```
-
-It writes the frontmatter (`id`, `title`, `type`, `status`, the original triage label under `labels`),
-lifts the inline `**Blocked by:**` line into a `## Blocked by` section with normalized ids, drops the now
-duplicated inline `**Status:**` line, and scaffolds `README.md` (ground rules) and `decisions.md` when they
-are missing. Already adopted files are skipped, so a later batch of tickets can be adopted without
-disturbing issues the chain has already advanced.
-
-`type` is derived from the triage vocabulary in `docs/agents/triage-labels.md`, never guessed:
-`ready-for-agent` is the only AFK status; `ready-for-human`, `needs-triage`, `needs-info` and `wontfix`
-become HITL. A missing or unknown status aborts the whole adoption without writing anything — an issue
-whose `type` is silently empty would read as AFK and be handed to autonomous workers.
-
-Adoption writes issue files, so it belongs to the orchestrator's lifecycle-state boundary, not to product
-code. If `to-tickets` later rewrites an adopted file, its frontmatter is gone: re-running adoption restores
-the format, but a `status: done` recorded there is lost.
+Read when a to-tickets tracker needs frontmatter adoption: [references/tracker-adoption.md](references/tracker-adoption.md).
 
 Create and append run-state. The default run id is `<ISSUE-ID>-<YYYY-MM-DD>-<HHMM>` (UTC) — issue first
 so runs group per issue, timestamped so re-runs never reuse a stale run directory (a leftover report from
@@ -1248,15 +871,7 @@ python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 
 The pass-2 example assumes the pass-1 implement, simplify, and review reports carry protected decisions
 or explicit human supersession records. Select prior reports by the relevance rule above.
 
-Render a follow-up pass (see Follow-up Pass). `--followup-file` applies to `--role implement` only and
-swaps the implement contract for the follow-up contract; the test prompt stays the normal one and
-receives the follow-up report and the item list as context files:
-
-```bash
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage triage --decision advance --reason "triage published; follow-up items accepted" --next-stage implement
-python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage implement --pass 2
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file .scratch/orchestrator/runs/<run-id>/followup-items.md
-```
+Read when rendering an accepted follow-up pass: [references/follow-up-commands.md](references/follow-up-commands.md).
 
 Parse worker reports. Exit code carries the gate; a missing report is `pending` (exit 6), never a crash:
 
@@ -1277,170 +892,8 @@ python3 scripts/await_report.py --run-dir .scratch/orchestrator/runs/<run-id> --
 Control worker panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints the pinned
 id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/`close` are the lifecycle verbs.
 
-Run the regression tests after touching `parse_report.py`, `await_report.py`, `pane_ctl.py`, `run_state.py`,
-`worker_snapshot.py`, `agents_config.py`, `collect_recommendations.py`, `triage_contract.py`, or
-`publish_triage.py`:
+Read when changing scripts or selecting their regression checks: [references/script-tests.md](references/script-tests.md).
 
-```bash
-python3 scripts/test_parse_report.py
-python3 scripts/test_collect_recommendations.py
-python3 scripts/test_await_report.py
-python3 scripts/test_pane_ctl.py
-python3 scripts/test_worker_readiness.py
-python3 scripts/test_stage_preparation.py
-python3 scripts/test_agents_config.py
-```
+Read when preparing a live worker pilot: [references/smoke-test.md](references/smoke-test.md).
 
-## Smoke Test
-
-Before a live worker pilot, run the scripts against the real local tracker. Replace `.scratch/<tracker>`
-with the tracker directory and `ISSUE-001` with an issue that is ready (type AFK, status todo/in_progress,
-unblocked) — `render_prompt.py` refuses HITL and non-ready issues by design. Every command must exit 0, and
-the whole block must be safe to run twice in a row:
-
-```bash
-python3 scripts/test_parse_report.py
-python3 scripts/test_collect_recommendations.py
-python3 scripts/test_await_report.py
-python3 scripts/test_pane_ctl.py
-python3 scripts/test_worker_readiness.py
-python3 scripts/test_issue_state.py
-python3 scripts/test_adopt_tracker.py
-python3 scripts/test_agents_config.py
-python3 scripts/test_stage_preparation.py
-python3 scripts/test_render_prompt.py
-python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
-python3 scripts/issue_state.py list --tracker .scratch/<tracker>
-python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --run-id smoke-issue-001
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "prepare repeatable smoke" --next-stage implement
-python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --pass 1
-python3 scripts/collect_recommendations.py --run-dir .scratch/orchestrator/runs/smoke-issue-001 --pass 1
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/smoke-issue-001
-python3 scripts/parse_report.py references/sample-no-findings.md --json
-python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-issue-001 --label "smoke snapshot"
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "smoke test" --next-stage simplify
-python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-issue-001 --message "smoke complete"
-```
-
-The collector on the fresh smoke run exits 0 with zero items and no items file; on the second run it
-exits 0 again without an extra collection event. The smoke-only gate and preparation reset the reusable
-smoke stage before rendering.
-
-The smoke test must prove gate correctness, issue parsing, blocker DAG evaluation, prompt rendering, run-state writing, tree fingerprinting, run closing, and report parsing without requiring product-code changes.
-
-`references/sample-no-findings.md` is the shipped clean-report fixture. `run_state.py init` is idempotent, so re-running the block reuses the existing run directory instead of failing. Run the block from the orchestrator's cmux pane so `init` can pin the workspace; outside cmux, pass `--workspace-id <uuid>` or `--no-workspace` explicitly.
-
-## Worker Report Contract
-
-Ask every worker to finish with this report shape. `## Result`, `## Blockers`, and `## Plan Drift` are
-required: absent or empty, they make the report malformed and the gate returns `hitl`. An omitted section
-never reads as `None`. Under `## Result`, emit exactly one of `NO FINDINGS`, `FINDINGS`, `BLOCKER` — a
-literal `NO FINDINGS | FINDINGS | BLOCKER` line is an unfilled template and is rejected.
-
-```markdown
-## Result
-NO FINDINGS
-
-## Tests / Checks
-- `command`: outcome
-
-## Findings
-- None
-
-## Blockers
-- None
-
-## Plan Drift
-- None
-
-## Notes
-- Optional: caveats, method notes, context. Never must-fix content.
-```
-
-Use exact section labels where possible. Treat missing tests/checks as a failed gate even if the report says `NO FINDINGS`.
-
-The bare-`None` rule: in `## Findings`, `## Blockers`, and `## Plan Drift`, an empty section is exactly the
-line `- None` — no prose on or after that line. `parse_report.py` reads anything else in these sections as a
-real finding, blocker, or drift; a `- None. Everything fine because …` gates the chain as if a finding were
-reported. Explanations belong in the optional `## Notes` section (or `## Recommendations` for review and
-simplify workers), which the gate does not parse. Rendered prompts instruct workers to self-validate their
-draft with `parse_report.py`, write the same validated body to the exact handoff path, validate that path,
-and only then return the report in the console, so format failures die at the source instead of at the gate.
-
-Plan drift is not a finding. `## Plan Drift` is its own section with its own gate (`hitl`); never mirror
-drift into `## Findings` or change `## Result` because of it. A report whose only irregularity is drift
-keeps `## Result` at `NO FINDINGS`, keeps `## Findings` empty (`- None`), and carries the drift exclusively
-in `## Plan Drift` — the parser gates `hitl` from that section alone. `FINDINGS` above an empty
-`## Findings` section is a contradiction, not a convention. The allowed `## Result` values stay
-`NO FINDINGS`, `FINDINGS`, `BLOCKER`.
-
-For review workers, require severity and recommendation triage. The first check line names the pass the
-harness ran: `/code-review medium --fix` on Claude Code, `review pass (standards, spec, correctness)` elsewhere:
-
-```markdown
-## Result
-NO FINDINGS
-
-## Tests / Checks
-- `/code-review medium --fix`: outcome
-- `command`: outcome
-
-## Change Summary
-- None, or concise list of review fixes applied by the review pass.
-
-## Findings
-- None
-
-## Recommendations
-- None, or non-blocking nice-to-have/follow-up items.
-
-## Blockers
-- None
-
-## Plan Drift
-- None
-```
-
-`## Findings` follows the bare-`None` rule; remaining must-fix and ask-user findings after the self-fix pass replace
-the `- None` line entirely, each with Severity (critical|high|medium|low), `Recommendation: must-fix` or
-`Recommendation: ask-user` (ask-user when the finding challenges a documented issue decision, or an
-earlier-stage decision for a non-quality reason — the reviewer must not fix those), Scope
-(acceptance|regression|security|data-safety|other), file/line Evidence, and a concrete suggested fix.
-`Scope: other` never carries `ask-user`; the parser flags a report whose findings are all of that shape for
-re-emission. `## Change Summary` and `## Recommendations` are not gate-parsed and may carry prose;
-quality-only counter-proposals to earlier-stage decisions go under `## Recommendations` marked
-`Counter-proposal`.
-
-For simplify/refactor workers, require the simplify pass to be reported as a check (`/simplify` on Claude
-Code, `simplify pass` elsewhere):
-
-```markdown
-## Tests / Checks
-- `/simplify`: outcome
-- `command`: outcome
-
-## Change Summary
-- None, or concise list of behavior-preserving refactorings applied.
-
-## Not Applied
-- None
-
-## Recommendations
-- None, or refactorings that need a human decision.
-```
-
-Require one bullet per considered-but-not-applied refactoring and a one-line reason under
-`## Not Applied`, or `- None`. This section is not gate-parsed by `parse_report.py`; it records
-decisions for the review worker and the orchestrator's review-gate diff inspection. It holds only
-refactorings the simplifier decided against itself; one that needs a human decision goes under
-`## Recommendations` and reaches triage from there.
-
-A follow-up implement report adds `## Change Summary` (changed files per approved item) and
-`## Not Applied` (approved items that no longer fit the code, each with a one-line reason).
-
-Runs use the shared `.scratch/orchestrator/runs/` root and default UTC id
-`chain-issue-NNN-<YYYY-MM-DD>-<HHMM>`. Each `state.json` records `workflow: issue-chain`,
-`layout_version: 1`, and `deliverables` with the tracker and issue paths. Inspect an existing run
-read-only with `run_state.py status --run-dir <run-dir>`; an unsupported legacy layout must be
-restarted before recovery, preparation, launch, or lifecycle writes.
+Read when checking report structure or requesting report re-emission: [references/worker-report-contract.md](references/worker-report-contract.md).

@@ -59,7 +59,7 @@ Open the target repository in cmux and ask your agent to use the relevant skill.
 
 On first use, the orchestrator creates `.scratch/orchestrator/agents.json`, shows the assignments for all three workflows, and asks whether to start or pause for edits. An existing valid schema-v3 file needs no start confirmation. Worker startup checks the configured executables, CLI capabilities, and local authentication.
 
-Issue-chain needs a compatible local Markdown tracker with issue metadata, dependencies, and canonical check commands. Planning produces this format. Existing `to-tickets` trackers can be converted with the [tracker adoption helper](cmux-issue-chain/SKILL.md#adopting-a-to-tickets-tracker).
+Issue-chain needs a compatible local Markdown tracker with issue metadata, dependencies, and canonical check commands. Planning produces this format. Existing `to-tickets` trackers can be converted with the [tracker adoption helper](cmux-issue-chain/references/tracker-adoption.md).
 
 ## How the workflows work
 
@@ -119,7 +119,7 @@ The shared configuration lives at `.scratch/orchestrator/agents.json`. These are
 
 Claude model names are provider aliases. These assignments describe the shipped configuration, not guaranteed model access. Optional `--probe-profiles` checks make a minimal live provider request before workers launch.
 
-Use the installed skill's `scripts/agents_config.py validate` and `show-resolved` commands to inspect configuration. Typed profile, CLI, model, effort, and executable overrides are supported; runtime safety policies remain code-owned. See the [configuration reference](cmux-issue-chain/SKILL.md#worker-profile-configuration) for commands, precedence, profiles, and probes.
+Use the installed skill's `scripts/agents_config.py validate` and `show-resolved` commands to inspect configuration. Typed profile, CLI, model, effort, and executable overrides are supported; runtime safety policies remain code-owned. See the [configuration reference](cmux-issue-chain/references/configuration.md) for commands, precedence, profiles, and probes.
 
 ### Upgrading an existing configuration
 
@@ -127,7 +127,7 @@ Use the installed skill's `scripts/agents_config.py validate` and `show-resolved
 
 Upgrade all installed siblings together. Schema-v1 and schema-v2 migration requires a read-only preview and explicit human approval before running the displayed `agents_config.py migrate --accept` command. Validation never migrates configuration as a side effect. A schema-v3 file needs no migration question.
 
-[Migration procedure and safeguards](cmux-issue-chain/SKILL.md#worker-profile-configuration)
+[Migration procedure and safeguards](cmux-issue-chain/references/configuration.md)
 
 ## Visibility, checks, and run artifacts
 

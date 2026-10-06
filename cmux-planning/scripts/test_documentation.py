@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import ast
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,9 +24,65 @@ SIBLINGS = tuple(
 )
 
 
+# Expand only explicit on-demand pointers in their original position, so section-level
+# assertions read the owning reference, never a duplicate in SKILL.md.
+ON_DEMAND = re.compile(
+    r"^Read when [^\n]+: \[references/([^\]\n]+)\]\(references/\1\)\.\n(?:\n|\Z)",
+    re.MULTILINE,
+)
+
+
+@lru_cache(maxsize=None)
+def documentation(guide: Path) -> str:
+    text = guide.read_text(encoding="utf-8")
+    if guide.name != "SKILL.md":
+        return text
+    return ON_DEMAND.sub(
+        lambda match: (guide.parent / "references" / match.group(1)).read_text(encoding="utf-8"),
+        text,
+    )
+
+
 @lru_cache(maxsize=None)
 def normalized(guide: Path) -> str:
-    return " ".join(guide.read_text(encoding="utf-8").split()).lower()
+    return " ".join(documentation(guide).split()).lower()
+
+
+class OnDemandDocumentation(unittest.TestCase):
+    # Entry-point sizes measured before conditional procedures moved to references/.
+    BASELINE_BYTES = {"cmux-issue-chain": 109325, "cmux-grilling": 75894, "cmux-planning": 51689}
+    NORMAL_HEADINGS = {
+        "cmux-issue-chain": ("## gate rule", "## default chain"),
+        "cmux-grilling": ("## gate rule", "## round loop"),
+        "cmux-planning": ("## initialize", "## run one stage", "## gate the author and reviewer"),
+    }
+
+    def test_entrypoints_reduce_start_context_by_at_least_thirty_percent(self):
+        for guide in SIBLINGS:
+            with self.subTest(skill=guide.parent.name):
+                self.assertLessEqual(guide.stat().st_size, self.BASELINE_BYTES[guide.parent.name] * .7)
+
+    def test_conditional_routes_resolve_to_nonempty_local_references(self):
+        for guide in SIBLINGS:
+            text = guide.read_text(encoding="utf-8")
+            routes = list(ON_DEMAND.finditer(text))
+            with self.subTest(skill=guide.parent.name):
+                self.assertTrue(routes, "conditional procedures need explicit read-when routes")
+                self.assertEqual(len(routes), text.count("Read when "))
+                for route in routes:
+                    target = guide.parent / "references" / route.group(1)
+                    self.assertEqual(target.resolve().parent, (guide.parent / "references").resolve())
+                    self.assertTrue(target.read_text(encoding="utf-8").strip(), target)
+
+    def test_normal_run_stays_in_entrypoints(self):
+        for guide in SIBLINGS:
+            text = guide.read_text(encoding="utf-8").lower()
+            with self.subTest(skill=guide.parent.name):
+                for phrase in (" init ", "## run briefing", "## run recap", "run_commit.py propose",
+                               "run_commit.py commit", "run_in_background: true", "persisted on first arm"):
+                    self.assertIn(phrase, text)
+                for heading in self.NORMAL_HEADINGS[guide.parent.name]:
+                    self.assertIn(heading, text)
 
 
 def notice(text: str) -> str:
@@ -193,7 +250,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             "correcting a regression while preserving documented intended behavior is not a "
             "decision reversion and does not trigger this stop rule", inspection,
         )
-        self.assertIn("\n## Not Applied\n- None", guide.read_text(encoding="utf-8"))
+        self.assertIn("\n## Not Applied\n- None", documentation(guide))
 
     def test_issue_chain_protects_same_run_decisions_across_passes(self):
         guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
@@ -311,7 +368,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         ):
             with self.subTest(section="follow-up", phrase=phrase):
                 self.assertIn(phrase, followup)
-        raw = guide.read_text(encoding="utf-8")
+        raw = documentation(guide)
         self.assertIn("--role implement --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --followup-file", raw)
         self.assertIn("\n## Recommendations\n- None, or refactorings that need a human decision.", raw)
 
@@ -355,7 +412,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             context,
         )
         self.assertIn("unrelated or decision-free historical reports are not required by default", context)
-        lines = guide.read_text(encoding="utf-8").splitlines()
+        lines = documentation(guide).splitlines()
         example = next(line for line in lines if line.startswith("python3 scripts/render_prompt.py ")
                        and "--role review --pass 2 " in line)
         for report in ("implement-1", "simplify-1", "review-1", "implement-2", "simplify-2"):
@@ -384,16 +441,17 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 sources.append(ast.get_source_segment(source, function))
             self.assertEqual(sources, [sources[0]] * 3, name)
 
-    def test_vendored_run_briefing_files_are_byte_identical(self):
+    def test_vendored_shared_files_are_byte_identical(self):
         if len(SIBLINGS) != 3:
             self.skipTest("sibling skills are absent in this independent installation")
-        for filename in ("run_briefing.py", "test_run_briefing.py", "run_commit.py", "test_run_commit.py"):
-            contents = [(guide.parent / "scripts" / filename).read_bytes() for guide in SIBLINGS]
-            self.assertEqual(contents, [contents[0]] * 3, filename)
+        for relative in ("scripts/run_briefing.py", "scripts/test_run_briefing.py", "scripts/run_commit.py",
+                         "scripts/test_run_commit.py", "references/preparation-upgrades.md"):
+            contents = [(guide.parent / relative).read_bytes() for guide in SIBLINGS]
+            self.assertEqual(contents, [contents[0]] * 3, relative)
 
     def test_commit_transaction_is_documented_in_every_guide(self):
         for skill in ("cmux-issue-chain", "cmux-grilling", "cmux-planning"):
-            text = (REPOSITORY / skill / "SKILL.md").read_text().lower()
+            text = documentation(REPOSITORY / skill / "SKILL.md").lower()
             vocabulary = text.split("## event vocabulary", 1)[1]
             for event in ("commit.attempted", "commit.created", "commit.skipped", "commit.failed"):
                 self.assertIn(event, vocabulary, skill)
@@ -457,7 +515,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         if not README.is_file():
             self.skipTest("repository README is absent")
         for guide in (README, PLANNING):
-            text = guide.read_text(encoding="utf-8")
+            text = documentation(guide)
             self.assertIn(".scratch/orchestrator/runs/<run-id>/", text)
             self.assertIn("deliverables", text)
             for line in text.splitlines():
@@ -481,7 +539,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
 
         for guide in GUIDES:
             with self.subTest(guide=guide.relative_to(REPOSITORY)):
-                self.assertEqual(canonical, notice(guide.read_text(encoding="utf-8")))
+                self.assertEqual(canonical, notice(documentation(guide)))
 
     def test_every_shipped_guide_documents_explicit_read_only_migration(self):
         # Detailed operator contracts belong in the standalone skill guides; the README
@@ -538,7 +596,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             self.assertIn(phrase, text)
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
-        text = PLANNING.read_text(encoding="utf-8")
+        text = documentation(PLANNING)
         start = "- Two explicit integrity boundaries apply."
         end = "\n- Every worker emission"
         self.assertIn(start, text)
@@ -675,7 +733,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")
-        guide = PLANNING.read_text(encoding="utf-8")
+        guide = documentation(PLANNING)
         readme = README.read_text(encoding="utf-8")
         normalized_guide = " ".join(guide.split())
         for required in (
