@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Regression tests for orchestrator_usage.py: workflow detection and call classification."""
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import orchestrator_usage as ou
 
@@ -132,7 +135,7 @@ class ClaudeSessions(unittest.TestCase):
         self.assertIsNone(ou.parse_claude(self.path, GRILLING))
 
 
-class GrillingRounds(unittest.TestCase):
+class GrillingFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -156,6 +159,8 @@ class GrillingRounds(unittest.TestCase):
         call.run_id = "grill-demo"
         return call
 
+
+class GrillingRounds(GrillingFixture):
     def test_rounds_are_the_stage_unit(self):
         state = ou.read_run_state(self.run_dir, GRILLING)
         self.assertEqual(state["stages_completed"], 2)
@@ -180,6 +185,243 @@ class GrillingRounds(unittest.TestCase):
         chain_rows = ou.aggregate_runs([session])
         self.assertTrue(chain_rows)
         self.assertNotIn("session_start_calls", chain_rows[0])
+
+
+class RunAttribution(GrillingFixture):
+    def events(self, run="grill-demo", **kwargs):
+        directory = self.root / ".scratch/orchestrator/runs" / run
+        directory.mkdir(parents=True, exist_ok=True)
+        events = [{"type": "run.init", "time": "2026-09-13T10:01:00Z"},
+                  {"type": "grill.question", "time": "2026-09-13T10:02:00Z"},
+                  {"type": "grill.question", "time": "2026-09-13T10:02:10Z"},
+                  {"type": "grill.question", "time": "2026-09-13T10:02:20Z"},
+                  {"type": "run.completed", "time": "2026-09-13T10:04:00Z"}]
+        events[0].update(kwargs)
+        (directory / "events.jsonl").write_text("\n".join(map(json.dumps, events)))
+        return directory
+
+    def parsed(self, owners, sid="owner"):
+        return ou.parsed_session("claude", sid, "p", str(self.root),
+                                 [self.call(i, 100) for i in range(7)], [], owners)
+
+    def test_modes_and_missing_directory(self):
+        for flags, expected in (([], ""), ([False], "old-start"), ([True, True], "new-start"),
+                                ([False, True], "mixed")):
+            self.events()
+            with (self.run_dir / "events.jsonl").open("a") as fh:
+                for flag in flags:
+                    fh.write("\n" + json.dumps({"type": "worker.launch_sent",
+                                                "data": {"prompt_path": "p"} if flag else {}}))
+            self.assertEqual(ou.read_run_state(self.run_dir)["start_mode"], expected)
+        session = ou.build_session("claude", "s", "p", "/does-not-exist", [self.call(1, 10)])
+        self.assertEqual(ou.aggregate_runs([session], GRILLING)[0]["start_mode"], "")
+
+    def test_mentions_do_not_own_and_windows_exclude_unrelated_work(self):
+        self.events()
+        sessions = ou.owned_session_windows([self.parsed(["grill-demo"]), self.parsed([], "analysis")], GRILLING)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["calls"], 4)
+        [row] = ou.aggregate_runs(sessions, GRILLING)
+        self.assertEqual(row["questions"], 3)
+        self.assertEqual(row["calls_per_question"], 1)
+        self.assertEqual(row["tokens_per_question"], 100)
+        self.assertEqual(row["sessions"], "owner")
+
+    def test_event_owner_and_recap_fallback(self):
+        self.events(data={"orchestrator_session_id": "owner"})
+        path = self.run_dir / "events.jsonl"
+        path.write_text(path.read_text().replace("run.completed", "run.recap"))
+        self.assertEqual(ou.owned_session_windows([self.parsed([])], GRILLING)[0]["calls"], 4)
+
+    def test_multiple_runs_and_open_window(self):
+        self.events()
+        second = self.events("plan-second")
+        path = second / "events.jsonl"
+        path.write_text(path.read_text().replace("10:01", "10:05").replace("10:04", "10:06"))
+        session = self.parsed(["grill-demo", "plan-second"])
+        self.assertEqual(ou.owned_session_windows([session], GRILLING)[0]["calls"], 4)
+        self.assertEqual(ou.owned_session_windows([session], PLANNING)[0]["calls"], 2)
+        path = self.run_dir / "events.jsonl"
+        path.write_text("\n".join(l for l in path.read_text().splitlines() if "run.completed" not in l))
+        self.assertEqual(ou.owned_session_windows([session], GRILLING)[0]["calls"], 4)
+
+    def test_init_pair_generated_id_and_discussion(self):
+        path = self.root / "owner.jsonl"
+        write_transcript(path, ["python3 cmux-grilling/scripts/run_state.py init --slug demo"])
+        events = [json.loads(l) for l in path.read_text().splitlines()]
+        events[1]["message"]["content"][0]["id"] = "init"
+        events += [{"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/grill-demo"}]}}]
+        path.write_text("\n".join(map(json.dumps, events)))
+        self.assertEqual(ou.parse_claude(path, GRILLING)["owned_runs"], ["grill-demo"])
+        self.assertFalse(ou.executed_init("grep 'python3 cmux-grilling/scripts/run_state.py init' log"))
+        self.assertEqual(ou.owned_session_windows([self.parsed([])], GRILLING), [])
+
+    def worker(self, harness, workflow, prompt_name):
+        run = {"grilling": "grill-demo", "planning": "plan-demo", "issue-chain": "chain-demo"}[workflow.name]
+        prompt = f"Your standing contract is in .scratch/orchestrator/runs/{run}/prompts/{prompt_name}.md."
+        path = self.root / f"{harness}.jsonl"
+        if harness == "claude":
+            write_transcript(path, ["echo working"] * 4, prompt)
+            lines = [json.loads(l) for l in path.read_text().splitlines()]
+            for ev in lines:
+                ev["cwd"] = str(self.root)
+        else:
+            lines = [{"type": "session_meta", "payload": {"id": "codex-lane", "cwd": str(self.root)}},
+                     {"type": "response_item", "payload": {"type": "message", "role": "user",
+                      "content": [{"type": "input_text", "text": "# AGENTS.md instructions\n# nested heading\nRules"},
+                                  {"type": "input_text", "text": "<environment_context>env</environment_context>"}]}},
+                     {"type": "response_item", "payload": {"type": "message", "role": "user", "content": prompt}}]
+            lines.append({"type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command",
+                "arguments": json.dumps({"cmd": f"python3 {workflow.subdir}/scripts/run_state.py status"})}})
+            for i in range(4):
+                lines.append({"type": "event_msg", "timestamp": f"2026-09-13T10:0{i}:00Z",
+                              "payload": {"type": "token_count", "info": {"total_token_usage":
+                                          {"input_tokens": 100 * (i + 1), "total_tokens": 100 * (i + 1)}}}})
+        path.write_text("\n".join(map(json.dumps, lines)))
+        parser = ou.parse_claude if harness == "claude" else ou.parse_codex
+        self.assertIsNone(parser(path, workflow))
+        session = parser(path, workflow, include_workers=True)
+        self.assertEqual(session["worker_runs"], [run])
+        self.assertEqual(ou.owned_session_windows([session], workflow), [])
+        return session
+
+    def test_workers_all_workflows_and_harnesses(self):
+        for workflow in (CHAIN, PLANNING, GRILLING):
+            for harness in ("claude", "codex"):
+                for prompt in ("session-docs", "round-1-docs", "implement-1"):
+                    with self.subTest(workflow=workflow.name, harness=harness, prompt=prompt):
+                        self.worker(harness, workflow, prompt)
+
+    def test_worker_totals_and_round_question_denominators(self):
+        self.events()
+        workers = [self.worker(h, GRILLING, "session-docs") for h in ("claude", "codex")]
+        rows = ou.aggregate_runs(ou.owned_session_windows([self.parsed(["grill-demo"])], GRILLING), GRILLING)
+        ou.add_worker_usage(rows, workers, GRILLING)
+        row = rows[0]
+        self.assertEqual(row["harnesses"], "claude")
+        self.assertEqual(row["worker_sessions"], 2)
+        self.assertEqual(row["worker_tokens_claude"], 4060)
+        self.assertEqual(row["worker_tokens_codex"], 400)
+        self.assertEqual(row["worker_tokens"], 4460)
+        self.assertEqual(row["worker_tokens_per_round"], 1115)
+        self.assertEqual(row["worker_tokens_per_question"], 743)
+        self.assertEqual(row["worker_tokens_per_round_codex"], 100)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            ou.print_start_summary([], rows, GRILLING)
+        self.assertIn("start_mode", output.getvalue())
+
+    def test_worker_run_ids_only_come_from_assignment_prompt_paths(self):
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                self.worker(harness, GRILLING, "session-docs")
+                path = self.root / f"{harness}.jsonl"
+                text = path.read_text().replace(
+                    "session-docs.md.",
+                    "session-docs.md. Read .scratch/orchestrator/runs/grill-reference/reports/round-1.md "
+                    "and .scratch/orchestrator/runs/plan-reference/events.jsonl for context.")
+                path.write_text(text)
+                parser = ou.parse_claude if harness == "claude" else ou.parse_codex
+                session = parser(path, GRILLING, include_workers=True)
+                self.assertEqual(session["worker_runs"], ["grill-demo"])
+
+    def test_codex_worker_prompt_shares_message_with_agents_and_environment(self):
+        self.worker("codex", GRILLING, "session-docs")
+        path = self.root / "codex.jsonl"
+        events = [json.loads(line) for line in path.read_text().splitlines()]
+        prompt = events.pop(2)["payload"]["content"]
+        events[1]["payload"]["content"].append({"type": "input_text", "text": prompt})
+        path.write_text("\n".join(map(json.dumps, events)))
+        self.assertIsNone(ou.parse_codex(path, GRILLING))
+        session = ou.parse_codex(path, GRILLING, include_workers=True)
+        self.assertEqual(session["worker_runs"], ["grill-demo"])
+        self.assertEqual(ou.owned_session_windows([session], GRILLING), [])
+
+    def test_missing_state_window_keeps_calls_until_next_run_mention(self):
+        calls = [self.call(i, 10 * (i + 1)) for i in range(7)]
+        for call, run in zip(calls, (None, "grill-missing", None, None,
+                                     "grill-other", None, None)):
+            call.run_id = run
+        session = ou.parsed_session("claude", "owner", "p", str(self.root), calls,
+                                    [], ["grill-missing", "grill-other"])
+        windows = ou.owned_session_windows([session], GRILLING)
+        self.assertEqual(len(windows), 2)
+        by_run = {s["run_ids"][0]: s for s in windows}
+        self.assertEqual(by_run["grill-missing"]["calls"], 3)
+        self.assertEqual(by_run["grill-missing"]["tokens_total"], 90)
+        self.assertEqual(by_run["grill-other"]["calls"], 3)
+        self.assertEqual(by_run["grill-other"]["tokens_total"], 180)
+
+    def test_run_project_without_run_root_uses_cwd_project_name(self):
+        with patch.object(ou, "project_root", return_value=None):
+            self.assertEqual(ou.run_project("/projects/example-app"), "-projects-example-app")
+
+    def test_start_summary_matches_both_session_id_and_run_id(self):
+        self.events()
+        sessions = ou.owned_session_windows([self.parsed(["grill-demo"], "owner123-long")], GRILLING)
+        rows = ou.aggregate_runs(sessions, GRILLING)
+        rows[0]["start_mode"] = "new-start"
+        # A different cwd/project must not break the row's explicit owner link.
+        owner = dict(sessions[0], cwd="/unrelated/cwd", project="different-project")
+        wrong_session = dict(owner, session_id="outsider-long", avg_context_per_call=900)
+        wrong_run = dict(owner, run_ids=["grill-other"], avg_context_per_call=700)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            ou.print_start_summary([owner, wrong_session, wrong_run], rows, GRILLING)
+        line = next(line for line in output.getvalue().splitlines() if line.startswith("new-start "))
+        fields = line.split()
+        self.assertEqual(fields[1:3], ["1", "1"])
+        self.assertEqual(float(fields[5]), 100)
+
+    def test_codex_init_output_owns_generated_run(self):
+        path = self.root / "codex-owner.jsonl"
+        events = [
+            {"type": "session_meta", "payload": {"id": "owner", "cwd": str(self.root)}},
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": "start grilling"}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "init",
+             "arguments": json.dumps({"cmd": "python3 cmux-grilling/scripts/run_state.py init --slug demo"})}},
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "init",
+             "output": ".scratch/orchestrator/runs/grill-demo"}},
+            {"type": "event_msg", "timestamp": "2026-09-13T10:02:00Z",
+             "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "total_tokens": 100}}}},
+        ]
+        path.write_text("\n".join(map(json.dumps, events)))
+        self.events()
+        session = ou.parse_codex(path, GRILLING)
+        self.assertEqual(session["owned_runs"], ["grill-demo"])
+        self.assertEqual(ou.owned_session_windows([session], GRILLING)[0]["tokens_total"], 100)
+
+    def test_start_summary_has_separate_modes_and_worker_medians(self):
+        self.events()
+        sessions = ou.owned_session_windows([self.parsed(["grill-demo"])], GRILLING)
+        rows = ou.aggregate_runs(sessions, GRILLING)
+        ou.add_worker_usage(rows, [], GRILLING)
+        rows = [dict(rows[0], start_mode=mode) for mode in ("old-start", "new-start", "mixed")]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            ou.print_summary(sessions, rows, GRILLING)
+        text = output.getvalue()
+        for mode in ("old-start", "new-start", "mixed"):
+            self.assertIn(mode + " 1 1", text)
+        for label in ("medians per skill commit", "ctx/call", "pane-calls/session",
+                      "calls/question", "worker_tokens_per_question_codex"):
+            self.assertIn(label, text)
+
+    def test_cli_filters_both_tables_and_preserves_excluded_csv(self):
+        self.events()
+        with (self.run_dir / "events.jsonl").open("a") as fh:
+            fh.write("\n" + json.dumps({"type": "worker.launch_sent", "data": {"prompt_path": "p"}}))
+        with patch.object(ou, "scan", return_value=[self.parsed(["grill-demo"])]), \
+             patch.object(ou, "CLAUDE_PROJECTS", self.root), \
+             patch.object(ou, "CODEX_SESSIONS", self.root / "absent"), \
+             patch.object(ou, "assign_skill_version"), contextlib.redirect_stdout(io.StringIO()) as output:
+            result = ou.main(["--workflow", "grilling", "--since", "2026-09-13", "--project", self.root.name,
+                              "--exclude-project", "unmatched", "--exclude-project", str(self.root), "--no-cache", "--out", str(self.root / "out")])
+            for args in (["--since", "2027-01-01"], ["--project", "does-not-match"]):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(ou.main(["--workflow", "grilling", "--no-cache", *args]), 1)
+        self.assertEqual(result, 0)
+        self.assertNotIn("[claude]", output.getvalue())
+        self.assertIn("new-start", (self.root / "out/orchestrator-usage-runs.csv").read_text())
 
 
 if __name__ == "__main__":
