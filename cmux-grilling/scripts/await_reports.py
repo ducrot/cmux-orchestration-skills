@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch session starts or round reports; exit 0=ready, 7=pane dead, 8=deadline, 9=not started.
+"""Watch fresh round starts and reports; exit 0=ready, 7=pane dead, 8=deadline, 9=not started.
 
 Run in background Bash, or Monitor with re-arm, to wake the orchestrator at exit.
 One watcher per round, not per lane: a round synthesizes only when all four lanes
@@ -12,20 +12,24 @@ whose pane exits right after writing its report has delivered, not died. No scre
 from __future__ import annotations
 
 import argparse
+import hashlib
+from datetime import datetime
 import json
 import shlex
 import subprocess
 import time
 from pathlib import Path
 
-from worker_readiness import ReadinessError, context, read_events
-from watch_deadlines import arm, monotonic_deadlines, wait_key
-from orchestrator_lib import LANES, append_jsonl, read_run_state, round_wait_minutes, session_marker_path, utc_now
+from worker_readiness import read_events
+from watch_deadlines import arm, monotonic_deadlines, fresh_report
+from orchestrator_lib import (
+    LANES, append_jsonl, read_run_state, round_marker_path, round_report_path, round_wait_minutes, utc_now,
+)
 
-EXIT_REPORTS = 0    # session lanes started, or round reports exist; NOT an advance verdict
+EXIT_REPORTS = 0    # all round reports exist; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # a lane surface with a pending report is gone per surface-health
 EXIT_DEADLINE = 8   # deadline exceeded with the pending panes alive/unknown
-EXIT_NOT_STARTED = 9  # session start window elapsed with lanes unconfirmed
+EXIT_NOT_STARTED = 9  # round start window elapsed with lanes unconfirmed
 # 1 = crash, 2 = argparse usage; 3-6 = report gates; 7-9 = watchers. Skill-wide unique.
 
 
@@ -60,7 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Initial wait duration, or additional minutes with --deadline-reason",
     )
-    parser.add_argument("--session", action="store_true", help="Wait for the given lane surfaces to adopt their sessions")
     parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
@@ -94,8 +97,7 @@ def parse_lane_surfaces(pairs: list[str], lanes: list[str]) -> dict[str, str]:
 
 
 def report_path(run_dir: Path, round_number: int, lane: str) -> Path:
-    # Must match render_prompt.py's report stem.
-    return run_dir / "reports" / f"round-{round_number}-{lane}.md"
+    return round_report_path(run_dir, round_number, lane)
 
 
 def pinned_workspace(run_dir: Path) -> str | None:
@@ -172,102 +174,72 @@ def join(lanes: list[str]) -> str:
     return ",".join(lanes) if lanes else "none"
 
 
-def watch_session(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
-    run_dir = Path(args.run_dir)
-    surfaces = parse_lane_surfaces(args.lane_surface, parse_lanes(args))
-    if not surfaces:
-        parser.error("--session requires at least one --lane-surface")
-    if any(surface.startswith("surface:") for surface in surfaces.values()):
-        parser.error("--session requires stable surface UUIDs, not positional surface:N refs")
-    lanes = list(surfaces)
-    cmd = health_command(args, parser)
-    start = time.monotonic()
-    events = read_events(run_dir)
-    identity = {"session": True, "lanes": sorted(lanes), "surface_ids": surfaces}
-    clock = arm(events, wait_key(events, identity, [
-        {"lane": lane, "surface_id": surfaces[lane]} for lane in sorted(lanes)]),
-        args.start_minutes, args.start_minutes, None,
-        lambda data: waiting_event(run_dir, "session start deadline recorded", {
-            **identity, "elapsed_seconds": 0, **data}))
-    _, deadline = monotonic_deadlines(clock)
-    next_health = start
-    next_heartbeat = start + args.heartbeat_seconds
-    health_status, health_detail, dead_lanes = "unchecked", "", []
+def current_launch(events: list[dict], lane: str, surface: str | None, number: int) -> dict | None:
+    panes = [e["data"] for e in events if e.get("type") == "pane.launched"
+             and e.get("data", {}).get("lane") == lane]
+    if panes and (panes[-1].get("round") != number or
+                  surface is not None and panes[-1].get("surface_id") != surface):
+        return None
+    boundary = [e for e in events if e.get("type") in ("worker.starting", "worker.launch_sent")
+                and e.get("data", {}).get("lane") == lane]
+    if not boundary or boundary[-1]["type"] != "worker.launch_sent":
+        return None
+    launch = boundary[-1]["data"]
+    if launch.get("round") != number or (surface is not None and launch.get("surface_id") != surface):
+        return None
+    if not isinstance(launch.get("start_time_ns"), int):
+        return None
+    return launch
 
-    def started() -> list[str]:
-        events = read_events(run_dir)
-        done = []
-        for lane, surface in surfaces.items():
-            identity = {"lane": lane}
-            try:
-                launch_id, later = context(events, identity, surface)
-            except ReadinessError:
-                continue
-            if any(event.get("type") == "worker.started" and
-                   event.get("data", {}).get("launch_id") == launch_id for event in later):
-                done.append(lane)
-                continue
-            launch = next((event["data"] for event in reversed(events)
-                           if event.get("type") == "worker.launch_sent" and
-                           event.get("data", {}).get("launch_id") == launch_id), {})
-            marker = session_marker_path(run_dir, lane)
-            start_ns = launch.get("start_time_ns")
-            try:
-                fresh = isinstance(start_ns, int) and marker.is_file() and marker.stat().st_mtime_ns >= start_ns
-            except FileNotFoundError:
-                fresh = False
-            if fresh:
-                append_jsonl(run_dir / "events.jsonl", {
-                    "time": utc_now(), "type": "worker.started", "message": "session start marker captured",
-                    "data": {**identity, "surface_id": surface, "launch_id": launch_id,
-                             "evidence": "marker", "marker_path": str(marker)},
-                })
-                done.append(lane)
-        return done
 
-    while True:
-        done = started()
-        pending = [lane for lane in lanes if lane not in done]
-        now = time.monotonic()
-        outcome, code = None, None
-        if not pending:
-            outcome, code = "started", EXIT_REPORTS
-        elif now >= next_health:
-            health_status, dead_lanes, health_detail = check_health(cmd, {lane: surfaces[lane] for lane in pending})
-            next_health = now + args.health_interval_seconds
-            if health_status == "dead":
-                outcome, code = "pane_dead", EXIT_PANE_DEAD
-        if outcome is None and now >= deadline:
-            outcome, code = "not_started", EXIT_NOT_STARTED
-        data = {"session": True, "lanes": lanes, "started_lanes": done, "not_started": pending,
-                "surface_ids": surfaces, "elapsed_seconds": round(now - start, 1),
-                "start_minutes": args.start_minutes, "health": health_status,
-                "health_detail": health_detail, "dead_lanes": dead_lanes}
-        if outcome:
-            waiting_event(run_dir, f"session watch: {outcome}", {**data, "outcome": outcome})
-            print(f"outcome={outcome} session=true elapsed_seconds={data['elapsed_seconds']} "
-                  f"started={join(done)} not_started={join(pending)} dead={join(dead_lanes)}")
-            return code
-        if now >= next_heartbeat:
-            waiting_event(run_dir, "session markers pending", data)
-            next_heartbeat = now + args.heartbeat_seconds
-        time.sleep(min(args.poll_seconds, max(deadline - time.monotonic(), 0.01)))
+def round_clock(events, identity, launches, minutes, start_minutes, reason, emit):
+    # A round owns one clock even if a lane is replaced. Only an exit-9 recovery for
+    # a named not-started lane creates a new window. Follow-ups never renew it.
+    pending = set()
+    recoveries = []
+    anchor = min((data["start_time_ns"] / 1e9 for data in launches.values() if data), default=None)
+    for index, event in enumerate(events):
+        data = event.get("data", {})
+        if (event.get("type") == "worker.waiting" and data.get("round") == identity["round"]
+                and data.get("outcome") == "not_started"):
+            pending.update(data.get("not_started", []))
+        lane = data.get("lane")
+        if lane not in pending:
+            continue
+        if data.get("surface_id") != identity["surface_ids"].get(lane):
+            continue
+        kind = event.get("type")
+        if kind in ("worker.prompt_sent", "worker.dialog_response", "worker.launch_sent") or (
+                kind == "worker.started" and data.get("evidence") == "screen"):
+            pending.remove(lane)
+            recoveries.append(index)
+            anchor = datetime.fromisoformat(event["time"]).timestamp()
+    key = hashlib.sha256(json.dumps([identity["round"], identity["lanes"], recoveries], sort_keys=True).encode()).hexdigest()
+    def anchored_emit(data):
+        clock = data["watch_clock"]
+        if not any(e.get("data", {}).get("watch_clock", {}).get("key") == key for e in events) and anchor is not None:
+            shift = anchor - clock["armed_at"]
+            clock["armed_at"] = anchor
+            clock["start_deadline"] += shift
+            if not clock["extension"]:
+                clock["deadline"] += shift
+        emit(data)
+    return arm(events, key, minutes, start_minutes, reason, anchored_emit)
 
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     run_dir = Path(args.run_dir)
-    if args.session:
-        if args.round_number is not None or args.questions is not None:
-            parser.error("--session refuses --round and --questions")
-    elif args.round_number is None or args.questions is None:
+    if args.round_number is None or args.questions is None:
         parser.error("round watches require --round and --questions")
     read_run_state(run_dir)
-    if args.session:
-        return watch_session(args, parser)
+    if args.round_number < 1:
+        parser.error("--round must be >= 1")
     if args.questions < 1:
         raise SystemExit("--questions must be >= 1")
     lanes = parse_lanes(args)
     surfaces = parse_lane_surfaces(args.lane_surface, lanes)
+    if any(surface.startswith("surface:") for surface in surfaces.values()):
+        parser.error("round watch requires stable surface UUIDs, not positional surface:N refs")
     reports = {lane: report_path(run_dir, args.round_number, lane) for lane in lanes}
     deadline_minutes = args.deadline_minutes if args.deadline_minutes is not None else round_wait_minutes(args.questions)
     # File-only mode (no lane surfaces) never shells out, so it needs no workspace.
@@ -275,29 +247,64 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     start = time.monotonic()
     events = read_events(run_dir)
     identity = {"round": args.round_number, "lanes": sorted(lanes), "surface_ids": surfaces}
-    clock = arm(events, wait_key(events, identity, [
-        {"lane": lane, **({"surface_id": surfaces[lane]} if lane in surfaces else {})}
-        for lane in sorted(lanes)]), deadline_minutes, args.start_minutes, args.deadline_reason,
+    launches = {lane: current_launch(events, lane, surfaces.get(lane), args.round_number) for lane in lanes}
+    clock = round_clock(events, identity, launches, deadline_minutes, args.start_minutes, args.deadline_reason,
         lambda data: waiting_event(run_dir, "round deadline recorded", {
             **identity, "delivered_lanes": [], "missing_lanes": lanes,
             "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data}))
-    deadline, _ = monotonic_deadlines(clock)
+    deadline, start_deadline = monotonic_deadlines(clock)
     deadline_minutes = clock["minutes"]
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
     health_status, health_detail, dead_lanes = "unchecked", "", []
 
-    def delivered() -> list[str]:
-        return [lane for lane in lanes if reports[lane].is_file()]
+    started_lanes = []
+
+    def progress() -> list[str]:
+        events = read_events(run_dir)
+        started_lanes.clear()
+        done = []
+        # File-only use with no launch history is retained for offline report capture.
+        offline = not surfaces and not any(e.get("type") in ("worker.starting", "worker.launch_sent", "pane.launched") for e in events)
+        started_ids = {e.get("data", {}).get("launch_id") for e in events if e.get("type") == "worker.started"}
+        for lane in lanes:
+            launch = current_launch(events, lane, surfaces.get(lane), args.round_number)
+            report = fresh_report(reports[lane], launch) if launch or offline else False
+            if report:
+                done.append(lane)
+            if offline:
+                started_lanes.append(lane)
+                continue
+            if not launch:
+                continue
+            if launch["launch_id"] in started_ids:
+                started_lanes.append(lane)
+                continue
+            marker = round_marker_path(run_dir, args.round_number, lane)
+            try:
+                marked = marker.is_file() and marker.stat().st_mtime_ns >= launch["start_time_ns"]
+            except FileNotFoundError:
+                marked = False
+            if marked or report:
+                append_jsonl(run_dir / "events.jsonl", {
+                    "time": utc_now(), "type": "worker.started", "message": "round start evidence captured",
+                    "data": {"lane": lane, "round": args.round_number, "surface_id": launch["surface_id"],
+                             "launch_id": launch["launch_id"], "evidence": "marker" if marked else "report",
+                             "marker_path": str(marker)},
+                })
+                started_lanes.append(lane)
+        return done
 
     def base_data(done: list[str]) -> dict:
         pending = [lane for lane in lanes if lane not in done]
         return {
             "round": args.round_number,
             "lanes": lanes,
+            "started_lanes": list(started_lanes),
+            "not_started": [lane for lane in lanes if lane not in started_lanes],
             "delivered_lanes": done,
             "missing_lanes": pending,
-            "surface_ids": {lane: surfaces[lane] for lane in pending if lane in surfaces},
+            "surface_ids": surfaces,
             "elapsed_seconds": round(time.monotonic() - start, 1),
             "deadline_minutes": deadline_minutes,
             "health": health_status,
@@ -314,19 +321,18 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         print(
             f"outcome={outcome} round={args.round_number} "
             f"elapsed_seconds={data['elapsed_seconds']} "
+            f"started={join(data['started_lanes'])} not_started={join(data['not_started'])} "
             f"delivered={join(data['delivered_lanes'])} "
             f"missing={join(data['missing_lanes'])} dead={join(dead_lanes)}"
         )
         return code
 
     while True:
-        done = delivered()
+        done = progress()
         pending = [lane for lane in lanes if lane not in done]
         if not pending:
             return finish("reports", EXIT_REPORTS, f"all {len(lanes)} lane reports captured", done)
         now = time.monotonic()
-        if now >= deadline:
-            return finish("deadline", EXIT_DEADLINE, f"deadline of {deadline_minutes} minutes exceeded", done)
         # Health only for lanes still owing a report: a lane whose pane exits right after
         # writing its report has delivered, and must not read as a dead pane.
         pending_surfaces = {lane: surfaces[lane] for lane in pending if lane in surfaces}
@@ -335,10 +341,15 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             next_health = now + args.health_interval_seconds
             if health_status == "dead":
                 return finish("pane_dead", EXIT_PANE_DEAD, f"lane pane dead: {health_detail}", done)
+        if now >= deadline:
+            return finish("deadline", EXIT_DEADLINE, f"deadline of {deadline_minutes} minutes exceeded", done)
+        if len(started_lanes) < len(lanes) and now >= start_deadline:
+            return finish("not_started", EXIT_NOT_STARTED, "round start window elapsed", done)
         if now >= next_heartbeat:
             waiting_event(run_dir, "lane reports pending; lanes still running", base_data(done))
             next_heartbeat = now + args.heartbeat_seconds
-        time.sleep(min(args.poll_seconds, max(deadline - time.monotonic(), 0.01)))
+        wake = min(deadline, start_deadline) if len(started_lanes) < len(lanes) else deadline
+        time.sleep(min(args.poll_seconds, max(wake - time.monotonic(), 0.01)))
 
 
 def main() -> int:

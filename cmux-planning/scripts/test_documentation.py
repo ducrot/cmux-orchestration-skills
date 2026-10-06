@@ -67,33 +67,22 @@ class WorkerStartDocumentation(unittest.TestCase):
 
 
 class CoordinatedUpgradeDocumentation(unittest.TestCase):
-    def test_grilling_session_start_captures_and_compares_delivery_baseline(self):
+    def test_grilling_round_start_captures_and_compares_delivery_baseline(self):
         guide = REPOSITORY / "cmux-grilling" / "SKILL.md"
         if not guide.is_file():
-            self.skipTest("grilling skill is absent in this independent installation")
+            self.skipTest("grilling skill absent")
         text = normalized(guide)
-        start = "session start:"
-        end = "lane panes stay open across rounds"
-        self.assertIn(start, text, "grilling guide is missing the session-start delimiter")
-        self.assertIn(end, text, "grilling guide is missing the session-start end delimiter")
-        procedure = text.split(start, 1)[1].split(end, 1)[0]
-        for phrase in (
-            'before sending any session prompt, capture',
-            'run_state.py snapshot --label "launched session"',
-            'delivery baselines and staged deltas',
-            'after all lanes adopt their session contracts, capture',
-            'run_state.py snapshot --label "adopted session"',
-            'compare it with the session baseline before arming the first round',
-        ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, procedure)
-        self.assertLess(procedure.index('snapshot --label "launched session"'),
-                        procedure.index('pane_ctl.py start-agent'))
-        self.assertLess(procedure.index('await_reports.py --session'),
-                        procedure.index('snapshot --label "adopted session"'))
-        self.assertLess(procedure.index('pane_ctl.py start-agent'),
-                        procedure.index('await_reports.py --session'))
-        self.assertIn('| 9 | session lanes not started', text)
+        procedure = text.split("round start:", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+        commands = ("pane_ctl.py open-round", 'snapshot --run-dir <run-dir> --label "launched round-1"',
+                    "pane_ctl.py start-round", "await_reports.py")
+        positions = [procedure.index(command) for command in commands]
+        self.assertEqual(positions, sorted(positions))
+        for phrase in ("round lanes not started", "not_started", "16 kib utf-8", "--context-digest",
+                       "depends_on", "fresh visible panes per round", "reports-captured round-<n>",
+                       "after exit 9", "readiness identity remains `{lane}`"):
+            self.assertIn(phrase, text)
+        for removed in ("await_reports.py --session", "render_prompt.py session", "adopted session"):
+            self.assertNotIn(removed, text)
 
     def test_watch_hosting_and_persisted_deadlines(self):
         for guide in SIBLINGS:
@@ -137,9 +126,6 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             with self.subTest(guide="issue-chain", phrase=phrase):
                 self.assertIn(phrase, chain)
         for phrase in (
-            'baseline snapshot before initial lane delivery, before the first `start-agent`', 'after all lanes adopt',
-            'await_reports.py --session', '| 9 | session lanes not started',
-            'compare the session baseline before arming the first round',
             'before each round delivery', '`reports-captured round-<n>` snapshot',
             'never replace a baseline before checking the interval it covers',
             '`staged_paths`', '`staged_diff_sha256`', 'gate `hitl` even with clean reports',

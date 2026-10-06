@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Render deterministic prompts for the persistent research lanes.
-
-`session` renders a lane's standing onboarding prompt (sent once at lane launch).
-`round` renders the per-round question prompt (all questions of the round) for one lane.
-"""
+"""Render self-contained prompts for fresh per-round research workers."""
 
 from __future__ import annotations
 
@@ -16,10 +12,13 @@ from orchestrator_lib import (
     read_json,
     read_run_state,
     read_text,
-    session_marker_path,
-    session_prompt_path,
+    round_marker_path,
+    round_prompt_path,
+    round_report_path,
     utc_now,
 )
+
+from round_context import render_context
 
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
@@ -74,11 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    session = subparsers.add_parser("session", help="Render a lane's standing session prompt")
-    session.add_argument("--run-dir", required=True)
-    session.add_argument("--lane", choices=sorted(LANES), required=True)
-    session.add_argument("--out", help="Prompt path. Defaults to run-dir/prompts/session-<lane>.md")
-
     round_cmd = subparsers.add_parser("round", help="Render a lane's per-round question prompt")
     round_cmd.add_argument("--run-dir", required=True)
     round_cmd.add_argument("--lane", choices=sorted(LANES), required=True)
@@ -108,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    round_cmd.add_argument("--context-digest", type=Path, help="Authored neutral earlier-round digest, at most 16 KiB UTF-8")
     return parser
 
 
@@ -122,98 +117,36 @@ def main() -> int:
     args = build_parser().parse_args()
     run_dir = Path(args.run_dir)
     state = read_run_state(run_dir)
-    if args.command == "session":
-        out = Path(args.out) if args.out else session_prompt_path(run_dir, args.lane)
-        prompt = render_session(args.lane, state, run_dir)
-    else:
-        if args.round_number > int(state["max_rounds"]):
-            raise SystemExit(f"round {args.round_number} exceeds max_rounds {state['max_rounds']}")
-        questions = [text.strip() for text in args.question] + [
-            read_text(Path(path)).strip() for path in args.question_file
-        ]
-        if not questions:
-            raise SystemExit("At least one --question or --question-file is required")
-        if any(not question for question in questions):
-            raise SystemExit("Question text is empty")
-        stem = f"round-{args.round_number}-{args.lane}"
-        out = Path(args.out) if args.out else run_dir / "prompts" / f"{stem}.md"
-        report_path = Path(args.report_path) if args.report_path else run_dir / "reports" / f"{stem}.md"
-        draft_path = Path(args.draft_path) if args.draft_path else run_dir / "drafts" / f"{stem}.md"
-        try:
-            prompt = render_round(
-                args.lane, state, run_dir, args.round_number, questions, report_path, draft_path
-            )
-        except ValueError as exc:
-            raise SystemExit(str(exc)) from exc
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        draft_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.round_number > int(state["max_rounds"]):
+        raise SystemExit(f"round {args.round_number} exceeds max_rounds {state['max_rounds']}")
+    questions = [text.strip() for text in args.question] + [
+        read_text(Path(path)).strip() for path in args.question_file
+    ]
+    if not questions:
+        raise SystemExit("At least one --question or --question-file is required")
+    if any(not question for question in questions):
+        raise SystemExit("Question text is empty")
+    out = Path(args.out) if args.out else round_prompt_path(run_dir, args.round_number, args.lane)
+    report_path = (Path(args.report_path) if args.report_path
+                   else round_report_path(run_dir, args.round_number, args.lane))
+    draft_path = Path(args.draft_path) if args.draft_path else run_dir / "drafts" / f"round-{args.round_number}-{args.lane}.md"
+    try:
+        prompt = render_round(
+            args.lane, state, run_dir, args.round_number, questions, report_path, draft_path, args.context_digest
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    draft_path.parent.mkdir(parents=True, exist_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(prompt, encoding="utf-8")
     print(out)
     return 0
 
 
-def render_session(lane: str, state: dict, run_dir: Path) -> str:
-    task = read_text(run_dir / str(state["task_file"])).rstrip()
-    marker = session_marker_path(run_dir, lane)
-    return f"""# Research Lane Prompt: {lane} ({LANES[lane]["label"]})
-
-## First Step
-
-Before doing anything else, create or overwrite `{marker}`. Create its parent directory
-if necessary and refresh its modification time even if it already exists.
-
-This file is your standing contract for the session, not a document to summarize. Adopt it,
-confirm in one line, then wait for round prompts.
-
-Created: {utc_now()}
-Run: {state["run_id"]}
-Max rounds: {state["max_rounds"]}
-
-{LANE_RULES[lane]}
-
-## Session Shape
-
-- You are one of four persistent research lanes in an autonomous grilling session. Each round
-  the orchestrator asks the decision-level questions whose prerequisites are settled (the
-  frontier) and sends them to you as one prompt file, numbered Q1..Qn.
-- Answer every question independently on its own evidence, including questions of the same
-  round: Q2's answer must not shape Q1's. Do not reuse an earlier round's conclusion without
-  re-verifying it; earlier answers are context, not sources.
-- You never talk to the user. The orchestrator synthesizes all lane reports; your report is
-  raw research input, not a message to a human.
-- After finishing a round, wait idle for the next round prompt. Do not invent follow-up work.
-
-## Boundaries
-
-{INDEX_HEAD_PROHIBITION}
-
-- Read-only research: never create, edit, or delete repository files, and never run
-  state-changing commands.
-- The one write outside the per-round draft and report is the session start marker
-  `{marker}`, created or overwritten as the first step above.
-- You may write exactly two files per round: the draft path and the report handoff path
-  named in each round prompt (draft validation and report capture are explicitly delegated
-  to you). The default draft template is `{run_dir}/drafts/round-<N>-{lane}.md`;
-  `<N>` is the round number. Do not write any other orchestration lifecycle state.
-- If a question cannot be answered from this lane's sources, return `NO ANSWER` and explain
-  why under `## Answer` — that is a valid, expected outcome, not a failure.
-- If your environment is broken (repo unreadable, tools unavailable), report `BLOCKER`.
-- If research shows the task's premise is stale or wrong (the plan contradicts what exists),
-  report the smallest accurate correction under `## Plan Drift`.
-
-## Task Under Grilling
-
-```markdown
-{task}
-```
-
-{contract_block()}"""
-
-
 def render_round(
     lane: str, state: dict, run_dir: Path, round_number: int, questions: list[str],
-    report_path: Path, draft_path: Path | None = None,
+    report_path: Path, draft_path: Path | None = None, context_digest: Path | None = None,
 ) -> str:
     if not questions:
         raise ValueError("A round needs at least one question")
@@ -227,16 +160,48 @@ def render_round(
     # Keeps an override off run state, prompts, and other lanes' reports.
     if (run_dir / "drafts").resolve() not in resolved_draft.parents:
         raise ValueError("Draft path must be inside the run-local drafts directory")
-    session_prompt = session_prompt_path(run_dir, lane)
+    context_path = render_context(run_dir, round_number, questions, context_digest)
+    marker = round_marker_path(run_dir, round_number, lane)
+    task = read_text(run_dir / str(state["task_file"])).rstrip()
     count = len(questions)
     listing = "\n\n".join(f"### Q{number}\n\n{question}" for number, question in enumerate(questions, start=1))
     return f"""# Round {round_number} Questions — lane {lane}
+
+## First Step
+
+Before doing anything else, create or overwrite `{marker}`. Create its parent directory
+if necessary and refresh its modification time even if it already exists.
 
 This file is your round task, not a document to summarize. Answer the questions now and write
 your report to the handoff path below.
 
 Run: {state["run_id"]}
 Created: {utc_now()}
+
+{LANE_RULES[lane]}
+
+Answer every question independently on its own evidence: Q2's answer must not shape Q1's.
+Do not reuse an earlier round's conclusion without re-verifying it. Read `{context_path}`
+as context to re-verify, not evidence. Never read earlier lane reports or per-lane findings.
+You never talk to the user. Answer now; after writing the report stay idle for a possible
+re-emission. Do not invent follow-up work.
+
+## Boundaries
+
+{INDEX_HEAD_PROHIBITION}
+
+Read-only research: never create, edit, or delete repository files or run state-changing
+commands. The only allowed writes are the round marker `{marker}`, draft `{draft_path}`,
+and report handoff `{report_path}`. Do not write other orchestration lifecycle state.
+Return `NO ANSWER` with an explanation when the question is outside this lane's sources.
+Report `BLOCKER` if the environment is broken. If the premise is stale or wrong, give the
+smallest accurate correction under `### Plan Drift`.
+
+## Task Under Grilling
+
+```markdown
+{task}
+```
 
 ## Questions ({count})
 
@@ -248,9 +213,9 @@ Created: {utc_now()}
 
 - Draft path: `{draft_path}`
 - Report handoff path: `{report_path}`
-- Standing session contract: `{session_prompt}`
+- Earlier-round context: `{context_path}`
 
-Answer per your standing session contract, then write your final report to the handoff path:
+Write your final report to the handoff path:
 exactly one `## Q<n>` block per question, Q1..Q{count}, each with its own sections.
 Before writing it, self-validate your draft with
 
@@ -260,7 +225,8 @@ python3 {shlex.quote(parser_path())} {shlex.quote(str(draft_path))} --questions 
 
 A well-formed report prints `gate=advance` (or `blocked`/`hitl` if you are genuinely
 reporting a blocker or plan drift). Fix the format, never the substance.
-"""
+
+{contract_block()}"""
 
 
 def contract_block() -> str:

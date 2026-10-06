@@ -154,6 +154,16 @@ class Cli(unittest.TestCase):
         state = Path(run_dir) / "state.json"
         if not state.exists():
             write_state(run_dir)
+        # Simulate launched workers for live-pane checks, before any prewritten report.
+        if "--lane-surface" in extra:
+            event_path = Path(run_dir) / "events.jsonl"
+            with event_path.open("a") as stream:
+                for i, flag in enumerate(extra):
+                    if flag == "--lane-surface" and "=" in extra[i + 1]:
+                        lane, surface = extra[i + 1].split("=", 1)
+                        stream.write(json.dumps({"type": "worker.launch_sent", "data": {
+                            "lane": lane, "round": 1, "surface_id": surface,
+                            "launch_id": lane, "start_time_ns": time.time_ns() - 1_000_000_000}}) + "\n")
         argv = [
             sys.executable, self.script,
             "--run-dir", run_dir, "--round", "1", "--questions", "1",
@@ -203,11 +213,11 @@ class Cli(unittest.TestCase):
         self.assertEqual(proc.returncode, EXIT_REPORTS)
 
     def test_dead_pane_of_pending_lane_exits_seven(self):
-        stub = f'{sys.executable} -c "print(\'surface:465 type=terminal in_window=true\')"'
+        stub = f'{sys.executable} -c "print(\'UUID-465 type=terminal in_window=true\')"'
         with tempfile.TemporaryDirectory() as tmp:
             proc = self.run_cli(
                 tmp, "--lanes", "codebase,web",
-                "--lane-surface", "codebase=surface:465", "--lane-surface", "web=surface:999",
+                "--lane-surface", "codebase=UUID-465", "--lane-surface", "web=UUID-999",
                 "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.5",
             )
@@ -217,12 +227,12 @@ class Cli(unittest.TestCase):
 
     def test_delivered_lane_with_closed_pane_is_not_dead(self):
         """The core round-watcher trap: a lane pane may exit right after writing its report."""
-        stub = f'{sys.executable} -c "print(\'surface:465 type=terminal in_window=true\')"'
+        stub = f'{sys.executable} -c "print(\'UUID-465 type=terminal in_window=true\')"'
         with tempfile.TemporaryDirectory() as tmp:
-            self.write_report(tmp, "web")  # web's surface:999 is gone from the listing
+            self.write_report(tmp, "web")  # web's UUID-999 is gone from the listing
             proc = self.run_cli(
                 tmp, "--lanes", "codebase,web",
-                "--lane-surface", "codebase=surface:465", "--lane-surface", "web=surface:999",
+                "--lane-surface", "codebase=UUID-465", "--lane-surface", "web=UUID-999",
                 "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.01",
             )
@@ -233,7 +243,7 @@ class Cli(unittest.TestCase):
         stub = f'{sys.executable} -c "raise SystemExit(1)"'
         with tempfile.TemporaryDirectory() as tmp:
             proc = self.run_cli(
-                tmp, "--lane-surface", "codebase=surface:465", "--health-cmd", stub,
+                tmp, "--lane-surface", "codebase=UUID-465", "--health-cmd", stub,
                 "--health-interval-seconds", "0.05", "--deadline-minutes", "0.01",
             )
         self.assertEqual(proc.returncode, EXIT_DEADLINE)
@@ -300,13 +310,13 @@ class Cli(unittest.TestCase):
 
     def test_malformed_lane_surface_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            proc = self.run_cli(tmp, "--lane-surface", "surface:465")
+            proc = self.run_cli(tmp, "--lane-surface", "UUID-465")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("LANE=SURFACE", proc.stderr)
 
     def test_lane_surface_for_unawaited_lane_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            proc = self.run_cli(tmp, "--lanes", "codebase", "--lane-surface", "web=surface:465")
+            proc = self.run_cli(tmp, "--lanes", "codebase", "--lane-surface", "web=UUID-465")
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("not being awaited", proc.stderr)
 
@@ -318,7 +328,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
 
 
-class SessionWatch(unittest.TestCase):
+class RoundWatch(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -327,13 +337,14 @@ class SessionWatch(unittest.TestCase):
         self.start_ns = time.time_ns()
         self.events = self.run_dir / "events.jsonl"
         self.events.write_text("".join(json.dumps({"type": "worker.launch_sent", "data": {
-            "lane": lane, "surface_id": f"UUID-{lane}", "launch_id": f"launch-{lane}",
+            "lane": lane, "round": 1, "surface_id": f"UUID-{lane}", "launch_id": f"launch-{lane}",
             "start_time_ns": self.start_ns}}) + "\n" for lane in LANES))
 
-    def marker(self, lane, ns=None):
-        path = self.run_dir / "artifacts" / f"session-{lane}" / "started"
+    def artifact(self, lane, report=False, ns=None, number=1):
+        path = (self.run_dir / "reports" / f"round-{number}-{lane}.md" if report else
+                self.run_dir / "artifacts" / f"round-{number}-{lane}" / "started")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("")
+        path.write_text("report" if report else "")
         ns = self.start_ns if ns is None else ns
         os.utime(path, ns=(ns, ns))
         return path
@@ -344,7 +355,8 @@ class SessionWatch(unittest.TestCase):
         health.write_text("print(" + repr(json.dumps({"surfaces": [] if dead else [
             {"id": f"UUID-{lane}"} for lane in lanes]})) + ")")
         argv = [sys.executable, str(Path(__file__).parent / "await_reports.py"),
-                "--run-dir", str(self.run_dir), "--session", "--start-minutes", "0.002",
+                "--run-dir", str(self.run_dir), "--round", "1", "--questions", "1",
+                "--lanes", ",".join(lanes), "--start-minutes", "0.002", "--deadline-minutes", "0.01",
                 "--poll-seconds", "0.01", "--health-cmd", f"{sys.executable} {health}"]
         for lane in lanes:
             argv += ["--lane-surface", f"{lane}=UUID-{lane}"]
@@ -353,44 +365,11 @@ class SessionWatch(unittest.TestCase):
     def recorded(self):
         return [json.loads(line) for line in self.events.read_text().splitlines()]
 
-    def test_stale_report_does_not_confirm_session_start(self):
-        report = self.run_dir / "reports/round-1-web.md"
-        report.parent.mkdir()
-        report.write_text("leftover report")
-        os.utime(report, ns=(self.start_ns - 1, self.start_ns - 1))
-        self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
-        self.assertFalse(any(e["type"] == "worker.started" for e in self.recorded()))
-
-    def test_rearm_after_elapsed_time_reaches_original_deadline(self):
-        from await_reports import build_parser, watch
-        parser = build_parser()
-        args = parser.parse_args(["--run-dir", str(self.run_dir), "--round", "1", "--questions", "1",
-                                  "--deadline-minutes", "1"])
-        with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
-                patch("time.sleep", side_effect=InterruptedError):
-            with self.assertRaises(InterruptedError):
-                watch(args, parser)
-        with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
-                patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
-            self.assertEqual(watch(args, parser), 8)
-
-    def test_session_rearm_retains_original_start_window(self):
-        from await_reports import build_parser, watch
-        parser = build_parser()
-        args = parser.parse_args(["--run-dir", str(self.run_dir), "--session", "--start-minutes", "1",
-                                  "--lane-surface", "web=UUID-web", "--health-cmd", "unused"])
-        with patch("await_reports.check_health", return_value=("alive", [], "")):
-            with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
-                    patch("time.sleep", side_effect=InterruptedError):
-                with self.assertRaises(InterruptedError):
-                    watch(args, parser)
-            with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
-                    patch("time.sleep", side_effect=AssertionError("start window moved on re-arm")):
-                self.assertEqual(watch(args, parser), 9)
-
-    def test_all_four_markers_required_and_recorded_once(self):
+    def test_markers_and_report_evidence_recorded_once_marker_preferred(self):
         for lane in LANES:
-            self.marker(lane)
+            self.artifact(lane, report=True)
+            if lane != "web":
+                self.artifact(lane)
         for _ in range(2):
             proc = self.watch()
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -398,94 +377,102 @@ class SessionWatch(unittest.TestCase):
         self.assertEqual(len(events), 4)
         for data in events:
             lane = data["lane"]
-            self.assertEqual(data, {"lane": lane, "surface_id": f"UUID-{lane}",
-                "launch_id": f"launch-{lane}", "evidence": "marker",
-                "marker_path": str(self.run_dir / "artifacts" / f"session-{lane}" / "started")})
+            self.assertEqual(data, {"lane": lane, "round": 1, "surface_id": f"UUID-{lane}",
+                "launch_id": f"launch-{lane}", "evidence": "report" if lane == "web" else "marker",
+                "marker_path": str(self.run_dir / "artifacts" / f"round-1-{lane}" / "started")})
 
-    def test_missing_lanes_named(self):
-        self.marker("codebase")
-        self.marker("docs")
+    def test_missing_lanes_named_with_start_and_report_state(self):
+        self.artifact("codebase")
+        self.artifact("docs", report=True)
         proc = self.watch()
         self.assertEqual(proc.returncode, 9, proc.stderr)
-        self.assertIn("not_started=codebase2,web", proc.stdout)
-        self.assertEqual(self.recorded()[-1]["data"]["outcome"], "not_started")
+        for phrase in ("started=codebase,docs", "not_started=codebase2,web", "delivered=docs", "missing=codebase,codebase2,web"):
+            self.assertIn(phrase, proc.stdout)
 
-    def test_stale_and_same_second_older_markers_ignored(self):
-        self.start_ns = (self.start_ns // 1_000_000_000) * 1_000_000_000 + 500_000_000
+    def test_stale_marker_and_report_cannot_confirm_start(self):
+        for report in (False, True):
+            self.artifact("web", report=report, ns=self.start_ns - 1)
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
+        self.assertFalse(any(e["type"] == "worker.started" for e in self.recorded()))
+
+    def test_previous_round_files_cannot_satisfy_current_round(self):
+        self.artifact("web")
+        self.artifact("web", report=True)
         events = self.recorded()
-        for event in events:
-            event["data"]["start_time_ns"] = self.start_ns
+        for e in events:
+            e["data"]["round"] = 2
         self.events.write_text("".join(json.dumps(e) + "\n" for e in events))
-        for age in (1, 2_000_000_000):
-            with self.subTest(age=age):
-                self.marker("web", self.start_ns - age)
-                proc = self.watch(lanes=["web"])
-                self.assertEqual(proc.returncode, 9, proc.stderr)
+        self.assertEqual(self.watch("--round", "2", lanes=["web"]).returncode, 9)
+        self.assertFalse(any(e["type"] == "worker.started" for e in self.recorded()))
+
+    def test_empty_report_cannot_confirm_start(self):
+        self.artifact("web", report=True).write_text("")
+        self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
 
     def test_replaced_or_unconfirmed_launch_cannot_accept_marker(self):
-        self.marker("web")
+        self.artifact("web")
         baseline = self.events.read_text()
         replacements = (
-            {"type": "worker.launch_sent", "data": {"lane": "web", "surface_id": "UUID-web", "launch_id": "new", "start_time_ns": self.start_ns + 1}},
-            {"type": "worker.starting", "data": {"lane": "web", "surface_id": "UUID-web", "launch_id": "pending"}},
-            {"type": "pane.launched", "data": {"lane": "web", "surface_id": "replacement-surface"}},
+            {"type": "worker.launch_sent", "data": {"round": 1, "lane": "web", "surface_id": "UUID-web", "launch_id": "new", "start_time_ns": self.start_ns + 1}},
+            {"type": "worker.starting", "data": {"round": 1, "lane": "web", "surface_id": "UUID-web", "launch_id": "pending"}},
+            {"type": "pane.launched", "data": {"round": 2, "lane": "web", "surface_id": "replacement-surface"}},
         )
         for event in replacements:
             with self.subTest(event=event["type"]):
                 previous = {"type": "worker.started", "data": {
-                    "lane": "web", "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "marker"}}
+                    "lane": "web", "round": 1, "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "marker"}}
                 self.events.write_text(baseline + json.dumps(previous) + "\n" + json.dumps(event) + "\n")
                 self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
 
     def test_legacy_launch_without_timestamp_stays_pending(self):
-        self.marker("web")
+        self.artifact("web")
         self.events.write_text(json.dumps({"type": "worker.launch_sent", "data": {
-            "lane": "web", "surface_id": "UUID-web"}}) + "\n")
+            "round": 1, "lane": "web", "surface_id": "UUID-web"}}) + "\n")
         self.assertEqual(self.watch(lanes=["web"]).returncode, 9)
 
-    def test_default_start_window_and_surface_requirement(self):
-        from await_reports import build_parser
-        args = build_parser().parse_args(["--run-dir", str(self.run_dir), "--session"])
-        self.assertEqual(args.start_minutes, 5)
-        proc = self.watch(lanes=[])
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("--lane-surface", proc.stderr)
-
-    def test_screen_confirmation_allows_rearming_without_marker(self):
+    def test_screen_confirmation_rearms_without_marker_but_still_needs_report(self):
         with self.events.open("a") as stream:
             stream.write(json.dumps({"type": "worker.started", "data": {
-                "lane": "web", "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "screen"}}) + "\n")
-        self.assertEqual(self.watch(lanes=["web"]).returncode, 0)
+                "lane": "web", "round": 1, "surface_id": "UUID-web", "launch_id": "launch-web", "evidence": "screen"}}) + "\n")
+        proc = self.watch(lanes=["web"])
+        self.assertEqual(proc.returncode, 8, proc.stderr)
+        self.assertIn("not_started=none", proc.stdout)
 
-    def test_pane_death(self):
+    def test_started_lane_without_report_is_health_checked(self):
+        self.artifact("web")
         self.assertEqual(self.watch(lanes=["web"], dead=True).returncode, 7)
+        self.artifact("web", report=True)
+        self.assertEqual(self.watch(lanes=["web"], dead=True).returncode, 0)
 
-    def test_session_refuses_round_arguments(self):
-        for flag in ("--round", "--questions"):
-            proc = self.watch(flag, "1")
-            self.assertEqual(proc.returncode, 2)
-            self.assertIn("--session refuses", proc.stderr)
-
-    def test_session_refuses_positional_surface_refs(self):
-        proc = self.watch("--lane-surface", "codebase=surface:465", lanes=[])
+    def test_round_refuses_positional_surface_refs_and_removed_session_mode(self):
+        proc = self.watch("--lane-surface", "web=surface:465", lanes=["web"])
         self.assertEqual(proc.returncode, 2)
-        self.assertIn(
-            "--session requires stable surface UUIDs, not positional surface:N refs",
-            proc.stderr,
-        )
+        self.assertIn("requires stable surface UUIDs", proc.stderr)
+        self.assertEqual(self.watch("--session").returncode, 2)
 
-    def test_round_watch_skips_start_phase_for_started_launch(self):
-        self.marker("web")
-        self.assertEqual(self.watch(lanes=["web"]).returncode, 0)
-        reports = self.run_dir / "reports"
-        reports.mkdir()
-        (reports / "round-1-web.md").write_text("report")
-        proc = subprocess.run([sys.executable, str(Path(__file__).parent / "await_reports.py"),
-            "--run-dir", str(self.run_dir), "--round", "1", "--questions", "1", "--lanes", "web"],
-            capture_output=True, text=True, timeout=10)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("outcome=reports", proc.stdout)
-        self.assertEqual(sum(e["type"] == "worker.started" for e in self.recorded()), 1)
+    def test_deadlines_anchored_to_launch_and_preserved_on_rearm(self):
+        from await_reports import round_clock
+        events = []
+        identity = {"round": 1, "lanes": ["web"], "surface_ids": {"web": "UUID-web"}}
+        launches = {"web": {"start_time_ns": 1000_000_000_000}}
+        def emit(data):
+            events.append({"type": "worker.waiting", "data": {**identity, **data}})
+        with patch("time.time", return_value=1020):
+            clock = round_clock(events, identity, launches, 15, 5, None, emit)
+        self.assertEqual(clock["deadline"], 1900)
+        self.assertEqual(clock["start_deadline"], 1300)
+        with patch("time.time", return_value=1100):
+            self.assertEqual(round_clock(events, identity, launches, 90, 20, None, emit), clock)
+        events.append({"time": "1970-01-01T00:20:00+00:00", "type": "worker.prompt_sent", "data": {"lane": "web", "surface_id": "UUID-web"}})
+        self.assertEqual(round_clock(events, identity, launches, 15, 5, None, emit), clock)
+        events.append({"type": "worker.waiting", "data": {**identity, "outcome": "not_started", "not_started": ["web"]}})
+        events.append({"time": "1970-01-01T00:21:00+00:00", "type": "worker.dialog_response", "data": {"lane": "docs", "surface_id": "UUID-docs"}})
+        self.assertEqual(round_clock(events, identity, launches, 15, 5, None, emit), clock)
+        events.append({"time": "1970-01-01T00:22:00+00:00", "type": "worker.prompt_sent", "data": {"lane": "web", "surface_id": "UUID-web"}})
+        recovered = round_clock(events, identity, launches, 15, 5, None, emit)
+        self.assertEqual(recovered["deadline"], 2220)
+        self.assertEqual(recovered["start_deadline"], 1620)
+        self.assertEqual(round_clock(events, identity, launches, 90, 20, None, emit), recovered)
 
 
 class WorkspaceResolution(unittest.TestCase):

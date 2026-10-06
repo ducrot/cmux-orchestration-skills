@@ -25,6 +25,12 @@ class RenderFunction(unittest.TestCase):
         self.state = {"run_id": "test-run", "max_rounds": 5, "task_file": "task.md"}
 
     def render(self, lane="codebase", round_number=1, questions=("What exists?",), **kwargs):
+        (self.run_dir / "events.jsonl").write_text("".join(json.dumps({"type": "grill.question", "data": {
+            "round": round_number, "id": f"Q{n}", "question": q, "depends_on": []}}) + "\n"
+            for n, q in enumerate(questions, 1)))
+        (self.run_dir / "synthesis").mkdir(exist_ok=True)
+        for previous in range(1, round_number):
+            (self.run_dir / "synthesis" / f"round-{previous}.json").write_text(json.dumps({"round": previous, "questions": []}))
         report = self.run_dir / "reports" / f"round-{round_number}-{lane}.md"
         return render_prompt.render_round(
             lane, self.state, self.run_dir, round_number, list(questions), report, **kwargs
@@ -43,35 +49,21 @@ class RenderFunction(unittest.TestCase):
                     self.assertEqual(shlex.split(command), ["python3", render_prompt.parser_path(), str(draft), "--questions", "1"])
                     self.assertNotEqual(draft, report)
 
-    def test_session_limits_writes_to_draft_and_handoff(self):
+    def test_round_is_self_contained_and_limits_writes(self):
         for lane in render_prompt.LANES:
-            with self.subTest(lane=lane):
-                prompt = render_prompt.render_session(lane, self.state, self.run_dir)
-                self.assertNotIn("temporary file of your own", prompt)
-                self.assertIn("the draft path named in each round prompt", prompt)
-                boundaries = prompt.split("## Boundaries\n", 1)[1].split("## Task", 1)[0]
-                self.assertIn("exactly two files per round", boundaries)
-                self.assertIn(f"{self.run_dir}/drafts/round-<N>-{lane}.md", boundaries)
-                self.assertIn("report handoff path", boundaries)
-
-    def test_session_first_step_and_marker_boundary(self):
-        for lane in render_prompt.LANES:
-            prompt = render_prompt.render_session(lane, self.state, self.run_dir)
-            marker = str(self.run_dir / "artifacts" / f"session-{lane}" / "started")
+            prompt = self.render(lane)
+            marker = str(self.run_dir / "artifacts" / f"round-1-{lane}" / "started")
             self.assertEqual(prompt.splitlines()[2], "## First Step")
-            first = prompt.split("## First Step", 1)[1].split("## Session Shape", 1)[0]
-            for phrase in (marker, "create or overwrite", "parent directory", "modification time"):
-                self.assertIn(phrase, first)
-            boundary = prompt.split("## Boundaries", 1)[1].split("## Task", 1)[0]
-            self.assertIn(marker, boundary)
-            self.assertIn("one write outside the per-round draft and report", boundary)
-
-    def test_session_and_round_forbid_index_changes(self):
-        for lane in render_prompt.LANES:
-            with self.subTest(lane=lane):
-                session = render_prompt.render_session(lane, self.state, self.run_dir)
-                self.assertIn(EXPECTED_INDEX_HEAD_PROHIBITION, session.split("## Boundaries", 1)[1])
-                self.assertIn(EXPECTED_INDEX_HEAD_PROHIBITION, self.render(lane))
+            for phrase in (marker, "create or overwrite", "parent directory", "modification time",
+                           "Research task", "NO ANSWER", "BLOCKER", "Plan Drift", "stay idle",
+                           "context to re-verify, not evidence", "Q2's answer must not shape Q1's",
+                           EXPECTED_INDEX_HEAD_PROHIBITION, render_prompt.LANE_RULES[lane]):
+                self.assertIn(phrase, prompt)
+            boundaries = prompt.split("## Boundaries", 1)[1].split("## Task", 1)[0]
+            self.assertIn("only allowed writes", boundaries)
+            self.assertIn(marker, boundaries)
+            self.assertNotIn("standing session", prompt)
+            self.assertIn("## Q1\n### Result", prompt)
 
     def test_explicit_draft_path_and_shell_quoting(self):
         draft = self.run_dir / "drafts" / "custom draft.md"
@@ -97,14 +89,6 @@ class RenderFunction(unittest.TestCase):
     def test_round_requires_a_question(self):
         with self.assertRaisesRegex(ValueError, "at least one question"):
             self.render(questions=[])
-
-    def test_session_contract_describes_question_blocks_and_max_rounds(self):
-        prompt = render_prompt.render_session("codebase", self.state, self.run_dir)
-        self.assertIn("Max rounds: 5", prompt)
-        self.assertNotIn("Max questions", prompt)
-        self.assertIn("## Q1\n### Result", prompt)
-        self.assertIn("--questions <number-of-questions>", prompt)
-        self.assertIn("Q2's answer must not shape Q1's", prompt)
 
     def test_rejects_draft_equal_to_report(self):
         report = self.run_dir / "reports" / "round-1-codebase.md"
@@ -169,6 +153,9 @@ class RenderCli(unittest.TestCase):
     def test_repeated_question_flags_become_numbered_questions(self):
         question_file = self.run_dir / "q3.md"
         question_file.write_text("Third from file\n", encoding="utf-8")
+        (self.run_dir / "events.jsonl").write_text("".join(json.dumps({"type": "grill.question", "data": {
+            "round": 1, "id": f"Q{n}", "question": q, "depends_on": []}}) + "\n"
+            for n, q in enumerate(("First", "Second", "Third from file"), 1)))
         proc = self.render("--round", "1", "--question", "First", "--question", "Second",
                            "--question-file", str(question_file))
         self.assertEqual(proc.returncode, 0, proc.stderr)

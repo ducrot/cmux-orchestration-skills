@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-# The four research lanes. Persistent panes for the whole session; the orchestrator
-# never substitutes hidden subagents for them.
+# Four visible research lanes, with fresh panes each round.
 LANES = {
     "codebase": {"label": "Researcher Codebase"},
     "codebase2": {"label": "Researcher Codebase2"},
@@ -29,16 +28,9 @@ def round_wait_minutes(questions: int) -> int:
     """Minimum wait for a round asking `questions` questions."""
     return LANE_WAIT_MINUTES + LANE_WAIT_EXTRA_MINUTES_PER_QUESTION * max(questions - 1, 0)
 
-# Task framing is load-bearing, not style: a Claude lane reads "Read <path> and report back"
-# as a summarization request — it summarizes the prompt and waits — while Codex reads the same
-# line as a work order. The two kinds differ on purpose:
-# a session prompt really is adopt-and-wait, a round prompt is work now. Policy, not a per-run
-# choice (SKILL.md, CMUX Control).
+# Framing is load-bearing: a Claude lane reads "Read <path> and report back" as a
+# summarization request and waits, while Codex reads it as a work order.
 DELIVERY_TEMPLATES = {
-    "session": (
-        "Your standing contract for this session is in {prompt_path}. It is not a document to "
-        "summarize. Adopt it, confirm in one line, then wait idle for round prompts."
-    ),
     "round": (
         "Your round task is in {prompt_path}. It is not a document to read back or summarize. "
         "Answer it now and write your report to the handoff path it names."
@@ -47,16 +39,20 @@ DELIVERY_TEMPLATES = {
 
 
 def delivery_text(kind: str, prompt_path: str) -> str:
-    """Text that hands a lane its rendered session contract or round prompt."""
+    """Text that hands a lane its rendered round prompt."""
     return DELIVERY_TEMPLATES[kind].format(prompt_path=prompt_path)
 
 
-def session_prompt_path(run_dir: Path, lane: str) -> Path:
-    return run_dir / "prompts" / f"session-{lane}.md"
+def round_marker_path(run_dir: Path, number: int, lane: str) -> Path:
+    return run_dir / "artifacts" / f"round-{number}-{lane}" / "started"
 
 
-def session_marker_path(run_dir: Path, lane: str) -> Path:
-    return run_dir / "artifacts" / f"session-{lane}" / "started"
+def round_prompt_path(run_dir: Path, number: int, lane: str) -> Path:
+    return run_dir / "prompts" / f"round-{number}-{lane}.md"
+
+
+def round_report_path(run_dir: Path, number: int, lane: str) -> Path:
+    return run_dir / "reports" / f"round-{number}-{lane}.md"
 
 
 def utc_now() -> str:

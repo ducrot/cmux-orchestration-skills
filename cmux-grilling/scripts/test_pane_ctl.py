@@ -91,12 +91,10 @@ class PaneCtlCase(unittest.TestCase):
             }),
             encoding="utf-8",
         )
-        from render_prompt import render_session
         (self.run_dir / "task.md").write_text("Research task")
         (self.run_dir / "prompts").mkdir()
         for lane in profiles:
-            (self.run_dir / "prompts" / f"session-{lane}.md").write_text(render_session(
-                lane, {"run_id": "test-run", "max_rounds": 4, "task_file": "task.md"}, self.run_dir))
+            (self.run_dir / "prompts" / f"round-1-{lane}.md").write_text("Round task")
         self.log = Path(self._tmp.name) / "cmux-calls.jsonl"
         fake = Path(self._tmp.name) / "fake_cmux.py"
         fake.write_text(FAKE_CMUX, encoding="utf-8")
@@ -106,6 +104,8 @@ class PaneCtlCase(unittest.TestCase):
         self._tmp.cleanup()
 
     def run_ctl(self, *argv: str) -> subprocess.CompletedProcess:
+        if argv[0] == "start-agent" and "--round" not in argv:
+            argv = (*argv, "--round", "1")
         env = dict(os.environ, FAKE_CMUX_LOG=str(self.log))
         return subprocess.run(
             [sys.executable, SCRIPT, "--cmux-cmd", self.cmux_cmd, *argv],
@@ -157,7 +157,7 @@ class Launch(PaneCtlCase):
     def test_splits_labels_and_records_events(self):
         proc = self.run_ctl(
             "launch", "--run-dir", str(self.run_dir),
-            "--lane", "codebase2", "--anchor", "surface:5",
+            "--lane", "codebase2", "--anchor", "ANCHOR-UUID",
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
@@ -168,7 +168,7 @@ class Launch(PaneCtlCase):
         self.assertEqual(len(calls), 2)
         split, rename = calls
         self.assertIn("new-split", split)
-        for expected in ("--workspace", "WS-UUID", "--surface", "surface:5", "--focus", "false"):
+        for expected in ("--workspace", "WS-UUID", "--surface", "ANCHOR-UUID", "--focus", "false"):
             self.assertIn(expected, split)
         # Stable UUIDs, not positional refs: refs shift when panes close.
         self.assertEqual(rename[:1], ["rename-tab"])
@@ -190,7 +190,7 @@ class Launch(PaneCtlCase):
 
         proc = self.run_ctl(
             "launch", "--run-dir", str(self.run_dir),
-            "--lane", "codebase2", "--anchor", "surface:5",
+            "--lane", "codebase2", "--anchor", "ANCHOR-UUID",
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("snapshot identity", proc.stderr)
@@ -211,7 +211,7 @@ class Launch(PaneCtlCase):
 
         proc = self.run_ctl(
             "launch", "--run-dir", str(self.run_dir),
-            "--lane", "codebase2", "--anchor", "surface:5",
+            "--lane", "codebase2", "--anchor", "ANCHOR-UUID",
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("violates adapter policy", proc.stderr)
@@ -220,7 +220,7 @@ class Launch(PaneCtlCase):
     def test_unknown_lane_is_usage_error(self):
         proc = self.run_ctl(
             "launch", "--run-dir", str(self.run_dir),
-            "--lane", "review", "--anchor", "surface:5",
+            "--lane", "review", "--anchor", "ANCHOR-UUID",
         )
         self.assertEqual(proc.returncode, 2)
 
@@ -259,54 +259,22 @@ class StartAgent(PaneCtlCase):
             expected = wave["resolved_profiles"][lane]["argv"]
             self.assertEqual(shlex.split(data["command"]),
                              ["CMUX_AGENT_MANAGED_SUBAGENT=1", *expected, data["text"]])
-            self.assertEqual(data["text"], delivery_text("session", data["prompt_path_relative"]))
+            self.assertEqual(data["text"], delivery_text("round", data["prompt_path_relative"]))
             self.assertEqual((git_root(Path.cwd()) / data["prompt_path_relative"]).resolve(), Path(data["prompt_path"]))
             self.assertGreater(data["start_time_ns"], 0)
             for key in ("launch_id", "surface_id", "prompt_path", "marker_path"):
                 self.assertEqual(result[key], data[key])
-            self.assertIn("--session", result["next"])
-            self.assertEqual(Path(data["marker_path"]), self.run_dir / "artifacts" / f"session-{lane}" / "started")
+            self.assertIn("--round 1", result["next"])
+            self.assertEqual(Path(data["marker_path"]), self.run_dir / "artifacts" / f"round-1-{lane}" / "started")
         self.assertEqual([call[0] for call in self.cmux_calls()], ["send", "send-key"] * 4)
 
-    def test_missing_session_prompt_refuses_before_cmux(self):
-        (self.run_dir / "prompts/session-web.md").unlink()
+    def test_missing_round_prompt_refuses_before_cmux(self):
+        (self.run_dir / "prompts/round-1-web.md").unlink()
         proc = self.run_ctl("start-agent", "--run-dir", str(self.run_dir), "--surface", "SURF-UUID", "--lane", "web")
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("Missing session prompt", proc.stderr)
+        self.assertIn("Missing round prompt", proc.stderr)
         self.assertEqual(self.cmux_calls(), [])
         self.assertEqual(self.events(), [])
-
-    def test_four_lane_session_cli_flow(self):
-        scripts = Path(__file__).parent
-        state_path = self.run_dir / "state.json"
-        state = json.loads(state_path.read_text())
-        state["task_file"] = "task.md"
-        state_path.write_text(json.dumps(state))
-        launch_ids = {}
-        for lane in ("codebase", "codebase2", "docs", "web"):
-            rendered = subprocess.run([sys.executable, str(scripts / "render_prompt.py"), "session",
-                "--run-dir", str(self.run_dir), "--lane", lane], capture_output=True, text=True)
-            self.assertEqual(rendered.returncode, 0, rendered.stderr)
-            started = self.run_ctl("start-agent", "--run-dir", str(self.run_dir),
-                                  "--lane", lane, "--surface", f"UUID-{lane}")
-            self.assertEqual(started.returncode, 0, started.stderr)
-            data = json.loads(started.stdout)
-            launch_ids[lane] = data["launch_id"]
-            # Simulate each worker following the actual rendered First Step.
-            prompt = Path(data["prompt_path"]).read_text()
-            marker = Path(prompt.split("create or overwrite `", 1)[1].split("`", 1)[0])
-            self.assertEqual(str(marker), data["marker_path"])
-            marker.parent.mkdir(parents=True)
-            marker.write_text("adopted")
-        args = [sys.executable, str(scripts / "await_reports.py"), "--run-dir", str(self.run_dir), "--session"]
-        for lane in launch_ids:
-            args += ["--lane-surface", f"{lane}=UUID-{lane}"]
-        watched = subprocess.run(args, capture_output=True, text=True, timeout=10)
-        self.assertEqual(watched.returncode, 0, watched.stderr)
-        self.assertIn("not_started=none", watched.stdout)
-        confirmed = [e["data"] for e in self.events() if e["type"] == "worker.started"]
-        self.assertEqual({e["lane"]: e["launch_id"] for e in confirmed}, launch_ids)
-        self.assertEqual([call[0] for call in self.cmux_calls()], ["send", "send-key"] * 4)
 
     def test_claude_lane_gets_the_marker_too(self):
         proc = self.run_ctl(
@@ -317,8 +285,8 @@ class StartAgent(PaneCtlCase):
         self.assertEqual(
             self.cmux_calls()[0][-1],
             "CMUX_AGENT_MANAGED_SUBAGENT=1 claude --model sonnet --effort medium "
-            "--permission-mode auto " + shlex.quote(delivery_text("session", os.path.relpath(
-                self.run_dir / "prompts" / "session-web.md", git_root(Path.cwd())))),
+            "--permission-mode auto " + shlex.quote(delivery_text("round", os.path.relpath(
+                self.run_dir / "prompts" / "round-1-web.md", git_root(Path.cwd())))),
         )
 
 
@@ -393,13 +361,12 @@ class Deliver(PaneCtlCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.events()[-1]["data"]["kind"], "round")
 
-    def test_session_and_round_pull_in_opposite_directions(self):
-        session = delivery_text("session", "prompts/session-codebase.md")
-        round_text = delivery_text("round", "prompts/round-1-codebase.md")
-        self.assertIn("wait idle for round prompts", session)
-        self.assertIn("Answer it now", round_text)
-        for text in (session, round_text):
-            self.assertNotIn("report back", text)
+    def test_round_delivery_is_an_immediate_assignment(self):
+        from orchestrator_lib import DELIVERY_TEMPLATES
+        self.assertEqual(set(DELIVERY_TEMPLATES), {"round"})
+        text = delivery_text("round", "prompts/round-1-codebase.md")
+        self.assertIn("Answer it now", text)
+        self.assertNotIn("report back", text)
 
     def test_text_and_prompt_are_mutually_exclusive(self):
         proc = self.run_ctl(

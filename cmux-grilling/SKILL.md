@@ -1,12 +1,12 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four persistent research lanes (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four fresh research lanes per round (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
 
 Use this skill to grill a task autonomously: the orchestrator asks decision-level questions
-about a plan, four persistent visible research lanes answer each question against the
+about a plan, four fresh visible research lanes per round answer each question against the
 current repository and the web, and the session ends with distilled defined assumptions the
 human reviews. The orchestrator is a coordinator plus judgment role: it formulates questions
 (griller), consolidates lane reports (synthesizer), and distills assumptions (finalize), but
@@ -221,8 +221,8 @@ Roles:
    constraints already decide. Facts are the lanes' job; nothing is put to the human during the
    run. The loop ends when the frontier is empty (`griller-done`) or the round budget is spent
    (`max-rounds`).
-2. **Research lanes** — four persistent visible panes, launched once and kept open for the
-   whole session:
+2. **Research lanes** — four fresh visible panes per round, with the round task attached
+   to each launch:
    - `codebase` — repo-only research, no web (Claude Opus/high by default).
    - `codebase2` — independent second-opinion repo research, no web (Codex by default).
    - `docs` — official documentation for the versions the repo pins (Codex Luna/medium by default).
@@ -233,13 +233,13 @@ Roles:
    pair, and presents the assumptions for human review.
 
 This deliberately deviates from the sibling skill's "at most orchestrator plus one worker
-pane" rule: a grilling session keeps the orchestrator pane plus all four lane panes open
-until the session ends.
+pane" rule: a grilling round keeps the orchestrator pane plus all four lane panes open.
+At the next round, replacement panes are created before the old panes close.
 
 ## Run Briefing
 
 A fresh session opens with a compact briefing so the human sees what is being grilled without
-opening a file. After `run_state.py init` and before the first `pane_ctl.py launch`:
+opening a file. After `run_state.py init` and before the first `pane_ctl.py open-round`:
 
 ```bash
 python3 scripts/run_briefing.py draft --run-dir <run-dir> --lang <de|en>
@@ -261,13 +261,11 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 
 ## Delivery baselines and staged deltas
 
-Capture a baseline snapshot before initial lane delivery, before the first `start-agent`:
-`run_state.py snapshot --label "launched session"`. After all lanes adopt their session
-contracts, capture `run_state.py snapshot --label "adopted session"` and compare the session
-baseline before arming the first round. Before each round delivery, capture
-`run_state.py snapshot --label "launched round-<N>"`; compare that round baseline with its
-`reports-captured round-<N>` snapshot before any advance gate. Never replace a baseline
-before checking the interval it covers, including on re-delivery.
+Before each round delivery, run `open-round`, then capture
+`run_state.py snapshot --label "launched round-<N>"` before `start-round`.
+Compare that round baseline with its `reports-captured round-<N>` snapshot after report
+capture and before any advance gate. Never replace a baseline before checking the interval
+it covers, including on re-delivery.
 
 Compare `staged_paths` and `staged_diff_sha256` for each interval. Any staged-path or
 staged-digest change prevents advance: gate `hitl` even with clean reports, recording the
@@ -283,20 +281,31 @@ who changed the index before accusing a lane; retract a mistaken accusation expl
 For each round `N` (1-based), in order:
 
 1. Compute the frontier and record one `grill.question` event per question with
-   `{"round": N, "id": "Q1", "question": "..."}` (`"depends_on": ["R1Q2"]`, round 1 Q2, when the
-   question builds on an earlier answer). The questions of a round must be independent of each other; a
-   question deferred from an earlier round (see Question failures) is asked again as a new
-   question with its own id.
-2. Render the four round prompts with `render_prompt.py round` (one per lane, every question
-   passed as its own `--question`/`--question-file`), capture the
-   delivery baseline under Delivery baselines and staged deltas, and send each
-   lane its prompt with `pane_ctl.py deliver --lane <lane> --kind round --prompt <path>`
-   (send + Enter + screen echo). Judge the echoed screen per lane before treating the round as
-   started; a lane that answers with a summary of the prompt and goes idle has not started (see
-   CMUX Control).
-3. Arm the round watcher (`await_reports.py --questions <n>` using the watcher host below) per the Lane Wait
-   Policy before ending the turn. Reports land at
-   `.scratch/orchestrator/runs/<run-id>/reports/round-<N>-<lane>.md`.
+   `{"round": N, "id": "Q1", "question": "...", "depends_on": []}`. The explicit array is
+   mandatory, including in round 1; use earlier IDs such as `"R1Q2"` when building on an
+   earlier answer. The event command validates that dependencies name earlier recorded
+   questions. Questions in one round must be independent. Re-ask deferred questions with
+   new IDs in a later round.
+2. Render the four self-contained prompts with `render_prompt.py round`, passing the same
+   frontier with repeated `--question`/`--question-file` flags. Each prompt includes its lane
+   policy, task, report contract, marker, and a shared `prompts/round-<N>-context.md` reference.
+   The renderer requires exactly one matching event per question. It projects dependencies
+   from earlier synthesis files (id, question, answer, confidence, sources, and reasoning
+   carrying caveats or disagreement) and indexes every other settled question with its
+   synthesis-file reference. No per-lane findings or earlier lane reports enter that context.
+   Context is for re-verification, not evidence. The shared file is capped at **16 KiB UTF-8**;
+   missing metadata or overflow fails closed. Supply an authored neutral digest through
+   `--context-digest <path>` (same cap) as the only recovery. A recorded round frontier
+   cannot be narrowed, and a recorded round id cannot be recorded again.
+   The digest may recover missing legacy `depends_on` metadata but never duplicate or
+   mismatched current question events. Include source references and all relevant caveats.
+3. Run `pane_ctl.py open-round --round <N>` (round 1 also needs `--anchor <orchestrator-UUID>`).
+   It reuses and validates the immutable launch wave, opens four new panes, then closes the
+   previous round's panes. Capture `run_state.py snapshot --label "launched round-<N>"`,
+   then run `pane_ctl.py start-round --round <N>`. Read its one JSON result and arm one
+   `await_reports.py --round <N> --questions <n> --lane-surface …` watch using the Lane Wait
+   Policy. No normal-path observation or separate delivery is needed. First-step markers are
+   `artifacts/round-<N>-<lane>/started`; reports land at `reports/round-<N>-<lane>.md`.
 4. When all four reports exist, record one tree snapshot:
    `run_state.py snapshot --label "reports-captured round-<N>"`. Compare the staged fields
    and HEAD against the round delivery baseline before parsing advance gates.
@@ -343,6 +352,7 @@ Synthesis is judgment, not vote counting, and runs per question:
       "confidence": "high|medium|low",
       "sources": ["..."],
       "reasoning": "...",
+      "reasoning_for_context": true,
       "findings": {
         "codebase": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
         "codebase2": {"result": "ANSWERED", "answer": "...", "sources": ["..."]},
@@ -353,6 +363,14 @@ Synthesis is judgment, not vote counting, and runs per question:
   ]
 }
 ```
+
+For each non-empty `reasoning`, set `reasoning_for_context` to `true` only when that
+reasoning carries caveats or disagreement needed by a later dependent question; otherwise
+set it to `false`. Keep a `true` reasoning focused on those caveats. The renderer uses this
+explicit judgment instead of guessing from keywords or language. Missing classification
+for a dependency fails closed to `--context-digest`. Write a synthesis file with an empty
+`questions` array even if every question was deferred, so context can distinguish no settled
+answers from missing metadata.
 
 ## Gate Rule
 
@@ -463,32 +481,39 @@ Bash(
 )
 ```
 
-Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
-current launch IDs and stage/pass or round. Every invocation computes the remaining time;
+Both deadlines are persisted on first arm in a `worker.waiting` event for the round,
+anchored to its earliest recorded launch `start_time_ns`. Every invocation computes the remaining time;
 re-arming, including after a host timeout, never moves either deadline. Initial
 `--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
 pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
 the watcher records the reason and grants that duration from the later of the existing
 deadline and extension arm. Repeating the same extension is idempotent; a second extension
-is refused. The start window is not extended by this flag. A recorded exit-9 recovery
-(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
-without spending the extension; merely observing, assessing, or re-arming does not.
-New launch IDs also start new windows. Never run two watchers for the same work concurrently.
+is refused. The start window is not extended by this flag. Only a recorded exit-9 recovery for a
+`not_started` lane (`respond`, readiness-gated re-delivery, a recovery launch, or screen
+confirmation) starts a new window without spending the extension. A follow-up, new launch
+outside exit-9 recovery, observation, assessment, or re-arm does not renew the round clock.
+Never run two watchers for the same work concurrently.
+
+The same poll loop tracks starts and reports independently for every lane. A round marker
+with mtime ≥ the current launch's `start_time_ns`, or a non-empty current-round report with
+that freshness, confirms start. Marker evidence is preferred. The watcher records exactly
+one `worker.started` per `launch_id`, including lane, round, surface UUID, evidence, and
+marker path. A previous round's marker or report cannot confirm the new round.
 
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.
 
-The watcher uses these exit codes (session mode waits for starts; round mode waits for reports):
+The watcher uses these exit codes:
 
 | Exit | Condition                                               | Orchestrator action                                                                               |
 |------|---------------------------------------------------------|---------------------------------------------------------------------------------------------------|
-| 0    | All session lanes started, or all awaited round reports exist                          | Session: capture adopted snapshot; round: snapshot, parse each lane, gate — exit 0 is not an advance verdict                                |
+| 0    | All fresh non-empty round reports exist | Snapshot, parse each lane, gate — exit 0 is not an advance verdict |
 | 7    | A pending lane's pane is dead per `cmux surface-health` | Stop as HITL for that lane; a dead pane with no report is orchestration uncertainty, not findings |
 | 8    | Round deadline exceeded, pending panes alive/unknown          | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL          |
-| 9    | Session lanes not started within the start window | Inspect only `not_started` lanes using the session exception path, then re-arm |
+| 9    | Round lanes not started within the start window | Inspect only `not_started` lanes using the round exception path, then re-arm |
 
 The stdout line carries the detail the exit code cannot:
-`outcome=… round=1 elapsed_seconds=… delivered=codebase,docs missing=codebase2,web dead=codebase2`
+`outcome=… round=1 elapsed_seconds=… started=codebase,docs not_started=codebase2,web delivered=codebase,docs missing=codebase2,web dead=codebase2`
 (`none` where a list is empty). The files remain the ground truth — parse them, do not trust
 the line alone.
 
@@ -712,9 +737,10 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 
 ## Worker input readiness
 
-Normal session starts attach the rendered session prompt to `start-agent` and confirm all lanes
-with one `await_reports.py --session` marker watch. Readiness observations are exception-path
-and follow-up only: after exit 9, or before round delivery and follow-up input, follow
+Normal round starts attach each self-contained prompt through `start-round` / `start-agent`.
+One `await_reports.py --round N` watch confirms starts and waits for reports. Readiness
+observations are exception-path and follow-up only: after exit 9, or before re-delivery
+and follow-up input, follow
 [Interactive worker readiness](references/worker-readiness.md). Use `observe`, explicitly
 `assess` the current screen, resolve dialogs with `respond`, then consume one fresh
 `worker.ready` with `deliver`. Read each tool result before the next input. The gate applies
@@ -816,90 +842,62 @@ workspace. An empty or missing pinned ID is a stop, not a fallback: the human ma
 at a different workspace than the one the run owns, and cmux resolves unscoped commands
 against the focused one.
 
+Round start:
+
 ```bash
-python3 scripts/pane_ctl.py launch --run-dir <run-dir> --lane codebase --anchor <surface-id>
-python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --lane codebase
-# Read each result; ready is a judgment, not an unconditional startup command.
-python3 scripts/pane_ctl.py observe --run-dir <run-dir> --surface <surface-id> --lane codebase
-python3 scripts/pane_ctl.py assess --run-dir <run-dir> --surface <surface-id> --lane codebase --observation <observation-id> --state ready --reason "<screen evidence>"
-python3 scripts/pane_ctl.py deliver --run-dir <run-dir> --surface <surface-id> --lane codebase --kind round --prompt <prompt-path>
-python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <surface-id> --lane codebase
-python3 scripts/pane_ctl.py cmux --run-dir <run-dir> -- read-screen --surface <surface-id> --lines 40
+python3 scripts/pane_ctl.py open-round --run-dir <run-dir> --round 1 --anchor <orchestrator-UUID>
+python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "launched round-1"
+python3 scripts/pane_ctl.py start-round --run-dir <run-dir> --round 1
+python3 scripts/await_reports.py --run-dir <run-dir> --round 1 --questions <n> --lane-surface codebase=<UUID> --lane-surface codebase2=<UUID> --lane-surface docs=<UUID> --lane-surface web=<UUID>
 ```
 
-`launch` first validates the prepared launch wave, then splits from the anchor without stealing focus, labels the pane, records
-`pane.launched` + `pane.labeled`, and prints the new surface's stable UUID — use that UUID in
-every later command; positional refs like `surface:465` shift when panes close. `start-agent`
-revalidates that same wave and appends the session delivery line as the single last argument
-of the requested lane's prepared command (configuration is never re-read). It refuses a missing
-`prompts/session-<lane>.md` before any cmux call, records `worker.starting` and
-`worker.launch_sent` with `start_time_ns`, and prints one JSON line with `launch_id`,
-`surface_id`, `prompt_path`, `marker_path`, and the next step. Default settle time is zero;
-`--settle-seconds` above zero enables a diagnostic screen read on stderr.
-`deliver` requires a fresh, screen-bound readiness assessment, consumes it, then
-sends the text, submits it with an explicit Enter key event (a trailing `\n` does not submit
-in either TUI; the text waits unsent in the composer), records `worker.prompt_sent`, and
-echoes the pane screen. Hand over a rendered prompt with `--prompt <path>` plus `--kind
-session|round`, never with hand-written `--text`: the wording comes from
-`orchestrator_lib.delivery_text()` and is skill policy like the launch command. `--kind`
-matters because the two prompts want opposite behavior — a session contract is adopt-and-wait,
-a round prompt is answer-now. `--text` is for follow-ups into a working lane (re-emission
-requests, clarifications). `close` closes the surface and records `pane.closed`. Everything else
-(diagnosis, `read-screen`, `set-status`, …) runs through the generic `cmux` injector, which
-inserts `--workspace <pinned>` into any cmux command. Avoid focus-changing commands.
+Check `run_state.py pending-decisions` before fresh init, then show the Run Briefing and
+record/render the frontier before this sequence. `open-round` validates the entire immutable
+wave and prints one JSON mapping of lanes to stable surface UUIDs. Use UUIDs only, never
+positional `surface:N` refs. Round 1 splits right from the orchestrator and stacks subsequent
+lanes down from the preceding lane. Later rounds split down from each lane's previous-round
+surface. All four replacements exist before any old surface closes. Labels include the
+lane, `grill-<slug>`, and `round-<N>`; pane lifecycle events carry `round`.
 
-After a *round* delivery, a lane that answers with a recap of the prompt ("the prompt is ready
-to execute; I only read it") and then goes idle has not started — no `worker.started`. That is
-a Claude failure mode: the delivery line was read as a documentation request. Re-deliver the
-same prompt with `deliver --kind round --prompt`
-(which carries the task framing), judge the screen again, and arm the round watcher from the
-re-delivery. A lane that never started does not consume the round's one deadline extension.
-The same screen after a *session* delivery is the expected outcome, not a failure.
+Before opening the next round, finish the previous round's reports, its one permitted
+re-emission, capture snapshot, integrity comparison, and gates. `open-round` refuses without
+the previous capture snapshot and lane gates. It stops at the first failure and names
+launched, closed, and orphaned surfaces; it never rolls back. Inspect partial results and
+use the single-lane `launch`, `start-agent`, and `close` verbs for recovery, with `--round N`.
+Do not replay a failed batch blindly. Record orphan evidence and close only known owned UUIDs.
 
-Session start:
+`start-round` requires the newest `tree.snapshot` to be `launched round-<N>` and newer than
+that round's last pane event. It starts each lane via the existing `start-agent` implementation,
+attaching `delivery_text("round", prompts/round-<N>-<lane>.md)` as one quoted last argument.
+It records `worker.starting` and `worker.launch_sent` with round, launch identity,
+`start_time_ns`, prompt path, and marker path. It stops at the first failure and names
+started and unstarted lanes. It refuses a repeated batch start; use single-lane recovery.
+Default settle time is zero; single-lane `--settle-seconds` enables a diagnostic screen read.
 
-1. Check the previous session first (`run_state.py pending-decisions`, see Resuming an
-   unfinished walkthrough); then `run_state.py init` with the task, show the Run Briefing,
-   and render the four session prompts with `render_prompt.py session`.
-2. Launch the four lanes one after another with `pane_ctl.py launch`, each split anchored to
-   the previously launched lane (`--anchor <previous-lane-surface-id>`); the first lane
-   may split from the orchestrator pane. A 2×2 arrangement next to the orchestrator pane
-   works well (`--direction right|down`).
-3. Labels are applied by `launch`: `Researcher Codebase`, `Researcher Codebase2`,
-   `Researcher Docs`, `Researcher Web`, each suffixed `- grill-<slug>`. Optional status
-   pills via `set-status` through the injector (not pane colors): Codebase `#0a84ff`,
-   Codebase2 `#5e5ce6`, Docs `#af52de`, Web `#34c759`, HITL/blocker `#ff3b30`.
-4. Before sending any session prompt, capture
-   `run_state.py snapshot --label "launched session"` under Delivery baselines and staged deltas,
-   before the first `start-agent`.
-5. Start each lane with `pane_ctl.py start-agent --run-dir <run-dir> --surface <lane-surface-id>
-   --lane <lane>`. Each launch attaches its rendered `prompts/session-<lane>.md`; the worker's
-   first step creates or overwrites `artifacts/session-<lane>/started` and refreshes its mtime.
-6. Arm one `await_reports.py --session --run-dir <run-dir>
-   --lane-surface codebase=<codebase-surface-id> --lane-surface codebase2=<codebase2-surface-id>
-   --lane-surface docs=<docs-surface-id> --lane-surface web=<web-surface-id>` watch via background Bash (or Monitor with re-arm).
-   The default `--start-minutes 5` window accepts only markers at least as new as the matching
-   current launch's `start_time_ns`, records one `worker.started` per lane with marker evidence,
-   and exits 0 only when all given lanes have started. No screen judgment is needed normally.
-   After exit 9, for each lane named in `not_started`, take one `observe` and `assess`:
-   - Dialog: `respond` with the assessed action, then re-arm without re-delivery.
-   - `failed`: follow the existing failure rules and stop as HITL/blocker.
-   - Ready but no session adopted: one readiness-gated `deliver --kind session --prompt
-     <run-dir>/prompts/session-<lane>.md`, then re-arm the session watch.
-   - Visibly working or session adopted: record `run_state.py event --type worker.started`
-     with data `{lane, surface_id, launch_id, evidence: "screen"}` from the current launch,
-     then re-arm. A lane that confirms in one line and goes idle is correct for a session.
-   Exit 7 means a pending lane pane died: stop as HITL for that lane.
-7. After the session watch exits 0, after all lanes adopt their session contracts, capture
-   `run_state.py snapshot --label "adopted session"` and compare it with the session baseline
-   before arming the first round, following Delivery baselines and staged deltas. Round prompts
-   continue through readiness-gated `deliver --kind round`; round watches await reports only,
-   without a new start phase for lanes whose latest launch already has `worker.started`.
+After exit 9, take one `observe` and `assess` for each lane named in `not_started` only:
 
-Lane panes stay open across rounds; they are closed only at session end, HITL stop, blocker
-stop, or run abort — after their reports and gate decisions are documented (`pane_ctl.py
-close` per lane, which records `pane.closed`). If a lane's tooling leaves orphan panes
-behind, record `pane.orphans_detected` with the IDs, then close them.
+- Dialog: `respond` with the assessed action, then re-arm without re-delivery. Resolve
+  further dialogs individually.
+- Failed startup: stop as HITL/blocker under the existing failure rules.
+- Ready but assignment idle, summarized, or unsent: one readiness-gated
+  `deliver --round N --kind round --prompt <run-dir>/prompts/round-<N>-<lane>.md`, then re-arm.
+- Visibly working: record `run_state.py event --type worker.started` with
+  `{lane, round, surface_id, launch_id, evidence: "screen", marker_path}` from the current
+  launch, then re-arm. A missing marker alone does not justify re-delivery.
+
+Always re-arm the full round watcher with the same four UUIDs; recovery input targets only
+`not_started` lanes. Existing start confirmations remain valid for their launch IDs.
+`deliver --kind round` is only for exit-9 recovery. `deliver --text` is for the one report
+re-emission or clarifications, also readiness-gated. Before every `deliver`, obtain a fresh
+screen-bound readiness assessment; it is consumed before input. Readiness identity remains
+`{lane}`, so replacing its pane invalidates earlier observations and ready events. Use the
+shared readiness reference for assessment and individual dialog handling. Everything else
+(`read-screen`, `set-status`, diagnosis) runs through `pane_ctl.py cmux`, which injects the
+pinned workspace. Do not route input through raw CMUX commands to bypass readiness.
+
+Keep current round panes open until the next `open-round` or session end, after reports,
+re-emission, gates, and snapshot are recorded. At session end use `close --round N --lane
+<lane> --surface <UUID>` per lane. Never close a pending report's pane during a normal wait.
 
 While a round is in flight, the four reports belong to the lanes: do not edit anything under
 `reports/` yourself, and compare snapshot fingerprints before any `report.integrity` claim.
@@ -919,14 +917,14 @@ consistently within a run.
 | `run.briefing`                                         | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                 |
 | `run.recap`                                            | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                       |
 | `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
-| `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle; written by `pane_ctl.py launch` / `close`                                                                     |
+| `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle with round; written by `open-round`, `launch`, or `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |
-| `worker.starting`                                    | Launch about to be sent; invalidates earlier readiness, includes launch_id and start_time_ns |
+| `worker.starting`                                    | Launch about to be sent; invalidates earlier readiness, includes round, launch_id, prompt_path, marker_path, and start_time_ns |
 | `worker.observed`, `worker.ready`, `worker.startup_status`, `worker.readiness_consumed`, `worker.dialog_response` | Readiness events: exception-path and follow-up only; observe/assess/respond before gated input |
-| `worker.launch_sent`                                   | Lane agent launch command with attached session prompt; written by `pane_ctl.py start-agent`                                                       |
+| `worker.launch_sent`                                   | Lane agent launch command with attached round prompt; written by `pane_ctl.py start-agent`                                                       |
 | `worker.prompt_sent`                                   | Text sent and submitted; written by `pane_ctl.py deliver`                                                                          |
-| `worker.started`                                       | Current launch confirmed by session marker (`evidence: "marker"`), or exception-path screen evidence (`evidence: "screen"`); data binds lane, surface_id, launch_id                   |
-| `worker.waiting`                                       | Written by the armed session or round watcher only: heartbeats plus its final outcome                                                         |
+| `worker.started`                                       | Current launch confirmed by fresh marker or report (`evidence: "marker"|"report"`), or exception-path `"screen"`; data binds lane, round, surface_id, launch_id, marker_path                   |
+| `worker.waiting`                                       | Written by the armed round watcher only: heartbeats plus its final outcome                                                         |
 | `worker.finished`                                      | Round report captured; data carries `{lane, round, surface_id}`                                                                    |
 | `worker.launch_blocked`                                | A lane launch was denied (permissions, environment)                                                                                |
 | `gate`                                                 | Only via `run_state.py gate`                                                                                                       |
@@ -935,7 +933,7 @@ consistently within a run.
 | `report.integrity`, `report.integrity.retracted`       | Report-claim accusation and its retraction                                                                                         |
 | `plan.drift`, `plan.drift.resolved`                    | Task-premise drift recorded / resolved; data carries `class` (small-factual, load-bearing) and `resolved_by` (orchestrator, human) |
 | `hitl.resolved`, `decision.human`                      | Human decisions and HITL resolutions                                                                                               |
-| `grill.question`                                       | Round question recorded before delivery, one per question; data `{round, id, question, depends_on?}`                               |
+| `grill.question`                                       | Round question recorded before delivery, one per question; data `{round, id, question, depends_on}`                               |
 | `grill.question_deferred`                              | Question dropped from a round's synthesis after a failed re-emission; data `{round, id, lanes, reason}`                             |
 | `grill.synthesis`                                      | One question synthesized; data `{round, id, confidence}`                                                                           |
 | `grill.done`                                           | Griller ends the loop (empty frontier or round budget spent); data `{round, reason}`                                                |
@@ -977,21 +975,20 @@ python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.j
 python3 scripts/run_state.py pending-decisions
 ```
 
-Render prompts. Session prompts once per lane at launch, round prompts once per round with one
+Render self-contained round prompts once per lane per round, with one
 `--question` (or `--question-file`) per frontier question, numbered `Q1..Qn` in order:
 
 ```bash
-python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/<run-id> --lane codebase
 python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/<run-id> --lane web --round 1 --question "Which HTTP client does the frontend use?" --question "Which API base URL does it use?"
 ```
 
 Await a round's reports. One watcher per round, armed through background Bash or Monitor with re-arm (see Lane Wait
-Policy); exits 0 = all reports (or session starts), 7 = pending lane's pane dead,
-8 = round deadline, 9 = session not started. Health checks are
+Policy); exits 0 = all reports, 7 = pending lane's pane dead,
+8 = round deadline, 9 = round not started. Health checks are
 scoped to the run's pinned `workspace_id` from `state.json`; there is no env fallback:
 
 ```bash
-python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 2 --lane-surface codebase=surface:465 --lane-surface codebase2=surface:466 --lane-surface docs=surface:467 --lane-surface web=surface:468
+python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/<run-id> --round 1 --questions 2 --lane-surface codebase=<UUID> --lane-surface codebase2=<UUID> --lane-surface docs=<UUID> --lane-surface web=<UUID>
 ```
 
 Parse lane reports. `--questions <n>` demands blocks `Q1..Qn`. The exit code carries the most severe
@@ -1007,15 +1004,15 @@ warns about an unreadable untracked directory, so its contents stay invisible ra
 Then:
 
 ```bash
-python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 Q1" --data '{"round":1,"id":"Q1","question":"..."}'
+python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 Q1" --data '{"round":1,"id":"Q1","question":"...","depends_on":[]}'
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "reports-captured round-1"
 python3 scripts/run_state.py gate --run-dir <run-dir> --stage round-1-web --decision advance --reason "well-formed ANSWERED, sources cited"
 python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <output-dir>/<slug>.md --json <output-dir>/<slug>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
 ```
 
 Control lane panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints
-the pinned id, `cmux` is the generic `--workspace` injector, `launch`/`deliver`/`close` are
-the lifecycle verbs.
+the pinned id, `cmux` is the generic `--workspace` injector, `open-round`/`start-round` own normal round lifecycle;
+`launch`/`start-agent`/`close` remain for recovery and final close.
 
 Run the regression tests after touching `parse_research_report.py`, `await_reports.py`,
 `pane_ctl.py`, `run_state.py`, `launch_wave.py`, or `agents_config.py`:
@@ -1032,33 +1029,23 @@ python3 scripts/test_launch_wave.py
 
 ## Smoke Test
 
-Before a live lane pilot, run the scripts end-to-end. Every command must exit 0, and the
-whole block must be safe to run twice in a row (`init` is idempotent):
+Before a live lane pilot, run the canonical baseline suites from the repository root:
 
 ```bash
-python3 scripts/test_parse_research_report.py
-python3 scripts/test_await_reports.py
-python3 scripts/test_pane_ctl.py
-python3 scripts/test_worker_readiness.py
-python3 scripts/test_run_state.py
-python3 scripts/test_agents_config.py
-python3 scripts/test_launch_wave.py
-python3 scripts/run_state.py init --task "Smoke: validate the grilling scripts" --run-id smoke-grill --max-rounds 2 --output-dir .scratch/grilling
-python3 scripts/run_state.py pending-decisions --output-dir .scratch/grilling
-python3 scripts/render_prompt.py session --run-dir .scratch/orchestrator/runs/smoke-grill --lane codebase
-python3 scripts/render_prompt.py round --run-dir .scratch/orchestrator/runs/smoke-grill --lane web --round 1 --question "Which HTTP client does the frontend use?"
-python3 scripts/parse_research_report.py references/sample-research-report.md --questions 1 --json
-python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-grill --label "smoke snapshot"
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-grill --stage round-1-web --decision advance --reason "smoke test"
-python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-grill --markdown .scratch/grilling/smoke.md --json .scratch/grilling/smoke.json --message "smoke complete" --data '{"stop_reason":"smoke"}'
-
-# The watcher without reports must hit its deadline (exit 8), file-only, in ~1 second:
-python3 scripts/await_reports.py --run-dir .scratch/orchestrator/runs/smoke-grill --round 1 --questions 1 --deadline-minutes 0.01 --poll-seconds 0.2; [ $? -eq 8 ]
+python3 -m unittest discover -s cmux-issue-chain/scripts -p 'test_*.py'
+python3 -m unittest discover -s cmux-planning/scripts -p 'test_*.py'
+python3 -m unittest discover -s cmux-grilling/scripts -p 'test_*.py'
+python3 tools/test_orchestrator_usage.py
 ```
 
-`references/sample-research-report.md` is the shipped clean-report fixture. Run the block
-from the orchestrator's cmux pane so `init` can pin the workspace; outside cmux, pass
-`--workspace-id <uuid>` or `--no-workspace` explicitly.
+`test_fresh_rounds.py` executes two rounds through the real CLIs with fake cmux and simulated
+workers: frontier rendering, open-round, launched snapshot, start-round, markers/reports,
+watching, parser gates, reports-captured snapshot, replacement anchoring, and final close.
+It also verifies stale readiness cannot authorize input after pane replacement. The watcher
+suite covers missing starts (exit 9), dead pending panes (7), stale artifacts, and re-armed
+deadlines (8). `test_round_context.py` verifies the dependency projection and UTF-8 cap.
+`references/sample-research-report.md` remains the clean-report fixture for live pilots.
+Live usage comparison is a separate human-assisted rollout task.
 
 ## Research Report Contract
 
@@ -1112,7 +1099,7 @@ Research-specific gate requirements:
 - `### Method` must be substantive in every report, including `NO ANSWER` — what was searched
   and found nothing is evidence too.
 
-Lanes may write exactly two files per round: the draft path and the report handoff path
+Lanes may write only their round marker, draft path, and report handoff path
 named in the round prompt. `init` creates `drafts/` alongside `prompts/`, `reports/`, and
 `synthesis/`. Rendered prompts name `<run-dir>/drafts/round-<N>-<lane>.md` and instruct lanes
 to self-validate that exact file with `parse_research_report.py` before writing the handoff

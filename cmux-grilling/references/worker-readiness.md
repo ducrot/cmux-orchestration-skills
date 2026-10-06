@@ -9,10 +9,10 @@ or separate `deliver`: read the launch output and arm the skill's watcher.
 
 `worker.launch_sent` records the launch and assignment identity; it alone does not prove that
 work began. On a fresh marker for the current launch, the watcher writes `worker.started`
-without a screen judgment. Issue-chain and planning also accept a report arriving
-first and continue watching for the report after start confirmation. Grilling uses
-`await_reports.py --session` to confirm all lane session markers; session adoption means the lane
-is waiting for its round assignment, not that a round report is complete.
+without a screen judgment. All three workflows also accept a fresh non-empty report arriving
+first and continue watching for the report after start confirmation. Grilling rounds each
+start fresh workers with their round prompts attached; `await_reports.py --round N` confirms
+per-round markers and waits for all four reports in the same loop.
 
 The start window defaults to five minutes (`--start-minutes 5`). Watcher exit 9 means assignment
 start was not confirmed within that window; use the exception path below. Do not send a duplicate
@@ -22,7 +22,7 @@ assignment or restart merely because a marker is missing. Normal successful laun
 ## When readiness is required
 
 Apply the interactive protocol after a watcher exit 9, after context recovery before any new input,
-and before every `deliver` (follow-ups, re-delivery, and grilling rounds, including session re-delivery).
+and before every `deliver` (follow-ups and re-delivery, including recovery for grilling rounds).
 A successful `start-agent`, a live surface, provider preflight, or a visible prompt glyph
 is not proof of readiness for new input. Codex can display a composer while still loading, and
 Pi renders its banner, skill list and composer frame before the session is usable.
@@ -32,11 +32,10 @@ After exit 9, observe and assess the current launch before choosing an action:
 - A dialog: use `respond` as described below, then re-arm the watcher without re-delivery;
   the assignment is already attached to the launch. Resolve further dialogs individually.
 - Failed startup: stop and follow the skill's blocker/recovery rules.
-- Confirmed idle or summarized-and-waiting assignment, unsent delivery line, or no adopted
-  grilling session: use one readiness-gated re-delivery of the same prompt, then re-arm the
+- Confirmed idle or summarized-and-waiting assignment, or unsent delivery line: use one readiness-gated re-delivery of the same prompt, then re-arm the
   watcher. Follow the skill's prompt and baseline requirements; a missing marker alone does
   not authorize re-delivery.
-- Visibly working, or an adopted grilling session: confirm `worker.started` with screen evidence
+- Visibly working: confirm `worker.started` with screen evidence
   using the skill's exception procedure (planning: `mark-started`), then re-arm the watcher.
 
 Preserve the current launch identity when re-arming and follow the skill's deadline rules.
@@ -75,8 +74,8 @@ or `--lane <lane>` for grilling.
    assessments can describe an animated observed frame; they never authorize delivery.
 4. After exception-path re-delivery, re-arm the watcher to confirm the marker or report.
    A readiness assessment does not confirm work. For screen-based start confirmation, follow
-   the exception procedure above. Follow-ups and grilling rounds keep the existing launch
-   confirmation and use the skill's report watcher; they do not need another `worker.started`.
+   the exception procedure above. Follow-ups keep the existing launch confirmation and use the skill's report watcher;
+   a new grilling round has fresh launches and its own `worker.started` events.
 
 ## Respond to a dialog
 

@@ -381,7 +381,7 @@ def init_run(args: argparse.Namespace) -> int:
         {
             "time": launch_wave_pointer["prepared_at"],
             "type": "launch_wave.prepared",
-            "message": "prepared all four persistent research lanes from validated configuration",
+            "message": "prepared the reusable four-lane launch wave from validated configuration",
             "data": {
                 "snapshot_id": launch_wave_pointer["snapshot_id"],
                 "snapshot_sha256": launch_wave_pointer["sha256"],
@@ -401,6 +401,16 @@ def append_event(args: argparse.Namespace) -> int:
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
+    if args.type == "grill.question":
+        from round_context import recorded_questions, validate_question
+        from worker_readiness import read_events
+        events = read_events(Path(args.run_dir))
+        try:
+            validate_question(data, events)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        if recorded_questions(events, data["round"], data["id"]):
+            raise SystemExit(f"grill.question R{data['round']}{data['id']} is already recorded; use a new id")
     append_jsonl(
         Path(args.run_dir) / "events.jsonl",
         {"time": utc_now(), "type": args.type, "message": args.message, "data": data},

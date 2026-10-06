@@ -169,6 +169,8 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         )
 
     def pane(self, *args: str) -> subprocess.CompletedProcess[str]:
+        if args[0] == "start-agent":
+            args = (*args, "--round", "1")
         return subprocess.run(
             [sys.executable, str(PANE_CTL), "--cmux-cmd", str(self.cmux), *args],
             cwd=self.repo,
@@ -178,10 +180,18 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             timeout=30,
         )
 
-    def render_session(self, run_dir: Path, lane: str):
+    def record_question(self, run_dir):
+        events = run_dir / "events.jsonl"
+        if '"type": "grill.question"' not in events.read_text():
+            with events.open("a") as stream:
+                stream.write(json.dumps({"type": "grill.question", "data": {
+                    "round": 1, "id": "Q1", "question": "What exists?", "depends_on": []}}) + "\n")
+
+    def render_round(self, run_dir: Path, lane: str):
+        self.record_question(run_dir)
         rendered = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "render_prompt.py"), "session",
-             "--run-dir", str(run_dir), "--lane", lane],
+            [sys.executable, str(SCRIPT_DIR / "render_prompt.py"), "round", "--round", "1",
+             "--question", "What exists?", "--run-dir", str(run_dir), "--lane", lane],
             cwd=self.repo, capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -254,8 +264,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 cwd=self.repo, capture_output=True, text=True, timeout=30,
             )
 
-        session = render("session", "--run-dir", str(run_dir), "--lane", "codebase2")
-        self.assertEqual(session.returncode, 0, session.stderr)
+        self.record_question(run_dir)
         args = ("round", "--run-dir", str(run_dir), "--lane", "codebase2",
                 "--round", "1", "--question", "What exists?")
         report = run_dir / "reports" / "round-1-codebase2.md"
@@ -406,7 +415,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 "launch", "--run-dir", str(run_dir), "--lane", lane, "--anchor", "anchor"
             )
             self.assertEqual(launched.returncode, 0, launched.stderr)
-            self.render_session(run_dir, lane)
+            self.render_round(run_dir, lane)
             started = self.pane(
                 "start-agent", "--run-dir", str(run_dir), "--surface", f"surface-{lane}",
                 "--lane", lane, "--settle-seconds", "0",
@@ -419,8 +428,8 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.assertEqual(
                 shlex.split(command),
                 ["CMUX_AGENT_MANAGED_SUBAGENT=1", *wave["resolved_profiles"][lane]["argv"],
-                 delivery_text("session", str(
-                     (self.run_dir("commands") / "prompts" / f"session-{lane}.md").relative_to(self.repo)))],
+                 delivery_text("round", str(
+                     (self.run_dir("commands") / "prompts" / f"round-1-{lane}.md").relative_to(self.repo)))],
             )
 
         self.assertEqual(
@@ -684,7 +693,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             "gpt-5.6-luna",
         )
 
-    def test_live_config_edits_do_not_change_or_restart_persistent_lanes(self):
+    def test_live_config_edits_do_not_change_prepared_round_launch_or_followups(self):
         initialized = self.init_for("immutable")
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         before = self.read_wave("immutable")
@@ -694,28 +703,28 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         run_dir = self.run_dir("immutable")
-        self.render_session(run_dir, "codebase2")
+        self.render_round(run_dir, "codebase2")
         started = self.pane(
-            "start-agent", "--run-dir", str(run_dir), "--surface", "persistent-surface",
+            "start-agent", "--run-dir", str(run_dir), "--surface", "round-surface",
             "--lane", "codebase2", "--settle-seconds", "0",
         )
         self.assertEqual(started.returncode, 0, started.stderr)
-        common = ["--run-dir", str(run_dir), "--surface", "persistent-surface", "--lane", "codebase2"]
+        common = ["--run-dir", str(run_dir), "--surface", "round-surface", "--lane", "codebase2"]
         observed = self.pane("observe", *common)
         self.assertEqual(observed.returncode, 0, observed.stderr)
         assessed = self.pane("assess", *common,
                              "--observation", json.loads(observed.stdout)["observation_id"],
-                             "--state", "ready", "--reason", "persistent lane is idle for the next round")
+                             "--state", "ready", "--reason", "round lane is idle for a clarification")
         self.assertEqual(assessed.returncode, 0, assessed.stderr)
         delivered = self.pane(
-            "deliver", "--run-dir", str(run_dir), "--surface", "persistent-surface",
-            "--lane", "codebase2", "--text", "round two", "--settle-seconds", "0",
+            "deliver", "--run-dir", str(run_dir), "--surface", "round-surface",
+            "--lane", "codebase2", "--text", "clarify answer", "--settle-seconds", "0",
         )
         self.assertEqual(delivered.returncode, 0, delivered.stderr)
         sends = [call[-1] for call in self.cmux_calls() if call and call[0] == "send"]
         self.assertIn("gpt-6-astra", sends[0])
         self.assertNotIn("changed/after-start", sends[0])
-        self.assertEqual(sends[1], "round two")
+        self.assertEqual(sends[1], "clarify answer")
         self.assertEqual(before, self.read_wave("immutable"))
 
         next_run = self.init_for("next-run")

@@ -12,9 +12,10 @@ with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
 if "new-split" in args:
+    counter = sum("new-split" in json.loads(line) for line in open(os.environ["FAKE_CMUX_LOG"]))
     print(json.dumps({
         "pane_id": "PANE-UUID", "pane_ref": "pane:9",
-        "surface_id": "SURF-UUID", "surface_ref": "surface:9",
+        "surface_id": "SURF-UUID" if counter == 1 else f"SURF-UUID-{counter}", "surface_ref": "surface:9",
         "type": "terminal", "workspace_id": "WS-UUID", "workspace_ref": "workspace:1",
     }))
 elif "read-screen" in args:
