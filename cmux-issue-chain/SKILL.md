@@ -826,7 +826,7 @@ configuration source and stores all temporary overrides only in that snapshot:
 python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --pass 1
 python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage test --pass 1 --probe-profiles --probe-timeout 180
 python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/<run-id> --stage test --pass 1 \
-  --profile test=codex-luna-medium --effort test=high
+  --profile test=codex-sol-high --effort test=xhigh
 ```
 
 Pane lifecycle events (`pane.launched`, `pane.labeled`, `worker.launch_sent`, `worker.prompt_sent`, `pane.closed`) are written

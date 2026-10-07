@@ -108,14 +108,14 @@ The shared configuration lives at `.scratch/orchestrator/agents.json`. These are
 | Workflow | Role | Model / effort |
 |---|---|---|
 | Grilling | Repository research | Claude Opus / high |
-| Grilling | Second repository opinion | GPT-6 Astra / high |
-| Grilling | Official documentation | GPT-5.6 Luna / medium |
+| Grilling | Second repository opinion | GPT-6.1 Sol / high |
+| Grilling | Official documentation | GPT-6.1 Sol / medium |
 | Grilling | Web research | Claude Sonnet / medium |
 | Planning | Specification and ticket authors | Claude Fable / high |
 | Planning | Reviewer | GPT-6 Astra / high |
-| Issue-chain | Implementer | GPT-6 Astra / xhigh |
-| Issue-chain | Simplifier and reviewer | Claude Opus / high |
-| Issue-chain | Final tester | GPT-6 Astra / high |
+| Issue-chain | Implementer | GPT-6.1 Sol / medium |
+| Issue-chain | Simplifier, reviewer, and triage | Claude Opus / medium |
+| Issue-chain | Final tester | GPT-6.1 Sol / medium |
 
 Claude model names are provider aliases. These assignments describe the shipped configuration, not guaranteed model access. Optional `--probe-profiles` checks make a minimal live provider request before workers launch.
 

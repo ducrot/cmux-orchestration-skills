@@ -349,7 +349,7 @@ class PlanningFlow(unittest.TestCase):
                 self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
 
     def test_reinitialization_preserves_pending_human_confirmation(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
         result = self.init_direct()
         self.assertEqual(result.returncode, 2, result.stderr)
         before = (self.run_dir / "state.json").read_bytes()
@@ -1308,7 +1308,7 @@ sha256 {resulting_digest or digest}
         self.launch_prepared_stage("spec")
 
     def test_refusing_spec_author_collision_preserves_stage_and_configuration_guidance(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
 
         refused = self.decide_diversity(
@@ -1337,7 +1337,7 @@ sha256 {resulting_digest or digest}
         self.assertNotIn("diversity-confirmation", status["recommended_next"]["command"])
 
     def test_refusing_a_changed_diverse_resolution_records_it_without_preparing(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assign_planning_profile("spec", "claude-fable-high")
 
@@ -1381,13 +1381,13 @@ sha256 {resulting_digest or digest}
         )
 
     def test_refusing_a_changed_still_colliding_resolution_records_the_fresh_combination(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
         first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
             "diversity_confirmation"
         ]
-        self.assign_planning_profile("spec", "codex-luna-medium")
-        self.assign_planning_profile("reviewer", "codex-luna-medium")
+        self.assign_planning_profile("spec", "codex-sol-medium")
+        self.assign_planning_profile("reviewer", "codex-sol-medium")
 
         refused = self.decide_diversity("refuse", "No independent reviewer is reachable today")
 
@@ -1397,7 +1397,7 @@ sha256 {resulting_digest or digest}
         record = state["diversity_confirmation"]
         self.assertEqual(record["status"], "refused")
         self.assertNotEqual(record["combination_id"], first["combination_id"])
-        self.assertEqual(record["author"]["model"], "gpt-5.6-luna")
+        self.assertEqual(record["author"]["model"], "gpt-6.1-sol")
         self.assertEqual(record["reason"], "No independent reviewer is reachable today")
         self.assertEqual(
             [entry["status"] for entry in state["diversity_confirmation_history"]], ["invalidated"]
@@ -1405,8 +1405,8 @@ sha256 {resulting_digest or digest}
         self.assertIn(str(self.config.resolve()), refused.stdout)
 
     def test_one_confirmation_covers_both_author_stages_for_the_same_combination(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
-        self.assign_planning_profile("tickets", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
+        self.assign_planning_profile("tickets", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity(
@@ -1472,7 +1472,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(
             self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir)).returncode, 0
         )
-        self.assign_planning_profile("tickets", "codex-astra-xhigh")
+        self.assign_planning_profile("tickets", "codex-astra-medium")
 
         approved = self.cli(
             STATE,
@@ -1563,7 +1563,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(snapshot["selected_worker"]["profile"], "claude-fable-high")
 
     def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
-        self.assign_planning_profile("spec", "codex-astra-xhigh")
+        self.assign_planning_profile("spec", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
         self.assertEqual(
             self.decide_diversity("confirm", "Temporary single-model operation").returncode,
@@ -1572,8 +1572,8 @@ sha256 {resulting_digest or digest}
         first = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))[
             "diversity_confirmation"
         ]
-        self.assign_planning_profile("spec", "codex-luna-medium")
-        self.assign_planning_profile("reviewer", "codex-luna-medium")
+        self.assign_planning_profile("spec", "codex-sol-medium")
+        self.assign_planning_profile("reviewer", "codex-sol-medium")
 
         prepared = self.cli(
             STATE,
@@ -1594,7 +1594,7 @@ sha256 {resulting_digest or digest}
         self.assertNotEqual(
             changed["diversity_confirmation"]["combination_id"], first["combination_id"]
         )
-        self.assertEqual(changed["diversity_confirmation"]["author"]["model"], "gpt-5.6-luna")
+        self.assertEqual(changed["diversity_confirmation"]["author"]["model"], "gpt-6.1-sol")
         self.assertEqual(len(changed["diversity_confirmation_history"]), 1)
         self.assertEqual(
             changed["diversity_confirmation_history"][0]["status"], "invalidated"
@@ -3054,7 +3054,7 @@ sha256 {resulting_digest or digest}
         legacy = json.loads(self.config.read_text(encoding="utf-8"))
         legacy["schema_version"] = 1
         del legacy["workflows"]["planning"]
-        legacy["workflows"]["grilling"]["web"] = "codex-astra-xhigh"
+        legacy["workflows"]["grilling"]["web"] = "codex-astra-medium"
         legacy_bytes = (json.dumps(legacy, indent=2) + "\n").encode("utf-8")
         self.config.write_bytes(legacy_bytes)
         self.config.chmod(0o640)
@@ -3082,7 +3082,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(proc.stdout, "")
         self.assertIn("cannot produce a valid migration candidate", proc.stderr)
         self.assertIn("cannot migrate invalid schema-v1 configuration", proc.stderr)
-        self.assertIn("workflow=grilling worker=web profile=codex-astra-xhigh field=harness", proc.stderr)
+        self.assertIn("workflow=grilling worker=web profile=codex-astra-medium field=harness", proc.stderr)
         self.assertIn(
             "No configuration bytes, planning run, or launchable state were recorded", proc.stderr
         )

@@ -428,7 +428,7 @@ class PreparedStageCli(unittest.TestCase):
         state = self.read_state()
         self.assertEqual(state["triage_mode"], "autonomous")
         self.assertEqual(state["chain"], ["implement", "simplify", "review", "test", "triage"])
-        self.assertEqual(self.read_snapshot()["resolved_profiles"]["triage"]["profile"], "claude-opus-high")
+        self.assertEqual(self.read_snapshot()["resolved_profiles"]["triage"]["profile"], "claude-opus-medium")
         before = file_contents(self.run_dir)
         self.assertNotEqual(self.init("--human-triage").returncode, 0)
         self.assertEqual(file_contents(self.run_dir), before)
@@ -690,9 +690,9 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(snapshot["config"]["sha256"], hashlib.sha256(config.read_bytes()).hexdigest())
         self.assertEqual(set(snapshot["resolved_profiles"]), {"implement", "simplify", "review", "test", "triage"})
         selected = snapshot["selected_worker"]
-        self.assertEqual(selected["profile"], "codex-astra-xhigh")
-        self.assertEqual(selected["model"], "gpt-6-astra")
-        self.assertEqual(selected["effort"], "xhigh")
+        self.assertEqual(selected["profile"], "codex-sol-medium")
+        self.assertEqual(selected["model"], "gpt-6.1-sol")
+        self.assertEqual(selected["effort"], "medium")
         self.assertEqual(selected["detected_version"], "codex 99.1-test")
         self.assertEqual(selected["entitlement"]["status"], "unverified")
         self.assertEqual(selected["argv"][0], "codex")
@@ -709,8 +709,8 @@ class PreparedStageCli(unittest.TestCase):
                 "-c", "check_for_update_on_startup=false",
                 "-c", "tui.animations=false",
                 "-c", "tui.disable_paste_burst=true",
-                "--model", "gpt-6-astra",
-                "-c", "model_reasoning_effort=xhigh",
+                "--model", "gpt-6.1-sol",
+                "-c", "model_reasoning_effort=medium",
             ],
         )
         serialized = json.dumps(snapshot)
@@ -785,7 +785,7 @@ class PreparedStageCli(unittest.TestCase):
 
         calls = [json.loads(line) for line in self.harness_log.read_text().splitlines()]
         probes = [call for call in calls if PROBE_SENTINEL in " ".join(call["argv"])]
-        self.assertEqual(len(probes), 3, "duplicate worker assignments must share one profile probe")
+        self.assertEqual(len(probes), 2, "duplicate worker assignments must share one profile probe")
         self.assertEqual({call["program"] for call in probes}, {"claude", "codex"})
         codex = next(call["argv"] for call in probes if call["program"] == "codex")
         claude = next(call["argv"] for call in probes if call["program"] == "claude")
@@ -1030,7 +1030,7 @@ class PreparedStageCli(unittest.TestCase):
 
     def test_overrides_resolve_in_order_reject_duplicates_and_do_not_persist(self):
         proc = self.init(
-            "--profile", "implement=codex-luna-medium",
+            "--profile", "implement=codex-astra-medium",
             "--model", "implement=custom/model-v2",
             "--effort", "implement=high",
             "--executable", f"implement={self.bin_dir / 'codex'}",
@@ -1042,13 +1042,13 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         snapshot = self.read_snapshot()
         selected = snapshot["selected_worker"]
-        self.assertEqual(selected["profile"], "codex-luna-medium")
+        self.assertEqual(selected["profile"], "codex-astra-medium")
         self.assertEqual(selected["model"], "custom/model-v2")
         self.assertEqual(selected["effort"], "high")
         self.assertEqual(
             snapshot["effective_overrides"]["implement"],
             {
-                "profile": "codex-luna-medium",
+                "profile": "codex-astra-medium",
                 "model": "custom/model-v2",
                 "effort": "high",
                 "executable": str(self.bin_dir / "codex"),
@@ -1079,7 +1079,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "temporary/model")
         second_refresh = self.prepare("implement", 3)
         self.assertEqual(second_refresh.returncode, 0, second_refresh.stderr)
-        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6-astra")
+        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6.1-sol")
         self.assertEqual(self.read_snapshot()["effective_overrides"], {})
 
     def test_incompatible_override_invalidates_previous_snapshot_before_pane_creation(self):
@@ -1118,7 +1118,7 @@ class PreparedStageCli(unittest.TestCase):
         for proc in (with_config, with_override):
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn("already exists", proc.stderr)
-        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6-astra")
+        self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6.1-sol")
 
     def test_init_records_the_invocation_and_reinit_keeps_it(self):
         prompt = "/cmux-issue-chain .scratch/tracker ISSUE-001 bitte Tests zuerst"

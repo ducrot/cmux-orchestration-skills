@@ -51,8 +51,8 @@ and events, writes no `followup-items.md`, and prints `next_stage: null`. Record
 `advance` with no next stage, then complete. Triage-2 never starts another follow-up pass.
 
 The `triage` worker needs an assignment in the configuration like every other worker, even though its
-run is optional; `--human-triage` only decides whether it launches. `init` writes `claude-opus-high`,
-and migration from schema v1 or v2 adds that assignment when it is missing. Every preparation
+run is optional; `--human-triage` only decides whether it launches. `init` writes `claude-opus-medium`,
+and migration from schema v1 or v2 adds `claude-opus-high` when it is missing. Every preparation
 resolves, preflights, and optionally probes all five workers, including in human mode.
 
 The triage worker decides every item autonomously and must never ask the human or the orchestrator

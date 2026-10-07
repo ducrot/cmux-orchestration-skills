@@ -51,15 +51,15 @@ This checkpoint belongs to the interactive orchestrator, never to a worker pane 
 not emulate it with shell input, a sleeping process, or polling while the human edits the file.
 
 The sixteen shipped profiles are `claude-fable-high` and `claude-fable-medium` (`claude-code`,
-`claude`, `fable`); `claude-opus-high`, `claude-opus-medium`, and `claude-opus-xhigh`
-(`claude-code`, `claude`, `opus`); `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
-`codex-astra-high`, `codex-astra-medium`, and `codex-astra-xhigh` (`codex`, `codex`,
-`gpt-6-astra`); `codex-luna-medium` (`codex`, `codex`, `gpt-5.6-luna`);
+`claude`, `fable`); `claude-opus-high` and `claude-opus-medium` (`claude-code`, `claude`, `opus`);
+`claude-sonnet-high` and `claude-sonnet-medium` (`claude-code`, `claude`, `sonnet`);
+`codex-astra-high` and `codex-astra-medium` (`codex`, `codex`, `gpt-6-astra`);
+`codex-sol-high` and `codex-sol-medium` (`codex`, `codex`, `gpt-6.1-sol`);
 `pi-gemini-pro-high` and `pi-gemini-pro-medium` (`pi`, `pi`, `google/gemini-3.1-pro-preview`);
 `pi-glm-high` and `pi-glm-medium` (`pi`, `pi`, `openrouter/z-ai/glm-5.3`); and `pi-grok-high`
 and `pi-grok-medium` (`pi`, `pi`, `xai/grok-4.7`). Each tuple lists
 harness, executable, and model; the profile suffix specifies effort. No workflow assigns a Pi
-profile by default; Pi is opted into per run or per tracker config. Grilling assigns Opus/high, Astra/high, Luna/medium, and Sonnet/medium to
+profile by default; Pi is opted into per run or per tracker config. Grilling assigns Opus/high, Sol/high, Sol/medium, and Sonnet/medium to
 `codebase`, `codebase2`, `docs`, and `web`, respectively. The `fable`, `opus`, and `sonnet`
 strings are intentionally moving provider aliases; deterministic selection of an alias does not
 pin the provider's underlying model version.

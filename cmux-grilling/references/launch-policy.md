@@ -10,7 +10,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c check_for_update_on_startup=false \
   -c tui.animations=false \
   -c tui.disable_paste_burst=true \
-  --model gpt-6-astra \
+  --model gpt-6.1-sol \
   -c model_reasoning_effort=high                          # codebase2
 CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c sandbox_workspace_write.network_access=true \
@@ -19,7 +19,7 @@ CMUX_AGENT_MANAGED_SUBAGENT=1 codex -s workspace-write \
   -c check_for_update_on_startup=false \
   -c tui.animations=false \
   -c tui.disable_paste_burst=true \
-  --model gpt-5.6-luna \
+  --model gpt-6.1-sol \
   -c model_reasoning_effort=medium                         # docs
 CMUX_AGENT_MANAGED_SUBAGENT=1 claude \
   --model sonnet --effort medium \

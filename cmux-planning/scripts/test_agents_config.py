@@ -122,11 +122,11 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "opus",
                     "effort": "medium",
                 },
-                "claude-opus-xhigh": {
+                "claude-sonnet-high": {
                     "harness": "claude-code",
                     "executable": "claude",
-                    "model": "opus",
-                    "effort": "xhigh",
+                    "model": "sonnet",
+                    "effort": "high",
                 },
                 "claude-sonnet-medium": {
                     "harness": "claude-code",
@@ -134,17 +134,17 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "sonnet",
                     "effort": "medium",
                 },
-                "claude-fable-medium": {
-                    "harness": "claude-code",
-                    "executable": "claude",
-                    "model": "fable",
-                    "effort": "medium",
-                },
                 "claude-fable-high": {
                     "harness": "claude-code",
                     "executable": "claude",
                     "model": "fable",
                     "effort": "high",
+                },
+                "claude-fable-medium": {
+                    "harness": "claude-code",
+                    "executable": "claude",
+                    "model": "fable",
+                    "effort": "medium",
                 },
                 "codex-astra-high": {
                     "harness": "codex",
@@ -158,16 +158,16 @@ class AgentsConfigCli(unittest.TestCase):
                     "model": "gpt-6-astra",
                     "effort": "medium",
                 },
-                "codex-astra-xhigh": {
+                "codex-sol-high": {
                     "harness": "codex",
                     "executable": "codex",
-                    "model": "gpt-6-astra",
-                    "effort": "xhigh",
+                    "model": "gpt-6.1-sol",
+                    "effort": "high",
                 },
-                "codex-luna-medium": {
+                "codex-sol-medium": {
                     "harness": "codex",
                     "executable": "codex",
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-6.1-sol",
                     "effort": "medium",
                 },
                 "pi-gemini-pro-high": {
@@ -212,16 +212,16 @@ class AgentsConfigCli(unittest.TestCase):
             data["workflows"],
             {
                 "issue-chain": {
-                    "implement": "codex-astra-xhigh",
-                    "simplify": "claude-opus-high",
-                    "review": "claude-opus-high",
-                    "test": "codex-astra-high",
-                    "triage": "claude-opus-high",
+                    "implement": "codex-sol-medium",
+                    "simplify": "claude-opus-medium",
+                    "review": "claude-opus-medium",
+                    "test": "codex-sol-medium",
+                    "triage": "claude-opus-medium",
                 },
                 "grilling": {
                     "codebase": "claude-opus-high",
-                    "codebase2": "codex-astra-high",
-                    "docs": "codex-luna-medium",
+                    "codebase2": "codex-sol-high",
+                    "docs": "codex-sol-medium",
                     "web": "claude-sonnet-medium",
                 },
                 "planning": {
@@ -281,9 +281,9 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(resolved["profiles"], data["profiles"])
         self.assertEqual(resolved["assignments"], data["workflows"])
         worker = resolved["resolved_workflows"]["issue-chain"]["implement"]
-        self.assertEqual(worker["profile"], "codex-astra-xhigh")
-        self.assertEqual(worker["model"], "gpt-6-astra")
-        self.assertEqual(worker["effort"], "xhigh")
+        self.assertEqual(worker["profile"], "codex-sol-medium")
+        self.assertEqual(worker["model"], "gpt-6.1-sol")
+        self.assertEqual(worker["effort"], "medium")
         self.assertEqual(worker["source"], str(path.resolve()))
         lane = resolved["resolved_workflows"]["grilling"]["web"]
         self.assertEqual(lane["harness"], "claude-code")
@@ -308,19 +308,19 @@ class AgentsConfigCli(unittest.TestCase):
 
         for forbidden in ("args", "environment", "capabilities", "safety"):
             changed = copy.deepcopy(default)
-            changed["profiles"]["codex-astra-xhigh"][forbidden] = []
+            changed["profiles"]["codex-sol-medium"][forbidden] = []
             cases.append(
                 (
                     f"forbidden-{forbidden}",
                     changed,
-                    ("profile=codex-astra-xhigh", f"field={forbidden}", "unknown field"),
+                    ("profile=codex-sol-medium", f"field={forbidden}", "unknown field"),
                 )
             )
 
         changed = copy.deepcopy(default)
-        del changed["profiles"]["codex-astra-xhigh"]["model"]
+        del changed["profiles"]["codex-sol-medium"]["model"]
         cases.append(
-            ("missing-profile-value", changed, ("profile=codex-astra-xhigh", "field=model", "required"))
+            ("missing-profile-value", changed, ("profile=codex-sol-medium", "field=model", "required"))
         )
 
         for harness, message in (
@@ -328,39 +328,39 @@ class AgentsConfigCli(unittest.TestCase):
             ("other", "unknown harness"),
         ):
             changed = copy.deepcopy(default)
-            changed["profiles"]["codex-astra-xhigh"]["harness"] = harness
+            changed["profiles"]["codex-sol-medium"]["harness"] = harness
             cases.append(
-                (f"harness-{harness}", changed, ("profile=codex-astra-xhigh", "field=harness", message))
+                (f"harness-{harness}", changed, ("profile=codex-sol-medium", "field=harness", message))
             )
 
         for executable in ("codex --fast", "./codex", "bin/codex", ""):
             changed = copy.deepcopy(default)
-            changed["profiles"]["codex-astra-xhigh"]["executable"] = executable
+            changed["profiles"]["codex-sol-medium"]["executable"] = executable
             cases.append(
                 (
                     f"executable-{len(cases)}",
                     changed,
-                    ("profile=codex-astra-xhigh", "field=executable", "program name or absolute path"),
+                    ("profile=codex-sol-medium", "field=executable", "program name or absolute path"),
                 )
             )
 
         for model in ("", "two models", "--model"):
             changed = copy.deepcopy(default)
-            changed["profiles"]["codex-astra-xhigh"]["model"] = model
+            changed["profiles"]["codex-sol-medium"]["model"] = model
             cases.append(
-                (f"model-{len(cases)}", changed, ("profile=codex-astra-xhigh", "field=model", "syntax"))
+                (f"model-{len(cases)}", changed, ("profile=codex-sol-medium", "field=model", "syntax"))
             )
 
         changed = copy.deepcopy(default)
-        changed["profiles"]["claude-opus-xhigh"]["effort"] = "ultra"
+        changed["profiles"]["claude-sonnet-high"]["effort"] = "ultra"
         cases.append(
-            ("claude-effort", changed, ("profile=claude-opus-xhigh", "field=effort", "unsupported"))
+            ("claude-effort", changed, ("profile=claude-sonnet-high", "field=effort", "unsupported"))
         )
 
         changed = copy.deepcopy(default)
-        changed["profiles"]["codex-astra-xhigh"]["effort"] = "extreme"
+        changed["profiles"]["codex-sol-medium"]["effort"] = "extreme"
         cases.append(
-            ("codex-effort", changed, ("profile=codex-astra-xhigh", "field=effort", "unsupported"))
+            ("codex-effort", changed, ("profile=codex-sol-medium", "field=effort", "unsupported"))
         )
 
         changed = copy.deepcopy(default)
@@ -372,7 +372,7 @@ class AgentsConfigCli(unittest.TestCase):
         cases.append(("missing-workflow", changed, ("workflow=grilling", "required")))
 
         changed = copy.deepcopy(default)
-        changed["workflows"]["issue-chain"]["deploy"] = "codex-astra-xhigh"
+        changed["workflows"]["issue-chain"]["deploy"] = "codex-sol-medium"
         cases.append(
             ("unknown-worker", changed, ("workflow=issue-chain", "worker=deploy", "unknown worker"))
         )
@@ -392,12 +392,12 @@ class AgentsConfigCli(unittest.TestCase):
         )
 
         changed = copy.deepcopy(default)
-        changed["workflows"]["grilling"]["web"] = "codex-luna-medium"
+        changed["workflows"]["grilling"]["web"] = "codex-sol-medium"
         cases.append(
             (
                 "incompatible-web",
                 changed,
-                ("workflow=grilling", "worker=web", "profile=codex-luna-medium", "not compatible"),
+                ("workflow=grilling", "worker=web", "profile=codex-sol-medium", "not compatible"),
             )
         )
 
@@ -419,7 +419,7 @@ class AgentsConfigCli(unittest.TestCase):
             for effort in efforts:
                 with self.subTest(harness=harness, effort=effort):
                     changed = copy.deepcopy(default)
-                    profile = "claude-opus-xhigh" if harness == "claude-code" else "codex-astra-xhigh"
+                    profile = "claude-sonnet-high" if harness == "claude-code" else "codex-sol-medium"
                     changed["profiles"][profile]["effort"] = effort
                     path = self.write_config(changed, f"{harness}-{effort}.json")
                     proc = self.run_cli("validate", "--config", str(path), cwd=self.tmp)
@@ -428,7 +428,7 @@ class AgentsConfigCli(unittest.TestCase):
     def test_models_are_syntax_checked_not_catalog_checked_and_absolute_executables_work(self):
         _, default = self.init_default()
         changed = copy.deepcopy(default)
-        changed["profiles"]["codex-astra-xhigh"].update({
+        changed["profiles"]["codex-sol-medium"].update({
             "executable": "/opt/custom-tools/codex-v2",
             "model": "custom/provider:model@2026.08",
         })
@@ -502,7 +502,7 @@ class AgentsConfigCli(unittest.TestCase):
     def test_validation_aggregates_errors_with_context(self):
         _, default = self.init_default()
         changed = copy.deepcopy(default)
-        changed["profiles"]["codex-astra-xhigh"]["args"] = ["--danger"]
+        changed["profiles"]["codex-sol-medium"]["args"] = ["--danger"]
         changed["workflows"]["issue-chain"]["deploy"] = "missing"
         path = self.write_config(changed, "several-errors.json")
 
@@ -510,13 +510,13 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertGreaterEqual(proc.stderr.count("source="), 2)
-        self.assertIn("profile=codex-astra-xhigh", proc.stderr)
+        self.assertIn("profile=codex-sol-medium", proc.stderr)
         self.assertIn("workflow=issue-chain worker=deploy", proc.stderr)
 
     def test_duplicate_json_fields_are_rejected_instead_of_silently_replaced(self):
         _, default = self.init_default()
         config = self.tmp / "duplicate.json"
-        worker_line = '"implement": "codex-astra-xhigh",'
+        worker_line = '"implement": "codex-sol-medium",'
         serialized = json.dumps(default, indent=2)
         serialized = serialized.replace(
             worker_line,
@@ -690,7 +690,6 @@ class AgentsConfigCli(unittest.TestCase):
 
     def test_version_one_migration_selects_fallbacks_and_never_overwrites_collision(self):
         _, legacy = self.legacy_default()
-        legacy["profiles"].pop("claude-opus-xhigh")
         legacy["profiles"].pop("claude-opus-high")
         legacy["profiles"].pop("claude-fable-medium")
         legacy["profiles"].pop("claude-fable-high")
@@ -731,7 +730,7 @@ class AgentsConfigCli(unittest.TestCase):
 
     def test_invalid_version_one_migration_preserves_original_bytes(self):
         _, legacy = self.legacy_default()
-        legacy["workflows"]["grilling"]["web"] = "codex-astra-xhigh"
+        legacy["workflows"]["grilling"]["web"] = "codex-sol-medium"
         path = self.write_config(legacy, "legacy-invalid.json")
         original = path.read_bytes()
 
@@ -876,7 +875,7 @@ class AgentsConfigCli(unittest.TestCase):
     def test_provider_qualified_models_stay_allowed_on_other_harnesses(self):
         _, default = self.init_default()
         changed = copy.deepcopy(default)
-        changed["profiles"]["codex-astra-xhigh"]["model"] = "gpt-6-astra"
+        changed["profiles"]["codex-sol-medium"]["model"] = "gpt-6.1-sol"
         changed["profiles"]["pi-glm-high"]["model"] = "openrouter/z-ai/glm-5.3"
         path = self.write_config(changed, "mixed-models.json")
 
@@ -887,7 +886,7 @@ class AgentsConfigCli(unittest.TestCase):
     def test_planning_reviewer_accepts_every_supported_harness(self):
         """The reviewer is assigned like any other worker; diversity is a run-time decision."""
         _, default = self.init_default()
-        for profile in ("claude-opus-xhigh", "pi-glm-high"):
+        for profile in ("claude-sonnet-high", "pi-glm-high"):
             with self.subTest(profile=profile):
                 current = copy.deepcopy(default)
                 current["workflows"]["planning"]["reviewer"] = profile
@@ -900,10 +899,10 @@ class AgentsConfigCli(unittest.TestCase):
     def test_triage_assignment_is_required_and_resolved_from_the_file(self):
         import agents_config as config
         path, data = self.init_default()
-        self.assertEqual(data["workflows"]["issue-chain"]["triage"], "claude-opus-high")
-        data["profiles"]["claude-opus-high"]["model"] = "custom-opus"
+        self.assertEqual(data["workflows"]["issue-chain"]["triage"], "claude-opus-medium")
+        data["profiles"]["claude-opus-medium"]["model"] = "custom-opus"
         self.assertEqual(config.resolve_workers(data, path, {}, workflow="issue-chain")["triage"]["model"], "custom-opus")
-        overrides = {"triage": {"profile": "codex-astra-xhigh", "effort": "high"}}
+        overrides = {"triage": {"profile": "codex-sol-medium", "effort": "high"}}
         triage = config.resolve_workers(data, path, overrides, workflow="issue-chain")["triage"]
         self.assertEqual((triage["harness"], triage["effort"]), ("codex", "high"))
         self.assertNotIn("assignment_source", triage)
@@ -947,7 +946,7 @@ class AgentsConfigCli(unittest.TestCase):
 
     def test_schema_two_migration_keeps_an_explicit_triage_assignment(self):
         _, legacy = self.schema_two_default()
-        legacy["workflows"]["issue-chain"]["triage"] = "codex-astra-xhigh"
+        legacy["workflows"]["issue-chain"]["triage"] = "codex-sol-medium"
         path = self.write_config(legacy, "v2-explicit.json")
 
         preview = self.run_cli("migrate", "--config", str(path), cwd=self.tmp)
@@ -956,7 +955,7 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
         migrated = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(migrated["workflows"]["issue-chain"]["triage"], "codex-astra-xhigh")
+        self.assertEqual(migrated["workflows"]["issue-chain"]["triage"], "codex-sol-medium")
 
     def test_every_registered_workflow_is_fully_described(self):
         sys.path.insert(0, str(SCRIPT_DIR))

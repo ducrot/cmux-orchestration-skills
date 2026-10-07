@@ -131,11 +131,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "opus",
             "effort": "medium",
         },
-        "claude-opus-xhigh": {
+        "claude-sonnet-high": {
             "harness": "claude-code",
             "executable": "claude",
-            "model": "opus",
-            "effort": "xhigh",
+            "model": "sonnet",
+            "effort": "high",
         },
         "claude-sonnet-medium": {
             "harness": "claude-code",
@@ -143,17 +143,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "sonnet",
             "effort": "medium",
         },
-        "claude-fable-medium": {
-            "harness": "claude-code",
-            "executable": "claude",
-            "model": "fable",
-            "effort": "medium",
-        },
         "claude-fable-high": {
             "harness": "claude-code",
             "executable": "claude",
             "model": "fable",
             "effort": "high",
+        },
+        "claude-fable-medium": {
+            "harness": "claude-code",
+            "executable": "claude",
+            "model": "fable",
+            "effort": "medium",
         },
         "codex-astra-high": {
             "harness": "codex",
@@ -167,16 +167,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "model": "gpt-6-astra",
             "effort": "medium",
         },
-        "codex-astra-xhigh": {
+        "codex-sol-high": {
             "harness": "codex",
             "executable": "codex",
-            "model": "gpt-6-astra",
-            "effort": "xhigh",
+            "model": "gpt-6.1-sol",
+            "effort": "high",
         },
-        "codex-luna-medium": {
+        "codex-sol-medium": {
             "harness": "codex",
             "executable": "codex",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6.1-sol",
             "effort": "medium",
         },
         "pi-gemini-pro-high": {
@@ -218,16 +218,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "workflows": {
         "issue-chain": {
-            "implement": "codex-astra-xhigh",
-            "simplify": "claude-opus-high",
-            "review": "claude-opus-high",
-            "test": "codex-astra-high",
-            "triage": "claude-opus-high",
+            "implement": "codex-sol-medium",
+            "simplify": "claude-opus-medium",
+            "review": "claude-opus-medium",
+            "test": "codex-sol-medium",
+            "triage": "claude-opus-medium",
         },
         "grilling": {
             "codebase": "claude-opus-high",
-            "codebase2": "codex-astra-high",
-            "docs": "codex-luna-medium",
+            "codebase2": "codex-sol-high",
+            "docs": "codex-sol-medium",
             "web": "claude-sonnet-medium",
         },
         "planning": {

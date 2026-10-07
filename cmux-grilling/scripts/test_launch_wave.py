@@ -378,8 +378,8 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             {lane: (entry["harness"], entry["model"], entry["effort"]) for lane, entry in lanes.items()},
             {
                 "codebase": ("claude-code", "opus", "high"),
-                "codebase2": ("codex", "gpt-6-astra", "high"),
-                "docs": ("codex", "gpt-5.6-luna", "medium"),
+                "codebase2": ("codex", "gpt-6.1-sol", "high"),
+                "docs": ("codex", "gpt-6.1-sol", "medium"),
                 "web": ("claude-code", "sonnet", "medium"),
             },
         )
@@ -495,7 +495,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         initialized = self.initialize_config(config)
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         data = json.loads(config.read_text(encoding="utf-8"))
-        data["workflows"]["grilling"]["codebase2"] = "codex-luna-medium"
+        data["workflows"]["grilling"]["codebase2"] = "codex-sol-medium"
         config.write_text(json.dumps(data), encoding="utf-8")
         before = (
             len(self.harness_log.read_text(encoding="utf-8").splitlines())
@@ -598,7 +598,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertEqual(self.read_state("explicit")["configuration_source"], str(explicit.resolve()))
 
         config = json.loads(explicit.read_text(encoding="utf-8"))
-        config["workflows"]["grilling"]["web"] = "codex-luna-medium"
+        config["workflows"]["grilling"]["web"] = "codex-sol-medium"
         explicit.write_text(json.dumps(config), encoding="utf-8")
         rejected = self.init_for("incompatible", "--config", str(explicit))
         self.assertNotEqual(rejected.returncode, 0)
@@ -690,7 +690,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
             self.assertIn("require a new grilling run", proc.stderr)
         self.assertEqual(
             self.read_wave("existing")["resolved_profiles"]["docs"]["model"],
-            "gpt-5.6-luna",
+            "gpt-6.1-sol",
         )
 
     def test_live_config_edits_do_not_change_prepared_round_launch_or_followups(self):
@@ -699,7 +699,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         before = self.read_wave("immutable")
         config_path = Path(self.read_state("immutable")["configuration_source"])
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["profiles"]["codex-astra-high"]["model"] = "changed/after-start"
+        config["profiles"]["codex-sol-high"]["model"] = "changed/after-start"
         config_path.write_text(json.dumps(config), encoding="utf-8")
 
         run_dir = self.run_dir("immutable")
@@ -722,7 +722,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         )
         self.assertEqual(delivered.returncode, 0, delivered.stderr)
         sends = [call[-1] for call in self.cmux_calls() if call and call[0] == "send"]
-        self.assertIn("gpt-6-astra", sends[0])
+        self.assertIn("gpt-6.1-sol", sends[0])
         self.assertNotIn("changed/after-start", sends[0])
         self.assertEqual(sends[1], "clarify answer")
         self.assertEqual(before, self.read_wave("immutable"))
