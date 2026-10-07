@@ -107,6 +107,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.cmux = self.root / "cmux"
         self.cmux.write_text(FAKE_CMUX, encoding="utf-8")
         self.cmux.chmod(0o755)
+        (self.bin_dir / "cmux").symlink_to(self.cmux)
         self.harness_log = self.root / "harness.jsonl"
         self.cmux_log = self.root / "cmux.jsonl"
         self.write_marker = self.root / "probe-write"
@@ -340,6 +341,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
 
     def test_legacy_run_is_inspectable_but_cannot_continue_or_launch(self):
         self.assertEqual(self.init_for("legacy").returncode, 0)
+        self.cmux_log.unlink()  # Ignore the successful init decoration.
         run_dir = self.run_dir("legacy")
         state = self.read_state("legacy")
         del state["workflow"]
@@ -597,6 +599,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertEqual(created.returncode, 0, created.stderr)
         self.assertEqual(self.read_state("explicit")["configuration_source"], str(explicit.resolve()))
 
+        self.cmux_log.unlink()  # Only rejected initialization must avoid cmux.
         config = json.loads(explicit.read_text(encoding="utf-8"))
         config["workflows"]["grilling"]["web"] = "codex-sol-medium"
         explicit.write_text(json.dumps(config), encoding="utf-8")
@@ -763,6 +766,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 run_id = f"invalid-{mode}"
                 initialized = self.init_for(run_id)
                 self.assertEqual(initialized.returncode, 0, initialized.stderr)
+                self.cmux_log.unlink()  # The launch refusal is the behavior under test.
                 run_dir = self.run_dir(run_id)
                 state_path = run_dir / "state.json"
                 state = json.loads(state_path.read_text(encoding="utf-8"))

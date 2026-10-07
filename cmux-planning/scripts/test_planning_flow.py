@@ -19,6 +19,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent))
 
 import orchestrator_lib  # noqa: E402
+from planning_state import PUBLISHING_COMMANDS  # noqa: E402
+from run_briefing import project_board, read_events  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
 from test_tracker_contract import proposal as tracker_proposal  # noqa: E402
@@ -56,8 +58,11 @@ else:
 
 FAKE_CMUX = '''#!/usr/bin/env python3
 import json, os, sys
-with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
+board = sys.argv[1] in {"workspace-action", "set-progress", "clear-progress"}
+with open(os.environ["FAKE_BOARD_LOG" if board else "FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
+if board and os.environ.get("FAKE_BOARD_FAIL"):
+    raise SystemExit("board offline")
 if "new-split" in sys.argv:
     created = {"surface_ref": "surface:1", "pane_id": "PANE-1"}
     if not os.environ.get("FAKE_CMUX_POSITIONAL_ONLY"):
@@ -108,10 +113,11 @@ class PlanningFlow(unittest.TestCase):
             path = self.bin / name
             path.write_text(FAKE_HARNESS, encoding="utf-8")
             path.chmod(0o755)
-        self.cmux = self.root / "cmux"
+        self.cmux = self.bin / "cmux"
         self.cmux.write_text(FAKE_CMUX, encoding="utf-8")
         self.cmux.chmod(0o755)
         self.cmux_log = self.root / "cmux.log"
+        self.board_log = self.root / "board.log"
         self.config = self.repo / ".scratch" / "orchestrator" / "agents.json"
         initialized = self.cli(AGENTS, "init", "--config", str(self.config))
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -129,6 +135,7 @@ class PlanningFlow(unittest.TestCase):
             "CODEX_HOME": str(self.trust_home),
             "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
             "FAKE_CMUX_LOG": str(self.cmux_log),
+            "FAKE_BOARD_LOG": str(self.board_log),
         }
 
     def cli(self, script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -140,14 +147,86 @@ class PlanningFlow(unittest.TestCase):
                     if path.is_absolute():
                         argv[index + 1] = os.path.relpath(path, self.repo)
             args = tuple(argv)
-        return subprocess.run(
+        # Observe every real planning CLI transition, including nonzero exits and recovery.
+        before_states = {p: p.read_bytes() for p in self.root.rglob("state.json")} if script == STATE else {}
+        board_before = len(self.board_calls())
+        run_env = env or self.env()
+        result = subprocess.run(
             [sys.executable, str(script), *args],
             cwd=self.repo,
-            env=env or self.env(),
+            env=run_env,
             capture_output=True,
             text=True,
             timeout=30,
         )
+        if script == STATE:
+            calls = self.board_calls()[board_before:]
+            expected = []
+            if args[0] in PUBLISHING_COMMANDS:
+                for path in self.root.rglob("state.json"):
+                    if path.read_bytes() == before_states.get(path) and not (args[0] == "resume" and "extend" in args and result.returncode == 0):
+                        continue
+                    state = json.loads(path.read_text())
+                    if state.get("workflow") != "planning" or not state.get("workspace_id"):
+                        continue
+                    status, detail, value, label = project_board(state, read_events(path.parent))
+                    expected += [["workspace-action", "--action", "set-description", "--description", f"planning · {status} · {detail}", "--workspace", state["workspace_id"]]]
+                    if not run_env.get("FAKE_BOARD_FAIL"):
+                        expected += [["set-progress", str(round(value, 2)), "--label", label, "--workspace", state["workspace_id"]]]
+            self.assertEqual(calls, expected, f"board calls for {args}: {result.stderr}")
+            if expected and run_env.get("FAKE_BOARD_FAIL"):
+                self.assertEqual(result.stderr.count("sidebar board not updated"), 1)
+        if script == AWAIT and (result.returncode not in (7, 8) or str(self.cmux) in args):
+            calls = self.board_calls()[board_before:]
+            expected_count = (1 if run_env.get("FAKE_BOARD_FAIL") else 2) if result.returncode in (7, 8) else 0
+            self.assertEqual(len(calls), expected_count)
+        return result
+
+    def board_calls(self) -> list[list[str]]:
+        lines = self.board_log.read_text().splitlines() if self.board_log.exists() else []
+        return [json.loads(line) for line in lines]
+
+    def assert_board(self, status, detail, value, label):
+        calls = self.board_calls()
+        self.assertEqual(calls[-2][4], f"planning · {status} · {detail}")
+        self.assertEqual(calls[-1][0:4], ["set-progress", str(value), "--label", label])
+
+    def test_board_failure_does_not_stop_publication(self):
+        with patch.dict(os.environ, {"FAKE_BOARD_FAIL": "1"}):
+            proposal = self.reach_ticket_approval()
+            approved = self.ticket_approval("approve", "Approved", target=self.repo / "trackers" / proposal["tracker"]["slug"])
+            self.assertEqual(approved.returncode, 0, approved.stderr)
+            published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+            self.assertEqual(published.returncode, 0, published.stderr)
+            self.assertEqual(json.loads((self.run_dir / "state.json").read_text())["current_stage"], "complete")
+
+    def test_board_integrity_in_ticket_review(self):
+        self.approve_spec_to_tickets()
+        self.render_and_baseline("tickets")
+        self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review")
+        self.write_tickets_review()
+        (self.repo / "product.txt").write_text("unauthorized change\n")
+        accepted = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 2, accepted.stderr)
+        calls = self.board_calls()
+        self.assertIn("planning · hitl · tickets-review:", calls[-2][4])
+        self.assertEqual(calls[-1][:4], ["set-progress", "0.57", "--label", "Tickets · Review 1"])
+
+    def test_board_artifact_integrity_uses_raw_run_stage(self):
+        artifact, markdown = self.grilling_pair()
+        initialized = self.cli(STATE, "init", "--task", "Plan", "--grilling-json", str(artifact),
+                               "--grilling-markdown", str(markdown), "--repo", str(self.repo),
+                               "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        (self.run_dir / "task.md").write_text("changed task\n")
+        outcomes = self.root / "outcomes.json"
+        outcomes.write_text('{"accepted": false}')
+        accepted = self.cli(STATE, "revalidate", "--run-dir", str(self.run_dir), "--outcomes", str(outcomes))
+        self.assertNotEqual(accepted.returncode, 0)
+        self.assert_board("hitl", "run: run artifact integrity violation", 0.0, "run")
 
     def init_direct(self, run_id: str = "plan-test") -> subprocess.CompletedProcess[str]:
         return self.cli(
@@ -1685,6 +1764,7 @@ sha256 {resulting_digest or digest}
         self.assertTrue((target / "issues").is_dir())
         final = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(final["current_stage"], "complete")
+        self.assert_board("done", "2 tickets published", 1.0, "Complete")
         self.assertEqual(final["deliverables"], {"tracker": final["published_tracker"]["path"]})
         event = json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
         self.assertEqual(event["data"]["deliverables"], final["deliverables"])
@@ -2317,9 +2397,11 @@ sha256 {resulting_digest or digest}
                 patch("await_report.health_says_dead", return_value=False):
             with self.assertRaises(InterruptedError):
                 await_report.watch(args)
-        with patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
+        with patch.dict(os.environ, self.env()), \
+                patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
                 patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
             self.assertEqual(await_report.watch(args), 8)
+        self.assert_board("hitl", "spec-1: report deadline exceeded, extension decision needed", 0.0, "Spec · Author 1")
 
     def test_start_prompt_stale_markers_and_older_launch_do_not_confirm(self):
         common = self.start_prompt_fixture()
@@ -2649,6 +2731,14 @@ sha256 {resulting_digest or digest}
             (self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1]
         )
         self.assertEqual(dead_event["data"]["surface_id"], "SURF-1")
+        self.assert_board("hitl", "spec-1: worker pane dead, relaunch decision needed", 0.0, "Spec · Author 1")
+        drafted = self.cli(SCRIPT_DIR / "run_briefing.py", "draft", "--run-dir", str(self.run_dir))
+        self.assertEqual(drafted.returncode, 0, drafted.stderr)
+        briefing = self.run_dir / "briefing.md"
+        briefing.write_text(briefing.read_text().replace("{{task}}", "Plan feature").replace("{{constraints}}", "Keep scope"))
+        shown = self.cli(SCRIPT_DIR / "run_briefing.py", "show", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assert_board("hitl", "spec-1: worker pane dead, relaunch decision needed", 0.0, "Spec · Author 1")
         marked = self.cli(PANE, "mark-started", "--run-dir", str(self.run_dir),
                           "--stage", "spec", "--pass", "1", "--surface", "SURF-1")
         self.assertEqual(marked.returncode, 0, marked.stderr)
@@ -3171,6 +3261,7 @@ Option?
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "awaiting-grilling-revalidation")
+        self.assert_board("waiting", "grilling input revalidation", 0.0, "Input · Revalidation")
         self.assertEqual(
             {
                 entry["kind"]
@@ -3400,6 +3491,7 @@ Option?
         init_event = next(event for event in events if event["type"] == "run.init")
         input_state = init_event["data"]["state"]
         self.assertEqual(input_state["current_stage"], "input")
+        self.assertEqual(project_board(input_state, [init_event]), ("running", "input validation", 0.0, "Input · Validation"))
         input_state_path.write_text(json.dumps(input_state), encoding="utf-8")
         events_path.write_text(json.dumps(init_event) + "\n", encoding="utf-8")
         input_status = json.loads(
@@ -3794,6 +3886,7 @@ Option?
             "0.01",
         )
         self.assertEqual(first.returncode, 8, first.stderr)
+        self.assert_board("hitl", "spec-1: report deadline exceeded, extension decision needed", 0.0, "Spec · Author 1")
         status = json.loads(
             self.cli(
                 STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
@@ -3814,6 +3907,7 @@ Option?
             str(self.cmux),
         )
         self.assertEqual(extended.returncode, 0, extended.stderr)
+        self.assert_board("running", json.loads((self.run_dir / "state.json").read_text())["tracker_slug"], 0.0, "Spec · Author 1")
         self.assertIn("--extension 1", json.loads(extended.stdout)["recommended_next"]["command"])
         expired = self.cli(
             AWAIT,
@@ -3847,6 +3941,7 @@ Option?
         self.assertEqual([e["data"]["watch_clock"] for e in self.run_events()
                           if "watch_clock" in e.get("data", {})], clocks)
 
+        self.assert_board("hitl", "spec-1: extended deadline exceeded, relaunch decision needed", 0.0, "Spec · Author 1")
         status = json.loads(
             self.cli(
                 STATE, "status", "--run-dir", str(self.run_dir), "--cmux-cmd", str(self.cmux)
@@ -3855,6 +3950,43 @@ Option?
         self.assertEqual(status["pane"]["status"], "watcher-expired")
         self.assertEqual(status["classification"], "hitl")
         self.assertIn("--decision relaunch", status["recommended_next"]["command"])
+
+        relaunched = self.cli(STATE, "resume", "--run-dir", str(self.run_dir), "--decision", "relaunch", "--reason", "Replace expired worker", "--cmux-cmd", str(self.cmux))
+        self.assertEqual(relaunched.returncode, 0, relaunched.stderr)
+        self.assert_board("running", json.loads((self.run_dir / "state.json").read_text())["tracker_slug"], 0.0, "Spec · Author 2")
+
+    def test_watcher_board_failures_preserve_outcomes_and_extension(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        marked = self.cli(PANE, "mark-started", "--run-dir", str(self.run_dir),
+                          "--stage", "spec", "--pass", "1", "--surface", "SURF-1")
+        self.assertEqual(marked.returncode, 0, marked.stderr)
+        before = json.loads((self.run_dir / "state.json").read_text())
+        for outcome, code in (("pane_dead", 7), ("deadline", 8), ("extension_approved", 0)):
+            before["artifact_audit"]["checked_at"] = "2000-01-01T00:00:00Z"
+            (self.run_dir / "state.json").write_text(json.dumps(before))
+            env = self.env()
+            env["FAKE_BOARD_FAIL"] = "1"
+            if code == 7:
+                env["FAKE_CMUX_DEAD"] = "1"
+            old_events = (self.run_dir / "events.jsonl").read_text()
+            old_calls = len(self.board_calls())
+            if code:
+                result = self.cli(AWAIT, "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1", "--surface", "SURF-1", "--cmux-cmd", str(self.cmux), "--deadline-minutes", "0.001", "--poll-seconds", "0.01", env=env)
+                self.assertEqual(result.stdout, f"outcome={outcome}\n")
+            else:
+                result = self.cli(STATE, "resume", "--run-dir", str(self.run_dir), "--decision", "extend", "--reason", "Keep working", "--cmux-cmd", str(self.cmux), env=env)
+                self.assertIn("--extension 1", json.loads(result.stdout)["recommended_next"]["command"])
+            self.assertEqual(result.returncode, code, result.stderr)
+            self.assertEqual(result.stderr.splitlines(), ["sidebar board not updated: board offline"])
+            self.assertEqual(len(self.board_calls()) - old_calls, 1)
+            after = json.loads((self.run_dir / "state.json").read_text())
+            after["artifact_audit"]["checked_at"] = before["artifact_audit"]["checked_at"]
+            self.assertEqual(after, before)
+            events = (self.run_dir / "events.jsonl").read_text()
+            self.assertTrue(events.startswith(old_events))
+            self.assertEqual(json.loads(events.splitlines()[-1])["data"]["outcome"], outcome)
 
     def test_tampered_prepared_snapshot_and_uncertain_handoff_stop_recovery(self):
         self.assertEqual(self.init_direct().returncode, 0)

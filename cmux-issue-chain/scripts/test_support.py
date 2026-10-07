@@ -10,6 +10,8 @@ FAKE_CMUX = '''#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
+if os.environ.get("FAKE_CMUX_EXIT"):
+    sys.exit(int(os.environ["FAKE_CMUX_EXIT"]))
 args = sys.argv[1:]
 if "new-split" in args:
     print(json.dumps({

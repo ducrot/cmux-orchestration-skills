@@ -187,6 +187,9 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 - `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
   the sidebar pill `cmux-planning-run` (`Planning · <slug>`) in the pinned workspace. A failed pill is
   a stderr note, not a stop. Relay the printed briefing verbatim as its own message, without preamble.
+- The scripts publish the board automatically at transitions in the pinned workspace. A failed board
+  update is a stderr note and never a stop. `--no-status` suppresses pill and board on
+  `run_briefing.py`; `planning_state.py` publishes whenever a workspace is pinned (`--no-workspace` avoids it).
 - On resume, run `show` again after `context` and status. `briefing.md` is orchestrator text, not a
   worker artifact: the artifact audit skips it and no prompt attaches it.
 
@@ -278,6 +281,8 @@ using `--deadline-minutes` (or the stage minimum when omitted); rejoining it can
 | 7 | Pane dead; stop at the existing HITL recovery boundary. |
 | 8 | Report deadline; use the existing human-approved extension rules. |
 | 9 | Assignment not started; inspect the exception path below. |
+
+Exits 7 and 8 publish `hitl` on the sidebar board. The recorded extension or relaunch decision returns the card to `running`.
 
 Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).
 
@@ -502,20 +507,13 @@ python3 scripts/run_briefing.py recap-draft --run-dir <run-dir> --lang <de|en>
 python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 ```
 
-- `recap-draft` refuses an active run, including one waiting at an approval boundary. It writes
-  `recap.md` with the facts from `state.json` and `events.jsonl`: status (complete, or halted at stage
-  and decision), duration, the published tracker path with its issue count and ready frontier, the
-  number of spec and ticket revisions, and for a completed run the next step: the issue chain with the
-  first startable issue, ranked as in `cmux-issue-chain` (AFK before HITL, `in_progress` first, most
-  transitively unblocked issues, lowest ID). A deviation from that default needs a startable issue and
-  a `Reason:` line (German: `Begründung:`); `recap-show` enforces both. A prompt block follows with
-  `/cmux-issue-chain <tracker> <issue-id>`; additions from the planning prompt are not carried over. It
-  never overwrites an existing recap.
+Read when drafting the run recap or selecting its next issue: [references/recap-draft.md](references/recap-draft.md).
+
 - Fill only `{{outcome}}`: one or two sentences on what the approved plan delivers, or for a halted
   run what stopped it and what the human has to decide. Neutral wording.
 - `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and
   turns the sidebar pill into `✓ Planning · <slug>` (green) or `<decision> · Planning · <slug>` (red).
-  `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap
+  `--clear-status` clears both pill and board, only when the human asks for it. Relay the printed recap
   verbatim as its own message. Like `briefing.md`, `recap.md` is skipped by the artifact audit.
 
 ## Artifact locations and failure policy
@@ -562,7 +560,8 @@ upgrading. Do not migrate those baselines or bypass their seals.
 
 `run_commit.py propose` validates published literal leaf paths and is the only writer of
 `commit.proposed`. Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing
-and recap generation.
+and recap generation. The scripts publish the board automatically at transitions; a failed board
+update is a stderr note and never a stop.
 
 ## Event Vocabulary
 

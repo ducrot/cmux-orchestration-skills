@@ -19,7 +19,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from types import MappingProxyType
 
 
 BRIEFING_FILE = "briefing.md"
@@ -790,18 +791,361 @@ def pill_text(state: dict[str, Any], lang: str, outcome: dict[str, Any] | None =
         text = f"{labels['pill_grilling']} · {state['slug']}"
     if outcome is not None:
         text = f"✓ {text}" if outcome["status"] == "done" else f"{outcome['decision']} · {text}"
-    return text if len(text) <= PILL_MAX_CHARS else text[: PILL_MAX_CHARS - 1].rstrip() + "…"
+    return shorten(text, PILL_MAX_CHARS)
+
+
+def shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+# Read-only mirror of issue-chain's persisted stages; no workflow-specific imports.
+ISSUE_BOARD_STAGES = frozenset({"implement", "simplify", "review", "test", "triage", "hitl", "done"})
+WATCHER_HITL_OUTCOMES = frozenset({"pane_dead", "deadline"})
+WATCHER_OUTCOMES = WATCHER_HITL_OUTCOMES | {"extension_approved"}
+# Read-only mirrors of planning's persisted stage and diversity vocabulary.
+PLANNING_STAGES = ("spec", "spec-review", "tickets", "tickets-review")
+PLANNING_BLOCKED_STAGES = frozenset(f"{stage}-blocked" for stage in PLANNING_STAGES)
+PLANNING_PASS_KEYS = MappingProxyType({
+    "spec": "spec_pass", "spec-review": "spec_review_pass",
+    "tickets": "tickets_pass", "tickets-review": "tickets_review_pass",
+})
+PLANNING_PENDING_STATUSES = frozenset({"pending", "refused"})
+PLANNING_VALUE_ORDER = (
+    "spec", "spec-review", "awaiting-spec-approval", "tickets", "tickets-review",
+    "awaiting-ticket-approval", "ready-to-publish", "complete",
+)
+
+
+def watcher_stop_reason(outcome: str, extended: bool) -> str:
+    return ("worker pane dead, relaunch decision needed" if outcome == "pane_dead" else
+            "extended deadline exceeded, relaunch decision needed" if extended else
+            "report deadline exceeded, extension decision needed")
+
+
+def preparation_watcher_events(events: list[dict[str, Any]], stage: str, pass_num: int) -> list[dict[str, Any]]:
+    """Watcher events since the last preparation of stage/pass; event order, not timestamps, defines it."""
+    window = None
+    for e in events:
+        data = e.get("data") or {}
+        if e.get("type") == "stage.prepared" and (data.get("stage"), data.get("pass")) == (stage, pass_num):
+            window = []
+        elif (window is not None and e.get("type") == "worker.waiting" and
+              (data.get("role"), data.get("pass")) == (stage, pass_num) and
+              data.get("outcome") in WATCHER_OUTCOMES):
+            window.append(e)
+    return window or []
+
+
+def planning_watcher_stop(state: dict[str, Any], events: list[dict[str, Any]]) -> str | None:
+    """Project only the current persisted pane/agent launch window; never probe health."""
+    stage = state.get("current_stage")
+    pass_num = state.get(PLANNING_PASS_KEYS[stage]) or 1
+    snapshot_id = (state.get("prepared_stage") or {}).get("snapshot_id")
+    if snapshot_id is None:
+        return None
+    surface = None
+    last = None
+    for event in events:
+        data = event.get("data") or {}
+        if (data.get("stage"), data.get("pass")) != (stage, pass_num):
+            continue
+        kind = event.get("type")
+        if kind == "pane.launched" and data.get("stage_snapshot_id") == snapshot_id:
+            surface, last = data.get("surface_id"), None
+        elif surface is not None and data.get("surface_id") == surface:
+            if kind == "worker.launch_sent":
+                last = None
+            elif kind == "worker.waiting":
+                last = data
+    if not last or last.get("outcome") not in WATCHER_HITL_OUTCOMES:
+        return None
+    return f"{stage}-{pass_num}: {watcher_stop_reason(last['outcome'], last.get('extension') == 1)}"
+
+
+def planning_board(state: dict[str, Any], events: list[dict[str, Any]]) -> tuple[str, str, float, str]:
+    stage = state.get("current_stage", "")
+    if stage == "complete":
+        return planning_complete_board(state)
+    status, detail = "running", state.get("tracker_slug", "")
+    if stage in PLANNING_BLOCKED_STAGES or stage == "integrity-violation":
+        recorded = gates(state, events)
+        gate = recorded[-1] if recorded else {}
+        status = "hitl" if stage == "integrity-violation" else "blocked"
+        detail = f"{gate.get('stage', '')}: {gate.get('reason', '')}"
+        stage = gate.get("stage", "") if status == "hitl" else stage.removesuffix("-blocked")
+    value = PLANNING_VALUE_ORDER.index(stage) / (len(PLANNING_VALUE_ORDER) - 1) if stage in PLANNING_VALUE_ORDER else 0.0
+    label = stage
+    if stage in PLANNING_STAGES:
+        family = "Spec" if stage.startswith("spec") else "Tickets"
+        role = "Review" if stage.endswith("review") else "Author"
+        label = f"{family} · {role} {state.get(PLANNING_PASS_KEYS[stage]) or 1}"
+        confirmation = state.get("diversity_confirmation") or {}
+        if status == "running" and confirmation.get("stage") == stage and confirmation.get("status") in PLANNING_PENDING_STATUSES:
+            status, detail = "waiting", "author/reviewer model diversity confirmation"
+        if status == "running" and (stop := planning_watcher_stop(state, events)):
+            status, detail = "hitl", stop
+    else:
+        positions = {
+            "input": ("running", "input validation", "Input · Validation"),
+            "awaiting-grilling-revalidation": ("waiting", "grilling input revalidation", "Input · Revalidation"),
+            "awaiting-spec-approval": ("waiting", "spec approval", "Spec · Approval"),
+            "awaiting-ticket-approval": ("waiting", "ticket approval", "Tickets · Approval"),
+            "ready-to-publish": ("running", detail, "Publish"),
+            "complete": ("done", planning_complete_board(state)[1], "Complete"),
+        }
+        projected_status, projected_detail, label = positions.get(stage, (status, detail, label))
+        if status == "running":
+            status, detail = projected_status, projected_detail
+    return status, board_detail(detail), value, label
+
+
+BOARD_MAX_CHARS = 80
+
+
+def board_detail(text: str) -> str:
+    return shorten(" ".join(text.replace("·", "-").split()), BOARD_MAX_CHARS)
+
+
+def board_status(decision: str) -> str:
+    return "halted" if decision == "stop" else decision
+
+
+ROUND_STAGE = re.compile(r"round-(\d+)(-.+)?")
+
+
+def grilling_rounds(recorded: list[dict[str, Any]]) -> int:
+    return max((int(match[1]) for gate in recorded
+                if (match := ROUND_STAGE.fullmatch(gate.get("stage", ""))) and match[2]), default=0)
+
+
+def open_decision_count(artifact: dict[str, Any] | None) -> int:
+    return sum(entry.get("status") == "open" for entry in artifact["open_decisions"]) if artifact is not None else 0
+
+
+def grilling_board(state: dict[str, Any], events: list[dict[str, Any]],
+                   artifact: dict[str, Any] | None) -> tuple[str, str, float, str]:
+    recorded = gates(state, events)
+    rounds = grilling_rounds(recorded)
+    budget = state["max_rounds"]
+    stage = state.get("current_stage", "")
+    count = open_decision_count(artifact)
+    label = f"Round {rounds}/{budget}"
+    if stage == "done" or (stage == "finalize" and any(
+            g.get("stage") == "finalize" and g.get("decision") == "advance" for g in recorded)):
+        detail = "assumptions review and decision walkthrough"
+        if artifact is not None:
+            detail += f", {count} open decisions"
+        return "waiting", detail, 1.0, label
+    last = recorded[-1] if recorded else {}
+    match = ROUND_STAGE.fullmatch(last.get("stage", ""))
+    if match and match[2] and last.get("decision") == "blocked":
+        n = int(match[1])
+        return "blocked", f"{last['stage']}: {last.get('reason', '')}", (n - 1) / budget, f"Round {n}/{budget}"
+    match = ROUND_STAGE.fullmatch(stage)
+    if match:
+        n = int(match[1])
+        return "running", state.get("slug", ""), (n - 1) / budget, f"Round {n}/{budget}"
+    if stage == "finalize":
+        return "running", "finalize", rounds / budget, label
+    return "running", state.get("slug", ""), 0.0, f"Round 1/{budget}"
+
+
+def issue_chain_board(state: dict[str, Any], events: list[dict[str, Any]]) -> tuple[str, str, float, str]:
+    stage = state.get("current_stage", "")
+    prefix = state["issue"]["id"]
+    status, detail, value, label = "running", state["issue"]["title"], 0.0, str(stage)
+    if stage in ISSUE_BOARD_STAGES:
+        chain = state.get("chain") or []
+        advanced = {e.get("stage") for e in events
+                    if e.get("type") == "gate" and e.get("decision") == "advance"}
+        value = len(advanced.intersection(chain)) / (len(chain) + 1)
+        label = f"{prefix} · {stage.capitalize() if stage != 'hitl' else 'HITL'}"
+        prepared = state.get("prepared_stage") or {}
+        if prepared.get("stage") == stage and stage != "done":
+            label += f" {prepared['pass']}"
+        watcher_events = []
+        if prepared.get("stage") == stage and prepared.get("pass") is not None:
+            watcher_events = preparation_watcher_events(events, stage, prepared["pass"])
+        watched = {id(e) for e in watcher_events}
+        relevant = [e for e in events if id(e) in watched or e.get("type") == "stage.prepared" or
+                    (e.get("type") == "gate" and e.get("decision") in
+                     HALTING_DECISIONS | {"advance", "pending"})]
+        if relevant:
+            last = relevant[-1]
+            if last.get("type") == "gate" and last.get("decision") in HALTING_DECISIONS:
+                status = board_status(last["decision"])
+                detail = f"{last.get('stage', '')}: {last.get('reason', '')}"
+            elif last.get("type") == "worker.waiting" and last["data"]["outcome"] in WATCHER_HITL_OUTCOMES:
+                extended = any(e["data"]["outcome"] == "extension_approved" for e in watcher_events)
+                reason = watcher_stop_reason(last["data"]["outcome"], extended)
+                status, detail = "hitl", f"{stage}-{prepared['pass']}: {reason}"
+        elif not chain and stage == "hitl":
+            status, detail = "waiting", "HITL issue: human steps"
+    return status, detail, value, label
+
+
+def recap_board(state: dict[str, Any], events: list[dict[str, Any]],
+                artifact: dict[str, Any] | None,
+                projected: tuple[str, str, float, str]) -> tuple[str, str, float, str]:
+    """Apply the latest relevant recap, preserving each workflow's completion semantics."""
+    workflow = state["workflow"]
+    stage = state.get("current_stage", "")
+    status, detail, value, label = projected
+    watched = set()
+    prepared = state.get("prepared_stage") or {}
+    if workflow == "issue-chain" and stage in ISSUE_BOARD_STAGES and prepared.get("stage") == stage and prepared.get("pass") is not None:
+        watched = {id(e) for e in preparation_watcher_events(events, stage, prepared["pass"])}
+    attention = [e for e in events if id(e) in watched or e.get("type") in {"run.recap", "gate", "stage.prepared"} or
+                 (workflow == "planning" and e.get("type") != "run.briefing")]
+    recap = attention[-1].get("data") if attention and attention[-1].get("type") == "run.recap" else None
+    outcome = recap.get("outcome", {}) if recap else {}
+    if workflow == "grilling":
+        if outcome.get("status") in {"done", "halted"}:
+            rounds = grilling_rounds(gates(state, events))
+            value, label = rounds / state["max_rounds"], f"Round {rounds}/{state['max_rounds']}"
+        if outcome.get("status") == "done":
+            return "done", f"{rounds} rounds, {open_decision_count(artifact)} open decisions", 1.0, label
+    elif stage == DONE_STAGES[workflow] or outcome.get("status") == "done":
+        if workflow == "planning":
+            return planning_complete_board(state)
+        return "done", state["issue"]["title"], 1.0, f"{state['issue']['id']} · Done"
+    if outcome.get("status") == "halted":
+        recorded = gates(state, events)
+        gate = next((g for g in reversed(recorded)
+                     if g.get("stage") == outcome.get("stage") and
+                     g.get("decision") == outcome.get("decision")), {})
+        status = board_status(outcome["decision"])
+        detail = f"{outcome.get('stage', '')}: {gate.get('reason', '')}"
+    return status, detail, value, label
+
+
+def planning_complete_board(state: dict[str, Any]) -> tuple[str, str, float, str]:
+    count = len((state.get("published_tracker") or {}).get("ticket_ids") or [])
+    return "done", f"{count} tickets published", 1.0, "Complete"
+
+
+def project_board(state: dict[str, Any], events: list[dict[str, Any]],
+                  artifact: dict[str, Any] | None = None) -> tuple[str, str, float, str]:
+    """Pure workflow projection followed by the shared recap overlay."""
+    workflow = state["workflow"]
+    if workflow == "issue-chain":
+        projected = issue_chain_board(state, events)
+    elif workflow == "planning":
+        projected = planning_board(state, events)
+    elif workflow == "grilling":
+        projected = grilling_board(state, events, artifact)
+    else:
+        raise KeyError(workflow)
+    status, detail, value, label = recap_board(state, events, artifact, projected)
+    return status, board_detail(detail), value, label
+
+
+class BoardPublication:
+    """Fail-soft command decoration, with late binding for validated init directories.
+
+    Explicit publication consumes the single attempt; force handles event/artifact-only
+    commands. Command exceptions always propagate unchanged.
+    """
+
+    def __init__(self, run_dir: Path | None, cmux_cmd: str | None = None, *,
+                 publisher: Callable[..., None] | None = None):
+        self.run_dir = None
+        self.cmux_cmd = cmux_cmd
+        self.publisher = publisher or publish_board
+        self.before = None
+        self.finished = False
+        self.force = False
+        if run_dir is not None:
+            self.bind(run_dir)
+
+    def _failed(self, error: BaseException) -> None:
+        self.finished = True
+        report_board_failure(error)
+
+    def _read(self) -> bytes | None:
+        try:
+            return (self.run_dir / "state.json").read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def bind(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        if not self.finished:
+            try:
+                self.before = self._read()
+            except (Exception, SystemExit) as error:
+                self._failed(error)
+
+    def publish(self) -> None:
+        if self.finished or self.run_dir is None:
+            return
+        self.finished = True
+        try:
+            self.publisher(self.run_dir, self.cmux_cmd)
+        except (Exception, SystemExit) as error:
+            self._failed(error)
+
+    def __enter__(self) -> BoardPublication:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.finished or self.run_dir is None:
+            return
+        try:
+            after = self._read()
+        except (Exception, SystemExit) as error:
+            self._failed(error)
+            return
+        if after is not None and (after != self.before or self.force):
+            self.publish()
+
+
+def publish_board(run_dir: Path, cmux_cmd: str | None = None, *, clear: bool = False) -> None:
+    """Best-effort decoration: never modify state/events or propagate projection/CLI failures."""
+    try:
+        state = read_state(run_dir)
+        workspace = state.get("workspace_id")
+        if not workspace:
+            return
+        if clear:
+            commands = [["workspace-action", "--action", "clear-description"], ["clear-progress"]]
+        else:
+            artifact = None
+            artifact_path = (state.get("deliverables") or {}).get("json")
+            if state["workflow"] == "grilling" and artifact_path:
+                artifact = read_artifact(Path(artifact_path))
+                if (not isinstance(artifact, dict) or not isinstance(artifact.get("open_decisions"), list)
+                        or any(not isinstance(entry, dict) or entry.get("status") not in DECISION_STATUSES
+                               for entry in artifact["open_decisions"])):
+                    raise ValueError("grilling artifact has malformed open_decisions")
+            status, detail, value, label = project_board(state, read_events(run_dir), artifact)
+            formatted = str(round(max(0.0, min(1.0, value)), 2))
+            commands = [
+                ["workspace-action", "--action", "set-description", "--description",
+                 f"{state['workflow']} · {status} · {detail}"],
+                ["set-progress", formatted, "--label", label],
+            ]
+        for command in commands:
+            failure = cmux(cmux_cmd, command + ["--workspace", workspace], timeout=10)
+            if failure:
+                raise RuntimeError(failure)
+    except (Exception, SystemExit) as error:
+        report_board_failure(error)
+
+
+def report_board_failure(error: BaseException) -> None:
+    print("sidebar board not updated: " + " ".join(str(error).split()), file=sys.stderr)
 
 
 def placeholders(text: str) -> list[str]:
     return sorted(set(PLACEHOLDER_RE.findall(text)))
 
 
-def cmux(args: argparse.Namespace, argv: list[str]) -> str | None:
+def cmux(cmux_cmd: str | None, argv: list[str], timeout: int = 30) -> str | None:
     """Run one cmux call; return a failure description instead of raising."""
-    base = shlex.split(args.cmux_cmd) if args.cmux_cmd else ["cmux"]
+    base = shlex.split(cmux_cmd) if cmux_cmd else ["cmux"]
     try:
-        result = subprocess.run(base + argv, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(base + argv, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
         return str(error)
     if result.returncode:
@@ -816,13 +1160,13 @@ def update_pill(args: argparse.Namespace, state: dict[str, Any], outcome: dict[s
         return None
     key = PILL_KEYS[state["workflow"]]
     if getattr(args, "clear_status", False):
-        failure = cmux(args, ["clear-status", key, "--workspace", workspace_id])
+        failure = cmux(args.cmux_cmd, ["clear-status", key, "--workspace", workspace_id])
         pill = None
     else:
         pill = pill_text(state, args.lang, outcome)
         color = PILL_COLORS["running" if outcome is None else outcome["status"]]
         failure = cmux(
-            args,
+            args.cmux_cmd,
             ["set-status", key, pill, "--color", color, "--priority", str(PILL_PRIORITY), "--workspace", workspace_id],
         )
     if failure:
@@ -865,6 +1209,8 @@ def show(args: argparse.Namespace, filename: str, event_type: str, recap: bool) 
     }
     with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")
+    if not args.no_status:
+        publish_board(run_dir, args.cmux_cmd, clear=getattr(args, "clear_status", False))
     sys.stdout.write(text)
     return 0
 
@@ -886,10 +1232,10 @@ def build_parser() -> argparse.ArgumentParser:
         command = subparsers.add_parser(name, help=text)
         command.add_argument("--run-dir", required=True)
         command.add_argument("--lang", choices=sorted(LABELS), default="en", help="Pill label language")
-        command.add_argument("--no-status", action="store_true", help="Leave the sidebar status pill untouched")
+        command.add_argument("--no-status", action="store_true", help="Leave the sidebar pill and board untouched")
         command.add_argument("--cmux-cmd", help=argparse.SUPPRESS)
         if name == "recap-show":
-            command.add_argument("--clear-status", action="store_true", help="Remove the run pill instead of marking it")
+            command.add_argument("--clear-status", action="store_true", help="Clear the run pill and board instead of marking them")
     return parser
 
 

@@ -332,10 +332,11 @@ Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to 
 current launch IDs and stage/pass or round. Every invocation computes the remaining time;
 re-arming, including after a host timeout, never moves either deadline. Initial
 `--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
-pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
+pass `--extend --reason "<recorded reason>" --deadline-minutes <additional-minutes>`;
 the watcher records the reason and grants that duration from the later of the existing
-deadline and extension arm. Repeating the same extension is idempotent; a second extension
-is refused. The start window is not extended by this flag. A recorded exit-9 recovery
+deadline and extension arm. Re-arm without `--extend` to keep that persisted deadline;
+a second `--extend` is refused. The compatible `--deadline-reason` spelling retains
+idempotent replay of the same reason and duration, sharing the same one-extension budget. The start window is not extended by this flag. A recorded exit-9 recovery
 (`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
 without spending the extension; merely observing, assessing, or re-arming does not.
 New launch IDs also start new windows. Never run two watchers for the same work concurrently.
@@ -347,7 +348,7 @@ Exit vocabulary: 0 = report, 1 = crash, 2 = usage, 3–6 = report gates, 7 = pan
 |------|---------------------------------------|------------------------------------------------------------------------------------------|
 | 0    | Report file exists                    | Snapshot, parse, gate — exit 0 is not an advance verdict                                 |
 | 7    | Pane dead per `cmux surface-health`   | Stop as HITL; a dead pane with no report is orchestration uncertainty, not findings      |
-| 8    | Deadline exceeded, pane alive/unknown | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL |
+| 8    | Deadline exceeded, pane alive/unknown | Extend once with `--extend --reason`, else stop as HITL                                  |
 | 9    | Assignment not started within `--start-minutes` (default 5) | Follow the exit-9 exception path below |
 
 The start window applies only to the latest matching `worker.launch_sent` carrying `prompt_path`
@@ -362,8 +363,12 @@ waiting events in parallel. Silence is never success — only the report file is
 static-looking pane may be a worker at an approval/confirmation prompt; that pane is alive, and the
 watcher correctly keeps waiting. Only `surface-health` reporting the pane gone counts as dead. Do not
 close the worker pane, and do not launch the next stage, until the report has been captured and parsed.
-Exactly one deadline extension per stage; pass `--deadline-reason` so the watcher records its reason in a `worker.waiting`
-event. Before spending it on a silent pane, check the screen for the not-started cases in CMUX Control:
+Exactly one deadline extension per prepared stage/pass; use `await_report.py --extend --reason <text>`
+with the usual run, role, pass, surface, and `--deadline-minutes` arguments to
+record the extension and re-arm the watcher. The watcher records the integer pass and structured
+extension event, publishes the board, then watches with the persisted extended deadline. A second extension
+in the same preparation, a blank or missing reason, or a missing deadline is refused.
+Before spending it on a silent pane, check the screen for the not-started cases in CMUX Control:
 re-delivering to a worker that never started restarts the wait clock and is not an extension.
 
 Use `blocked` only for explicit blockers reported by a worker. Use `hitl` for orchestration uncertainty such as a silent or possibly stuck worker after the wait policy is exhausted.
@@ -428,6 +433,10 @@ active; the tree belongs to the worker until its report is captured and snapshot
 
 ## Run Briefing
 
+The scripts publish the board automatically at transitions and when showing a briefing or recap.
+A failed board update is a stderr note and never a stop. `--no-status` suppresses pill and board
+on `run_briefing.py`; `run_state.py` publishes whenever a workspace is pinned (`--no-workspace` avoids it).
+
 A fresh run opens with a compact briefing so the human sees what the run is about without opening a
 file. After `run_state.py init` (HITL issues included) and before the first `pane_ctl.py launch`:
 
@@ -475,6 +484,8 @@ Every autonomous run ends with the Run Recap (below), followed by the details it
 After the recap, details, and proposal, the orchestrator waits for the human.
 
 ## Run Recap
+
+`recap-show` publishes the board after recording `run.recap`; `--clear-status` clears both pill and board.
 
 The counterpart to the Run Briefing. After `run_state.py complete`, `run_commit.py propose`, and `run_commit.py commit` in commit mode, or
 after a `hitl`, `blocked`, or `stop` gate that ends the run:
@@ -777,6 +788,9 @@ Read when writing any event with `run_state.py event` (including drift records) 
 
 ## Scripts
 
+`run_state.py` publishes the board automatically after state changes, including persisted progress before
+a non-zero exit. Board failures never change command results.
+
 `run_commit.py propose` is the only writer of `commit.proposed`; generic `event` refuses `commit.*`.
 
 `collect_recommendations.py --run-dir <run-dir> --pass <1|2>` writes the immutable recommendations list.
@@ -900,6 +914,9 @@ python3 scripts/parse_report.py path/to/worker-report.md --json
 Await a worker report deterministically (see Worker Wait Policy for the background Bash invocation). The deadline
 defaults to the role's minimum wait; exit 0 = report exists, 7 = pane dead, 8 = deadline exceeded, 9 = not started.
 `--start-minutes` defaults to 5; the role deadline keeps counting from arming.
+Watcher exits 7 and 8 publish `hitl` on the board. The recorded extension returns the card to
+`running`; a later `gate`/`prepare` supersedes watcher attention with its own result (a continuing gate
+or fresh preparation returns it to `running`).
 Heartbeats go to `events.jsonl` as `worker.waiting`. Health checks are scoped to the run's pinned
 `workspace_id` from `state.json`; there is no env fallback:
 

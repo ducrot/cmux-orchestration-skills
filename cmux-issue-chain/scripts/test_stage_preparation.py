@@ -4,6 +4,11 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
+from unittest.mock import patch
+
+import run_state
 import json
 import os
 import shlex
@@ -116,6 +121,109 @@ def file_contents(root: Path) -> dict[Path, bytes]:
 
 
 class PreparedStageCli(unittest.TestCase):
+    def board_calls(self):
+        return [json.loads(line) for line in self.cmux_log.read_text().splitlines()] if self.cmux_log.exists() else []
+
+    def test_board_cli_transition_sequence(self):
+        commands = [lambda: self.init(), lambda: self.gate("implement", "simplify"),
+                    lambda: self.prepare("simplify"), lambda: self.gate("simplify", "review"),
+                    lambda: self.prepare("review"),
+                    lambda: self.run_state("gate", "--run-dir", str(self.run_dir), "--stage", "review",
+                                           "--decision", "hitl", "--reason", "human choice"),
+                    lambda: self.run_state("complete", "--run-dir", str(self.run_dir))]
+        for index, command in enumerate(commands):
+            self.cmux_log.unlink(missing_ok=True)
+            result = command()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self.board_calls()
+            self.assertEqual([call[0] for call in calls], ["workspace-action", "set-progress"])
+            expected = "running · Prepared workers" if index < 5 else "hitl · review: human choice" if index == 5 else "done · Prepared workers"
+            self.assertIn("issue-chain · " + expected, calls[0])
+            self.assertEqual(calls[1][-2:], ["--workspace", "WORKSPACE"])
+        self.assertEqual(calls[1], ["set-progress", "1.0", "--label", "ISSUE-001 · Done", "--workspace", "WORKSPACE"])
+
+    def test_no_workspace_read_only_and_idempotent_init(self):
+        self.assertEqual(self.init("--no-workspace").returncode, 0)
+        self.assertFalse(self.board_calls())
+        self.assertEqual(self.gate("implement", "simplify").returncode, 0)
+        self.assertFalse(self.board_calls())
+        self.assertEqual(self.init_for("pinned").returncode, 0)
+        self.cmux_log.unlink()
+        self.assertEqual(self.init_for("pinned").returncode, 0)
+        self.assertEqual(self.run_state("status", "--run-dir", str(self.runs_root / "pinned")).returncode, 0)
+        self.assertFalse(self.board_calls())
+        self.assertEqual(self.init_for("pinned", "--invocation", "new invocation").returncode, 0)
+        self.assertEqual(len(self.board_calls()), 2)
+
+    def test_failed_board_keeps_cli_progress_including_nonzero_prepare(self):
+        failed = self.env(FAKE_CMUX_EXIT="7")
+        self.assertEqual(self.init(env=failed).returncode, 0)
+        self.assertEqual([c[0] for c in self.board_calls()], ["workspace-action"])
+        for args in (("gate", "--stage", "implement", "--decision", "advance", "--reason", "ok", "--next-stage", "simplify"),
+                     ("prepare", "--stage", "simplify", "--pass", "1"),
+                     ("prepare", "--stage", "simplify", "--pass", "2"),
+                     ("complete",)):
+            self.cmux_log.unlink()
+            env = self.env(FAKE_CMUX_EXIT="7", FAKE_HARNESS_FAILURE="version") if args[-1] == "2" else failed
+            result = self.run_state(args[0], "--run-dir", str(self.run_dir), *args[1:], env=env)
+            self.assertEqual(result.returncode != 0, args[-1] == "2", result.stderr)
+            self.assertEqual(result.stderr.count("sidebar board not updated:"), 1)
+            self.assertEqual([c[0] for c in self.board_calls()], ["workspace-action"])
+        self.assertEqual(self.read_state()["current_stage"], "done")
+
+    def test_board_boundary_preserves_outputs_state_events_and_exits(self):
+        # Exercise every publishing dispatch, including a future triage state write and SystemExit.
+        self.assertEqual(self.init().returncode, 0)
+        for command in ("init", "prepare", "gate", "complete", "publish-triage"):
+            for exits in (0, 2):
+                args = run_state.build_parser().parse_args(
+                    ["init", "--tracker", "unused", "--issue", "ISSUE-001", "--run-id", "prepared-run", "--runs-root", str(self.runs_root)]
+                    if command == "init" else
+                    [command, "--run-dir", str(self.run_dir)] +
+                    (["--stage", "implement", "--pass", "1"] if command == "prepare" else
+                     ["--stage", "implement", "--decision", "advance", "--reason", "ok"] if command == "gate" else
+                     ["--pass", "1"] if command == "publish-triage" else []))
+                args.cmux_cmd = str(self.cmux)
+                self.cmux_log.unlink(missing_ok=True)
+                state_path = self.run_dir / "state.json"
+                expected = state_path.read_text() + " "
+                events_path = self.run_dir / "events.jsonl"
+                events = events_path.read_bytes()
+                def operation(_):
+                    state_path.write_text(expected)
+                    print("original stdout")
+                    if exits:
+                        raise SystemExit(exits)
+                    return exits
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.object(run_state, "dispatch_command", operation), patch.dict("os.environ", self.env(FAKE_CMUX_EXIT="7")), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    if exits:
+                        with self.assertRaises(SystemExit) as raised:
+                            run_state.run_command(args)
+                        self.assertEqual(raised.exception.code, exits)
+                    else:
+                        self.assertEqual(run_state.run_command(args), 0)
+                self.assertEqual(stdout.getvalue(), "original stdout\n")
+                self.assertEqual(state_path.read_text(), expected)
+                self.assertEqual(events_path.read_bytes(), events)
+                self.assertEqual(stderr.getvalue().splitlines(), ["sidebar board not updated: exit 7"])
+                self.assertEqual([c[0] for c in self.board_calls()], ["workspace-action"])
+
+    def test_documented_board_contract(self):
+        text = (Path(__file__).parents[1] / "SKILL.md").read_text()
+        for phrase in ("publish the board automatically at transitions", "failed board update is a stderr note and never a stop",
+                       "`--no-status` suppresses pill and board", "`--clear-status` clears both pill and board"):
+            self.assertIn(phrase, text)
+
+    def test_triage_without_state_change_does_not_publish(self):
+        self.triage_fixture()
+        self.cmux_log.unlink(missing_ok=True)
+        before = (self.run_dir / "state.json").read_bytes()
+        result = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
+        self.assertFalse(self.board_calls())
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
@@ -140,7 +248,7 @@ class PreparedStageCli(unittest.TestCase):
             path = self.bin_dir / name
             path.write_text(FAKE_HARNESS, encoding="utf-8")
             path.chmod(0o755)
-        self.cmux = self.root / "cmux"
+        self.cmux = self.bin_dir / "cmux"
         self.cmux.write_text(FAKE_CMUX, encoding="utf-8")
         self.cmux.chmod(0o755)
         self.harness_log = self.root / "harness.jsonl"
@@ -245,7 +353,7 @@ class PreparedStageCli(unittest.TestCase):
             "--role", role, "--pass", str(pass_num), "--anchor", "anchor",
         )
         self.assertNotEqual(pane.returncode, 0)
-        self.assertFalse(self.cmux_log.exists())
+        self.assertTrue(all(call[0] in {"workspace-action", "set-progress"} for call in self.board_calls()))
 
     def assert_no_launchable_run(self, failed_dir: Path) -> None:
         self.assertFalse((failed_dir / "state.json").exists())
@@ -301,6 +409,7 @@ class PreparedStageCli(unittest.TestCase):
 
     def test_legacy_run_refuses_preparation_and_lifecycle_without_writes(self):
         self.assertEqual(self.init().returncode, 0)
+        self.cmux_log.unlink()
         state_path = self.run_dir / "state.json"
         state = json.loads(state_path.read_text())
         del state["workflow"]
@@ -996,7 +1105,7 @@ class PreparedStageCli(unittest.TestCase):
 
         self.assertEqual(started.returncode, 0, started.stderr)
         cmux_calls = [json.loads(line) for line in self.cmux_log.read_text().splitlines()]
-        command = cmux_calls[0][-1]
+        command = next(call for call in cmux_calls if call[0] not in {"workspace-action", "set-progress"})[-1]
         self.assertEqual(shlex.split(command), ["CMUX_AGENT_MANAGED_SUBAGENT=1", *prepared_argv,
                                                delivery_text(str(prompt.relative_to(self.repo)))])
         self.assertIn("next-model", command)

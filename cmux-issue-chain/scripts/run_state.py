@@ -115,10 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
     status.add_argument("--run-dir", required=True)
 
+    for command in (init, prepare, gate, complete, publish, event):
+        command.add_argument("--cmux-cmd", default="cmux", help=argparse.SUPPRESS)
+
     return parser
 
 
-def run_command(args: argparse.Namespace) -> int:
+def dispatch_command(args: argparse.Namespace) -> int:
     if args.command == "status":
         run_dir = Path(args.run_dir)
         state = read_json(run_dir / "state.json")
@@ -152,6 +155,19 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command == "complete":
         return complete_run(args)
     raise AssertionError(args.command)
+
+
+def run_command(args: argparse.Namespace) -> int:
+    if args.command not in {"init", "prepare", "gate", "complete", "publish-triage"}:
+        return dispatch_command(args)
+    if args.command == "init":
+        args.run_id = args.run_id or run_identifier("chain", slugify(args.issue), utc_now())
+        run_dir = Path(args.runs_root) / args.run_id
+    else:
+        run_dir = Path(args.run_dir)
+    from run_briefing import BoardPublication
+    with BoardPublication(run_dir, args.cmux_cmd):
+        return dispatch_command(args)
 
 
 def main() -> int:
@@ -396,6 +412,9 @@ def append_event(args: argparse.Namespace) -> int:
         Path(args.run_dir) / "events.jsonl",
         {"time": utc_now(), "type": args.type, "message": args.message, "data": data},
     )
+    if args.type == "worker.waiting":
+        from run_briefing import publish_board
+        publish_board(Path(args.run_dir), args.cmux_cmd)
     return 0
 
 

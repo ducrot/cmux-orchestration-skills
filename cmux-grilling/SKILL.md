@@ -154,6 +154,11 @@ At the next round, replacement panes are created before the old panes close.
 
 ## Run Briefing
 
+The scripts publish the board automatically at transitions. A failed board update is a
+stderr note (`sidebar board not updated`) and never a stop. On `run_briefing.py`,
+`--no-status` suppresses pill and board; `--clear-status` clears both. `run_state.py`
+publishes whenever state changes in a pinned workspace, and after recorded decisions.
+
 A fresh session opens with a compact briefing so the human sees what is being grilled without
 opening a file. After `run_state.py init` and before the first `pane_ctl.py open-round`:
 
@@ -359,10 +364,11 @@ Both deadlines are persisted on first arm in a `worker.waiting` event for the ro
 anchored to its earliest recorded launch `start_time_ns`. Every invocation computes the remaining time;
 re-arming, including after a host timeout, never moves either deadline. Initial
 `--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
-pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
+pass `--extend --reason "<recorded reason>" --deadline-minutes <additional-minutes>`;
 the watcher records the reason and grants that duration from the later of the existing
-deadline and extension arm. Repeating the same extension is idempotent; a second extension
-is refused. The start window is not extended by this flag. Only a recorded exit-9 recovery for a
+deadline and extension arm. Re-arm without `--extend` to keep that persisted deadline;
+a second `--extend` is refused. The compatible `--deadline-reason` spelling retains
+idempotent replay of the same reason and duration, sharing the same one-extension budget. The start window is not extended by this flag. Only a recorded exit-9 recovery for a
 `not_started` lane (`respond`, readiness-gated re-delivery, a recovery launch, or screen
 confirmation) starts a new window without spending the extension. A follow-up, new launch
 outside exit-9 recovery, observation, assessment, or re-arm does not renew the round clock.
@@ -383,7 +389,7 @@ The watcher uses these exit codes:
 |------|---------------------------------------------------------|---------------------------------------------------------------------------------------------------|
 | 0    | All fresh non-empty round reports exist | Snapshot, parse each lane, gate — exit 0 is not an advance verdict |
 | 7    | A pending lane's pane is dead per `cmux surface-health` | Stop as HITL for that lane; a dead pane with no report is orchestration uncertainty, not findings |
-| 8    | Round deadline exceeded, pending panes alive/unknown          | Extend once with a recorded reason (re-arm with `--deadline-minutes`), else stop as HITL          |
+| 8    | Round deadline exceeded, pending panes alive/unknown          | Extend once with `--extend --reason`, else stop as HITL                                          |
 | 9    | Round lanes not started within the start window | Inspect only `not_started` lanes using the round exception path, then re-arm |
 
 The stdout line carries the detail the exit code cannot:
@@ -399,8 +405,11 @@ their reviewer agent rather than to the human, so a quiet pane is a lane still t
 one already finished, and the watcher correctly keeps waiting either way. Only
 `surface-health` reporting the surface gone counts as dead.
 
-- Exactly one deadline extension per round; pass `--deadline-reason` so the watcher records its reason
-  when re-arming. Before spending it on a silent lane, check the
+- Exactly one deadline extension per round; use `await_reports.py --extend --reason <text>`
+  with the usual round arguments and `--deadline-minutes` to record the
+  extension and re-arm. The watcher records a structured `worker.waiting` extension event;
+  a second extension in the same round, a blank or missing reason, or a missing deadline is refused.
+  Before spending it on a silent lane, check the
   screen for the not-started case in CMUX Control: re-delivering a round prompt to a lane that
   never started restarts the wait clock and is not an extension.
 - After an exhausted extension with no report, or a dead pane: record a `hitl` gate for
@@ -575,6 +584,10 @@ An unverified outcome leaves Git untouched and names HEAD for human inspection.
 
 ## Run Recap
 
+The board stays waiting through assumptions review and the decision walkthrough, counting
+down open decisions. `recap-show` records the recap before publishing its final board state;
+`--no-status` suppresses pill and board and `--clear-status` clears both.
+
 The counterpart to the Run Briefing and the last message of a session. After the commit proposal and `run_commit.py commit` in commit mode,
 or after a `hitl`, `blocked`, or `stop` gate that ends the session:
 
@@ -621,6 +634,9 @@ missing, failed, mismatched, or tampered lane blocks every pane.
 Read when inspecting the default launch wave, harness arguments, sandbox policy, or notification behavior: [references/launch-policy.md](references/launch-policy.md).
 
 ### Pinned workspace, deterministic pane control
+
+The scripts publish the board automatically at transitions; a failed board update is a
+stderr note and never a stop.
 
 `run_state.py init` prepares the full launch wave before it publishes a launchable run and
 pins the run's cmux workspace: flag > `CMUX_WORKSPACE_ID` env > hard error

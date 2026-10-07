@@ -19,6 +19,7 @@ from pathlib import Path
 from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_run_state, utc_now
 from worker_readiness import read_events
 from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
+from run_briefing import WATCHER_HITL_OUTCOMES, publish_board
 
 EXIT_REPORT = 0     # report file exists — parse it next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # surface affirmatively gone/dead per surface-health
@@ -44,11 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial wait duration, or additional minutes with --deadline-reason",
     )
     parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
+    parser.add_argument("--extend", action="store_true", help="Record the one deadline extension and resume watching")
+    parser.add_argument("--reason", help="Required explanation for --extend")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-interval-seconds", type=float, default=60)
     parser.add_argument("--heartbeat-seconds", type=float, default=300)
     parser.add_argument("--health-cmd", help="Override the surface-health command (tests)")
+    parser.add_argument("--cmux-cmd", default="cmux", help=argparse.SUPPRESS)
     return parser
 
 
@@ -165,7 +169,34 @@ def marker_ready(launch: dict) -> bool:
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     run_dir = Path(args.run_dir)
-    read_run_state(run_dir)
+    if args.extend and args.deadline_reason is not None:
+        raise SystemExit("use either --extend --reason or --deadline-reason")
+    if args.extend:
+        if not args.reason or not args.reason.strip():
+            raise SystemExit("--extend requires a non-blank --reason")
+        if args.deadline_minutes is None:
+            raise SystemExit("--extend requires --deadline-minutes")
+    state = read_run_state(run_dir)
+    # Clock extensions and board attention share the preparation budget, even
+    # when the surface or startup-recovery clock changes.
+    events = read_events(run_dir)
+    window_start = 0
+    for index, event in enumerate(events):
+        data = event.get("data", {})
+        if event.get("type") == "stage.prepared" and (data.get("stage"), data.get("pass")) == (args.role, args.pass_num):
+            window_start = index + 1
+    window = events[window_start:]
+    extended = any(event.get("type") == "worker.waiting"
+                   and (event.get("data", {}).get("role"), event.get("data", {}).get("pass")) == (args.role, args.pass_num)
+                   and (event["data"].get("outcome") == "extension_approved"
+                        or event["data"].get("watch_clock", {}).get("extension") == 1)
+                   for event in window)
+    if args.extend:
+        prepared = state.get("prepared_stage") or {}
+        if (state.get("current_stage"), prepared.get("stage"), prepared.get("pass")) != (args.role, args.role, args.pass_num):
+            raise SystemExit("--extend requires the current prepared role and pass")
+        if extended:
+            raise SystemExit("deadline extension already recorded for this preparation")
     report = report_path(run_dir, args.role, args.pass_num)
     deadline_minutes = (
         args.deadline_minutes if args.deadline_minutes is not None else MINIMUM_WAIT_MINUTES[args.role]
@@ -173,14 +204,24 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     # File-only mode (no --surface) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if args.surface else []
     start = time.monotonic()
-    events = read_events(run_dir)
     identity = {"role": args.role, "pass": args.pass_num, "surface_id": args.surface}
     launch = pending_launch(events, identity)
     report_launch = current_launch(events, identity)
-    clock = arm(events, wait_key(events, identity, [identity]), deadline_minutes,
-                args.start_minutes, args.deadline_reason,
-                lambda data: waiting_event(run_dir, "watch deadlines recorded", {
-                    **identity, "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data}))
+    key = wait_key(events, identity, [identity])
+    reason = args.reason if args.extend else args.deadline_reason
+    def record_clock(data):
+        # A replayed clock emits nothing; a new key must not buy another extension.
+        if reason is not None and extended:
+            raise ValueError("deadline extension already recorded for this preparation")
+        waiting_event(run_dir, "watch deadlines recorded", {
+            **identity, "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data})
+    clock = arm(window, key, deadline_minutes, args.start_minutes, reason, record_clock)
+    if reason is not None and not extended:
+        waiting_event(run_dir, "deadline extension approved", {
+            **identity, "outcome": "extension_approved", "extension": 1, "reason": reason,
+        })
+        publish_board(run_dir, args.cmux_cmd)
+        extended = True
     deadline, start_deadline = monotonic_deadlines(clock)
     deadline_minutes = clock["minutes"]
     next_health = start
@@ -194,6 +235,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             "surface_id": args.surface,
             "elapsed_seconds": round(time.monotonic() - start, 1),
             "deadline_minutes": deadline_minutes,
+            **({"extension": 1} if extended else {}),
             "health": health_status,
         }
 
@@ -203,6 +245,8 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         if health_detail:
             data["health_detail"] = health_detail
         waiting_event(run_dir, message, data)
+        if outcome in WATCHER_HITL_OUTCOMES:
+            publish_board(run_dir, args.cmux_cmd)
         print(f"outcome={outcome} elapsed_seconds={data['elapsed_seconds']} report={report}")
         return code
 
@@ -238,7 +282,10 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 def main() -> int:
     parser = build_parser()
-    return watch(parser.parse_args(), parser)
+    try:
+        return watch(parser.parse_args(), parser)
+    except ValueError as error:
+        raise SystemExit(str(error))
 
 
 if __name__ == "__main__":

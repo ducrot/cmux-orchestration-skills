@@ -9,6 +9,7 @@ import unittest
 
 from test_pane_ctl import PaneCtlCase
 from orchestrator_lib import LANES, append_jsonl
+from run_briefing import project_board
 
 
 class FreshRounds(PaneCtlCase):
@@ -23,8 +24,11 @@ class FreshRounds(PaneCtlCase):
         append_jsonl(self.run_dir / 'events.jsonl', {'type': kind, 'data': data, 'message': message})
 
     def script(self, name, *args):
+        if name == 'run_state.py':
+            args = (*args, '--cmux-cmd', self.cmux_cmd)
         return subprocess.run([sys.executable, str(Path(__file__).parent / name), *args],
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=10,
+                              env={**os.environ, 'FAKE_CMUX_LOG': str(self.log)})
 
     def snapshot(self, label):
         proc = self.script('run_state.py', 'snapshot', '--run-dir', str(self.run_dir), '--label', label)
@@ -85,16 +89,42 @@ class FreshRounds(PaneCtlCase):
             args = ['--run-dir', str(self.run_dir), '--round', str(number), '--questions', '1']
             for lane, surface in surfaces.items():
                 args += ['--lane-surface', f'{lane}={surface}']
+            # Extend a real prompt-attached round; fresh sessions must not lose the
+            # persisted extension or grant a second one in the same round.
+            watched = self.script('await_reports.py', *args, '--deadline-minutes', '0')
+            self.assertEqual(watched.returncode, 0, watched.stderr)
+            clocks = lambda: [e['data']['watch_clock'] for e in self.events()
+                              if e.get('data', {}).get('round') == number
+                              and 'watch_clock' in e.get('data', {})]
+            original = clocks()[-1]
+            extended = self.script('await_reports.py', *args, '--extend', '--reason', 'round research',
+                                   '--deadline-minutes', '.001')
+            self.assertEqual(extended.returncode, 0, extended.stderr)
+            current = clocks()[-1]
+            self.assertEqual(current['extension'], 1)
+            self.assertGreater(current['deadline'], original['deadline'])
+            self.assertEqual(current['start_deadline'], original['start_deadline'])
+            before = (self.run_dir / 'events.jsonl').read_bytes()
+            refused = self.script('await_reports.py', *args, '--extend', '--reason', 'again',
+                                  '--deadline-minutes', '.001')
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('already recorded for this round', refused.stderr)
+            self.assertEqual((self.run_dir / 'events.jsonl').read_bytes(), before)
+            board = project_board(json.loads((self.run_dir / 'state.json').read_text()), self.events())
+            self.assertEqual(board[0], 'running')
+            self.assertTrue(board[3].startswith(f'Round {number}/'), board)
             for _ in range(2):
                 watched = self.script('await_reports.py', *args)
                 self.assertEqual(watched.returncode, 0, watched.stderr)
+            self.assertEqual(clocks(), [original, current])
             confirmed = [e for e in self.events() if e['type'] == 'worker.started' and e['data']['round'] == number]
             self.assertEqual(len(confirmed), 4)
             self.snapshot(f'reports-captured round-{number}')
             for lane in LANES:
                 parsed = self.script('parse_research_report.py', str(self.run_dir / 'reports' / f'round-{number}-{lane}.md'), '--questions', '1')
                 self.assertEqual(parsed.returncode, 0, parsed.stdout + parsed.stderr)
-                gate = self.script('run_state.py', 'gate', '--run-dir', str(self.run_dir), '--stage', f'round-{number}-{lane}', '--decision', 'advance', '--reason', 'validated report')
+                gate = self.script('run_state.py', 'gate', '--run-dir', str(self.run_dir), '--stage', f'round-{number}-{lane}', '--decision', 'advance', '--reason', 'validated report',
+                                   *(['--next-stage', 'round-2'] if number == 1 and lane == 'web' else []))
                 self.assertEqual(gate.returncode, 0, gate.stderr)
             if number == 1:
                 common = ['--run-dir', str(self.run_dir), '--lane', 'web', '--surface', surfaces['web']]

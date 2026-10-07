@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from run_briefing import BoardPublication, publish_board
 from run_commit import capture_baseline
 from agents_config import (
     ConfigError,
@@ -72,6 +73,9 @@ DECISION_REQUIRED_FIELDS = (
 
 
 RUN_SUBDIRS = ("prompts", "reports", "drafts", "synthesis")
+
+
+PUBLISHING_COMMANDS = ("init", "event", "gate", "snapshot", "complete", "decision")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
     status.add_argument("--run-dir", required=True)
 
+    for name in PUBLISHING_COMMANDS:
+        subparsers.choices[name].add_argument("--cmux-cmd", help=argparse.SUPPRESS)
     return parser
 
 
@@ -185,9 +191,17 @@ def run_command(args: argparse.Namespace) -> int:
     raise AssertionError(args.command)
 
 
+def run(args: argparse.Namespace) -> int:
+    if args.command not in PUBLISHING_COMMANDS:
+        return run_command(args)
+    run_dir = Path(args.run_dir) if args.command != "init" else None
+    with BoardPublication(run_dir, args.cmux_cmd, publisher=publish_board) as args._board_publication:
+        return run_command(args)
+
+
 def main() -> int:
     try:
-        return run_command(build_parser().parse_args())
+        return run(build_parser().parse_args())
     except ConfigError as error:
         print(error, file=sys.stderr)
         return 1
@@ -294,6 +308,7 @@ def init_run(args: argparse.Namespace) -> int:
     run_id = args.run_id or run_identifier("grill", slug, now)
     runs_root = Path(args.runs_root)
     run_dir = runs_root / run_id
+    args._board_publication.bind(run_dir)
     overrides = parse_overrides(args, workflow=WORKFLOW)
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
@@ -606,6 +621,8 @@ def record_decision(args: argparse.Namespace) -> int:
             "data": {"id": args.id, "status": args.status, "decision": args.decision, "artifact": str(artifact_path)},
         },
     )
+    if publication := getattr(args, "_board_publication", None):
+        publication.force = True
     # Printed ready to paste: the Markdown half of the pair is transcribed, not recomposed.
     print(f"{args.id} {args.status}\nAusgang ({args.status}): {args.decision}")
     return 0

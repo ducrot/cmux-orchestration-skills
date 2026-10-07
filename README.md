@@ -47,6 +47,40 @@ For Claude Code issue-chain workers, make sure `/simplify` and `/code-review med
 
 Pi is the least contained harness on offer: it ships no sandbox and no approval gate, so a Pi worker's shell and file tools run unconfined and the `.git` protection that Codex workers get does not apply. Choose a Pi profile only where that is acceptable.
 
+## Orchestrator board sidebar
+
+The optional [orchestrator board](tools/cmux-sidebar/orchestrator-board.swift) shows runs in **Needs you**, **Running**, and **Done**, with skill colors, project names, progress, details, agent counts, and last-activity age. Click a card to select its workspace. Sessions without a run appear in a compact list below the board.
+
+From this repository, install it by copying the file (or symlinking its absolute path):
+
+```bash
+mkdir -p ~/.config/cmux/sidebars
+cp tools/cmux-sidebar/orchestrator-board.swift ~/.config/cmux/sidebars/orchestrator-board.swift
+cmux sidebar validate orchestrator-board
+cmux sidebar open orchestrator-board
+```
+
+This opens a pane and does not set the board as the default sidebar. Only workspaces in the sidebar's own cmux window are visible. Custom Sidebars must be enabled in cmux Settings. See the [cmux authoring documentation](https://github.com/manaflow-ai/cmux/blob/main/docs/custom-sidebars.md) for runtime support.
+
+The board consumes the workspace description convention `<skill> · <state> · <detail>`. Skills are `issue-chain` (blue), `planning` (purple), and `grilling` (orange). State mapping is:
+
+| State | Column |
+|---|---|
+| `hitl`, `blocked`, `waiting` | Needs you |
+| `done`, `halted` | Done |
+| `running` and any other state | Running |
+
+Workspace progress uses a value from 0 to 1 for completed stages or rounds, and a label naming the subject and stage, such as `ISSUE-004 · Review 1` or `Round 2/4`. Agent prompt status alone does not put a workspace in Needs you. A workspace without a recognized run description appears under Sessions without run when it has working or at-prompt agents; remaining workspaces contribute to the compact count below it.
+
+For a manual smoke check, create a test workspace without switching focus, then use its returned reference to set progress:
+
+```bash
+cmux new-workspace --name "Board smoke" --focus false --description "issue-chain · hitl · Review needs a decision"
+cmux set-progress 0.6 --label "ISSUE-004 · Review 1" --workspace <test-workspace-ref>
+```
+
+It should appear once under Needs you. Repeat with `planning · running · Spec review` and `grilling · done · Round recap` for the other columns. Close only the test workspaces afterwards with `cmux close-workspace --workspace <test-workspace-ref>`.
+
 ## First run
 
 Open the target repository in cmux and ask your agent to use the relevant skill. For example:

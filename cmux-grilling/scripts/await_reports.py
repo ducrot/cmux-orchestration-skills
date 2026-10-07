@@ -65,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initial wait duration, or additional minutes with --deadline-reason",
     )
     parser.add_argument("--deadline-reason", help="Record the reason for the one deadline extension")
+    parser.add_argument("--extend", action="store_true", help="Record the one deadline extension and resume watching")
+    parser.add_argument("--reason", help="Required explanation for --extend")
     parser.add_argument("--start-minutes", type=float, default=5)
     parser.add_argument("--poll-seconds", type=float, default=15)
     parser.add_argument("--health-interval-seconds", type=float, default=60)
@@ -229,6 +231,13 @@ def round_clock(events, identity, launches, minutes, start_minutes, reason, emit
 
 def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     run_dir = Path(args.run_dir)
+    if args.extend and args.deadline_reason is not None:
+        raise SystemExit("use either --extend --reason or --deadline-reason")
+    if args.extend:
+        if not args.reason or not args.reason.strip():
+            raise SystemExit("--extend requires a non-blank --reason")
+        if args.deadline_minutes is None:
+            raise SystemExit("--extend requires --deadline-minutes")
     if args.round_number is None or args.questions is None:
         parser.error("round watches require --round and --questions")
     read_run_state(run_dir)
@@ -240,18 +249,39 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     surfaces = parse_lane_surfaces(args.lane_surface, lanes)
     if any(surface.startswith("surface:") for surface in surfaces.values()):
         parser.error("round watch requires stable surface UUIDs, not positional surface:N refs")
+    events = read_events(run_dir)
+    extended = any(
+        event.get("type") == "worker.waiting"
+        and event.get("data", {}).get("round") == args.round_number
+        and (event.get("data", {}).get("outcome") == "extension_approved"
+             or event.get("data", {}).get("watch_clock", {}).get("extension") == 1)
+        for event in events
+    )
+    if args.extend and extended:
+        raise SystemExit("deadline extension already recorded for this round")
     reports = {lane: report_path(run_dir, args.round_number, lane) for lane in lanes}
     deadline_minutes = args.deadline_minutes if args.deadline_minutes is not None else round_wait_minutes(args.questions)
     # File-only mode (no lane surfaces) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if surfaces else []
     start = time.monotonic()
-    events = read_events(run_dir)
     identity = {"round": args.round_number, "lanes": sorted(lanes), "surface_ids": surfaces}
     launches = {lane: current_launch(events, lane, surfaces.get(lane), args.round_number) for lane in lanes}
-    clock = round_clock(events, identity, launches, deadline_minutes, args.start_minutes, args.deadline_reason,
-        lambda data: waiting_event(run_dir, "round deadline recorded", {
+    reason = args.reason if args.extend else args.deadline_reason
+    def record_clock(data):
+        # A legacy reason can replay its persisted clock, but changing the lane
+        # subset or recovering a start must not buy another round extension.
+        if reason is not None and extended:
+            raise ValueError("deadline extension already recorded for this round")
+        waiting_event(run_dir, "round deadline recorded", {
             **identity, "delivered_lanes": [], "missing_lanes": lanes,
-            "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data}))
+            "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data})
+    clock = round_clock(events, identity, launches, deadline_minutes, args.start_minutes, reason, record_clock)
+    if reason is not None and not extended:
+        waiting_event(run_dir, "deadline extension approved", {
+            "round": args.round_number, "lanes": lanes,
+            "outcome": "extension_approved", "extension": 1, "reason": reason,
+        })
+        extended = True
     deadline, start_deadline = monotonic_deadlines(clock)
     deadline_minutes = clock["minutes"]
     next_health = start
@@ -307,6 +337,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             "surface_ids": surfaces,
             "elapsed_seconds": round(time.monotonic() - start, 1),
             "deadline_minutes": deadline_minutes,
+            **({"extension": 1} if extended else {}),
             "health": health_status,
         }
 
@@ -354,7 +385,10 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 def main() -> int:
     parser = build_parser()
-    return watch(parser.parse_args(), parser)
+    try:
+        return watch(parser.parse_args(), parser)
+    except ValueError as error:
+        raise SystemExit(str(error))
 
 
 if __name__ == "__main__":

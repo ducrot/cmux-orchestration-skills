@@ -31,6 +31,7 @@ from await_report import (  # noqa: E402
 )
 from orchestrator_lib import MINIMUM_WAIT_MINUTES  # noqa: E402
 from parse_report import EXIT_CODES as GATE_EXIT_CODES  # noqa: E402
+from test_support import FAKE_CMUX  # noqa: E402
 
 
 def write_state(run_dir: str, **fields) -> None:
@@ -128,13 +129,24 @@ class CliHarness(unittest.TestCase):
         state = Path(run_dir) / "state.json"
         if not state.exists():
             write_state(run_dir)
+        # Even pinned-workspace fixtures must never reach the user's cmux binary.
+        fake = Path(run_dir) / "cmux"
+        log = Path(run_dir) / "board-calls.jsonl"
+        fake.write_text(FAKE_CMUX)
+        fake.chmod(0o755)
         argv = [
             sys.executable, self.script,
             "--run-dir", run_dir, "--role", "review", "--pass", "1",
             "--poll-seconds", "0.05", "--heartbeat-seconds", "0.05",
+            "--cmux-cmd", str(fake),
             *extra,
         ]
-        return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30,
+                                env={**os.environ, "FAKE_CMUX_LOG": str(log),
+                                     "PATH": str(Path(run_dir)) + os.pathsep + os.environ.get("PATH", "")})
+        if result.returncode in (EXIT_REPORT, EXIT_NOT_STARTED):
+            self.assertFalse(log.exists(), "report/not_started must not publish")
+        return result
 
     def write_report(self, run_dir: str) -> Path:
         path = Path(run_dir) / "reports" / "review-1.md"
@@ -166,6 +178,7 @@ class Cli(CliHarness):
 
     def test_existing_report_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
+            write_state(tmp, workspace_id="TEST")
             self.write_report(tmp)
             proc = self.run_cli(tmp)
         self.assertEqual(proc.returncode, EXIT_REPORT)
@@ -303,6 +316,7 @@ class StartWindow(CliHarness):
     def test_missing_and_stale_markers_timeout(self):
         for age in (None, 1, 1_000_000_000):
             with self.subTest(age=age), tempfile.TemporaryDirectory() as tmp:
+                write_state(tmp, workspace_id="TEST")
                 marker, data = self.launch(tmp, start_time_ns=1_900_000_000_500_000_000)
                 if age is not None:
                     marker.write_text("old")

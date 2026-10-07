@@ -182,6 +182,61 @@ class Cli(unittest.TestCase):
         for lane in LANES:
             self.write_report(run_dir, lane)
 
+    def test_extend_once_per_round(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            health = Path(tmp) / 'health.py'
+            health.write_text("print('UUID-live')")
+            result = self.run_cli(tmp, '--extend', '--reason', 'research ongoing',
+                '--deadline-minutes', '0.001', '--lane-surface', 'web=UUID-live',
+                '--health-cmd', f'{sys.executable} {health}')
+            self.assertEqual(result.returncode, 8, result.stderr)
+            path = Path(tmp) / 'events.jsonl'
+            events = [json.loads(line) for line in path.read_text().splitlines()]
+            extension = next(e for e in events if e.get('data', {}).get('outcome') == 'extension_approved')
+            self.assertEqual(extension['data'], dict(round=1, lanes=list(LANES),
+                outcome='extension_approved', extension=1, reason='research ongoing'))
+            self.assertEqual(events[-1]['data']['extension'], 1)
+            before = path.read_bytes()
+            result = self.run_cli(tmp, '--extend', '--reason', 'again', '--deadline-minutes', '0', '--lanes', 'web')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(len(result.stderr.splitlines()), 1)
+            self.assertEqual(path.read_bytes(), before)
+            result = self.run_cli(tmp, '--round', '2', '--extend', '--reason', 'next round', '--deadline-minutes', '0')
+            self.assertEqual(result.returncode, 8, result.stderr)
+
+    def test_legacy_extension_shares_round_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.run_cli(tmp, '--deadline-reason', 'legacy', '--deadline-minutes', '0')
+            self.assertEqual(result.returncode, 8, result.stderr)
+            path = Path(tmp) / 'events.jsonl'
+            before = path.read_bytes()
+            for extra in [('--extend', '--reason', 'again'),
+                          ('--deadline-reason', 'again'),
+                          ('--deadline-reason', 'legacy', '--lanes', 'web')]:
+                result = self.run_cli(tmp, '--deadline-minutes', '0', *extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_extend_validation_and_documentation(self):
+        for extra in [('--deadline-minutes', '0'), ('--reason', ' ', '--deadline-minutes', '0'),
+                      ('--reason', 'working'),
+                      ('--reason', 'working', '--deadline-minutes', 'nan'),
+                      ('--reason', 'working', '--deadline-minutes', '-1'),
+                      ('--reason', 'working', '--deadline-minutes', '0', '--deadline-reason', 'legacy'),
+                      ('--session', '--reason', 'working', '--deadline-minutes', '0')]:
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmp:
+                result = self.run_cli(tmp, '--extend', *extra)
+                self.assertNotEqual(result.returncode, 0)
+                if '--session' in extra:
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('unrecognized arguments: --session', result.stderr)
+                else:
+                    self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+                self.assertFalse((Path(tmp) / 'events.jsonl').exists())
+        text = (Path(__file__).parents[1] / 'SKILL.md').read_text()
+        self.assertIn('--extend --reason', text)
+        self.assertNotIn('record its reason as a `worker.waiting` or', text)
+
     def test_all_reports_present_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.write_all(tmp)

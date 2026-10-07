@@ -254,11 +254,15 @@ class RenderCli(unittest.TestCase):
             path = bin_dir / name
             path.write_text(FAKE_HARNESS, encoding="utf-8")
             path.chmod(0o755)
+        from test_support import FAKE_CMUX
+        fake_cmux = bin_dir / "cmux"
+        fake_cmux.write_text(FAKE_CMUX)
+        fake_cmux.chmod(0o755)
         trust_home = root / "trust-home"
         trust_home.mkdir()
         (trust_home / ".claude.json").write_text(json.dumps({"projects": {str(self.repo.resolve()): {"hasTrustDialogAccepted": True}}}))
         (trust_home / "config.toml").write_text(f'[projects.{json.dumps(str(self.repo.resolve()))}]\ntrust_level = "trusted"\n')
-        self.env = {**os.environ, "HOME": str(trust_home), "CLAUDE_CONFIG_DIR": str(trust_home), "CODEX_HOME": str(trust_home), "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+        self.env = {**os.environ, "FAKE_CMUX_LOG": str(root / "cmux.log"), "HOME": str(trust_home), "CLAUDE_CONFIG_DIR": str(trust_home), "CODEX_HOME": str(trust_home), "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
         self.runs_root = self.repo / ".scratch" / "orchestrator" / "runs"
         self.run_dir = self.runs_root / "render-run"
         config_path = self.repo / ".scratch" / "orchestrator" / "agents.json"

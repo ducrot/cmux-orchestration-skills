@@ -27,6 +27,7 @@ from orchestrator_lib import (
     validate_recorded_surface,
     write_json,
 )
+from run_briefing import publish_board
 from stage_snapshot import load_prepared_snapshot
 from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
 
@@ -206,11 +207,13 @@ def watch(args: argparse.Namespace) -> int:
         # its one settling poll, but never renew the wait for a continually changing file.
         if not start_pending and now >= deadline and (digest is None or settled is not None):
             event(run_dir, "planning report deadline exceeded", {**data, "outcome": "deadline"})
+            publish_board(run_dir, args.cmux_cmd)
             print("outcome=deadline")
             return EXIT_DEADLINE
         if now >= next_health:
             if health_says_dead(health_command, surface):
                 event(run_dir, "planning worker pane disappeared", {**data, "outcome": "pane_dead"})
+                publish_board(run_dir, args.cmux_cmd)
                 print("outcome=pane_dead")
                 return EXIT_PANE_DEAD
             next_health = now + args.health_seconds

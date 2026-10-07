@@ -83,6 +83,92 @@ class RunDirTestCase(unittest.TestCase):
         )
 
 
+class BoardProjection(RunDirTestCase):
+    def test_issue_transitions_progress_and_sanitization(self):
+        state = {**ISSUE_STATE, "current_stage": "review", "prepared_stage": {"stage": "review", "pass": 2},
+                 "issue": {**ISSUE_STATE["issue"], "title": "a · b\n  c"}}
+        events = [{"type": "gate", "stage": "implement", "decision": "advance"}] * 2
+        self.assertEqual(run_briefing.project_board(state, events),
+                         ("running", "a - b c", 1/6, "ISSUE-003 · Review 2"))
+        for decision, status in (("hitl", "hitl"), ("blocked", "blocked"), ("stop", "halted")):
+            halted = events + [{"type": "gate", "stage": "review", "decision": decision, "reason": "need\n human · choice"}]
+            self.assertEqual(run_briefing.project_board(state, halted)[:2], (status, "review: need human - choice"))
+            self.assertEqual(run_briefing.project_board(state, halted + [{"type": "stage.prepared"}])[0], "running")
+            self.assertEqual(run_briefing.project_board({**state, "current_stage": "done"}, halted),
+                             ("done", "a - b c", 1.0, "ISSUE-003 · Done"))
+        self.assertEqual(run_briefing.board_detail("x" * 81), "x" * 79 + "…")
+        self.assertEqual(run_briefing.board_detail("x" * 80), "x" * 80)
+        self.assertEqual(run_briefing.project_board({**state, "current_stage": "future"}, events),
+                         ("running", "a - b c", 0, "future"))
+        self.assertEqual(run_briefing.project_board({**state, "current_stage": "hitl", "chain": []}, []),
+                         ("waiting", "HITL issue: human steps", 0, "ISSUE-003 · HITL"))
+
+    def test_recap_outcomes_all_workflows(self):
+        for base in (ISSUE_STATE, PLANNING_STATE, GRILLING_STATE):
+            for decision, expected in (("hitl", "hitl"), ("blocked", "blocked"), ("stop", "halted")):
+                gate = {"type": "gate", "stage": "review", "decision": decision, "reason": "human choice"}
+                state = {**base, "current_stage": "review", "gate_decisions": [gate]}
+                recap = {"type": "run.recap", "data": {"outcome": {"status": "halted", "stage": "review", "decision": decision}}}
+                self.assertEqual(run_briefing.project_board(state, [gate, recap])[:2], (expected, "review: human choice"))
+                if base["workflow"] == "issue-chain":
+                    self.assertEqual(run_briefing.project_board(state, [gate, recap, {"type": "stage.prepared"}])[0], "running")
+                recap["data"]["outcome"] = {"status": "done"}
+                result = run_briefing.project_board(state, [gate, recap])
+                self.assertEqual((result[0], result[2]), ("done", 1.0))
+
+    def test_publisher_bounds_failure_and_no_mutations(self):
+        from unittest.mock import patch
+        import io
+        from contextlib import redirect_stderr
+        run_dir = self.run_dir({**ISSUE_STATE, "current_stage": "implement"})
+        original = (run_dir / "state.json").read_bytes()
+        for error in (subprocess.TimeoutExpired("cmux", 10), OSError("bad\ncommand")):
+            stderr = io.StringIO()
+            with patch.object(run_briefing.subprocess, "run", side_effect=error) as call, redirect_stderr(stderr):
+                run_briefing.publish_board(run_dir)
+            self.assertEqual(call.call_count, 1)
+            self.assertEqual(call.call_args.kwargs["timeout"], 10)
+            self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+            self.assertIn("sidebar board not updated:", stderr.getvalue())
+        (run_dir / "events.jsonl").write_text("broken JSON")
+        stderr = io.StringIO()
+        with patch.object(run_briefing.subprocess, "run") as call, redirect_stderr(stderr):
+            run_briefing.publish_board(run_dir)
+        call.assert_not_called()
+        self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+        self.assertEqual((run_dir / "state.json").read_bytes(), original)
+        self.assertEqual((run_dir / "events.jsonl").read_text(), "broken JSON")
+
+    def test_show_and_recap_board_cli(self):
+        state = {**ISSUE_STATE, "current_stage": "review", "gate_decisions": [
+            {"type": "gate", "stage": "review", "decision": "hitl", "reason": "choose"}]}
+        run_dir = self.run_dir(state)
+        for command, filename in (("show", "briefing.md"), ("recap-show", "recap.md")):
+            (run_dir / filename).write_text("Ready\n")
+            for exit_code in (0, 7):
+                self.log.unlink(missing_ok=True)
+                before = (run_dir / "state.json").read_bytes()
+                result = self.call(command, "--run-dir", str(run_dir), "--cmux-cmd", self.cmux, exit_code=exit_code)
+                self.assertEqual((result.returncode, result.stdout), (0, "Ready\n"))
+                self.assertEqual(before, (run_dir / "state.json").read_bytes())
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertEqual([c[0] for c in calls], ["set-status", "workspace-action"] + ([] if exit_code else ["set-progress"]))
+                self.assertEqual(result.stderr.count("sidebar board not updated:"), bool(exit_code))
+                event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
+                self.assertEqual(event["type"], "run.recap" if command == "recap-show" else "run.briefing")
+                if command == "recap-show":
+                    self.assertIn("issue-chain · hitl · review: choose", calls[1])
+            self.log.unlink()
+            result = self.call(command, "--run-dir", str(run_dir), "--no-status", "--cmux-cmd", self.cmux)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self.log.exists())
+        result = self.call("recap-show", "--run-dir", str(run_dir), "--clear-status", "--cmux-cmd", self.cmux)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual([c[0] for c in calls], ["clear-status", "workspace-action", "clear-progress"])
+        self.assertIn("clear-description", calls[1])
+
+
 class RunBriefing(RunDirTestCase):
     def draft(self, run_dir: Path, lang: str = "de") -> dict:
         result = self.call("draft", "--run-dir", str(run_dir), "--lang", lang)
@@ -240,7 +326,8 @@ class RunRecap(RunDirTestCase):
         path.write_text(path.read_text(encoding="utf-8").replace("{{outcome}}", "filled outcome"), encoding="utf-8")
 
     def pill_calls(self) -> list:
-        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        return [call for line in self.log.read_text(encoding="utf-8").splitlines()
+                if (call := json.loads(line))[0] in {"set-status", "clear-status"}]
 
     def test_issue_chain_recap_collects_gates_triage_and_commit(self):
         run_dir = self.run_dir(DONE_ISSUE_STATE)

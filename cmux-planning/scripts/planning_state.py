@@ -244,9 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--run-dir", required=True)
     resume.add_argument("--decision", choices=("rejoin", "extend", "relaunch"))
     resume.add_argument("--reason")
-    resume.add_argument("--cmux-cmd", default="cmux")
     add_override_options(resume, workflow=WORKFLOW)
     add_probe_options(resume)
+    for command in (init, revalidate, prepare, diversity, author, review, approval, ticket_approval, publish, resume):
+        command.add_argument("--cmux-cmd", default="cmux", help=argparse.SUPPRESS)
     return parser
 
 
@@ -730,6 +731,7 @@ def init_run(args: argparse.Namespace) -> int:
         else run_identifier("plan", slug, now)
     )
     run_dir = runs_root / run_id
+    args._board_publication.bind(run_dir)
     # Like the sibling workflows, a persisted state makes init idempotent. This only returns
     # the existing run; advancing it still requires the normal resume and integrity checks.
     if (run_dir / "state.json").is_file():
@@ -2386,6 +2388,8 @@ def resume_run(args: argparse.Namespace) -> int:
                 "reason": args.reason,
             },
         )
+        # This explicit publication also covers any audit timestamp refreshed above.
+        args._board_publication.publish()
         print(json.dumps(status_payload(run_dir, cmux_cmd=args.cmux_cmd), indent=2, sort_keys=True))
         return 0
 
@@ -2490,7 +2494,7 @@ def resume_run(args: argparse.Namespace) -> int:
     return preparation_exit_code(pointer)
 
 
-def run(args: argparse.Namespace) -> int:
+def dispatch_command(args: argparse.Namespace) -> int:
     if args.command not in {"init", "status", "context"}:
         state_path = Path(args.run_dir) / "state.json"
         require_current_format(read_planning_state(state_path), source=state_path)
@@ -2547,6 +2551,21 @@ def run(args: argparse.Namespace) -> int:
     if args.command == "resume":
         return resume_run(args)
     raise AssertionError(args.command)
+
+
+PUBLISHING_COMMANDS = frozenset({
+    "init", "revalidate", "prepare", "diversity-confirmation", "accept-author",
+    "accept-review", "approval", "ticket-approval", "publish", "resume",
+})
+
+
+def run(args: argparse.Namespace) -> int:
+    if args.command not in PUBLISHING_COMMANDS:
+        return dispatch_command(args)
+    from run_briefing import BoardPublication
+    run_dir = Path(args.run_dir) if getattr(args, "run_dir", None) else None
+    with BoardPublication(run_dir, args.cmux_cmd) as args._board_publication:
+        return dispatch_command(args)
 
 
 def main() -> int:
