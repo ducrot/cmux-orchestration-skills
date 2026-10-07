@@ -70,6 +70,46 @@ class WorkflowDetection(unittest.TestCase):
 
 
 class Classification(unittest.TestCase):
+    def test_report_capture_is_not_a_screen_read_after_wait(self):
+        for command in (
+            'python3 $S/run_state.py snapshot --label "report-captured review-1"',
+            'python3 $S/run_state.py event --message "review report captured"',
+            'python3 $S/run_state.py event --message "confirmed via read-screen"',
+            'python3 $S/run_state.py event --message "launch and capture snapshots agree"',
+            'python3 $S/run_state.py event --message "checked read-screen output"',
+            "python3 $S/run_state.py snapshot --label 'checked capture-pane output'",
+            'python3 $S/run_state.py event --message="checked read-screen output"',
+            'python3 $S/run_state.py snapshot --label=read-screen',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(ou.classify_bash(command, "wait"), "bookkeeping")
+
+    def test_executable_quoted_screen_reads_still_count(self):
+        for command in (
+            'screen="$(cmux read-screen --surface s)"',
+            'bash -c "cmux read-screen --surface s"',
+            "bash -c 'cmux capture-pane --surface s'",
+            'python3 run_state.py event --message "checked read-screen output"; '
+            'bash -c "cmux read-screen --surface s"',
+        ):
+            for previous, expected in ((None, "pane-lifecycle"), ("wait", "wait"),
+                                       ("reply-after-wait", "wait")):
+                with self.subTest(command=command, previous=previous):
+                    self.assertEqual(ou.classify_bash(command, previous), expected)
+
+    def test_actual_screen_commands_still_count_after_wait(self):
+        for command in (
+            'cmux read-screen --surface s',
+            'cmux capture-pane --surface s',
+            'cmux capture --surface s',
+            'python3 $S/pane_ctl.py cmux --run-dir r -- read-screen --surface s',
+            'cmux read-screen --surface "$S";echo',
+            'out=$(cmux read-screen --surface s)',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(ou.classify_bash(command, "wait"), "wait")
+                self.assertEqual(ou.classify_bash(command), "pane-lifecycle")
+
     def test_stage_capture_after_monitor_is_bookkeeping(self):
         previous = ou.classify_tool("Monitor", None)
         self.assertEqual(previous, "wait")
@@ -117,6 +157,30 @@ class ClaudeSessions(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "session.jsonl"
+
+    def test_watcher_then_report_capture_does_not_inflate_wait_count(self):
+        write_transcript(self.path, [
+            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/chain-demo",
+            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/chain-demo",
+            'python3 $S/run_state.py snapshot --label "report-captured review-1"',
+            'python3 $S/run_state.py event --message "launch and capture snapshots agree"',
+        ])
+        session = ou.parse_claude(self.path, CHAIN)
+        self.assertEqual(session["purpose_calls"]["wait"], 1)
+        self.assertEqual(session["purpose_calls"]["bookkeeping"], 3)
+
+    def test_watcher_then_quoted_screen_reads_count_as_waits(self):
+        write_transcript(self.path, [
+            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/chain-demo",
+            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/chain-demo",
+            'screen="$(cmux read-screen --surface s)"',
+            'bash -c "cmux read-screen --surface s"',
+            "bash -c 'cmux capture-pane --surface s'",
+            'python3 $S/run_state.py event --message "checked read-screen output"',
+        ])
+        session = ou.parse_claude(self.path, CHAIN)
+        self.assertEqual(session["purpose_calls"]["wait"], 4)
+        self.assertEqual(session["purpose_calls"]["bookkeeping"], 2)
 
     def test_grilling_session_is_selected_only_for_grilling(self):
         write_transcript(self.path, [

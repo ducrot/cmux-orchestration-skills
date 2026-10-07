@@ -33,7 +33,7 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS = Path.home() / ".codex" / "sessions"
 SKILL_REPO = Path.home() / "Sites" / "agentic-workflows" / "cmux-orchestration-skills"
 CACHE_DIR = Path.home() / ".cache" / "orchestrator-usage"
-CACHE_VERSION = 13
+CACHE_VERSION = 14
 
 
 class Workflow:
@@ -174,7 +174,13 @@ def is_orchestrator(evidence: dict) -> bool:
 
 
 WAIT_COMMAND = re.compile(r"await_reports?\.py|tail -f|(?:^|[\n;&|(]\s*)sleep\s+\d")
-SCREEN_READ = re.compile(r"read-screen|capture")
+# Ignore bookkeeping argument values, while retaining quoted executable shell
+# content such as bash -c commands and command substitutions in assignments.
+SCREEN_READ = re.compile(
+    r"(?:^|[\s;&|(])(?:read-screen|capture-pane)(?![\w-])|\bcmux\s+capture(?![\w-])")
+BOOKKEEPING_ARGUMENT = re.compile(
+    r"(?<!\S)--(?:message|label)(?:\s+|=)"
+    r'''(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s;&|]+)''')
 WAIT_CATEGORIES = ("wait", "reply-after-wait")
 # Composite verbs go by their verb: `stage.py capture` right after a watcher wake-up
 # collects a finished report and must not fall into the screen-read rule below.
@@ -196,7 +202,7 @@ def classify_bash(command: str, prev_category: str | None = None) -> str:
     # A screen read is lifecycle when it judges a start or delivery, and waiting when
     # it follows a sleep or a watcher - the sleep-and-look loop of a harness without
     # a blocking wait.
-    if SCREEN_READ.search(c):
+    if SCREEN_READ.search(BOOKKEEPING_ARGUMENT.sub("", c)):
         return "wait" if prev_category in WAIT_CATEGORIES else "pane-lifecycle"
     if "pane_ctl" in c:
         return "pane-lifecycle"

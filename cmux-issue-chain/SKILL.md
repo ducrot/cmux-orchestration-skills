@@ -303,6 +303,15 @@ For other hosts and unattended sessions, use Monitor with re-arm (30 minutes by 
 up to 2 hours). If Monitor expires before the watcher exits, re-arm the same command;
 this resumes the persisted deadline and does not grant more time.
 
+The host timeout and worker deadline are separate: never shorten `--deadline-minutes`
+to fit a Monitor cap (for example, 29 minutes under a 30-minute cap). A host timeout
+is not exit 8 and calls for neither a screen check nor an extension, only the re-arm.
+While the watcher runs, do not add sleeps, report-file polls, screen reads, or task-output
+polls. Its start phase confirms the marker and continues in the same process; no separate
+start-window watch is needed. After exit 0, capture and parse the report directly.
+Outside input-readiness checks, reserve screen inspection for the documented exit-9
+recovery or exit-8 intervention.
+
 ```
 Bash(
   command: "python3 scripts/await_report.py --run-dir .scratch/orchestrator/runs/<run-id> --role review --pass 1 --surface <surface-id>",
