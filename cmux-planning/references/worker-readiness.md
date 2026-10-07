@@ -94,6 +94,21 @@ pane_ctl.py respond <worker arguments> --observation <observation_id> \
   --key <key> --reason "<identified dialog, chosen action, existing authorization>"
 ```
 
+For a numbered option, use `--key 1`, `--key 2`, or `--key 3` matching the
+visible dialog. Option numbers vary per dialog ("No" can be option 3 or 4), so read
+the digit from the assessed screen, never from memory. An option beyond 3 is reached
+with `down` and `enter`, one assessed `respond` per key. Digit keys are sent as
+text with `cmux send`; `cmux send-key` does not accept digits. No Enter is appended. Named keys (`enter`, `up`, `down`, `left`,
+`right`, `escape`, `tab`) use `cmux send-key`. If the dialog requires a separate
+confirmation, inspect and assess the resulting screen before `respond --key enter`.
+In Claude Code, `escape` cancels the dialog and interrupts the worker's turn; use
+the numbered choice when you intend to answer the dialog. A numbered rejection
+keeps the harness's own behavior: in Claude Code a rejection ends the worker's turn,
+so inspect the result and resume the worker with `deliver --text` (in planning,
+`deliver --prompt`) once the screen is assessed `ready`.
+If the dialog closed before the digit arrived, the digit sits in the composer;
+do not assess `ready` until the composer is empty.
+
 `respond` checks that the assessed screen is still current, invalidates readiness before input,
 and prints a new observation. Read and assess that observation before any further key. If rendering
 is still in progress, observe again. The allowed keys cover menu navigation and selection; do not

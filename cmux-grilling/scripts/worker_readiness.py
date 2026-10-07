@@ -16,6 +16,13 @@ from pathlib import Path
 MAX_AGE_SECONDS = 60
 STATES = ("ready", "loading", "prompt", "failed", "unknown")
 VERBS = ("observe", "assess", "respond")
+# cmux send-key accepts named keys, not digits. Numbered dialog shortcuts are
+# text input sent without Enter, which could reach the next screen.
+RESPONSE_KEYS = {
+    "enter": "send-key", "up": "send-key", "down": "send-key", "left": "send-key",
+    "right": "send-key", "escape": "send-key", "tab": "send-key",
+    "1": "send", "2": "send", "3": "send",
+}
 
 
 class ReadinessError(ValueError):
@@ -37,8 +44,7 @@ def add_commands(subparsers, *, parents=(), selector=None):
         if verb == "assess":
             parser.add_argument("--state", required=True, choices=STATES)
         if verb == "respond":
-            parser.add_argument("--key", required=True,
-                                choices=("enter", "up", "down", "left", "right", "escape", "tab", "1", "2", "3"))
+            parser.add_argument("--key", required=True, choices=tuple(RESPONSE_KEYS))
 
 
 def read_events(run_dir):
@@ -205,7 +211,7 @@ class Gate:
             raise ReadinessError("respond requires a current assessment of state prompt")
         # Invalidate before input; even a failed send may have reached the terminal.
         self.emit("worker.dialog_response", {**data, "key": self.args.key, "reason": self.args.reason})
-        self.call(self.args, ["send-key", *self.target, self.args.key])
+        self.call(self.args, [RESPONSE_KEYS[self.args.key], *self.target, self.args.key])
         self.observe()
 
     def consume(self):

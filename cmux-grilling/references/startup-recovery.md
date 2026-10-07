@@ -19,3 +19,9 @@ shared readiness reference for assessment and individual dialog handling. Everyt
 (`read-screen`, `set-status`, diagnosis) runs through `pane_ctl.py cmux`, which injects the
 pinned workspace. Do not route input through raw CMUX commands to bypass readiness.
 
+For numbered dialog options, use readiness-gated `respond --key 1|2|3` for the
+visible choice. Digits are sent as text, without an extra Enter; named navigation
+keys still use `cmux send-key`. Inspect and assess the returned observation before
+any separate confirmation. In Claude Code, `escape` interrupts the worker's turn
+as well as closing the dialog; use the numbered choice to answer it, then inspect
+the harness's response. See `references/worker-readiness.md` for the full protocol.

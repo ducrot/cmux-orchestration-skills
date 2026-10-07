@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from worker_readiness import Gate, ReadinessError, begin_start, read_events, readiness_status, screen_fingerprint, screen_hash
+from worker_readiness import add_commands, Gate, ReadinessError, begin_start, read_events, readiness_status, screen_fingerprint, screen_hash
 
 
 class Readiness(unittest.TestCase):
@@ -134,18 +134,80 @@ class Readiness(unittest.TestCase):
         with self.assertRaises(ReadinessError):
             self.gate.respond()
 
+    def test_every_offered_response_key_has_a_pinned_delivery(self):
+        expected = {
+            "enter": "send-key", "up": "send-key", "down": "send-key",
+            "left": "send-key", "right": "send-key", "escape": "send-key",
+            "tab": "send-key", "1": "send", "2": "send", "3": "send",
+        }
+        parser = argparse.ArgumentParser()
+        commands = parser.add_subparsers(dest="command")
+        add_commands(commands, selector="lane")
+        offered = next(action.choices for action in commands.choices["respond"]._actions
+                       if action.dest == "key")
+        self.assertEqual(set(offered), set(expected))
+        for key, verb in expected.items():
+            with self.subTest(key=key):
+                self.args.key = key
+                self.observe()
+                self.assess("prompt")
+                before = len(read_events(self.root))
+                self.calls.clear()
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.gate.respond()
+                self.assertEqual(self.calls, [
+                    ["read-screen", "--workspace", "WS-1", "--surface", "UUID-1", "--lines", "80"],
+                    [verb, "--workspace", "WS-1", "--surface", "UUID-1", key],
+                    ["read-screen", "--workspace", "WS-1", "--surface", "UUID-1", "--lines", "80"],
+                ])
+                events = read_events(self.root)[before:]
+                self.assertEqual([e["type"] for e in events],
+                                 ["worker.dialog_response", "worker.observed"])
+                self.assertEqual(events[0]["data"]["key"], key)
+                self.assertEqual(events[0]["data"]["observation_id"], self.args.observation)
+                echoed = json.loads(output.getvalue())
+                self.assertEqual(echoed["screen"], self.screen)
+                self.assertNotEqual(echoed["observation_id"], self.args.observation)
+                with self.assertRaises(ReadinessError):
+                    self.gate.respond()
+                with self.assertRaises(ReadinessError):
+                    self.gate.consume()
+
+    def test_digit_and_named_response_refuse_unassessed_expired_or_changed_screen(self):
+        for key in ("3", "enter"):
+            for condition in ("unassessed", "ready", "expired", "changed"):
+                with self.subTest(key=key, condition=condition):
+                    self.args.key = key
+                    self.observe()
+                    if condition != "unassessed":
+                        self.assess("ready" if condition == "ready" else "prompt")
+                    if condition == "changed":
+                        self.screen += " changed"
+                    self.calls.clear()
+                    now = read_events(self.root)[-1]["data"]["observed_at"]
+                    with patch("worker_readiness.time.time", return_value=now + (61 if condition == "expired" else 1)):
+                        with self.assertRaises(ReadinessError):
+                            self.gate.respond()
+                    self.assertTrue(all(c[0] == "read-screen" for c in self.calls))
+
     def test_failed_response_still_invalidates_ready(self):
-        self.observe()
-        self.assess("prompt")
         def fail(args, argv):
-            if argv[0] == "send-key":
+            if argv[0] in ("send", "send-key"):
+                self.assertEqual(read_events(self.root)[-1]["type"], "worker.dialog_response")
                 raise OSError("lost terminal")
             return self.call(args, argv)
         self.gate.call = fail
-        with self.assertRaises(OSError):
-            self.gate.respond()
-        with self.assertRaises(ReadinessError):
-            self.gate.consume()
+        for key in ("enter", "3"):
+            with self.subTest(key=key):
+                self.args.key = key
+                self.observe()
+                self.assess("prompt")
+                with self.assertRaises(OSError):
+                    self.gate.respond()
+                with self.assertRaises(ReadinessError):
+                    self.gate.respond()
+                with self.assertRaises(ReadinessError):
+                    self.gate.consume()
 
     def test_screens_not_persisted_and_calls_are_scoped(self):
         self.ready()
