@@ -32,6 +32,15 @@ Omitting the flag at fresh init (including smoke tests) records `commit_mode: pr
 Legacy runs without the field read as `propose`; an existing run's mode cannot change.
 The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch|Vorschlag`).
 
+## Default assignments at initialization
+
+At the same point as the commit-mode question, with the same exceptions, run
+`python3 scripts/agents_config.py compare-defaults` with the run's `--config` when that file
+already exists as valid schema v3, including one just migrated. Continue when `matches_defaults`
+is true.
+
+Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
+
 ## Worker Profile Configuration
 
 Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).

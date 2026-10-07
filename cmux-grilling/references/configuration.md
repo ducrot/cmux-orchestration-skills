@@ -8,6 +8,8 @@ python3 scripts/agents_config.py validate
 python3 scripts/agents_config.py show-resolved
 python3 scripts/agents_config.py migrate
 python3 scripts/agents_config.py migrate --accept
+python3 scripts/agents_config.py compare-defaults
+python3 scripts/agents_config.py compare-defaults --accept
 ```
 
 Use `--config <path>` after any command to select an explicit file, including outside Git,
@@ -31,7 +33,8 @@ protocol. Never offer profile overrides the human did not ask for.
    On confirmation, invoke the preview's exact `agents_config.py migrate --accept` command, digest
    argument included, then validate and continue.
 2. If the file already exists and is valid schema v3, continue with its assignments.
-   A schema-v3 file needs no migration question.
+   A schema-v3 file needs no migration question. On a fresh init, first run the default-assignment
+   check from SKILL.md; it also follows an accepted migration.
    An existing valid schema-v3 file needs no start confirmation either; the start question
    belongs only to a newly created default (accepted with the **Yes, start now** answer).
 3. If it is missing, run `agents_config.py init` for that exact default or explicit path, then run

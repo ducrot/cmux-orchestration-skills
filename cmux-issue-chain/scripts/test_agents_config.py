@@ -944,6 +944,123 @@ class AgentsConfigCli(unittest.TestCase):
         migrated = json.loads(bare_path.read_text(encoding="utf-8"))
         self.assertEqual(migrated["profiles"]["claude-opus-high"], config.DEFAULT_CONFIG["profiles"]["claude-opus-high"])
 
+    def compare(self, path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+        return self.run_cli("compare-defaults", *extra, "--config", str(path), cwd=self.tmp)
+
+    def test_compare_defaults_reports_no_differences_for_the_initialized_defaults(self):
+        path, _ = self.init_default()
+        original = path.read_bytes()
+
+        proc = self.compare(path)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertTrue(report["matches_defaults"])
+        self.assertEqual(report["differences"], [])
+        self.assertIsNone(report["comparison_sha256"])
+        self.assertIsNone(report["acceptance_command"])
+        accepted = self.compare(path, "--accept")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("already match", accepted.stdout)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_compare_defaults_ignores_profile_changes_and_lists_only_assignments(self):
+        path, data = self.init_default()
+        data["profiles"]["codex-sol-medium"]["effort"] = "high"
+        data["profiles"]["pi-local"] = dict(data["profiles"]["pi-glm-high"])
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        report = json.loads(self.compare(path).stdout)
+
+        self.assertTrue(report["matches_defaults"])
+
+    def test_compare_defaults_previews_without_mutation_and_adopts_with_digest(self):
+        path, data = self.init_default()
+        data["workflows"]["issue-chain"]["implement"] = "claude-opus-high"
+        data["workflows"]["grilling"]["docs"] = "pi-glm-medium"
+        del data["profiles"]["codex-sol-medium"]
+        data["workflows"]["issue-chain"]["test"] = "codex-astra-medium"
+        data["profiles"]["claude-opus-high"]["model"] = "custom-opus"
+        data["profiles"]["own-profile"] = dict(data["profiles"]["pi-grok-high"])
+        path.write_text(json.dumps(data), encoding="utf-8")
+        original = path.read_bytes()
+
+        proc = self.compare(path)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(path.read_bytes(), original)
+        report = json.loads(proc.stdout)
+        self.assertFalse(report["matches_defaults"])
+        self.assertEqual(
+            report["differences"],
+            [
+                {"workflow": "issue-chain", "worker": "implement",
+                 "current": "claude-opus-high", "default": "codex-sol-medium"},
+                {"workflow": "issue-chain", "worker": "test",
+                 "current": "codex-astra-medium", "default": "codex-sol-medium"},
+                {"workflow": "grilling", "worker": "docs",
+                 "current": "pi-glm-medium", "default": "codex-sol-medium"},
+            ],
+        )
+        self.assertEqual(report["added_profiles"], ["codex-sol-medium"])
+        self.assertIn("--expect-sha256", report["acceptance_command"])
+
+        accepted = self.compare(path, "--accept", "--expect-sha256", report["comparison_sha256"])
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn("adopted 3 default assignment(s)", accepted.stdout)
+        import agents_config as config
+        adopted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(adopted["workflows"], config.DEFAULT_CONFIG["workflows"])
+        self.assertEqual(adopted["profiles"]["codex-sol-medium"], config.DEFAULT_CONFIG["profiles"]["codex-sol-medium"])
+        self.assertEqual(adopted["profiles"]["claude-opus-high"]["model"], "custom-opus")
+        self.assertIn("own-profile", adopted["profiles"])
+        self.assertTrue(json.loads(self.compare(path).stdout)["matches_defaults"])
+
+    def test_compare_defaults_keeps_a_same_named_local_profile(self):
+        path, data = self.init_default()
+        data["workflows"]["issue-chain"]["review"] = "claude-opus-high"
+        data["profiles"]["claude-opus-medium"]["model"] = "local-opus"
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        report = json.loads(self.compare(path).stdout)
+        self.assertEqual(report["added_profiles"], [])
+        accepted = self.compare(path, "--accept", "--expect-sha256", report["comparison_sha256"])
+
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        adopted = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(adopted["workflows"]["issue-chain"]["review"], "claude-opus-medium")
+        self.assertEqual(adopted["profiles"]["claude-opus-medium"]["model"], "local-opus")
+
+    def test_compare_defaults_refuses_a_stale_or_malformed_digest(self):
+        path, data = self.init_default()
+        data["workflows"]["planning"]["reviewer"] = "pi-glm-high"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        digest = json.loads(self.compare(path).stdout)["comparison_sha256"]
+        data["workflows"]["planning"]["spec"] = "claude-opus-high"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        changed = path.read_bytes()
+
+        stale = self.compare(path, "--accept", "--expect-sha256", digest)
+        malformed = self.compare(path, "--accept", "--expect-sha256", "abc")
+
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("compare again", stale.stderr)
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("printed by compare-defaults", malformed.stderr)
+        self.assertEqual(path.read_bytes(), changed)
+
+    def test_compare_defaults_requires_migration_of_a_legacy_file_first(self):
+        _, legacy = self.schema_two_default()
+        path = self.write_config(legacy, "v2-compare.json")
+        original = path.read_bytes()
+
+        proc = self.compare(path, "--accept")
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("migrate", proc.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_schema_two_migration_keeps_an_explicit_triage_assignment(self):
         _, legacy = self.schema_two_default()
         legacy["workflows"]["issue-chain"]["triage"] = "codex-sol-medium"

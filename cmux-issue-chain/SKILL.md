@@ -32,6 +32,15 @@ prompt carries it. A prompt already naming the mode is recorded unchanged. The q
 is still asked for a HITL issue even though it has no worker chain. Init derives the mode
 from `--invocation` when the direct flag is omitted and refuses contradictory values.
 
+## Default assignments at initialization
+
+At the same point as the commit-mode question, with the same exceptions, run
+`python3 scripts/agents_config.py compare-defaults` with the run's `--config` when that file
+already exists as valid schema v3, including one just migrated. Continue when `matches_defaults`
+is true.
+
+Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
+
 ## Worker Profile Configuration
 
 Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).

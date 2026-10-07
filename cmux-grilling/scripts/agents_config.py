@@ -899,6 +899,39 @@ def migration_preview(
     )
 
 
+def default_assignment_candidate(
+    data: dict[str, Any], source: Path
+) -> tuple[list[dict[str, str]], list[str], dict[str, Any], bytes]:
+    """Assignment differences from the shipped defaults and the validated adopting candidate.
+
+    Only assignments are compared. A default-assigned profile missing locally is copied in;
+    a local profile of the same name is kept as it is."""
+    differences = [
+        {"workflow": workflow, "worker": worker, "current": current, "default": default}
+        for workflow, defaults in DEFAULT_CONFIG["workflows"].items()
+        for worker, default in defaults.items()
+        if (current := data["workflows"][workflow][worker]) != default
+    ]
+    candidate = copy.deepcopy(data)
+    added_profiles = sorted(
+        {entry["default"] for entry in differences} - set(candidate["profiles"])
+    )
+    for name in added_profiles:
+        candidate["profiles"][name] = copy.deepcopy(DEFAULT_CONFIG["profiles"][name])
+    for entry in differences:
+        candidate["workflows"][entry["workflow"]][entry["worker"]] = entry["default"]
+    payload = (json.dumps(candidate, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    validated = require_valid(parse_json(payload, source, ConfigError), source, ConfigError)
+    return differences, added_profiles, validated, payload
+
+
+def compare_defaults_command(path: Path, digest: str) -> str:
+    return shlex.join(
+        ["python3", str(SCRIPT_PATH), "compare-defaults", "--accept", "--expect-sha256", digest,
+         "--config", str(path)]
+    )
+
+
 def migration_target(path: Path) -> tuple[Path, os.stat_result]:
     """Resolve and guard the file that an accepted migration would replace."""
     try:
@@ -1896,7 +1929,43 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIGEST",
         help="refuse acceptance unless the candidate still matches this previewed digest",
     )
+    compare = subparsers.add_parser(
+        "compare-defaults",
+        help="list worker assignments that differ from the shipped defaults; adopt them only with --accept",
+    )
+    add_path_options(compare, suppress_defaults=True)
+    compare.add_argument(
+        "--accept",
+        action="store_true",
+        help="atomically set every differing assignment to its default",
+    )
+    compare.add_argument(
+        "--expect-sha256",
+        metavar="DIGEST",
+        help="refuse acceptance unless the comparison still matches this digest",
+    )
     return parser
+
+
+def approved_digest(args: argparse.Namespace, expected: str) -> str | None:
+    approved = args.expect_sha256
+    if approved is None:
+        return None
+    approved = approved.strip().lower()
+    # Shape-checked here so a truncated or mistyped digest is reported as a bad argument
+    # rather than as "the source changed after its preview", which it did not.
+    if not re.fullmatch(r"[0-9a-f]{64}", approved):
+        omission_guidance = (
+            "omit --expect-sha256 to accept without digest binding"
+            if args.accept
+            else "omit --expect-sha256 to run a read-only preview"
+        )
+        raise ConfigError(
+            f"invalid --expect-sha256 digest: {args.expect_sha256!r} is not 64 hexadecimal "
+            f"characters; provide the {expected}, "
+            f"or {omission_guidance}"
+        )
+    return approved
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1908,22 +1977,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"initialized: {path}")
         return 0
     if args.command == "migrate":
-        approved = args.expect_sha256
-        if approved is not None:
-            approved = approved.strip().lower()
-            # Shape-checked here so a truncated or mistyped digest is reported as a bad argument
-            # rather than as "the source changed after its preview", which it did not.
-            if not re.fullmatch(r"[0-9a-f]{64}", approved):
-                omission_guidance = (
-                    "omit --expect-sha256 to accept without digest binding"
-                    if args.accept
-                    else "omit --expect-sha256 to run a read-only preview"
-                )
-                raise ConfigError(
-                    f"invalid --expect-sha256 digest: {args.expect_sha256!r} is not 64 hexadecimal "
-                    "characters; provide the candidate SHA-256 printed by the migration preview, "
-                    f"or {omission_guidance}"
-                )
+        approved = approved_digest(args, "candidate SHA-256 printed by the migration preview")
         original = read_config_bytes(path, ConfigError)
         parsed = parse_json(original, path, ConfigError)
         if not is_legacy(parsed):
@@ -1944,6 +1998,43 @@ def run(args: argparse.Namespace) -> int:
             )
         atomic_replace(path, preview.payload, expected_original=original)
         print(f"migrated schema {preview.source_version} to {SCHEMA_VERSION}: {path}")
+        return 0
+    if args.command == "compare-defaults":
+        approved = approved_digest(args, "comparison SHA-256 printed by compare-defaults")
+        data, original = load_validated_with_payload(path, ConfigError)
+        differences, added_profiles, _, payload = default_assignment_candidate(data, path)
+        # Bound to the listed differences as well, so a difference added after the comparison
+        # is never adopted on an approval that did not show it.
+        digest = (
+            candidate_digest(json.dumps(differences, sort_keys=True).encode("utf-8") + payload)
+            if differences
+            else None
+        )
+        if not args.accept:
+            print(json.dumps(
+                {
+                    "source": str(path),
+                    "matches_defaults": not differences,
+                    "differences": differences,
+                    "added_profiles": added_profiles,
+                    "comparison_sha256": digest,
+                    "acceptance_command": compare_defaults_command(path, digest) if digest else None,
+                },
+                indent=2,
+                sort_keys=True,
+            ))
+            return 0
+        if not differences:
+            print(f"assignments already match the defaults; not changed: {path}")
+            return 0
+        if approved is not None and approved != digest:
+            raise ConfigError(
+                f"approved comparison {approved} is not the comparison this configuration now "
+                f"produces ({digest}); the source changed after its comparison and was not replaced: "
+                f"{path}; compare again"
+            )
+        atomic_replace(path, payload, expected_original=original)
+        print(f"adopted {len(differences)} default assignment(s): {path}")
         return 0
     data = load_validated(path)
     if args.command == "validate":
