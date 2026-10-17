@@ -24,6 +24,7 @@ from orchestrator_lib import (
     write_json,
 )
 from planning_inputs import INLINE_SOURCES, manifest_kind, original_display, planning_inputs
+from planning_recovery import DEFAULT_ARTIFACT_LANGUAGE
 from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
 from tracker_contract import validate_proposal
@@ -422,18 +423,44 @@ python3 {contract_path()} review-report {paths['report']} \\
 """
 
 
-VERTICAL_SLICE_POLICY = """Prefer a small number of cohesive tracer-bullet vertical slices. Each
-ticket must state one complete user-observable delivered behavior, include stable acceptance criteria,
-and be independently demonstrable or verifiable. A slice may cross every technical layer needed for
-that behavior. Never decompose by frontend, backend, database, tests, directories, file types, or worker
-specialties by default. Use suitability for one fresh worker context only as a qualitative boundary;
-never write token counts or estimates into the proposal. Evaluate merge opportunities as explicitly as
-split points: merge work sharing one outcome, verification story, and substantially the same context;
-split independent outcomes, decision boundaries, rollout requirements, or excessive context. Add only
-blocking edges whose prerequisite genuinely prevents the blocked ticket from starting, leaving every
-initially ready ticket visible in the frontier. A wide mechanical refactor that cannot remain green as
-ordinary slices must use explicit expand, bounded migrate, and contract tickets; add a final integration
-exception only when intermediate migration batches cannot remain green independently."""
+VERTICAL_SLICE_POLICY = """Each slice cuts a narrow but COMPLETE path through every layer needed for
+its behavior (schema, API, UI, tests). Each ticket must state one complete user-observable delivered
+behavior, include stable acceptance criteria, and be independently demonstrable or verifiable.
+For normal vertical slices only: Never decompose by frontend, backend, database, tests,
+directories, file types, or worker specialties. Use suitability for one fresh worker context only as
+a qualitative boundary; never write token counts or estimates into the proposal. Evaluate merge
+opportunities as explicitly as split points: merge only work sharing one outcome, verification story,
+and substantially the same context; split independent outcomes, decision boundaries, rollout
+requirements, or excessive context. Add only blocking edges whose prerequisite genuinely prevents
+the blocked ticket from starting, leaving every initially ready ticket visible in the frontier.
+
+Look for prefactoring: "make the change easy, then make the easy change." Create a standalone ticket
+when it prepares several slices or is substantial; otherwise make it the first step of its slice.
+A standalone prefactor uses `slice_type: prefactor` and `wide_refactor: null`, comes before and blocks
+the benefiting slices. Its `delivered_behavior` describes preserved behavior and what it simplifies
+for the following slices. Verify it with existing tests. This is the only exception to describing delivered behavior from the user's perspective, apart from
+the mechanical tickets of a wide refactor.
+
+**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand–contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there."""
+
+
+def ticket_ground_rules(state: dict) -> str:
+    return f"""- Artifact language: {state.get('artifact_language', DEFAULT_ARTIFACT_LANGUAGE)}. Write ticket content in this language:
+  `title`, `delivered_behavior`, `acceptance_criteria`, `merge_split_rationale`, and `tracker.title`.
+  Preserve literal product copy and domain terms in their original language.
+- Keep headings, markers, JSON keys, `technical_layers`, fixed labels, frontmatter values, and worker
+  reports in English; preserve the native contract's exact structure and machine-readable values.
+- Ticket titles, `delivered_behavior` (What to build), and acceptance criteria contain no file paths or code snippets.
+  A prototype snippet is the sole snippet exception when it encodes a decision more precisely than prose:
+  note its prototype origin and trim it to the decision-rich parts, rather than a working demo.
+  `canonical_check_commands` may contain paths.
+- Describe end-to-end behavior from the user's perspective, not a layer-by-layer implementation list,
+  except for the standalone prefactor and wide-refactor tickets described in the vertical-slice policy.
+- Number tickets in dependency order: every blocker must have a smaller numeric ID than its dependent.
+- Record the target repository's current working branch and exact runnable baseline check commands.
+- Only fully specified approved work may be AFK and ready-for-agent.
+- The published tracker must contain README.md, spec.md, map.md, decisions.md, and one native issue file
+  per complete proposed ticket under issues/."""
 
 
 NATIVE_TRACKER_POLICY = """The machine proposal uses schema version 1 with exactly four top-level keys:
@@ -443,10 +470,15 @@ non-empty list of exact runnable `canonical_check_commands`. `tracker.slug` must
 Tracker slug (fixed) value under Inputs and Identity. Every ticket contains exactly `id` in
 ISSUE-NNN form, `title`, `delivered_behavior`, non-empty `acceptance_criteria`, `blocked_by`,
 `merge_split_rationale`, `slice_type`, non-empty `technical_layers`, and `wide_refactor`. A normal ticket
-uses `slice_type: vertical` and `wide_refactor: null`. A wide-refactor ticket uses
+uses `slice_type: vertical` and `wide_refactor: null`. A standalone prefactor uses
+`slice_type: prefactor` and `wide_refactor: null`. A wide-refactor ticket uses
 `slice_type: wide-refactor` and an object with `phase`, `sequence: expand-migrate-contract`, and
-`integration_reason` (null except for a justified integration exception). IDs are unique, blockers must
-exist, and dependencies must be acyclic. All approved work is fully specified AFK work with the
+`integration_reason` (null except for a justified integration exception). `phase` is `expand`, `migrate`,
+`contract`, or `integration`: every migrate ticket is blocked by an expand ticket, every contract ticket by
+every migrate ticket, and the integrate-and-verify ticket uses phase `integration` and is blocked by a
+contract ticket. IDs are unique, blockers must
+exist, every blocker must have a smaller numeric ID than its dependent, and dependencies must be
+acyclic. All approved work is fully specified AFK work with the
 ready-for-agent label when published; no adoption conversion is used."""
 
 
@@ -466,6 +498,16 @@ Turn the immutable approved specification into a native executable tracker propo
 pane without recovering or inheriting either specification worker session. Inspect the target repository
 read-only for current branch, exact runnable checks, implementation context, terminology, and prior-art
 tests. Do not make product or scope decisions that the approved specification did not make.
+
+## Process
+
+1. Read the approved specification in full, including its decisions and scope boundaries.
+2. Explore the repository read-only: use domain glossary vocabulary, ADRs, existing tests, and
+   prefactoring opportunities to ground the breakdown (make the change easy, then make the easy change).
+3. Draft slices: apply the vertical-slice policy below, look for merge and split opportunities, and
+   describe each delivered behavior from the user's perspective.
+4. Set blocking edges: include only genuine prerequisites, put prefactoring first, and assign IDs in
+   dependency order so every blocker has a smaller number. Expose all initially ready tickets.
 
 ## Inputs and Identity
 
@@ -488,12 +530,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 ## Tracker Ground Rules
 
-- Canonical artifacts, headings, frontmatter values, reports, and proposal text are English; preserve
-  literal product copy in its real language.
-- Record the target repository's current working branch and exact runnable baseline check commands.
-- Only fully specified approved work may be AFK and ready-for-agent.
-- The published tracker must contain README.md, spec.md, map.md, decisions.md, and one native issue file
-  per complete proposed ticket under issues/.
+{ticket_ground_rules(state)}
 
 ## Vertical-Slice Policy
 
@@ -636,6 +673,10 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 
 {resumed_context(run_dir, state, "tickets-review", pass_num)}
 
+## Tracker Ground Rules
+
+{ticket_ground_rules(state)}
+
 ## Vertical-Slice Policy
 
 {VERTICAL_SLICE_POLICY}
@@ -643,6 +684,13 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 ## Native Tracker Contract
 
 {NATIVE_TRACKER_POLICY}
+
+Check each ticket for user perspective (with the standalone prefactor and wide-refactor exceptions),
+no file paths or code snippets (except the documented prototype
+exception), prefactoring first, no horizontal slices, and dependency-ordered IDs. Verify the chosen
+artifact language, glossary and ADR alignment, narrow but complete behavior, justified merges and splits,
+existing-test verification for preserved prefactor behavior, and any wide-refactor sequence or integration
+exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.
 
 Return exactly one verdict:
 

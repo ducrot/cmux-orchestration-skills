@@ -91,9 +91,10 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   content follow the chosen language (`artifact_language`). Headings, markers, JSON keys, reports,
   state, events, and prompts stay English; preserve literal product copy. Field-level rules,
   including English `technical_layers` and fixed labels: [references/spec-contract.md](references/spec-contract.md).
-- Ticket decomposition prefers a small number of cohesive tracer-bullet vertical slices. Never
-  default to frontend/backend/database/test tickets, never persist token counts or estimates, and
-  evaluate merge opportunities as explicitly as split points. Blocking edges must be genuine.
+- Each ticket is a narrow but complete vertical slice. Never default to frontend/backend/database/test
+  tickets, never persist token counts or estimates, and evaluate merge opportunities as explicitly as
+  split points. Standalone prefactors (`slice_type: prefactor`) come first and block the slices they
+  prepare. Blocking edges must be genuine and every blocker has a smaller ticket ID.
 - Only a passing reviewed ticket candidate may be staged. Publication is a collision-checked atomic
   directory move into the target repository and never invokes `cmux-issue-chain` or
   `adopt_tracker.py` at runtime.

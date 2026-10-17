@@ -362,6 +362,7 @@ class PlanningFlow(unittest.TestCase):
             "--config",
             str(self.config),
             *(["--commit-mode", self.commit_mode] if hasattr(self, "commit_mode") else []),
+            *(["--artifact-language", self.artifact_language] if hasattr(self, "artifact_language") else []),
         )
 
     def test_shared_identity_slug_override_and_sibling_discovery(self):
@@ -922,9 +923,9 @@ sha256 {resulting_digest or digest}
         self.approve_spec_to_tickets()
         self.render_and_baseline("tickets")
         author_prompt = (self.run_dir / "prompts" / "tickets-1.md").read_text()
-        self.assertIn("small number of cohesive tracer-bullet vertical slices", author_prompt)
+        self.assertIn("Each slice cuts a narrow but COMPLETE path", author_prompt)
         self.assertIn("Never decompose by frontend, backend, database", author_prompt)
-        self.assertIn("expand, bounded migrate, and contract", author_prompt)
+        self.assertIn("**Wide refactors are the exception to vertical slicing.**", author_prompt)
         self.assertIn("Approved Specification", author_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets")
@@ -954,6 +955,62 @@ sha256 {resulting_digest or digest}
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
         return proposal_result
+
+    def check_ticket_prompt_rules(self, language):
+        self.reach_ticket_approval()
+        author = (self.run_dir / "prompts" / "tickets-1.md").read_text()
+        reviewer = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
+        steps = ["1. Read the approved specification", "2. Explore the repository",
+                 "3. Draft slices", "4. Set blocking edges"]
+        self.assertEqual(sorted(author.index(step) for step in steps),
+                         [author.index(step) for step in steps])
+        self.assertIn("domain glossary vocabulary, ADRs", author)
+        for role, prompt in (("author", author), ("reviewer", reviewer)):
+            with self.subTest(language=language, role=role):
+                self.assertIn(f"Artifact language: {language}", prompt)
+                self.assertIn("`title`, `delivered_behavior`, `acceptance_criteria`", prompt)
+                self.assertIn("`merge_split_rationale`, and `tracker.title`", prompt)
+                self.assertIn("headings, markers, JSON keys, `technical_layers`", prompt)
+                self.assertNotIn("Canonical artifacts, headings, frontmatter values, reports, and proposal text are English", prompt)
+                self.assertNotIn("Prefer a small number", prompt)
+                self.assertIn("merge only work sharing one outcome, verification story", prompt)
+                self.assertIn("For normal vertical slices only", prompt)
+                self.assertIn("directories, file types, or worker", prompt)
+                self.assertIn("several slices or is substantial", prompt)
+                self.assertIn("otherwise make it the first step of its slice", prompt)
+                self.assertIn("`slice_type: prefactor` and `wide_refactor: null`", prompt)
+                self.assertIn("preserved behavior and what it simplifies", prompt)
+                self.assertIn("Verify it with existing tests", prompt)
+                self.assertIn("only exception to describing delivered behavior from the user's perspective", prompt)
+                self.assertIn("apart from\nthe mechanical tickets of a wide refactor", prompt)
+                self.assertIn("except for the standalone prefactor and wide-refactor tickets", prompt)
+                self.assertIn("no file paths or code snippets", prompt)
+                self.assertIn("prototype snippet", prompt)
+                self.assertIn("note its prototype origin", prompt)
+                self.assertIn("trim it to the decision-rich parts", prompt)
+                self.assertIn("`canonical_check_commands` may contain paths", prompt)
+                self.assertIn("every blocker must have a smaller numeric ID", prompt)
+                self.assertIn("**Wide refactors are the exception to vertical slicing.**", prompt)
+                self.assertIn("batches sized by blast radius (per package, per directory)", prompt)
+                self.assertIn("green is promised only there.", prompt)
+        self.assertIn("Check each ticket for user perspective", reviewer)
+        self.assertIn("user perspective (with the standalone prefactor and wide-refactor exceptions)", reviewer)
+        self.assertIn("prefactoring first", reviewer)
+        self.assertIn("no horizontal slices", reviewer)
+        self.assertIn("dependency-ordered IDs", reviewer)
+        # Author and reviewer must receive the same complete policy, not abbreviated variants.
+        def section(prompt, heading, end):
+            return prompt.split(f"## {heading}\n", 1)[1].split(f"## {end}", 1)[0]
+        for heading, end in (("Tracker Ground Rules", "Vertical-Slice Policy"),
+                             ("Vertical-Slice Policy", "Native")):
+            self.assertEqual(section(author, heading, end), section(reviewer, heading, end))
+
+    def test_ticket_rules_render_through_cli_in_default_language(self):
+        self.check_ticket_prompt_rules("English")
+
+    def test_ticket_rules_render_through_cli_in_chosen_language(self):
+        self.artifact_language = "German"
+        self.check_ticket_prompt_rules("German")
 
     def test_all_four_prompts_disclose_unreadable_untracked_directory_exclusion(self):
         self.reach_ticket_approval()
@@ -4797,6 +4854,20 @@ Option?
             str(self.config),
         )
         self.assertEqual(next_run.returncode, 0, next_run.stderr)
+
+
+class TicketPolicyRules(unittest.TestCase):
+    def test_wide_refactor_paragraph_is_verbatim_from_pinned_to_tickets(self):
+        from render_prompt import VERTICAL_SLICE_POLICY
+        # mattpocock/skills@49dd158, engineering/to-tickets/SKILL.md, full wide-refactor paragraph.
+        paragraph = VERTICAL_SLICE_POLICY[VERTICAL_SLICE_POLICY.index("**Wide refactors"):]
+        self.assertEqual(hashlib.sha256(paragraph.encode()).hexdigest(),
+                         "454f4cac41851f481bb1c135bc8d39b08847185be1164a43840da72c5714dc0c")
+
+    def test_legacy_state_without_artifact_language_uses_english_ticket_rules(self):
+        from render_prompt import ticket_ground_rules
+        self.assertEqual(ticket_ground_rules({}), ticket_ground_rules({"artifact_language": "English"}))
+        self.assertIn("Artifact language: English", ticket_ground_rules({}))
 
 
 class SurfaceIdentityRules(unittest.TestCase):
