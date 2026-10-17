@@ -56,12 +56,108 @@ claiming a validated handoff."""
 
 
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
-SPEC_CONTRACT = f"""The draft must be English and contain substantive `##` sections named exactly:
-{", ".join(SPEC_SECTIONS[:-1])}, and {SPEC_SECTIONS[-1]}. Preserve literal product copy and
-domain terms in their actual language. Under Testing Decisions include bullet entries prefixed
+SPEC_CONTRACT = f"""The draft must contain non-empty `##` sections named exactly:
+{", ".join(SPEC_SECTIONS[:-1])}, and {SPEC_SECTIONS[-1]}. User Stories must contain at least one
+list item. Under Testing Decisions include entries containing
 `Existing seam:`, `Prior-art test:`, and `Verification:`. If proposing a `New seam:`, also include
-`Justification:`. An open decision states the question, context, options, recommendation when evidence
-supports one, and why it remains open. Use exactly `- None` when there are no open decisions."""
+`Justification:`. Use exactly `- None` when there are no open decisions; a reviewed candidate must
+have no open decisions."""
+
+
+# Adapted from mattpocock/skills to-spec, pinned in the planning-to-spec design document.
+SPEC_TEMPLATE = """<spec-template>
+## Problem Statement
+
+The problem that the user is facing, from the user's perspective.
+
+## Solution
+
+The solution to the problem, from the user's perspective.
+
+## User Stories
+
+A LONG, numbered list of user stories. Each user story should be in the format of:
+
+1. As an <actor>, I want a <feature>, so that <benefit>
+
+<user-story-example>
+1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
+</user-story-example>
+
+This list of user stories should be extremely extensive and cover all aspects of the feature.
+Translate the actor, want, benefit pattern into the artifact language; for German:
+"Als <Rolle> möchte ich <Funktion>, damit <Nutzen>". The reviewer checks structure and coverage;
+the validator only requires a list item, not a language-specific story form.
+
+## Implementation Decisions
+
+A list of implementation decisions that were made. This can include:
+
+- The modules that will be built/modified
+- The interfaces of those modules that will be modified
+- Technical clarifications from the developer
+- Architectural decisions
+- Schema changes
+- API contracts
+- Specific interactions
+
+Include only decisions established by plan files, the confirmed brief, revalidated grilling input,
+or necessarily imposed by the repository's current behavior. Put your own inferences in Assumptions,
+with their basis, and unresolved choices in Open Decisions. Do not present an inference as a decision.
+
+Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can
+(state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly
+that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+
+## Testing Decisions
+
+A list of testing decisions that were made. Include:
+
+- A description of what makes a good test (only test external behavior, not implementation details)
+- Which modules will be tested
+- Prior art for the tests (i.e. similar types of tests in the codebase)
+
+Use `Existing seam:`, `Prior-art test:`, and `Verification:` entries. Name seams, modules, and tests
+by name and behavior, never by file path. For `New seam:`, add `Justification:` explaining why
+existing seams cannot cover the behavior and why this is the highest useful new seam.
+
+## Assumptions
+
+[AFK addition] Your own conclusions, each with its evidence or basis. Keep these distinct from
+established Implementation Decisions. Use `- None` if there are no assumptions.
+
+## Open Decisions
+
+[AFK addition] For each unresolved choice, state the question, context, options, recommendation
+when supported by evidence, and why it remains open. Do not interview the user or invent a decision.
+Use exactly `- None` if there are no open decisions.
+
+## Out of Scope
+
+A description of the things that are out of scope for this spec.
+
+## Further Notes
+
+Any further notes about the feature. Preserve literal product copy and domain terms in their actual
+language throughout the specification.
+</spec-template>"""
+
+
+def spec_language(state: dict) -> str:
+    return f"""Artifact language: {state.get('artifact_language', DEFAULT_ARTIFACT_LANGUAGE)}
+Write specification content in this language, including the actor, want, benefit story pattern.
+Machine-readable section headings, testing markers, and the `- None` sentinel stay exactly as
+written in the template.
+Reports retain their prescribed English headings and sentinel values."""
+
+
+def spec_template_section(state: dict) -> str:
+    return f"""## Specification Template and Language
+
+{spec_language(state)}
+
+{SPEC_TEMPLATE}"""
 
 
 def script_path(name: str) -> str:
@@ -213,8 +309,21 @@ Stage snapshot: {snapshot['snapshot_id']}
 Harness: {snapshot['selected_worker']['harness']}
 
 Synthesize the supplied context into a repository-grounded specification. Do not interview the user.
-Inspect repository source, local documentation, ADRs, terminology, history, and existing tests as needed.
 When information is genuinely missing, record it under `Open Decisions` instead of guessing.
+
+## Process
+
+1. Explore the repo to understand the current state of the codebase. Use the project's domain glossary vocabulary
+   throughout the spec, and respect any ADRs in the area you're touching. Inspect source, local docs,
+   history, and existing tests as needed.
+2. Sketch out the seams at which you're going to test the feature. Prefer existing seams to new ones.
+   Use the highest useful seam possible. If new seams are needed, propose them at the highest point
+   you can. The fewer seams across the codebase, the better; the ideal number is one. Record the
+   proposed seams in your report for the human approval walkthrough; do not create a separate seam gate.
+3. Write the spec using the template below and the supplied inputs. Do not publish it yourself.
+   No file paths or code snippets in the spec, except the narrowly defined prototype snippet below.
+   Name modules, tests, and seams by name and behavior. Paths and line references belong in the
+   author report under `Repository Sources / Methods`.
 
 ## Persisted Task
 
@@ -236,8 +345,7 @@ When information is genuinely missing, record it under `Open Decisions` instead 
 
 {SPEC_CONTRACT}
 
-Testing decisions must choose the highest useful existing test seam, cite relevant prior-art tests,
-prefer observable behavior over implementation details, and justify any new seam.
+{spec_template_section(state)}
 
 ## Write Boundary
 
@@ -346,6 +454,18 @@ the complete draft, and the contract below.
 ## Specification Contract
 
 {SPEC_CONTRACT}
+
+{spec_template_section(state)}
+
+Check Problem Statement and Solution from the user's perspective, story structure and coverage in
+the artifact language, no file paths or code snippets (except the documented prototype exception),
+seam minimalism (prefer existing seams, the highest useful seam, as few as possible, ideally one;
+new seams at the highest useful point), and decision/assumption separation. Check that every
+Implementation Decision comes from the inputs or is necessarily imposed by the repository;
+the author's own conclusions must be Assumptions with their basis.
+Removing file paths or moving an author inference into Assumptions while retaining established intent
+is `pass_with_fixes`. If an inference presented as a decision
+requires a real product, scope, behavior, priority, or architecture decision, return `blocked`.
 
 No unresolved current-scope Open Decision may pass. A deferred decision passes only after the candidate
 explicitly moves it to Out of Scope or a follow-up area.

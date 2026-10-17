@@ -106,6 +106,14 @@ class SpecificationContract(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_numbered_stories_accept_any_language_without_judging_story_structure(self):
+        for story in ("1. Als Kundin möchte ich den Kontostand sehen, damit ich planen kann.",
+                      "1. Deliberately incomplete story for the reviewer to assess."):
+            with self.subTest(story=story):
+                self.draft.write_text(spec().replace(
+                    "- As a user, I can approve a reviewed specification.", story))
+                validate_spec(self.draft)
+
     def test_spec_and_grounded_author_report_validate(self):
         self.report.write_text(
             f"""## Result

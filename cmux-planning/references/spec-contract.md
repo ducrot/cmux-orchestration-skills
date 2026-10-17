@@ -21,6 +21,10 @@ language. The specification contains substantive sections named exactly:
 test, describes the externally observable verification, and justifies any new seam. An open
 decision contains the question, context, options, an evidence-backed recommendation when one is
 available, and the reason it remains open. Use `- None` only when no open decision remains.
+`User Stories` is a numbered list in the artifact language. `Implementation Decisions` holds only
+decisions established by the inputs or imposed by the repository; the author's own inferences go to
+`Assumptions` with their basis. The specification contains no file paths or code snippets, except a
+trimmed prototype snippet that encodes a decision more precisely than prose.
 
 The author report is separate from the draft. It names concrete repository sources and methods,
 proposed test seams, blockers, plan drift, and the exact draft path. A clean author handoff moves

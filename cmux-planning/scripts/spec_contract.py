@@ -96,6 +96,10 @@ def bullet_count(body: str) -> int:
     return len(re.findall(r"^[-*]\s+\S", body, re.MULTILINE))
 
 
+def list_item_count(body: str) -> int:
+    return len(re.findall(r"^(?:[-*]|\d+[.)])\s+\S", body, re.MULTILINE))
+
+
 def split_checked_fields(bullet: str) -> list[str]:
     """Split on the first two colons outside backtick spans, so a quoted reference such as
     `src/cli.py:42` stays one field instead of being cut at its own colon. An unterminated
@@ -152,7 +156,7 @@ def validate_spec(path: Path, *, require_closed_decisions: bool = False) -> dict
     raw = path.read_bytes()
     parsed = sections(raw.decode("utf-8"))
     require_sections(parsed, SPEC_SECTIONS, "specification")
-    if bullet_count(parsed["User Stories"]) < 1:
+    if list_item_count(parsed["User Stories"]) < 1:
         raise ContractError("User Stories must contain at least one list item")
     testing = parsed["Testing Decisions"]
     for marker in ("Existing seam:", "Prior-art test:", "Verification:"):

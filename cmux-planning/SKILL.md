@@ -350,10 +350,10 @@ blocks a legitimate current `pass`/`blocked` verdict nor becomes the current app
 
 At `awaiting-spec-approval`, present in the user's language:
 
+- proposed test seams as a separate block before the specification;
 - the complete reviewed specification and reviewer verdict;
 - the correction summary and human-visible draft/candidate diff;
 - assumptions and decided/deferred items;
-- proposed test seams;
 - explicit confirmation that no decision remains open.
 
 Load the complete deterministic walkthrough payload first; it includes the reviewed specification,

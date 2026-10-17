@@ -956,6 +956,37 @@ sha256 {resulting_digest or digest}
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
         return proposal_result
 
+    def check_spec_prompt_rules(self, language):
+        from render_prompt import SPEC_TEMPLATE
+
+        self.approve_spec_to_tickets()
+        author = (self.run_dir / "prompts" / "spec-1.md").read_text()
+        reviewer = (self.run_dir / "prompts" / "spec-review-1.md").read_text()
+        for prompt in (author, reviewer):
+            self.assertIn(f"Artifact language: {language}", prompt)
+            self.assertIn(SPEC_TEMPLATE, prompt)
+            self.assertIn("the `- None` sentinel stay exactly as", prompt)
+            self.assertNotIn("The draft must be English", prompt)
+        steps = ["1. Explore the repo", "2. Sketch out the seams", "3. Write the spec"]
+        self.assertEqual([author.index(step) for step in steps],
+                         sorted(author.index(step) for step in steps))
+        for rule in ("domain glossary vocabulary", "respect any ADRs", "ideal number is one",
+                     "highest point", "Repository Sources / Methods"):
+            self.assertIn(rule, author)
+        for rule in ("user's perspective", "story structure and coverage", "no file paths or code snippets",
+                     "seam minimalism", "decision/assumption separation", "Removing file paths",
+                     "an inference presented as a decision"):
+            self.assertIn(rule, reviewer)
+        self.assertIn("`pass_with_fixes`", reviewer)
+        self.assertIn("`blocked`", reviewer)
+
+    def test_spec_rules_render_through_cli_in_default_language(self):
+        self.check_spec_prompt_rules("English")
+
+    def test_spec_rules_render_through_cli_in_chosen_language(self):
+        self.artifact_language = "German"
+        self.check_spec_prompt_rules("German")
+
     def check_ticket_prompt_rules(self, language):
         self.reach_ticket_approval()
         author = (self.run_dir / "prompts" / "tickets-1.md").read_text()
