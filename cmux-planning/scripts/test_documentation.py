@@ -92,6 +92,46 @@ def notice(text: str) -> str:
     return lines[0]
 
 
+class TicketApprovalQuizDocumentation(unittest.TestCase):
+    def setUp(self):
+        self.approval = normalized(PLANNING).split("## ticket approval, staging, and publication", 1)[1].split("## commit", 1)[0]
+
+    def test_walkthrough_is_compact_with_details_on_request(self):
+        for phrase in (
+            "at `awaiting-ticket-approval`", "ticket-approval-view --run-dir <run-dir>",
+            "compact numbered list", "title, blocked by, and what to build",
+            "full acceptance criteria and merge/split rationale on request",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.approval)
+        self.assertLess(self.approval.index("ticket-approval-view --run-dir <run-dir>"),
+                        self.approval.index("one `askuserquestion` with three"))
+
+    def test_single_quiz_asks_all_three_dimensions_in_human_language(self):
+        for phrase in (
+            "one `askuserquestion` with three single-select questions in the human's language",
+            "granularity: fits / too coarse / too fine",
+            "edges: correct / needs correction",
+            "merge/split: no change / change",
+            "spec approval keeps its existing flow without a fixed quiz",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.approval)
+
+    def test_quiz_answers_route_to_approval_ticket_revision_or_spec_revision(self):
+        for phrase in (
+            "only when all three answers are positive (fits, correct, no change), ask for the target path",
+            "--decision approve --reason <human-reason> --target <repo-relative-or-absolute-target>",
+            "if any answer differs, ask a concrete follow-up",
+            "--decision revise --reason <concrete-change>",
+            "fresh ticket pass, a new review, and a new quiz",
+            "if the follow-up reveals an approved-spec defect",
+            "--decision revise --scope spec --reason <approved-spec-defect>",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.approval)
+
+
 class WorkerStartDocumentation(unittest.TestCase):
     def test_shared_protocol_separates_normal_start_from_readiness(self):
         for guide in SIBLINGS:

@@ -413,28 +413,43 @@ approval, ticket author, and ticket review.
 
 ## Ticket approval, staging, and publication
 
-Load the deterministic walkthrough before asking the human. It includes verdict and corrections, every
-ticket's delivered behavior and criteria, the ready frontier, blocking edges, wide-refactor exceptions,
-merge/split rationale, and author/candidate diff:
+At `awaiting-ticket-approval`, load the deterministic walkthrough before asking the human:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval-view --run-dir <run-dir>
 ```
 
-Record revision feedback with a fresh tickets pass, or route an approved-spec defect back through the
-complete spec sequence:
+Show a compact numbered list: title, blocked by, and what to build (`delivered_behavior`) per ticket.
+Below it, state the review verdict, its correction summary, and any wide-refactor exceptions, because
+safe reviewer fixes reach this gate without another author pass. Provide full acceptance criteria and
+merge/split rationale on request. The view also includes the ready frontier, blocking edges, and
+author/candidate diff.
+
+Ask one `AskUserQuestion` with three single-select questions in the human's language (translate these
+questions and options):
+
+- Granularity: fits / too coarse / too fine
+- Edges: correct / needs correction
+- Merge/Split: no change / change
+
+If any answer differs, ask a concrete follow-up to identify the affected tickets and requested change.
+Record that reason below; require a fresh ticket pass, a new review, and a new quiz. If the follow-up
+reveals an approved-spec defect, use `--scope spec` to restart the complete spec sequence instead:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
-  --decision revise --reason <granularity-change>
+  --decision revise --reason <concrete-change>
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
   --decision revise --scope spec --reason <approved-spec-defect>
 ```
 
-Approval requires the explicit target path. It freezes the exact reviewed proposal digest, stages
-`README.md`, `spec.md`, `map.md`, `decisions.md`, and every native issue file under the run directory,
-and validates the complete staged tracker with this skill's standalone native contract. The target must
-remain absent and its basename must equal the approved lowercase kebab-case tracker slug:
+Only when all three answers are positive (fits, correct, no change), ask for the target path and approve.
+Spec approval keeps its existing flow without a fixed quiz.
+
+Approval freezes the exact reviewed proposal digest, stages `README.md`, `spec.md`, `map.md`,
+`decisions.md`, and every native issue file under the run directory, and validates the complete staged
+tracker with this skill's standalone native contract. The target must remain absent and its basename must
+equal the approved lowercase kebab-case tracker slug:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
@@ -451,14 +466,7 @@ Publication refuses path escape, collisions, changed approved identities, malfor
 sets, duplicate IDs, unknown blockers, cycles, changed staging, and second publication. Staging or
 validation failure leaves the target unchanged and records diagnostics for human resolution.
 
-Status distinguishes publication not started, fully staged but not yet recorded, recorded and validated,
-already moved but not recorded, and completed. Repeating explicit ticket approval adopts complete
-unrecorded staging only after it validates against the reviewed proposal and approved spec; partial or
-changed staging stops for inspection. If interruption happens after the atomic move but before the final
-state write, rerunning `publish` validates the existing target against the approved spec, proposal,
-ticket set, and staged artifact identities before completing state. If both staging and target exist,
-identities differ, or the run is already complete, publication refuses to duplicate or partially
-overwrite anything.
+Read when recovering interrupted ticket staging or publication: [references/ticket-publication-recovery.md](references/ticket-publication-recovery.md).
 
 ## Commit
 
