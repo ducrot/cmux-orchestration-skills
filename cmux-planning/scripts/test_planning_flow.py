@@ -1828,10 +1828,12 @@ sha256 {resulting_digest or digest}
             (self.run_dir / "state.json").read_text(encoding="utf-8")
         )["reviewed_tickets"]
         original = self.run_dir / "artifacts" / "tickets-1.json"
+        self.seed_old_recovery_context()
         revised = self.ticket_approval("revise", "Merge the two slices because their verification story is shared")
         self.assertEqual(revised.returncode, 0, revised.stderr)
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "tickets")
+        self.assertNotIn("resume_context", state)
         self.assertEqual(state["tickets_pass"], 2)
         self.assertTrue(original.is_file())
         self.assertEqual(state["prepared_stage"]["pass"], 2)
@@ -1917,12 +1919,14 @@ sha256 {resulting_digest or digest}
         )
         blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        self.seed_old_recovery_context()
         rolled_back = self.ticket_approval("revise", "Resolve rollout behavior in the specification", scope="spec")
         self.assertEqual(rolled_back.returncode, 0, rolled_back.stderr)
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "spec")
         self.assertEqual(state["spec_pass"], 2)
         self.assertEqual(state["tickets_pass"], 2)
+        self.assertNotIn("resume_context", state)
         self.assertIsNone(state["approved_spec"])
         self.assertIsNone(state["author_tickets"])
         self.assertEqual(state["prepared_stage"]["stage"], "spec")
@@ -2082,6 +2086,7 @@ sha256 {resulting_digest or digest}
             candidate_digest,
         )
 
+        self.seed_old_recovery_context()
         revised = self.cli(
             STATE,
             "approval",
@@ -2095,6 +2100,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(revised.returncode, 0, revised.stderr)
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "spec")
+        self.assertNotIn("resume_context", state)
         self.assertEqual(state["spec_pass"], 2)
         self.assertEqual(state["prepared_stage"]["stage"], "spec")
         revision_status = json.loads(
@@ -3769,6 +3775,138 @@ Option?
             "The human confirmed that the dead pane may be replaced",
             (self.run_dir / "prompts" / "spec-2.md").read_text(encoding="utf-8"),
         )
+
+    def seed_old_recovery_context(self):
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["resume_context"] = {
+            "reason": "Obsolete recovery", "to_stage": "spec", "to_pass": 1,
+            "to_review_pass": 1, "prior_handoffs": [],
+        }
+        state_path.write_text(json.dumps(state))
+
+    def test_ticket_review_integrity_relaunch_records_review_pass(self):
+        self.approve_spec_to_tickets()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["tickets_review_pass"] = 4
+        state_path.write_text(json.dumps(state))
+        self.render_and_baseline("tickets")
+        self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review", 4)
+        (self.repo / "product.txt").write_text("unauthorized edit")
+        blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        (self.repo / "product.txt").write_text("baseline\n")
+        self.seed_old_recovery_context()
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir),
+                           "--decision", "relaunch", "--reason", "Resolved integrity violation")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        state = json.loads(state_path.read_text())
+        recovery = state["resume_context"]
+        self.assertEqual((recovery["from_stage"], recovery["from_pass"]), ("tickets-review", 4))
+        self.assertEqual((recovery["to_stage"], recovery["to_pass"], recovery["to_review_pass"]), ("tickets", 2, 5))
+        self.assertEqual(recovery["reason"], "Resolved integrity violation")
+        self.assertTrue(all("tickets-1" in item["path"] for item in recovery["prior_handoffs"]))
+        self.assertEqual(len(recovery["prior_handoffs"]), 3)
+
+    def exercise_scoped_relaunch(self, stage):
+        if stage == "spec":
+            self.assertEqual(self.init_direct().returncode, 0)
+        else:
+            self.approve_spec_to_tickets()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        # Review counters can diverge after reviewer-only recovery.
+        state[f"{stage}_review_pass"] = 4
+        state["spec_revision_feedback"] = "Keep the specification revision request"
+        state["ticket_revision_feedback"] = "Keep the ticket revision request"
+        state_path.write_text(json.dumps(state))
+        self.render_and_baseline(stage)
+        if stage == "spec":
+            self.write_author_handoff()
+        else:
+            self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline(f"{stage}-review", 4)
+        state = json.loads(state_path.read_text())
+        author = state["author_spec" if stage == "spec" else "author_tickets"]
+        author_ids = {value for key, value in author.items() if key.endswith("manifest_id")}
+        report = Path(state["current_attempt"]["paths"]["report"])
+        if stage == "spec":
+            digest = author["draft_sha256"]
+            report.write_text(review_report("blocked", digest, digest, blockers="- Owner must resolve the blocked attempt."))
+        else:
+            self.write_tickets_review("blocked", blockers="- Owner must resolve the blocked attempt.")
+        blocked = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        state = json.loads(state_path.read_text())
+        report_ids = {entry["id"] for entry in state["artifact_manifest"].values()
+                      if entry["path"] == str(report.relative_to(self.run_dir.resolve()))}
+        reason = "Human resolved this recovery only"
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir),
+                           "--decision", "relaunch", "--reason", reason)
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        state = json.loads(state_path.read_text())
+        recovery = state["resume_context"]
+        self.assertEqual((recovery["from_stage"], recovery["from_pass"]), (f"{stage}-review", 4))
+        self.assertEqual((recovery["to_stage"], recovery["to_pass"], recovery["to_review_pass"]), (stage, 2, 5))
+        self.assertEqual({entry["manifest_id"] for entry in recovery["prior_handoffs"]}, author_ids | report_ids)
+        self.assertEqual(state["spec_revision_feedback"], "Keep the specification revision request")
+        self.assertEqual(state["ticket_revision_feedback"], "Keep the ticket revision request")
+        self.render_and_baseline(stage, 2)
+        state = json.loads(state_path.read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertIn("## Interrupted-Pass Recovery Context", prompt)
+        self.assertIn(report.read_text().rstrip(), prompt)
+        self.assertEqual(prompt.count(reason), 1)
+        if stage == "spec":
+            self.write_author_handoff(2)
+        else:
+            self.write_tickets_handoff(2)
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline(f"{stage}-review", 5)
+        state = json.loads(state_path.read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        recovery_block = prompt.split("## Interrupted-Pass Recovery Context", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(reason, recovery_block)
+        self.assertNotIn("```", recovery_block)
+        self.assertNotIn("Owner must resolve", recovery_block)
+        for item in recovery["prior_handoffs"]:
+            self.assertIn(item["path"], recovery_block)
+            self.assertIn(item["sha256"], recovery_block)
+        if stage == "spec":
+            digest = state["author_spec"]["draft_sha256"]
+            Path(state["current_attempt"]["paths"]["report"]).write_text(review_report("pass", digest, digest))
+        else:
+            self.write_tickets_review()
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        if stage == "spec":
+            approved = self.cli(STATE, "approval", "--run-dir", str(self.run_dir), "--decision", "approve", "--reason", "Reviewed recovery")
+        else:
+            approved = self.ticket_approval("approve", "Reviewed recovery", target=self.repo / ".scratch" / state["tracker_slug"])
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads(state_path.read_text())
+        self.assertNotIn("resume_context", state)
+        if stage == "spec":
+            self.render_and_baseline("tickets")
+            state = json.loads(state_path.read_text())
+            later_prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+            self.assertNotIn("## Interrupted-Pass Recovery Context", later_prompt)
+            self.assertNotIn(reason, later_prompt)
+        events = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([event["data"] for event in events if event["type"] == "run.relaunch_approved"], [recovery])
+
+    def test_spec_relaunch_context_is_scoped_and_revision_feedback_survives(self):
+        self.exercise_scoped_relaunch("spec")
+
+    def test_ticket_relaunch_context_is_scoped_and_revision_feedback_survives(self):
+        self.exercise_scoped_relaunch("tickets")
 
     def test_dead_reviewer_relaunches_as_a_new_reviewer_pass_without_replacing_the_author(self):
         self.assertEqual(self.init_direct().returncode, 0)

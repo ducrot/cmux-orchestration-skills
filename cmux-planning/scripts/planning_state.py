@@ -1713,12 +1713,13 @@ def checked_staging_path(run_dir: Path, value: Any) -> Path:
     return staged
 
 
-def reset_ticket_state(state: dict[str, Any]) -> None:
+def reset_ticket_state(state: dict[str, Any], keep_feedback: bool = False) -> None:
     state["approved_spec"] = None
     state["author_tickets"] = None
     state["reviewed_tickets"] = None
     state["approved_tickets"] = None
-    state["ticket_revision_feedback"] = None
+    if not keep_feedback:
+        state["ticket_revision_feedback"] = None
     state["staged_tracker"] = None
 
 
@@ -1749,6 +1750,8 @@ def approval(args: argparse.Namespace) -> int:
                 raise ContractError(
                     "recorded specification approval is stale because its digest-bound candidate changed"
                 )
+            if state.pop("resume_context", None) is not None:
+                write_json(state_path, state)
             print(json.dumps({"approved_spec": approved, "idempotent": True}, sort_keys=True))
             return 0
         if state.get("current_stage") != "awaiting-spec-approval":
@@ -1786,6 +1789,7 @@ def approval(args: argparse.Namespace) -> int:
             "manifest_id": approved_entry["id"],
             "approved_at": now,
         }
+        state.pop("resume_context", None)
         state["current_stage"] = "tickets"
         state["prepared_stage"] = None
         state["tree_baseline"] = None
@@ -1830,6 +1834,7 @@ def approval(args: argparse.Namespace) -> int:
     state["author_spec"] = None
     state["reviewed_spec"] = None
     state["spec_revision_feedback"] = args.reason
+    state.pop("resume_context", None)
     # A revision from an integrity violation can arrive after the spec boundary, and a new spec pass
     # invalidates every ticket artifact derived from the old approved spec.
     old_tickets = state["tickets_pass"] if state.get("approved_spec") else None
@@ -2028,6 +2033,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         state["prepared_stage"] = None
         state["tree_baseline"] = None
         state["staged_tracker"] = None
+        state.pop("resume_context", None)
         state["updated_at"] = utc_now()
         write_json(state_path, state)
         discard_staging(run_dir)
@@ -2085,6 +2091,8 @@ def ticket_approval(args: argparse.Namespace) -> int:
             )
             if validated["artifacts"] != staged_state.get("artifacts"):
                 raise ContractError("recorded staged tracker changed after ticket approval")
+        if state.pop("resume_context", None) is not None:
+            write_json(state_path, state)
         print(
             json.dumps(
                 {
@@ -2187,6 +2195,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         "ready_frontier": native["ready_frontier"],
         "artifacts": native["artifacts"],
     }
+    state.pop("resume_context", None)
     state["current_stage"] = "ready-to-publish"
     state["updated_at"] = now
     write_json(state_path, state)
@@ -2318,7 +2327,9 @@ def publish_tracker(run_dir: Path) -> int:
     return 0
 
 
-def resume_inputs(run_dir: Path, state: dict[str, Any]) -> list[dict[str, str]]:
+def resume_inputs(
+    run_dir: Path, state: dict[str, Any], stage: str, pass_num: int
+) -> list[dict[str, str]]:
     """Attach only finalized manifest identities; unexpected files remain audit evidence."""
     labels = {
         "spec-draft": "prior specification author handoff",
@@ -2328,10 +2339,27 @@ def resume_inputs(run_dir: Path, state: dict[str, Any]) -> list[dict[str, str]]:
         "tickets-summary": "prior ticket author summary",
         "worker-report": "prior worker report",
     }
+    # A pass may have multiple immutable attempts. Only its latest attempt belongs
+    # to this recovery; partial, unfinalized files remain audit evidence.
+    attempts = [*state.get("attempt_history", []), state.get("current_attempt")]
+    blocked = next(
+        (item for item in reversed(attempts)
+         if isinstance(item, dict) and item.get("stage") == stage and item.get("pass") == pass_num),
+        None,
+    )
+    identities = {blocked["attempt_id"]} if blocked else set()
+    manifest = state.get("artifact_manifest", {})
+    if stage.endswith("-review"):
+        author = state.get("author_spec" if stage == "spec-review" else "author_tickets") or {}
+        for role in HANDOFF_KINDS:
+            entry = manifest.get(author.get(f"{role}_manifest_id"))
+            if isinstance(entry, dict):
+                identities.add(entry["attempt_id"])
     candidates = [
         (labels[entry["kind"]], entry)
-        for entry in state.get("artifact_manifest", {}).values()
+        for entry in manifest.values()
         if isinstance(entry, dict) and entry.get("kind") in labels and entry.get("finalized")
+        and entry.get("attempt_id") in identities
     ]
     result: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -2405,15 +2433,15 @@ def resume_run(args: argparse.Namespace) -> int:
     if stage in {"ready-to-publish", "complete"}:
         raise ContractError("publication recovery never relaunches a worker")
     target = stage
+    source_stage = stage.removesuffix("-blocked")
     if stage in {"spec-blocked", "spec-review-blocked"}:
         target = "spec"
     elif stage in {"tickets-blocked", "tickets-review-blocked"}:
         target = "tickets"
     elif stage == "integrity-violation":
         ensure_integrity_resolved(run_dir, state)
-        gates = state.get("gate_decisions", [])
-        source = gates[-1].get("stage") if gates and isinstance(gates[-1], dict) else None
-        target = "tickets" if isinstance(source, str) and source.startswith("tickets") else "spec"
+        source_stage = state["gate_decisions"][-1]["stage"]
+        target = "tickets" if source_stage.startswith("tickets") else "spec"
     elif stage not in STAGES:
         raise ContractError(f"cannot relaunch from planning stage {stage!r}")
     elif payload["pane"]["status"] not in {"dead", "watcher-expired"}:
@@ -2424,14 +2452,8 @@ def resume_run(args: argparse.Namespace) -> int:
     if stage in STAGES:
         ensure_relaunch_tree_safe(run_dir, state, stage, stage_pass(state, stage))
 
-    old_pass = (
-        stage_pass(state, stage)
-        if stage in STAGES
-        else state["tickets_pass"]
-        if isinstance(stage, str) and stage.startswith("tickets")
-        else state["spec_pass"]
-    )
-    prior = resume_inputs(run_dir, state)
+    old_pass = stage_pass(state, source_stage)
+    prior = resume_inputs(run_dir, state, source_stage, old_pass)
     now = utc_now()
     if target == "spec-review":
         state["spec_review_pass"] = state.get("spec_review_pass", state["spec_pass"]) + 1
@@ -2447,11 +2469,10 @@ def resume_run(args: argparse.Namespace) -> int:
         next_pass = state["spec_pass"]
         state["author_spec"] = None
         state["reviewed_spec"] = None
-        state["spec_revision_feedback"] = args.reason
         if state.get("approved_spec") is not None:
             state["tickets_pass"] += 1
             state["tickets_review_pass"] = state.get("tickets_review_pass", state["tickets_pass"] - 1) + 1
-            reset_ticket_state(state)
+            reset_ticket_state(state, keep_feedback=True)
             discard_staging(run_dir)
     else:
         state["tickets_pass"] += 1
@@ -2461,7 +2482,6 @@ def resume_run(args: argparse.Namespace) -> int:
         state["reviewed_tickets"] = None
         state["approved_tickets"] = None
         state["staged_tracker"] = None
-        state["ticket_revision_feedback"] = args.reason
         discard_staging(run_dir)
 
     state["current_stage"] = target
@@ -2470,10 +2490,11 @@ def resume_run(args: argparse.Namespace) -> int:
     state["resume_context"] = {
         "recorded_at": now,
         "reason": args.reason,
-        "from_stage": stage,
+        "from_stage": source_stage,
         "from_pass": old_pass,
         "to_stage": target,
         "to_pass": next_pass,
+        "to_review_pass": stage_pass(state, target if target.endswith("-review") else f"{target}-review"),
         "prior_handoffs": prior,
     }
     state["updated_at"] = now

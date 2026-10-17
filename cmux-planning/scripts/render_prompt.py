@@ -107,11 +107,22 @@ def normalized_context(run_dir: Path, state: dict) -> str:
     )
 
 
-def resumed_context(run_dir: Path, state: dict) -> str:
+def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> str:
     recovery = state.get("resume_context")
     if not isinstance(recovery, dict):
-        return "No interrupted prior pass is attached to this assignment."
+        return ""
+    target = recovery.get("to_stage")
+    if not isinstance(target, str):
+        return ""
+    review_stage = target if target.endswith("-review") else f"{target}-review"
+    if (stage, pass_num) not in {
+        (target, recovery.get("to_pass")),
+        (review_stage, recovery.get("to_review_pass")),
+    }:
+        return ""
+    reviewer = stage.endswith("-review")
     blocks = [
+        "## Interrupted-Pass Recovery Context",
         f"Human resume reason: {recovery.get('reason', '')}",
         (
             f"Recovery route: {recovery.get('from_stage')}-{recovery.get('from_pass')} -> "
@@ -136,14 +147,14 @@ def resumed_context(run_dir: Path, state: dict) -> str:
         )
         if not path.is_file() or sha256_file(path) != item.get("sha256"):
             raise SnapshotError(f"resume context handoff is missing or changed: {path}")
-        try:
-            content = path.read_text(encoding="utf-8").rstrip()
-        except UnicodeError as error:
-            raise SnapshotError(f"resume context handoff is not UTF-8: {path}") from error
-        blocks.append(
-            f"### {item.get('label', 'Prior handoff')}\n\n"
-            f"`{path}` (sha256 `{item['sha256']}`)\n\n```text\n{content}\n```"
-        )
+        block = f"### {item.get('label', 'Prior handoff')}\n\n`{path}` (sha256 `{item['sha256']}`)"
+        if not reviewer:
+            try:
+                content = path.read_text(encoding="utf-8").rstrip()
+            except UnicodeError as error:
+                raise SnapshotError(f"resume context handoff is not UTF-8: {path}") from error
+            block += f"\n\n```text\n{content}\n```"
+        blocks.append(block)
     return "\n\n".join(blocks)
 
 
@@ -195,9 +206,7 @@ Source: `{task_path}` (sha256 `{state['task']['sha256']}`)
 
 {feedback}
 
-## Interrupted-Pass Recovery Context
-
-{resumed_context(run_dir, state)}
+{resumed_context(run_dir, state, "spec", pass_num)}
 
 ## Specification Contract
 
@@ -308,9 +317,7 @@ the complete draft, and the contract below.
 {author_report.read_text(encoding='utf-8').rstrip()}
 ```
 
-## Interrupted-Pass Recovery Context
-
-{resumed_context(run_dir, state)}
+{resumed_context(run_dir, state, "spec-review", pass_num)}
 
 ## Specification Contract
 
@@ -455,9 +462,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 {feedback}
 
-## Interrupted-Pass Recovery Context
-
-{resumed_context(run_dir, state)}
+{resumed_context(run_dir, state, "tickets", pass_num)}
 
 ## Tracker Ground Rules
 
@@ -614,9 +619,7 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 {report.read_text(encoding='utf-8').rstrip()}
 ```
 
-## Interrupted-Pass Recovery Context
-
-{resumed_context(run_dir, state)}
+{resumed_context(run_dir, state, "tickets-review", pass_num)}
 
 ## Vertical-Slice Policy
 
