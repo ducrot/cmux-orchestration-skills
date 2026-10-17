@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,8 @@ PROPOSAL_SCHEMA_VERSION = 1
 ISSUE_ID_RE = re.compile(r"\AISSUE-(\d{3})\Z")
 SLUG_BODY = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 SLUG_RE = re.compile(rf"\A{SLUG_BODY}\Z")
-TOKEN_SIZING_RE = re.compile(r"\btokens?\b", re.IGNORECASE)
+TOKEN_SIZING_RE = re.compile(r"\b\d[\d.,]*\s*[km]?[\s-]*tokens?\b", re.IGNORECASE)
+GERMAN_TRANSLITERATION = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 AUTHOR_REPORT_SECTIONS = (
     "Result",
     "Repository Sources / Methods",
@@ -220,12 +222,12 @@ def validate_proposal(
         rationale = _text(ticket["merge_split_rationale"], f"{issue_id}.merge_split_rationale")
         layers = _string_list(ticket["technical_layers"], f"{issue_id}.technical_layers")
         slice_type = _text(ticket["slice_type"], f"{issue_id}.slice_type")
-        if slice_type not in {"vertical", "wide-refactor"}:
-            raise ContractError(f"{issue_id}.slice_type must be vertical or wide-refactor")
+        if slice_type not in {"vertical", "prefactor", "wide-refactor"}:
+            raise ContractError(f"{issue_id}.slice_type must be vertical, prefactor, or wide-refactor")
         wide_refactor = ticket["wide_refactor"]
-        if slice_type == "vertical":
+        if slice_type in {"vertical", "prefactor"}:
             if wide_refactor is not None:
-                raise ContractError(f"{issue_id} is vertical and must set wide_refactor to null")
+                raise ContractError(f"{issue_id} is {slice_type} and must set wide_refactor to null")
         else:
             details = _object(wide_refactor, f"{issue_id}.wide_refactor")
             if set(details) != {"phase", "sequence", "integration_reason"}:
@@ -264,8 +266,13 @@ def validate_proposal(
         )
 
     _validate_dependency_graph(ids, blockers, reject_self_blocker=True)
+    for issue_id, prerequisites in blockers.items():
+        for prerequisite in prerequisites:
+            # ISSUE-NNN is fixed-width, so string order is numeric order.
+            if prerequisite >= issue_id:
+                raise ContractError(f"{issue_id} blocker {prerequisite} must have a lower number")
     if any(TOKEN_SIZING_RE.search(text) for text in forbidden_sizing_text):
-        raise ContractError("ticket sizing must stay qualitative; proposal text may not mention tokens")
+        raise ContractError("ticket sizing must stay qualitative; proposal text may not give token counts")
 
     if any(wide.values()):
         for phase in ("expand", "migrate", "contract"):
@@ -487,7 +494,10 @@ def validate_ticket_review_report(
 
 
 def issue_slug(title: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    composed = unicodedata.normalize("NFC", title).lower().translate(GERMAN_TRANSLITERATION)
+    normalized = unicodedata.normalize("NFKD", composed)
+    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
     return slug[:72].rstrip("-") or "work"
 
 
@@ -522,11 +532,7 @@ labels:
 
 ## Acceptance Criteria
 
-{criteria}
-
-## Merge / Split Rationale
-
-{ticket["merge_split_rationale"]}{wide}
+{criteria}{wide}
 
 ## Blocked by
 
@@ -663,7 +669,7 @@ def validate_native_tracker(
         if frontmatter["labels"] != ["ready-for-agent"]:
             raise ContractError(f"{path.name} must carry only the ready-for-agent label")
         parsed = sections(body)
-        for heading in ("What to build", "Acceptance Criteria", "Merge / Split Rationale", "Blocked by"):
+        for heading in ("What to build", "Acceptance Criteria", "Blocked by"):
             if not parsed.get(heading, "").strip():
                 raise ContractError(f"{path.name} is missing native heading {heading}")
         criteria = re.findall(r"^- \[ \] \S.*$", parsed["Acceptance Criteria"], re.MULTILINE)

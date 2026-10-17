@@ -15,6 +15,7 @@ from orchestrator_lib import sha256_file  # noqa: E402
 from spec_contract import ContractError  # noqa: E402
 from test_spec_contract import checked_evidence, review_report  # noqa: E402
 from tracker_contract import (  # noqa: E402
+    issue_slug,
     render_summary,
     stage_native_tracker,
     validate_native_tracker,
@@ -169,7 +170,7 @@ sha256 {self.spec_digest}
         cases = []
         horizontal = proposal(self.spec)
         horizontal["tickets"][0]["slice_type"] = "frontend"
-        cases.append((horizontal, "vertical or wide-refactor"))
+        cases.append((horizontal, "slice_type must be"))
         unknown = proposal(self.spec)
         unknown["tickets"][0]["blocked_by"] = ["ISSUE-999"]
         cases.append((unknown, "unknown blocker"))
@@ -218,11 +219,106 @@ sha256 {self.spec_digest}
         ]
         valid = self.write_proposal(proposal(self.spec, tickets))
         self.assertEqual(set(valid["wide_refactor"]), {"expand", "migrate", "contract"})
+        tracker = self.root / "wide-tracker"
+        stage_native_tracker(tracker, valid, approved_spec=self.spec)
+        for issue in (tracker / "issues").glob("*.md"):
+            self.assertIn("## Wide Refactor Sequence", issue.read_text())
+            self.assertNotIn("## Merge / Split Rationale", issue.read_text())
 
         missing_contract = proposal(self.spec, tickets[:-1])
         self.proposal_path.write_text(json.dumps(missing_contract), encoding="utf-8")
         with self.assertRaisesRegex(ContractError, "expand, bounded migrate, and contract"):
             validate_proposal(self.proposal_path)
+
+    def test_prefactor_accepts_null_wide_refactor_and_rejects_details(self):
+        data = proposal(self.spec)
+        data["tickets"][0]["slice_type"] = "prefactor"
+        result = self.write_proposal(data)
+        self.assertEqual(result["tickets"][0]["slice_type"], "prefactor")
+        self.assertIsNone(result["tickets"][0]["wide_refactor"])
+        self.assertEqual(result["ready_frontier"], ["ISSUE-001"])
+        for kind in ("vertical", "prefactor"):
+            with self.subTest(kind=kind):
+                data["tickets"][0]["slice_type"] = kind
+                data["tickets"][0]["wide_refactor"] = {"phase": "expand"}
+                with self.assertRaisesRegex(ContractError, "wide_refactor to null"):
+                    self.write_proposal(data)
+
+    def test_blockers_must_have_lower_numbers_regardless_of_proposal_order(self):
+        data = proposal(self.spec)
+        data["tickets"].reverse()
+        self.assertEqual(self.write_proposal(data)["ready_frontier"], ["ISSUE-001"])
+        for blocker in ("ISSUE-001", "ISSUE-002"):
+            with self.subTest(blocker=blocker):
+                data = proposal(self.spec)
+                data["tickets"][1]["blocked_by"] = []
+                data["tickets"][0]["blocked_by"] = [blocker]
+                expected = "lists itself" if blocker == "ISSUE-001" else "must have a lower number"
+                with self.assertRaisesRegex(ContractError, expected):
+                    self.write_proposal(data)
+
+    def test_product_token_vocabulary_passes_but_number_plus_token_sizing_fails(self):
+        for text in ("Auth-Token erneuern", "Tokens bleiben gültig", "Token 123", "Tokenizer"):
+            with self.subTest(text=text):
+                data = proposal(self.spec)
+                data["tickets"][0]["title"] = text
+                self.write_proposal(data)
+        for field in ("title", "delivered_behavior", "acceptance_criteria",
+                      "merge_split_rationale", "technical_layers"):
+            for text in ("1000 tokens", "1 Token", "2 TOKENS", "100\tTokens", "10k tokens",
+                         "500-token budget", "1,500 Tokens", "5000tokens"):
+                with self.subTest(field=field, text=text):
+                    data = proposal(self.spec)
+                    data["tickets"][0][field] = [text] if field in (
+                        "acceptance_criteria", "technical_layers"
+                    ) else text
+                    with self.assertRaisesRegex(ContractError, "qualitative"):
+                        self.write_proposal(data)
+
+    def test_issue_slugs_transliterate_german_and_normalize_other_latin_titles(self):
+        for title, expected in (
+            ("ÄÖÜ äöü ß ẞ", "aeoeue-aeoeue-ss-ss"),
+            ("Größe ändern", "groesse-aendern"),
+            ("Gro\u0308\u00dfe a\u0308ndern", "groesse-aendern"),
+            ("Crème brûlée", "creme-brulee"),
+            ("東京", "work"),
+            ("!!!", "work"),
+            ("a" * 71 + " b", "a" * 71),
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(issue_slug(title), expected)
+
+    def test_new_issues_omit_rationale_and_legacy_issues_still_validate(self):
+        data = proposal(self.spec)
+        data["tickets"][0]["slice_type"] = "prefactor"
+        data["tickets"][0]["title"] = "Größe ändern: Auth-Token"
+        result = self.write_proposal(data)
+        tracker = self.root / "planned-feature"
+        stage_native_tracker(tracker, result, approved_spec=self.spec)
+        issue = tracker / "issues" / "ISSUE-001-groesse-aendern-auth-token.md"
+        self.assertTrue(issue.is_file())
+        self.assertNotIn("## Merge / Split Rationale", issue.read_text())
+        rationale = data["tickets"][0]["merge_split_rationale"]
+        self.assertEqual(rationale, result["tickets"][0]["merge_split_rationale"])
+        self.assertIn(rationale, render_summary(result))
+        for name in ("map.md", "decisions.md"):
+            self.assertIn(rationale, (tracker / name).read_text())
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    issue.write_text(issue.read_text().replace(
+                        "## Blocked by", f"## Merge / Split Rationale\n\n{rationale}\n\n## Blocked by"
+                    ))
+                checked = self.contract_cli("native-tracker", str(tracker),
+                                            "--spec-sha256", self.spec_digest)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                chain = subprocess.run(
+                    [sys.executable, str(ISSUE_STATE), "list", "--tracker", str(tracker), "--json"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(chain.returncode, 0, chain.stderr)
+                self.assertEqual([item["id"] for item in json.loads(chain.stdout)],
+                                 ["ISSUE-001", "ISSUE-002"])
 
     def test_proposal_enforces_frozen_tracker_slug(self):
         self.write_proposal()
