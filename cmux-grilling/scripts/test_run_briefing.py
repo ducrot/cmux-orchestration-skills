@@ -205,6 +205,23 @@ class RunBriefing(RunDirTestCase):
                     text = run_briefing.render_briefing(state, [], lang)
                     self.assertEqual(text.splitlines()[-1], f"- Commit: {expected}")
 
+    def test_artifact_language_line_only_when_present(self):
+        for base in (ISSUE_STATE, PLANNING_STATE, GRILLING_STATE):
+            for lang, label in (("en", "Language"), ("de", "Sprache")):
+                without = run_briefing.render_briefing(base, [], lang)
+                self.assertNotIn(f"- {label}:", without)
+                for language in ("English", "German", "Brazilian Portuguese"):
+                    with_language = run_briefing.render_briefing(
+                        {**base, "artifact_language": language}, [], lang)
+                    self.assertIn(f"- {label}: {language}\n", with_language)
+                    self.assertEqual(with_language.replace(f"- {label}: {language}\n", ""), without)
+                    self.assertTrue(with_language.splitlines()[-1].startswith("- Commit:"))
+
+    def test_draft_cli_includes_artifact_language(self):
+        run_dir = self.run_dir({**PLANNING_STATE, "artifact_language": "German"})
+        self.draft(run_dir, lang="de")
+        self.assertIn("- Sprache: German\n", (run_dir / "briefing.md").read_text())
+
     def test_next_prompt_preserves_commit_mode(self):
         invocation = "/cmux-issue-chain ISSUE-003 --commit-mode commit"
         prompt, unchanged = run_briefing.next_prompt(

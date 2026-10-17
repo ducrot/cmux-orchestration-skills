@@ -578,6 +578,25 @@ class CommitModeDocumentation(unittest.TestCase):
 
 
 
+class ArtifactLanguageDocumentation(unittest.TestCase):
+    def test_fresh_init_question_and_language_boundary(self):
+        text = normalized(PLANNING)
+        language = text.split("## artifact language at initialization", 1)[1].split("## ", 1)[0]
+        for phrase in ("askuserquestion", "single-select", "english", "first and recommended",
+                       "human's language", "other", "free text", "--artifact-language",
+                       "never on resume", "re-init", "exit-3", "smoke tests", "40 characters",
+                       "immutable", "legacy", "english language name"):
+            self.assertIn(phrase, language)
+        for path in (PLANNING, PLANNING.parent / "references" / "spec-contract.md"):
+            content = normalized(path)
+            for phrase in ("original language", "chosen language", "headings", "markers", "json keys",
+                           "reports", "state", "events", "prompts", "technical_layers"):
+                self.assertIn(phrase, content, path)
+            self.assertNotIn("canonical persisted artifacts are english", content)
+            self.assertNotIn("the specification is english", content)
+            self.assertNotIn("one english frontmatter issue", content)
+
+
 class PlanningOperatorDocumentation(unittest.TestCase):
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)

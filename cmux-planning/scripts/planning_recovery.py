@@ -35,6 +35,7 @@ from tracker_contract import ContractError, validate_native_tracker, validate_pr
 from tree_integrity import snapshot_digest
 
 
+DEFAULT_ARTIFACT_LANGUAGE = "English"
 PASS_KEYS = {
     "spec": "spec_pass",
     "spec-review": "spec_review_pass",
@@ -503,6 +504,7 @@ def recovery_context(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
             )
     return {
         "commit_mode": state.get("commit_mode", "propose"),
+        "artifact_language": state.get("artifact_language", DEFAULT_ARTIFACT_LANGUAGE),
         "paths": paths,
         "history": files,
         "resume_context": state.get("resume_context"),
@@ -1003,6 +1005,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
 
     payload = {
         "commit_mode": state.get("commit_mode", "propose"),
+        "artifact_language": state.get("artifact_language", DEFAULT_ARTIFACT_LANGUAGE),
         "run_id": state.get("run_id"),
         "run_dir": str(run_dir),
         "repository": state.get("repository"),

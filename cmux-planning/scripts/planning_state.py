@@ -74,6 +74,7 @@ from orchestrator_lib import (
     write_json,
 )
 from planning_recovery import (
+    DEFAULT_ARTIFACT_LANGUAGE,
     PASS_KEYS,
     recovery_context,
     shell_join,
@@ -139,12 +140,21 @@ def preparation_payload(result: dict[str, Any], **context: Any) -> dict[str, Any
     return {**context, "prepared": result}
 
 
+def artifact_language_name(value: str) -> str:
+    """Accept a human-supplied English language name without a fixed language catalogue."""
+    if not value.strip() or len(value) > 40:
+        raise argparse.ArgumentTypeError("expected a non-empty English language name of at most 40 characters")
+    return value.strip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Persist planning input and prepare direct-task spec work")
     init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
+    init.add_argument("--artifact-language", type=artifact_language_name, default=None,
+                      help="English language name for spec and ticket content (default: English)")
     task = init.add_mutually_exclusive_group(required=True)
     task.add_argument("--task")
     task.add_argument("--task-file")
@@ -745,6 +755,12 @@ def init_run(args: argparse.Namespace) -> int:
                 f"run {run_id} already exists with commit mode {stored_mode}; "
                 f"--commit-mode {args.commit_mode} cannot change it"
             )
+        stored_language = existing.get("artifact_language", DEFAULT_ARTIFACT_LANGUAGE)
+        if args.artifact_language is not None and args.artifact_language != stored_language:
+            raise ConfigError(
+                f"run {run_id} already exists with artifact language {stored_language}; "
+                f"--artifact-language {args.artifact_language} cannot change it"
+            )
         if supplied_configuration_inputs(args, workflow=WORKFLOW) or args.accept_config:
             raise ConfigError(
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
@@ -852,6 +868,7 @@ def init_run(args: argparse.Namespace) -> int:
         "workflow": "planning",
         "commit_baseline": capture_baseline(repository),
         "commit_mode": args.commit_mode or "propose",
+        "artifact_language": args.artifact_language or DEFAULT_ARTIFACT_LANGUAGE,
         "layout_version": 1,
         "deliverables": {},
         "tracker_slug": slug,

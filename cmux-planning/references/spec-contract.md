@@ -1,7 +1,11 @@
 # Specification and review contract
 
-The specification is English, while literal product copy and domain terminology stay in their
-actual language. It contains substantive sections named exactly:
+Inputs keep their original language. Specification prose and ticket content follow the chosen language
+(`artifact_language`, default English for legacy runs). Localized ticket fields are `title`,
+`delivered_behavior`, `acceptance_criteria`, `merge_split_rationale`, and `tracker.title`.
+Headings, markers, JSON keys, `technical_layers`, fixed renderer labels, worker reports, state,
+events, and prompts stay English. Literal product copy and domain terminology stay in their actual
+language. The specification contains substantive sections named exactly:
 
 - `Problem Statement`
 - `Solution`
@@ -89,7 +93,7 @@ A passing candidate must have unique ISSUE-NNN IDs, known acyclic blockers, and 
 blockers as the initial ready frontier.
 
 After explicit human approval, the orchestrator renders a native tracker containing `README.md`,
-`spec.md`, `map.md`, `decisions.md`, and one English frontmatter issue per approved ticket under
+`spec.md`, `map.md`, `decisions.md`, and one frontmatter issue per approved ticket under
 `issues/`. Only fully specified work is `AFK` and `ready-for-agent`. The standalone planning validator
 must accept the complete staged tracker before one collision-checked atomic publication move; no sibling
 skill or adoption conversion is a runtime dependency.

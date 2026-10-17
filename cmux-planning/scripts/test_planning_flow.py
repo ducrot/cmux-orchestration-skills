@@ -376,6 +376,48 @@ class PlanningFlow(unittest.TestCase):
                 after = file_contents(self.run_dir)
                 self.assertEqual(after, before)
 
+    def test_artifact_language_defaults_choice_and_legacy_reinitialization(self):
+        def init(run_id, *extra):
+            return self.cli(STATE, "init", "--task", "Sprachwahl", "--run-id", run_id,
+                            "--no-workspace", "--new-run", *extra)
+
+        for index, language in enumerate((None, "German", "Brazilian Portuguese", "L" * 40)):
+            run_id = f"language-{index}"
+            extra = [] if language is None else ["--artifact-language", language]
+            result = init(run_id, *extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_dir = self.runs / run_id
+            state_path = run_dir / "state.json"
+            state = json.loads(state_path.read_text())
+            effective = language or "English"
+            self.assertEqual(state["artifact_language"], effective)
+            self.assertEqual((run_dir / "task.md").read_text(), "Sprachwahl")
+            for legacy in (False, True):
+                if legacy:
+                    state.pop("artifact_language")
+                    state_path.write_text(json.dumps(state))
+                    effective = "English"
+                before = file_contents(run_dir)
+                for command in ("status", "context"):
+                    shown = self.cli(STATE, command, "--run-dir", str(run_dir))
+                    self.assertEqual(shown.returncode, 0, shown.stderr)
+                    self.assertEqual(json.loads(shown.stdout)["artifact_language"], effective)
+                for extra in ([], ["--artifact-language", effective]):
+                    repeated = init(run_id, *extra)
+                    self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                refused = init(run_id, "--artifact-language", "French")
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("--artifact-language French cannot change it", refused.stderr)
+                self.assertEqual(file_contents(run_dir), before)
+
+    def test_artifact_language_rejects_empty_and_overlong_values(self):
+        for language in ("", "   ", "L" * 41):
+            result = self.cli(STATE, "init", "--task", "Language validation", "--run-id", "bad-language",
+                              "--artifact-language", language, "--no-workspace")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("English language name", result.stderr)
+            self.assertFalse((self.runs / "bad-language").exists())
+
     def test_commit_modes_and_legacy_default(self):
         def init(run_id, *extra):
             return self.cli(STATE, "init", "--task", "Mode test", "--run-id", run_id, "--no-workspace", "--new-run", *extra)

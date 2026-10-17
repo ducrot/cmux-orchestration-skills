@@ -52,6 +52,7 @@ PROMPT_BLOCK_RE = re.compile(
 LABELS = {
     "en": {
         "heading": "Run briefing",
+        "artifact_language": "Language",
         "recap_heading": "Run recap",
         "goal": "Goal",
         "scope": "Scope",
@@ -145,6 +146,7 @@ LABELS = {
     },
     "de": {
         "heading": "Run-Briefing",
+        "artifact_language": "Sprache",
         "recap_heading": "Run-Recap",
         "goal": "Ziel",
         "scope": "Umfang",
@@ -358,6 +360,8 @@ def render_briefing(state: dict[str, Any], events: list[dict[str, Any]], lang: s
     labels = LABELS[lang]
     lines = [f"**{labels['heading']} · {state['run_id']}**", ""]
     lines += BRIEFING_BODIES[state["workflow"]](state, labels)
+    if "artifact_language" in state:
+        lines.append(f"- {labels['artifact_language']}: {state['artifact_language']}")
     mode = state.get("commit_mode", "propose")
     lines.append(f"- {labels['commit']}: {labels['commit_mode_' + mode]}")
     return "\n".join(lines) + "\n"

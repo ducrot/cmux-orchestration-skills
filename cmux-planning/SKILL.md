@@ -24,25 +24,32 @@ input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
 
 ## Commit mode at initialization
 
-Before a fresh init whose invocation does not already name `--commit-mode`, ask one
-`AskUserQuestion` single-select question in the human's language: "How should this run
-handle its commit?" / "Wie soll dieser Lauf mit seinem Commit umgehen?"
-Offer `propose` first and recommended: "Show proposal only" / "Nur Vorschlag zeigen";
-offer `commit` second: "Commit automatically" / "Automatisch committen".
-Pass the chosen mode to `init --commit-mode commit|propose`. When the invocation already
-names the mode, use it without asking. Never on resume, on re-init, in planning's exit-3
-unfinished-run path, or in smoke tests: reuse the stored choice. For planning, inspect
-existing unfinished runs before asking; ask only after the human chooses a fresh run.
-Omitting the flag at fresh init (including smoke tests) records `commit_mode: propose`.
-Legacy runs without the field read as `propose`; an existing run's mode cannot change.
-The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+Before a fresh init whose invocation does not already name `--commit-mode`, ask one `AskUserQuestion`
+single-select in the human's language: "How should this run handle its commit?" /
+"Wie soll dieser Lauf mit seinem Commit umgehen?" Offer `propose` first and recommended:
+"Show proposal only" / "Nur Vorschlag zeigen"; then `commit`: "Commit automatically" /
+"Automatisch committen". Pass `init --commit-mode commit|propose`; use an explicit mode without asking.
+Never on resume, re-init, the exit-3 unfinished-run path, or smoke tests. Inspect unfinished runs
+first; ask only after the human chooses a fresh run. Default and legacy mode: `propose`;
+stored choices cannot change. Briefing ends with `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+
+## Artifact language at initialization
+
+After commit mode, before default assignments, ask one `AskUserQuestion` single-select in the
+human's language: "Which language should spec and ticket content use?" Offer English first
+and recommended, then the human's language if not English; Other allows free text.
+Use an explicit `--artifact-language` without asking. Same fresh-run checks; never on resume, re-init, exit-3, or smoke tests.
+
+Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters
+(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init
+value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …`
+only with the field, before Commit.
 
 ## Default assignments at initialization
 
-At the same point as the commit-mode question, with the same exceptions, run
-`python3 scripts/agents_config.py compare-defaults` with the run's `--config` when that file
-already exists as valid schema v3, including one just migrated. Continue when `matches_defaults`
-is true.
+After both questions, with the same exceptions, run `python3 scripts/agents_config.py compare-defaults`
+with the run's `--config` if valid schema v3 exists (including after migration).
+Continue when `matches_defaults` is true.
 
 Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
 
@@ -79,8 +86,10 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   stage/pass filenames; every later same-pass attempt uses an `-attempt-N` suffix for its prompt,
   report, draft/proposal, optional corrected candidate, stage snapshot, and tree snapshots. Preparing
   a retry closes the earlier attempt and never reuses, deletes, or silently re-baselines its paths.
-- Ask human revalidation and approval questions in the user's language. Persist task inputs,
-  specifications, reports, state, and events in English; preserve literal product copy.
+- Questions and walkthroughs use the user's language; inputs keep their original language. Spec and ticket
+  content follow the chosen language (`artifact_language`). Headings, markers, JSON keys, reports,
+  state, events, and prompts stay English; preserve literal product copy. Field-level rules,
+  including English `technical_layers` and fixed labels: [references/spec-contract.md](references/spec-contract.md).
 - Ticket decomposition prefers a small number of cohesive tracer-bullet vertical slices. Never
   default to frontend/backend/database/test tickets, never persist token counts or estimates, and
   evaluate merge opportunities as explicitly as split points. Blocking edges must be genuine.
@@ -125,7 +134,7 @@ Use one task source:
 
 ```bash
 python3 scripts/planning_state.py init --task-file <path> --repo <repo> \
-  --workspace-id <workspace> [--config <agents.json>] [--accept-config]
+  --workspace-id <workspace> [--artifact-language <name>] [--config <agents.json>] [--accept-config]
 ```
 
 For conversation input, render a faithful summary into `--conversation-summary`. For grilling input,
@@ -155,17 +164,14 @@ Relative `--runs-root` and `--run-dir` paths are interpreted from the command's 
 as in grilling and issue-chain. Stored artifact pointers are canonical run-relative paths; readers
 join them to the run directory exactly once. Absolute worker handoff paths remain supported.
 
-Initialization is idempotent for the same run ID when `state.json` already exists: it prints the
-existing run directory and exits successfully without replacing input, preparing workers, or advancing
-the run. Inspect `status` and use `resume` to continue, including any pending human gates. Configuration,
-typed overrides, live probes, and `--accept-config` are refused on re-initialization rather than silently
-ignored; use stage preparation for fresh configuration. A directory without `state.json` does not by
-itself block initialization, so a failed start that only wrote `task.md` can be retried.
+Re-init with `state.json` prints the run directory; no input replacement, preparation, or advance.
+Use `status` and `resume` through human gates. Re-init refuses configuration,
+typed overrides, live probes, and `--accept-config`; use stage preparation. A directory without
+`state.json` can be retried, even if a failed start wrote `task.md`.
 
-For a different run ID, initialization looks for the newest unfinished run recorded for the same
-repository. It prints that run and its exact `resume` command and exits before creating another.
-Completed runs never block a later session. Use `--new-run` only after the human deliberately chooses
-a separate planning session beside an unfinished one; it never resets an existing run.
+For a different run ID, init prints this repository's newest unfinished run and exact `resume`
+command, then exits before creation. Completed runs do not block init. Use
+`--new-run` only after the human chooses a separate session; it never resets an existing run.
 
 ## Run briefing
 
@@ -550,8 +556,7 @@ the planning orchestrator, silently repair the working tree, or claim detection 
 files or skipped untracked content (files above the 8 MiB size cap or unsupported types). An unreadable
 or vanished untracked path fails capture with a diagnostic naming it instead of being skipped; restore
 access or remove the path and retry. Git only warns about an unreadable untracked directory, so its
-contents stay invisible rather than failing capture. Canonical persisted artifacts are English, literal
-product copy keeps its actual language, and human questions and walkthroughs use the user's language.
+contents stay invisible rather than failing capture. The Ground rules language split applies.
 
 Upgrade note: affected in-flight planning runs with pre-change untracked baselines must restart after
 upgrading. Do not migrate those baselines or bypass their seals.
