@@ -1,11 +1,11 @@
 ---
 name: cmux-planning
-description: Coordinate sequential visible CMUX planning workers that turn a task or explicitly human-revalidated cmux-grilling JSON/Markdown pair into an approved repository-grounded specification and a reviewed native executable issue tracker. Use for cmux planning, task-to-spec workflows, vertical ticket decomposition, reviewed local specifications and trackers, optional grilling handoffs, planning run initialization, approval, revision, and collision-safe tracker publication. Do not use this skill to implement product code or to skip either approval boundary.
+description: Coordinate sequential visible CMUX planning workers that turn plan files or a confirmed conversation brief, with optional human-revalidated cmux-grilling input, into an approved repository-grounded specification and a reviewed native executable issue tracker. Use for cmux planning, task-to-spec workflows, vertical ticket decomposition, reviewed local specifications and trackers, optional grilling handoffs, planning run initialization, approval, revision, and collision-safe tracker publication. Do not use this skill to implement product code or to skip either approval boundary.
 ---
 
 # CMUX Planning
 
-Turn one persisted task into an independently reviewed, explicitly approved specification and then
+Turn persisted planning inputs into an independently reviewed, explicitly approved specification and then
 an independently reviewed native issue tracker. The orchestrator coordinates; it does not author the
 planning artifacts or edit product code. Every author and reviewer runs as a fresh, visibly labeled
 CMUX pane.
@@ -60,7 +60,8 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   `git update-ref HEAD <P> <C>` to undo its proven commit. Never `--no-verify`; workers retain their
   index and HEAD prohibition. A HITL issue run always proposes.
 
-- Copy inputs unchanged to `inputs/task-files/NN-<basename>`; record `state.inputs`.
+- Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to
+  `inputs/conversation-brief.md`; record `state.inputs`.
   Legacy `state.task` / `task.md` works; preserve each input's language.
 - `cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by
   `markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with the
@@ -130,6 +131,12 @@ Read when installing planning or setting it up for first use: [references/instal
 
 ## Initialize
 
+Before a fresh init: unfinished-run check (exit 3), commit mode, language, draft and confirm the
+conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
+for its six English headings, human-language content and verbatim quotes; show it fully for confirmation.
+Require a plan file or brief; grilling is additional. Explicit brief decisions beat revalidated grilling
+decisions, which beat plans; other contradictions go to `Open Decisions`.
+
 Repeat `--task-file` for multiple plans:
 
 ```bash
@@ -137,7 +144,8 @@ python3 scripts/planning_state.py init --task-file <path> --repo <repo> \
   --workspace-id <workspace> [--artifact-language <name>] [--config <agents.json>] [--accept-config]
 ```
 
-For conversation input, render a faithful summary into `--conversation-summary`. For grilling input,
+For conversation input, pass `--conversation-brief <path> --brief-confirmed`, optionally alongside
+plan files. For grilling input,
 also pass `--grilling-json <result.json>` and optionally the exact `--grilling-markdown <result.md>`.
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
@@ -150,28 +158,7 @@ snapshot.
 
 Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
 
-Concrete direct-task and optional grilling-pair starts are:
-
-```bash
-python3 scripts/planning_state.py init --task-file ./task.md --repo . \
-  --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
-python3 scripts/planning_state.py init --task-file ./task.md --repo . \
-  --grilling-json ./grilling-result.json --grilling-markdown ./grilling-result.md \
-  --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
-```
-
-Relative `--runs-root` and `--run-dir` paths are interpreted from the command's working directory,
-as in grilling and issue-chain. Stored artifact pointers are canonical run-relative paths; readers
-join them to the run directory exactly once. Absolute worker handoff paths remain supported.
-
-Re-init with `state.json` prints the run directory; no input replacement, preparation, or advance.
-Use `status` and `resume` through human gates. Re-init refuses configuration,
-typed overrides, live probes, and `--accept-config`; use stage preparation. Without `state.json`,
-retry even if input copies exist.
-
-For a different run ID, init prints this repository's newest unfinished run and exact `resume`
-command, then exits before creation. Completed runs do not block init. Use
-`--new-run` only after the human chooses a separate session; it never resets an existing run.
+Read when choosing init examples, relative paths, or retry behavior: [references/initialization-details.md](references/initialization-details.md).
 
 ## Run briefing
 
@@ -531,7 +518,7 @@ optional `--tracker-slug` to check this equality outside the run; the orchestrat
 value at its gates. This does not authorize ticket revision after approval.
 
 Publication records `deliverables.tracker` alongside `published_tracker`. The frozen `tracker_slug`
-uses the first plan's first heading (or first line, at most 30 characters); `init --slug <value>` overrides it with lowercase
+uses the brief's Goal when present, otherwise the first plan's first heading (or first line, at most 30 characters); `init --slug <value>` overrides it with lowercase
 words separated by hyphens. Default ids are `plan-<tracker_slug>-<YYYY-MM-DD>-<HHMM>` (UTC).
 Legacy runs under `.scratch/orchestrator/planning-runs/` cannot continue; inspect read-only and obtain
 a human decision to restart or use a separately reviewed migration procedure.

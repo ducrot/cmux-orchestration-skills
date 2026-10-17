@@ -182,6 +182,123 @@ class PlanningFlow(unittest.TestCase):
             self.assertEqual(len(calls), expected_count)
         return result
 
+    def plan_file(self, text):
+        path = self.root / "task.md"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def brief_file(self, *, missing=None):
+        headings = ("Goal", "Decisions made", "Rejected alternatives", "Constraints / Non-goals",
+                    "Referenced material", "Still open")
+        path = self.root / "brief.md"
+        path.write_text("\n\n".join(f"## {heading}\n" + (
+            "Menschen helfen" if heading == "Goal" else "None")
+            for heading in headings if heading != missing), encoding="utf-8")
+        return path
+
+    def test_init_without_inputs_offers_unfinished_run_before_source_validation(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        before = file_contents(self.runs)
+        args = ("init", "--repo", str(self.repo), "--runs-root", str(self.runs),
+                "--workspace-id", "WORKSPACE-1")
+        offered = self.cli(STATE, *args)
+        self.assertEqual(offered.returncode, 3, offered.stderr)
+        self.assertEqual(json.loads(offered.stdout)["unfinished_run"]["run_id"], "plan-test")
+        fresh = self.cli(STATE, *args, "--new-run")
+        self.assertNotEqual(fresh.returncode, 0)
+        self.assertNotEqual(fresh.returncode, 3)
+        self.assertIn("at least one --task-file or --conversation-brief", fresh.stderr)
+        self.assertEqual(file_contents(self.runs), before)
+
+    def test_conversation_brief_goal_folds_umlauts_for_tracker_slug(self):
+        brief = self.brief_file()
+        brief.write_text(brief.read_text(encoding="utf-8").replace(
+            "Menschen helfen", "Größere Übersicht für Nutzer"), encoding="utf-8")
+        result = self.cli(STATE, "init", "--conversation-brief", str(brief), "--brief-confirmed",
+                          "--run-id", "plan-test", "--no-workspace")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["tracker_slug"], "groessere-uebersicht-fuer")
+
+    def test_neighbor_hint_requires_a_plan_file_alongside_conversation_brief(self):
+        brief = self.brief_file()
+        for with_plan in (False, True):
+            with self.subTest(with_plan=with_plan):
+                run_id = f"neighbor-hint-{with_plan}"
+                plan = ["--task-file", self.plan_file("# Plan title")] if with_plan else []
+                result = self.cli(STATE, "init", "--conversation-brief", str(brief),
+                                  "--brief-confirmed", *plan, "--run-id", run_id,
+                                  "--new-run", "--no-workspace")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rendered = self.cli(RENDER, "--run-dir", str(self.runs / run_id),
+                                    "--stage", "spec", "--pass", "1")
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                prompt = Path(rendered.stdout.strip()).read_text(encoding="utf-8")
+                self.assertIn("Menschen helfen", prompt)
+                self.assertEqual("You may read neighboring files" in prompt, with_plan)
+
+    def test_conversation_brief_validation_before_run_creation(self):
+        for missing in ("Goal", "Decisions made", "Rejected alternatives", "Constraints / Non-goals",
+                        "Referenced material", "Still open"):
+            with self.subTest(missing=missing):
+                result = self.cli(STATE, "init", "--conversation-brief", str(self.brief_file(missing=missing)),
+                                  "--brief-confirmed", "--no-workspace", "--run-id", "plan-test")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(missing, result.stderr)
+                self.assertFalse(self.run_dir.exists())
+        result = self.cli(STATE, "init", "--conversation-brief", str(self.brief_file()),
+                          "--no-workspace", "--run-id", "plan-test")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--brief-confirmed", result.stderr)
+        self.assertFalse(self.run_dir.exists())
+
+    def test_conversation_brief_cli_to_prompts_and_manifest(self):
+        brief = self.brief_file()
+        payload = brief.read_bytes()
+        for with_plan in (False, True):
+            with self.subTest(with_plan=with_plan):
+                run_id = f"brief-{with_plan}"
+                plan = ["--task-file", self.plan_file("# Plan title")] if with_plan else []
+                result = self.cli(STATE, "init", "--conversation-brief", str(brief), "--brief-confirmed",
+                                  *plan, "--run-id", run_id, "--new-run", "--no-workspace")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run_dir = self.runs / run_id
+                state = json.loads((run_dir / "state.json").read_text())
+                self.assertEqual(state["tracker_slug"], "menschen-helfen")
+                item = state["inputs"][-1]
+                self.assertEqual(item["kind"], "conversation-brief")
+                self.assertEqual(item["original_path"], str(brief.resolve()))
+                self.assertEqual((run_dir / item["path"]).read_bytes(), payload)
+                self.assertEqual(item["sha256"], hashlib.sha256(payload).hexdigest())
+                self.assertEqual(len(state["inputs"]), 2 if with_plan else 1)
+                events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+                self.assertTrue(next(e for e in events if e["type"] == "run.init")["data"]["brief_confirmed"])
+                from artifact_manifest import verify_entry
+                verify_entry(state, run_dir, item["manifest_id"], expected_kind="conversation-brief")
+                rendered = self.cli(RENDER, "--run-dir", str(run_dir), "--stage", "spec", "--pass", "1")
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                prompt = Path(rendered.stdout.strip()).read_text()
+                self.assertIn("Menschen helfen", prompt)
+                self.assertIn("explicit decision in the brief", prompt)
+                # Reuse the normal author gate to exercise the independent reviewer too.
+                self.run_dir = run_dir
+                self.render_and_baseline("spec")
+                self.write_author_handoff()
+                accepted = self.cli(STATE, "accept-author", "--run-dir", str(run_dir))
+                self.assertEqual(accepted.returncode, 0, accepted.stderr)
+                rendered = self.cli(RENDER, "--run-dir", str(run_dir), "--stage", "spec-review", "--pass", "1")
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                review = Path(rendered.stdout.strip()).read_text()
+                self.assertIn("Menschen helfen", review)
+                self.assertIn("explicit decision in the brief", review)
+
+    def test_init_requires_a_primary_source(self):
+        for extra in ([], ["--brief-confirmed"], ["--grilling-json", "unused.json"]):
+            result = self.cli(STATE, "init", "--no-workspace", *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("at least one", result.stderr)
+
     def board_calls(self) -> list[list[str]]:
         lines = self.board_log.read_text().splitlines() if self.board_log.exists() else []
         return [json.loads(line) for line in lines]
@@ -217,7 +334,7 @@ class PlanningFlow(unittest.TestCase):
 
     def test_board_artifact_integrity_uses_raw_run_stage(self):
         artifact, markdown = self.grilling_pair()
-        initialized = self.cli(STATE, "init", "--task", "Plan", "--grilling-json", str(artifact),
+        initialized = self.cli(STATE, "init", "--task-file", self.plan_file("Plan"), "--grilling-json", str(artifact),
                                "--grilling-markdown", str(markdown), "--repo", str(self.repo),
                                "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -232,8 +349,8 @@ class PlanningFlow(unittest.TestCase):
         return self.cli(
             STATE,
             "init",
-            "--task",
-            "Bitte sichere Planung erstellen.",
+            "--task-file",
+            self.plan_file("Bitte sichere Planung erstellen."),
             "--slug",
             "planned-feature",
             "--repo",
@@ -251,7 +368,7 @@ class PlanningFlow(unittest.TestCase):
         sibling = self.runs / "grill-sibling"
         sibling.mkdir(parents=True)
         (sibling / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1, "slug": "sibling"}))
-        result = self.cli(STATE, "init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--workspace-id", "WORKSPACE-1")
+        result = self.cli(STATE, "init", "--task-file", self.plan_file("Task: Static teaser website for cmux Orchestration skills"), "--workspace-id", "WORKSPACE-1")
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip().splitlines()[-1]
         self.assertEqual(run_dir.parent, self.runs)
@@ -262,18 +379,18 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(state["layout_version"], 1)
         self.assertEqual(state["schema_version"], 3)
         self.assertEqual(state["deliverables"], {})
-        offered = self.cli(STATE, "init", "--task", "Another task", "--workspace-id", "WORKSPACE-1")
+        offered = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--workspace-id", "WORKSPACE-1")
         self.assertEqual(json.loads(offered.stdout)["unfinished_run"]["run_id"], run_dir.name)
-        override = self.cli(STATE, "init", "--task", "Another task", "--slug", "frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
+        override = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--slug", "frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(override.returncode, 0, override.stderr)
         overridden = self.repo / override.stdout.strip().splitlines()[-1]
         self.assertTrue(overridden.name.startswith("plan-frozen-name-"))
         self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
-        reinit = self.cli(STATE, "init", "--task", "Changed task", "--run-id", overridden.name, "--slug", "different-name", "--workspace-id", "WORKSPACE-1")
+        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Changed task"), "--run-id", overridden.name, "--slug", "different-name", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(reinit.returncode, 0, reinit.stderr)
         self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
         for slug in ("", "Upper", "a--b", "../x", "x" * 31):
-            invalid = self.cli(STATE, "init", "--task", "Task", "--run-id", "invalid", "--slug", slug, "--new-run", "--workspace-id", "WORKSPACE-1")
+            invalid = self.cli(STATE, "init", "--task-file", self.plan_file("Task"), "--run-id", "invalid", "--slug", slug, "--new-run", "--workspace-id", "WORKSPACE-1")
             self.assertNotEqual(invalid.returncode, 0)
             self.assertIn("--slug", invalid.stderr)
             self.assertFalse((self.runs / "invalid").exists())
@@ -309,7 +426,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
         before = file_contents(legacy_dir)
-        reinit = self.cli(STATE, "init", "--task", "Task", "--run-id", legacy_dir.name, "--runs-root", str(legacy_dir.parent), "--workspace-id", "WORKSPACE-1")
+        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Task"), "--run-id", legacy_dir.name, "--runs-root", str(legacy_dir.parent), "--workspace-id", "WORKSPACE-1")
         self.assertNotEqual(reinit.returncode, 0)
         self.assertIn("legacy layout", reinit.stderr)
         self.assertIn("human decision to restart", reinit.stderr)
@@ -324,7 +441,7 @@ class PlanningFlow(unittest.TestCase):
         ):
             with self.subTest(mode=mode):
                 result = self.cli(
-                    STATE, "init", "--task", "Title\nSecond line\nThird line",
+                    STATE, "init", "--task-file", self.plan_file("Title\nSecond line\nThird line"),
                     "--run-id", f"plan-{mode}", "--workspace-id", "WORKSPACE-1",
                     "--new-run", *root_args,
                 )
@@ -368,7 +485,7 @@ class PlanningFlow(unittest.TestCase):
         for extra in ([], ["--new-run"]):
             with self.subTest(extra=extra):
                 result = self.cli(
-                    STATE, "init", "--task", "Replacement task must not be used",
+                    STATE, "init", "--task-file", self.plan_file("Replacement task must not be used"),
                     "--run-id", "plan-test", *extra,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -378,7 +495,7 @@ class PlanningFlow(unittest.TestCase):
 
     def test_artifact_language_defaults_choice_and_legacy_reinitialization(self):
         def init(run_id, *extra):
-            return self.cli(STATE, "init", "--task", "Sprachwahl", "--run-id", run_id,
+            return self.cli(STATE, "init", "--task-file", self.plan_file("Sprachwahl"), "--run-id", run_id,
                             "--no-workspace", "--new-run", *extra)
 
         for index, language in enumerate((None, "German", "Brazilian Portuguese", "L" * 40)):
@@ -412,7 +529,7 @@ class PlanningFlow(unittest.TestCase):
 
     def test_artifact_language_rejects_empty_and_overlong_values(self):
         for language in ("", "   ", "L" * 41):
-            result = self.cli(STATE, "init", "--task", "Language validation", "--run-id", "bad-language",
+            result = self.cli(STATE, "init", "--task-file", self.plan_file("Language validation"), "--run-id", "bad-language",
                               "--artifact-language", language, "--no-workspace")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("English language name", result.stderr)
@@ -420,7 +537,7 @@ class PlanningFlow(unittest.TestCase):
 
     def test_commit_modes_and_legacy_default(self):
         def init(run_id, *extra):
-            return self.cli(STATE, "init", "--task", "Mode test", "--run-id", run_id, "--no-workspace", "--new-run", *extra)
+            return self.cli(STATE, "init", "--task-file", self.plan_file("Mode test"), "--run-id", run_id, "--no-workspace", "--new-run", *extra)
 
         for mode in (None, "commit", "propose"):
             run_id = "mode-" + str(mode)
@@ -464,7 +581,7 @@ class PlanningFlow(unittest.TestCase):
             ["--model", "spec=opus"], ["--probe-profiles"], ["--probe-timeout", "10"],
         ):
             with self.subTest(extra=extra):
-                result = self.cli(STATE, "init", "--task", "Same run", "--run-id", "plan-test", *extra)
+                result = self.cli(STATE, "init", "--task-file", self.plan_file("Same run"), "--run-id", "plan-test", *extra)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("not to re-initialization", result.stderr)
                 self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
@@ -474,7 +591,7 @@ class PlanningFlow(unittest.TestCase):
         result = self.init_direct()
         self.assertEqual(result.returncode, 2, result.stderr)
         before = (self.run_dir / "state.json").read_bytes()
-        repeated = self.cli(STATE, "init", "--task", "Same run", "--run-id", "plan-test")
+        repeated = self.cli(STATE, "init", "--task-file", self.plan_file("Same run"), "--run-id", "plan-test")
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
         self.assertFalse(list((self.run_dir / "stage-snapshots").iterdir()))
@@ -485,7 +602,7 @@ class PlanningFlow(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(other_repo)], check=True)
         before = (self.run_dir / "state.json").read_bytes()
         repeated = self.cli(
-            STATE, "init", "--task", "Another repository", "--run-id", "plan-test",
+            STATE, "init", "--task-file", self.plan_file("Another repository"), "--run-id", "plan-test",
             "--repo", str(other_repo),
         )
         self.assertEqual(repeated.returncode, 1, repeated.stderr)
@@ -969,7 +1086,7 @@ sha256 {resulting_digest or digest}
                                 pass_num=1, attempt=1, producer="run.init")
         state["task"] = {"path": "task.md", "sha256": entry["sha256"], "manifest_id": entry["id"]}
         state_path.write_text(json.dumps(state))
-        self.init_direct = lambda: self.cli(STATE, "init", "--task", "legacy", "--run-id", "plan-test", "--no-workspace")
+        self.init_direct = lambda: self.cli(STATE, "init", "--task-file", self.plan_file("legacy"), "--run-id", "plan-test", "--no-workspace")
         self.approve_spec_to_tickets()
         self.render_and_baseline("tickets")
         self.write_tickets_handoff()
@@ -1159,8 +1276,8 @@ sha256 {resulting_digest or digest}
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Plan kind binding",
+            "--task-file",
+            self.plan_file("Plan kind binding"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -1266,8 +1383,8 @@ sha256 {resulting_digest or digest}
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Plan symlink safety",
+            "--task-file",
+            self.plan_file("Plan symlink safety"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -2981,7 +3098,7 @@ sha256 {resulting_digest or digest}
         (self.runs / ".gitignore").write_text("**\n!*/\n!*.md\n")
         self.run_dir = self.runs / "plan-test"
         initialized = self.cli(
-            STATE, "init", "--task", "Plan a feature", "--slug", "planned-feature",
+            STATE, "init", "--task-file", self.plan_file("Plan a feature"), "--slug", "planned-feature",
             "--repo", str(self.repo), "--run-id", "plan-test", "--runs-root", str(self.runs),
             "--workspace-id", "WORKSPACE-1", "--config", str(self.config),
         )
@@ -3125,8 +3242,8 @@ sha256 {resulting_digest or digest}
         proc = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task",
+            "--task-file",
+            self.plan_file("Task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3150,8 +3267,8 @@ sha256 {resulting_digest or digest}
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task",
+            "--task-file",
+            self.plan_file("Task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3234,8 +3351,8 @@ sha256 {resulting_digest or digest}
         proc = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task",
+            "--task-file",
+            self.plan_file("Task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3294,8 +3411,8 @@ sha256 {resulting_digest or digest}
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task",
+            "--task-file",
+            self.plan_file("Task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3326,8 +3443,8 @@ sha256 {resulting_digest or digest}
         proc = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task",
+            "--task-file",
+            self.plan_file("Task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3424,7 +3541,7 @@ Option?
         artifact, markdown = self.grilling_pair()
         run_dir = self.runs / "plan-grilling"
         initialized = self.cli(
-            STATE, "init", "--task", "Planung",
+            STATE, "init", "--task-file", self.plan_file("Planung"),
             "--grilling-json", str(artifact), "--grilling-markdown", str(markdown),
             "--repo", str(self.repo), "--run-id", "plan-grilling",
             "--runs-root", str(self.runs), "--workspace-id", "WORKSPACE-1",
@@ -3506,8 +3623,8 @@ Option?
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Planung",
+            "--task-file",
+            self.plan_file("Planung"),
             "--grilling-json",
             str(artifact),
             "--grilling-markdown",
@@ -3548,7 +3665,7 @@ Option?
         markdown.unlink()
         run_dir = self.runs / "bad-grilling"
         failed = self.cli(
-            STATE, "init", "--task", "Planung", "--grilling-json", str(artifact),
+            STATE, "init", "--task-file", self.plan_file("Planung"), "--grilling-json", str(artifact),
             "--repo", str(self.repo), "--run-id", "bad-grilling",
             "--runs-root", str(self.runs), "--workspace-id", "WORKSPACE-1",
             "--config", str(self.config),
@@ -3601,8 +3718,8 @@ Option?
         spaced_init = self.cli(
             STATE,
             "init",
-            "--task",
-            "Task in a spaced run root",
+            "--task-file",
+            self.plan_file("Task in a spaced run root"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3619,8 +3736,8 @@ Option?
         spaced_duplicate = self.cli(
             STATE,
             "init",
-            "--task",
-            "Another task",
+            "--task-file",
+            self.plan_file("Another task"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -3641,8 +3758,8 @@ Option?
         deliberate = self.cli(
             STATE,
             "init",
-            "--task",
-            "A separate deliberate planning session",
+            "--task-file",
+            self.plan_file("A separate deliberate planning session"),
             "--repo",
             str(self.repo),
             "--run-id",
@@ -4337,8 +4454,8 @@ Option?
         initialized = self.cli(
             STATE,
             "init",
-            "--task",
-            "Planung",
+            "--task-file",
+            self.plan_file("Planung"),
             "--grilling-json",
             str(artifact),
             "--grilling-markdown",
@@ -4666,8 +4783,8 @@ Option?
         next_run = self.cli(
             STATE,
             "init",
-            "--task",
-            "A later planning task",
+            "--task-file",
+            self.plan_file("A later planning task"),
             "--repo",
             str(self.repo),
             "--run-id",

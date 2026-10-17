@@ -188,9 +188,17 @@ def input_context(state: dict, inputs: list[tuple[dict, Path]], *, inline: bool)
         if inline:
             block += f"\n\n```text\n{path.read_text(encoding='utf-8').rstrip()}\n```"
         blocks.append(block)
-    if inline and any(item["original_path"] not in INLINE_SOURCES for item, _ in inputs):
+    if inline and any(item["original_path"] not in INLINE_SOURCES and item["kind"] != "conversation-brief"
+                      for item, _ in inputs):
         blocks.append("You may read neighboring files at the original paths as unpinned context.")
     return "\n\n".join(blocks)
+
+
+INPUT_PRECEDENCE = (
+    "An explicit decision in the brief takes precedence over revalidated grilling decisions, "
+    "which take precedence over plan files. Contradictions between plan files or without an "
+    "explicit decision belong under `Open Decisions`."
+)
 
 
 def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
@@ -214,6 +222,8 @@ When information is genuinely missing, record it under `Open Decisions` instead 
 ## Optional Revalidated Grilling Context
 
 {normalized_context(run_dir, state)}
+
+{INPUT_PRECEDENCE}
 
 ## Human Specification Revision Feedback
 
@@ -321,6 +331,8 @@ the complete draft, and the contract below.
 ### Optional Revalidated Grilling Context
 
 {normalized_context(run_dir, state)}
+
+{INPUT_PRECEDENCE}
 
 ### Author Report
 

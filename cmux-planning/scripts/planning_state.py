@@ -109,6 +109,7 @@ from stage_snapshot import (
 )
 from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_digest, verify
 from tracker_contract import (
+    ascii_fold,
     stage_native_tracker,
     validate_native_tracker,
     validate_proposal,
@@ -152,14 +153,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init = subparsers.add_parser("init", help="Persist planning input and prepare direct-task spec work")
+    init = subparsers.add_parser("init", allow_abbrev=False, help="Persist planning input and prepare direct-task spec work")
     init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
     init.add_argument("--artifact-language", type=artifact_language_name, default=None,
                       help="English language name for spec and ticket content (default: English)")
-    task = init.add_mutually_exclusive_group(required=True)
-    task.add_argument("--task")
-    task.add_argument("--task-file", action="append")
-    task.add_argument("--conversation-summary")
+    init.add_argument("--task-file", action="append")
+    init.add_argument("--conversation-brief")
+    init.add_argument("--brief-confirmed", action="store_true")
     init.add_argument("--grilling-json")
     init.add_argument("--grilling-markdown")
     init.add_argument("--repo", default=".")
@@ -274,21 +274,61 @@ def resolve_workspace(args: argparse.Namespace) -> str | None:
     return workspace
 
 
-def task_inputs(args: argparse.Namespace) -> list[tuple[bytes, str, str]]:
-    if args.task_file:
-        paths = [Path(name).expanduser().resolve() for name in args.task_file]
-        sources = [(path.read_bytes(), str(path), path.name) for path in paths]
-    elif args.task is not None:
-        sources = [(args.task.encode("utf-8"), "explicit-text", "task.md")]
-    else:
-        sources = [(args.conversation_summary.encode("utf-8"), "conversation-summary", "task.md")]
-    for payload, source, _ in sources:
+BRIEF_HEADINGS = (
+    "Goal", "Decisions made", "Rejected alternatives", "Constraints / Non-goals",
+    "Referenced material", "Still open",
+)
+
+
+def brief_sections(text: str) -> dict[str, str]:
+    """Read actual Markdown headings, ignoring examples inside fenced blocks."""
+    sections = {}
+    current = None
+    fence = None
+    for line in text.splitlines():
+        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence) and not marker.group(2).strip():
+                fence = None
+            continue
+        if fence:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+?)(?:\s+#+)?\s*$", line)
+        if heading:
+            current = heading.group(1)
+            sections.setdefault(current, [])
+        elif current is not None:
+            sections[current].append(line)
+    return {heading: "\n".join(lines).strip() for heading, lines in sections.items()}
+
+
+def task_inputs(args: argparse.Namespace) -> list[tuple[bytes, str, str, str]]:
+    if not args.task_file and not args.conversation_brief:
+        raise ConfigError("at least one --task-file or --conversation-brief is required")
+    if args.conversation_brief and not args.brief_confirmed:
+        raise ConfigError("--conversation-brief requires --brief-confirmed after human confirmation")
+    named = [(name, "task-file") for name in args.task_file or []]
+    if args.conversation_brief:
+        named.append((args.conversation_brief, "conversation-brief"))
+    sources = []
+    for name, kind in named:
+        path = Path(name).expanduser().resolve()
+        sources.append((path.read_bytes(), str(path), path.name, kind))
+    for payload, source, _, kind in sources:
         try:
             text = payload.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ConfigError(f"task input {source} is not UTF-8: {error}") from error
         if not text.strip():
             raise ConfigError(f"task input {source} is empty")
+        if kind == "conversation-brief":
+            sections = brief_sections(text)
+            missing = [heading for heading in BRIEF_HEADINGS if heading not in sections]
+            if missing:
+                raise ConfigError(f"conversation brief lacks headings: {', '.join(missing)}")
     return sources
 
 
@@ -719,23 +759,38 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
     return state
 
 
+def offer_unfinished_run(runs_root: Path, repository: Path) -> bool:
+    unfinished = unfinished_runs(runs_root, repository)
+    if unfinished:
+        latest = unfinished[0]
+        print(
+            json.dumps(
+                {
+                    "unfinished_run": latest,
+                    "recommended_next": {
+                        "action": "inspect and resume the newest unfinished planning run",
+                        "command": shell_join(
+                            [
+                                "python3",
+                                Path(__file__).resolve(),
+                                "resume",
+                                "--run-dir",
+                                latest["run_dir"],
+                            ]
+                        ),
+                    },
+                    "new_run_override": "rerun init with --new-run",
+                },
+                sort_keys=True,
+            )
+        )
+        return True
+    return False
+
+
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
-    sources = task_inputs(args)
-    task_bytes = sources[0][0]
     runs_root = Path(args.runs_root)
-    now = utc_now()
-    lines = task_bytes.decode("utf-8").strip().splitlines()
-    title, fenced = lines[0], False
-    for line in lines:
-        if re.match(r"^\s*(```|~~~)", line):
-            fenced = not fenced
-        elif not fenced and re.match(r"^#{1,6}\s+", line):
-            title = line.lstrip("#").strip()
-            break
-    slug = args.slug if args.slug is not None else slugify(title)
-    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
-        raise ConfigError("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
     if any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
            for path in (runs_root.resolve(), *runs_root.resolve().parents)):
         raise ConfigError(
@@ -743,6 +798,24 @@ def init_run(args: argparse.Namespace) -> int:
             "then obtain a human decision to restart the run or use a separately reviewed "
             "migration procedure. New runs belong under .scratch/orchestrator/runs/"
         )
+    if not args.new_run and not args.run_id and offer_unfinished_run(runs_root, repository):
+        return 3
+    sources = task_inputs(args)
+    brief = next((payload for payload, _, _, kind in sources if kind == "conversation-brief"), None)
+    title_text = (brief_sections(brief.decode("utf-8"))["Goal"] if brief is not None
+                  else sources[0][0].decode("utf-8"))
+    now = utc_now()
+    lines = title_text.strip().splitlines()
+    title, fenced = lines[0] if lines else "conversation", False
+    for line in lines:
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        elif not fenced and re.match(r"^#{1,6}\s+", line):
+            title = line.lstrip("#").strip()
+            break
+    slug = args.slug if args.slug is not None else slugify(ascii_fold(title))
+    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise ConfigError("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
     run_id = (
         checked_run_id(args.run_id)
         if args.run_id
@@ -779,32 +852,8 @@ def init_run(args: argparse.Namespace) -> int:
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
-    if not args.new_run:
-        unfinished = unfinished_runs(runs_root, repository)
-        if unfinished:
-            latest = unfinished[0]
-            print(
-                json.dumps(
-                    {
-                        "unfinished_run": latest,
-                        "recommended_next": {
-                            "action": "inspect and resume the newest unfinished planning run",
-                            "command": shell_join(
-                                [
-                                    "python3",
-                                    Path(__file__).resolve(),
-                                    "resume",
-                                    "--run-dir",
-                                    latest["run_dir"],
-                                ]
-                            ),
-                        },
-                        "new_run_override": "rerun init with --new-run",
-                    },
-                    sort_keys=True,
-                )
-            )
-            return 3
+    if not args.new_run and offer_unfinished_run(runs_root, repository):
+        return 3
     grilling = None
     if args.grilling_markdown and not args.grilling_json:
         raise ConfigError("--grilling-markdown requires --grilling-json")
@@ -839,10 +888,11 @@ def init_run(args: argparse.Namespace) -> int:
     for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)
     inputs = []
-    for number, (payload, original, basename) in enumerate(sources, 1):
-        relative = f"inputs/task-files/{number:02d}-{basename}"
+    for number, (payload, original, basename, kind) in enumerate(sources, 1):
+        relative = ("inputs/conversation-brief.md" if kind == "conversation-brief"
+                    else f"inputs/task-files/{number:02d}-{basename}")
         atomic_write(run_dir / relative, payload)
-        inputs.append({"kind": "task-file", "original_path": original,
+        inputs.append({"kind": kind, "original_path": original,
                        "path": relative, "sha256": sha256_bytes(payload)})
     grilling_state = None
     if grilling is not None:
@@ -968,7 +1018,7 @@ def init_run(args: argparse.Namespace) -> int:
         run_dir,
         "run.init",
         "persisted validated input at a recoverable initialization checkpoint",
-        {"state": state},
+        {"state": state, "brief_confirmed": bool(args.conversation_brief)},
     )
     finish_input_validation(run_dir)
     prepared: dict[str, Any] = {}

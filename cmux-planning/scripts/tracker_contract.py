@@ -493,11 +493,14 @@ def validate_ticket_review_report(
     }
 
 
-def issue_slug(title: str) -> str:
-    composed = unicodedata.normalize("NFC", title).lower().translate(GERMAN_TRANSLITERATION)
+def ascii_fold(text: str) -> str:
+    composed = unicodedata.normalize("NFC", text).lower().translate(GERMAN_TRANSLITERATION)
     normalized = unicodedata.normalize("NFKD", composed)
-    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
-    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    return "".join(character for character in normalized if not unicodedata.combining(character))
+
+
+def issue_slug(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_fold(title)).strip("-")
     return slug[:72].rstrip("-") or "work"
 
 
