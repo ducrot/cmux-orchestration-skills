@@ -60,8 +60,8 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   `git update-ref HEAD <P> <C>` to undo its proven commit. Never `--no-verify`; workers retain their
   index and HEAD prohibition. A HITL issue run always proposes.
 
-- Persist exactly one run-scoped `task.md`. Preserve explicit task text or file content in its
-  original language; a conversation start persists the orchestrator's summary.
+- Copy inputs unchanged to `inputs/task-files/NN-<basename>`; record `state.inputs`.
+  Legacy `state.task` / `task.md` works; preserve each input's language.
 - `cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by
   `markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with the
   human before preparing a worker. Structural validation proves integrity, not freshness.
@@ -130,7 +130,7 @@ Read when installing planning or setting it up for first use: [references/instal
 
 ## Initialize
 
-Use one task source:
+Repeat `--task-file` for multiple plans:
 
 ```bash
 python3 scripts/planning_state.py init --task-file <path> --repo <repo> \
@@ -166,8 +166,8 @@ join them to the run directory exactly once. Absolute worker handoff paths remai
 
 Re-init with `state.json` prints the run directory; no input replacement, preparation, or advance.
 Use `status` and `resume` through human gates. Re-init refuses configuration,
-typed overrides, live probes, and `--accept-config`; use stage preparation. A directory without
-`state.json` can be retried, even if a failed start wrote `task.md`.
+typed overrides, live probes, and `--accept-config`; use stage preparation. Without `state.json`,
+retry even if input copies exist.
 
 For a different run ID, init prints this repository's newest unfinished run and exact `resume`
 command, then exits before creation. Completed runs do not block init. Use
@@ -187,7 +187,7 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 
 - `draft` writes `briefing.md` with the facts filled in (task source, stage flow, tracker slug) and
   never overwrites an existing briefing. Pick `--lang` by the human's language.
-- Fill only the placeholders, from `task.md` and, for grilling input, the copied pair:
+- Fill placeholders from input copies (legacy `task.md`) and the optional grilling pair:
   `{{task}}` is what will be planned in two or three sentences; `{{constraints}}` lists the fixed
   constraints and non-goals. Neutral wording; keep the fixed lines and their order unchanged.
 - `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
@@ -531,12 +531,12 @@ optional `--tracker-slug` to check this equality outside the run; the orchestrat
 value at its gates. This does not authorize ticket revision after approval.
 
 Publication records `deliverables.tracker` alongside `published_tracker`. The frozen `tracker_slug`
-is derived from the task (at most 30 characters); `init --slug <value>` overrides it with lowercase
+uses the first plan's first heading (or first line, at most 30 characters); `init --slug <value>` overrides it with lowercase
 words separated by hyphens. Default ids are `plan-<tracker_slug>-<YYYY-MM-DD>-<HHMM>` (UTC).
 Legacy runs under `.scratch/orchestrator/planning-runs/` cannot continue; inspect read-only and obtain
 a human decision to restart or use a separately reviewed migration procedure.
 
-Runs live under `.scratch/orchestrator/runs/<run-id>/` by default. `task.md`, optional `inputs/`,
+Runs live under `.scratch/orchestrator/runs/<run-id>/` by default. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
 `state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
 `spec.md`, `map.md`, `decisions.md`, and `issues/` at the explicit target. That target is immediately

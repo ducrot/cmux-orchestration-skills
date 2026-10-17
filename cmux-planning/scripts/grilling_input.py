@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from agents_config import ObjectWithDuplicates, duplicate_keys
-from orchestrator_lib import checkout_identity, read_json, sha256_bytes, utc_now, write_json
+from orchestrator_lib import checkout_identity, read_json, sha256_bytes, sha256_file, utc_now, write_json
 from spec_contract import ContractError, sections
 
 
@@ -273,7 +273,7 @@ def normalize_revalidation(
     imported: dict[str, Any],
     outcomes: dict[str, Any],
     *,
-    task_path: Path,
+    input_paths: list[Path],
     repository: Path,
 ) -> dict[str, Any] | None:
     if outcomes.get("accepted") is False:
@@ -313,6 +313,7 @@ def normalize_revalidation(
                 "reason": outcome.get("reason", ""),
             }
         )
+    digests = [sha256_file(path) for path in input_paths]
     now = utc_now()
     event_seed = json.dumps(outcomes, sort_keys=True).encode("utf-8") + now.encode("utf-8")
     return {
@@ -328,8 +329,9 @@ def normalize_revalidation(
         },
         "task": {
             "artifact_text": data["task"],
-            "planning_path": str(task_path.resolve()),
-            "planning_sha256": sha256_bytes(task_path.read_bytes()),
+            "planning_inputs": [{"path": str(path.resolve()), "sha256": digest}
+                                for path, digest in zip(input_paths, digests)],
+            "planning_sha256": sha256_bytes(json.dumps(digests).encode("utf-8")),
         },
         "checkout": checkout_identity(repository),
         "premise_corrections": corrections,
@@ -350,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
     normalize.add_argument("--json", required=True)
     normalize.add_argument("--markdown")
     normalize.add_argument("--repo", default=".")
-    normalize.add_argument("--task-file", required=True)
+    normalize.add_argument("--task-file", required=True, action="append")
     normalize.add_argument("--outcomes", required=True)
     normalize.add_argument("--out", required=True)
     return parser
@@ -382,7 +384,8 @@ def main() -> int:
         if not isinstance(outcomes, dict):
             raise GrillingInputError("revalidation outcomes root must be an object")
         normalized = normalize_revalidation(
-            imported, outcomes, task_path=Path(args.task_file), repository=Path(args.repo).resolve()
+            imported, outcomes, input_paths=[Path(name) for name in args.task_file],
+            repository=Path(args.repo).resolve()
         )
         if normalized is None:
             print("revalidation=refused")

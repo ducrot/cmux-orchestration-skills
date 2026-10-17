@@ -183,9 +183,7 @@ Welche Variante?
 
     def test_normalized_handoff_is_complete_for_confirm_correct_discard_and_decisions(self):
         imported = validate_pair(self.artifact, self.markdown, self.repo)
-        normalized = normalize_revalidation(
-            imported,
-            {
+        outcomes = {
                 "accepted": True,
                 "premise_corrections": [{"index": 1, "outcome": "confirmed", "reason": ""}],
                 "assumptions": [
@@ -193,10 +191,12 @@ Welche Variante?
                     {"index": 2, "outcome": "discarded", "reason": "Nicht mehr relevant"},
                 ],
                 "decisions": [{"id": "D1", "status": "deferred", "decision": "Follow-up", "reason": "Scope"}],
-            },
-            task_path=self.task,
-            repository=self.repo,
-        )
+            }
+        second = self.repo / "second.md"
+        second.write_text("Second planning input")
+        def normalize(paths):
+            return normalize_revalidation(imported, outcomes, input_paths=paths, repository=self.repo)
+        normalized = normalize([self.task, second])
         assert normalized is not None
         self.assertEqual(normalized["assumptions"][0]["value"], "Korrigiert")
         self.assertIsNone(normalized["assumptions"][1]["value"])
@@ -205,13 +205,24 @@ Welche Variante?
         self.assertEqual(normalized["checkout"]["repository"], str(self.repo.resolve()))
         self.assertEqual(normalized["evidence"], self.data["qa"])
 
+        import hashlib
+        digests = [hashlib.sha256(path.read_bytes()).hexdigest() for path in (self.task, second)]
+        self.assertEqual(normalized["task"]["planning_sha256"],
+                         hashlib.sha256(json.dumps(digests).encode("utf-8")).hexdigest())
+        self.assertEqual(len(normalized["task"]["planning_inputs"]), 2)
+        self.assertNotEqual(normalize([second, self.task])["task"]["planning_sha256"],
+                            normalized["task"]["planning_sha256"])
+        second.write_text("Changed second planning input")
+        self.assertNotEqual(normalize([self.task, second])["task"]["planning_sha256"],
+                            normalized["task"]["planning_sha256"])
+
     def test_refusal_returns_no_handoff(self):
         imported = validate_pair(self.artifact, self.markdown, self.repo)
         self.assertIsNone(
             normalize_revalidation(
                 imported,
                 {"accepted": False},
-                task_path=self.task,
+                input_paths=[self.task],
                 repository=self.repo,
             )
         )

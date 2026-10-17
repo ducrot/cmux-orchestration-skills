@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from planning_inputs import planning_inputs
 from worker_readiness import readiness_status
 
 from artifact_manifest import (
@@ -447,10 +448,13 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
 
 
 def recovery_context(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
-    task_pointer = state.get("task")
-    task_relative = task_pointer.get("path", "task.md") if isinstance(task_pointer, dict) else "task.md"
+    try:
+        inputs = [str(run_dir / item["path"]) for item in planning_inputs(state)]
+    except (KeyError, TypeError, ValueError):
+        inputs = []
     paths = {
-        "task": str(run_dir / task_relative),
+        "task": inputs[0] if inputs else None,
+        "inputs": inputs,
         "state": str(run_dir / "state.json"),
         "events": str(run_dir / "events.jsonl"),
         "copied_grilling_json": None,
@@ -801,7 +805,13 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         except (KeyError, TypeError, ValueError) as error:
             errors.append(str(error))
 
-    task = pointer_identity(run_dir, state.get("task"), "persisted task", errors)
+    try:
+        inputs = [pointer_identity(run_dir, item, "persisted input", errors)
+                  for item in planning_inputs(state)]
+    except (KeyError, TypeError, ValueError) as error:
+        errors.append(f"persisted inputs are malformed: {error}")
+        inputs = []
+    task = inputs[0] if inputs else None
     normalized = pointer_identity(
         run_dir, state.get("normalized_grilling_input"), "normalized grilling input", errors
     )
@@ -1011,6 +1021,7 @@ def status_payload(run_dir: Path, *, cmux_cmd: str = "cmux") -> dict[str, Any]:
         "repository": state.get("repository"),
         "input": {
             "task": task,
+            "inputs": inputs,
             "grilling_import": grilling_import,
             "normalized_grilling_input": normalized,
             "grilling_revalidation": revalidation,

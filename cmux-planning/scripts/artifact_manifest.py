@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 from typing import Any
@@ -316,10 +317,15 @@ def _verify_role_location(state: dict[str, Any], run_dir: Path, entry: dict[str,
     path = entry["path"]
     fixed = {
         "task": "task.md",
+        "conversation-brief": "inputs/conversation-brief.md",
         "grilling-source-json": "inputs/grilling-source.json",
         "grilling-source-markdown": "inputs/grilling-source.md",
     }
     expected: str | None = fixed.get(kind)
+    if kind == "task-file":
+        if not re.fullmatch(r"inputs/task-files/[0-9]{2,}-[^/]+", path):
+            raise ArtifactIntegrityError("task-file has a substituted location")
+        return
     if kind == "grilling-revalidation-progress":
         if not path.startswith("inputs/grilling-revalidation-progress") or not path.endswith(
             ".json"

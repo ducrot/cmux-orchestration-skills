@@ -322,6 +322,13 @@ def issue_chain_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str
 
 def planning_source(state: dict[str, Any], labels: dict[str, str]) -> str:
     grilling = state.get("grilling_import")
+    if state.get("inputs"):
+        named = {"explicit-text": labels["source_text"], "conversation-summary": labels["source_summary"]}
+        sources = [named.get(item["original_path"]) or labels["source_file"].format(name=item["original_path"])
+                   for item in state["inputs"]]
+        if grilling:
+            sources.append(labels["source_grilling"].format(name=Path(grilling["source_json"]).name))
+        return "; ".join(sources)
     if grilling:
         return labels["source_grilling"].format(name=Path(grilling["source_json"]).name)
     source = state.get("task", {}).get("source", "")

@@ -23,6 +23,7 @@ from orchestrator_lib import (
     sha256_file,
     write_json,
 )
+from planning_inputs import INLINE_SOURCES, manifest_kind, original_display, planning_inputs
 from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
 from tracker_contract import validate_proposal
@@ -167,16 +168,32 @@ so its modification time is refreshed, then execute this assignment.
 """
 
 
+def verified_inputs(run_dir: Path, state: dict) -> list[tuple[dict, Path]]:
+    verified = []
+    for item in planning_inputs(state):
+        path = run_dir / item["path"]
+        entry = verify_entry(state, run_dir, item.get("manifest_id", ""),
+                             expected_kind=manifest_kind(state, item), expected_path=path)
+        if entry["sha256"] != item["sha256"]:
+            raise SnapshotError(f"planning input pointer digest changed: {path}")
+        verified.append((item, path))
+    return verified
+
+
+def input_context(state: dict, inputs: list[tuple[dict, Path]], *, inline: bool) -> str:
+    blocks = []
+    for item, path in inputs:
+        block = (f"- {item['kind']}: `{original_display(state, item)}`; "
+                 f"run copy: `{path.resolve()}` (sha256 `{item['sha256']}`)")
+        if inline:
+            block += f"\n\n```text\n{path.read_text(encoding='utf-8').rstrip()}\n```"
+        blocks.append(block)
+    if inline and any(item["original_path"] not in INLINE_SOURCES for item, _ in inputs):
+        blocks.append("You may read neighboring files at the original paths as unpinned context.")
+    return "\n\n".join(blocks)
+
+
 def author_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
-    task_path = (run_dir / state["task"]["path"]).resolve()
-    verify_entry(
-        state,
-        run_dir,
-        state["task"].get("manifest_id", ""),
-        expected_kind="task",
-        expected_path=task_path,
-    )
-    task = task_path.read_text(encoding="utf-8")
     paths = snapshot["allowed_worker_writes"]
     feedback = state.get("spec_revision_feedback") or "None recorded for this specification pass."
     return f"""# Planning Worker Prompt: specification author (pass {pass_num})
@@ -192,11 +209,7 @@ When information is genuinely missing, record it under `Open Decisions` instead 
 
 ## Persisted Task
 
-Source: `{task_path}` (sha256 `{state['task']['sha256']}`)
-
-```text
-{task.rstrip()}
-```
+{input_context(state, verified_inputs(run_dir, state), inline=True)}
 
 ## Optional Revalidated Grilling Context
 
@@ -266,7 +279,6 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
     author = state.get("author_spec")
     if not isinstance(author, dict):
         raise SnapshotError("review prompt requires the validated author handoff")
-    task_path = (run_dir / state["task"]["path"]).resolve()
     draft = Path(author["draft"]).resolve()
     verify_entry(
         state,
@@ -284,6 +296,7 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
         expected_path=author_report,
     )
     paths = snapshot["allowed_worker_writes"]
+    inputs = verified_inputs(run_dir, state)
     return f"""# Planning Worker Prompt: independent specification review (pass {pass_num})
 
 {first_step(paths['started'])}
@@ -297,15 +310,13 @@ the complete draft, and the contract below.
 
 ## Inputs and Identity
 
-- Task: `{task_path}` (sha256 `{state['task']['sha256']}`)
+{input_context(state, inputs, inline=False)}
 - Author report: `{author_report}`
 - Draft: `{draft}` (sha256 `{author['draft_sha256']}`)
 
 ### Persisted Task
 
-```text
-{task_path.read_text(encoding='utf-8').rstrip()}
-```
+{input_context(state, inputs, inline=True)}
 
 ### Optional Revalidated Grilling Context
 
@@ -429,7 +440,6 @@ ready-for-agent label when published; no adoption conversion is used."""
 
 def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
     approved_spec, spec_digest = approved_spec_from_state(state, run_dir=run_dir)
-    task_path = (run_dir / state["task"]["path"]).resolve()
     paths = snapshot["allowed_worker_writes"]
     tracker_slug = state["tracker_slug"]
     feedback = state.get("ticket_revision_feedback") or "None recorded for this tickets pass."
@@ -447,7 +457,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 ## Inputs and Identity
 
-- Persisted task: `{task_path}` (sha256 `{state['task']['sha256']}`)
+{input_context(state, verified_inputs(run_dir, state), inline=False)}
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
 - Tracker slug (fixed): `{tracker_slug}`
 - Repository: `{state['repository']}`
@@ -548,7 +558,6 @@ def tickets_review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: d
     author = state.get("author_tickets")
     if not isinstance(author, dict) or not author.get("proposal_sha256"):
         raise SnapshotError("tickets review prompt requires the validated tickets author handoff")
-    task_path = (run_dir / state["task"]["path"]).resolve()
     proposal = Path(author["proposal"]).resolve()
     summary = Path(author["summary"]).resolve()
     verify_entry(
@@ -594,18 +603,12 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 
 ## Inputs and Identity
 
-- Task: `{task_path}` (sha256 `{state['task']['sha256']}`)
+{input_context(state, verified_inputs(run_dir, state), inline=False)}
 - Approved specification: `{approved_spec}` (sha256 `{spec_digest}`)
 - Tracker slug (fixed): `{tracker_slug}`
 - Machine proposal: `{proposal}` (sha256 `{author['proposal_sha256']}`)
 - Human summary: `{summary}` (sha256 `{author['summary_sha256']}`)
 - Author report: `{report}` (sha256 `{sha256_file(report)}`)
-
-### Persisted Task
-
-```text
-{task_path.read_text(encoding='utf-8').rstrip()}
-```
 
 ### Approved Specification and Decisions
 

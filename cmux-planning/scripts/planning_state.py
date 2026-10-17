@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from planning_inputs import planning_inputs
 from run_commit import capture_baseline
 
 from artifact_manifest import (
@@ -157,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="English language name for spec and ticket content (default: English)")
     task = init.add_mutually_exclusive_group(required=True)
     task.add_argument("--task")
-    task.add_argument("--task-file")
+    task.add_argument("--task-file", action="append")
     task.add_argument("--conversation-summary")
     init.add_argument("--grilling-json")
     init.add_argument("--grilling-markdown")
@@ -273,24 +274,22 @@ def resolve_workspace(args: argparse.Namespace) -> str | None:
     return workspace
 
 
-def task_input(args: argparse.Namespace) -> tuple[bytes, str]:
+def task_inputs(args: argparse.Namespace) -> list[tuple[bytes, str, str]]:
     if args.task_file:
-        path = Path(args.task_file).expanduser().resolve()
-        payload = path.read_bytes()
-        source = f"file:{path}"
+        paths = [Path(name).expanduser().resolve() for name in args.task_file]
+        sources = [(path.read_bytes(), str(path), path.name) for path in paths]
     elif args.task is not None:
-        payload = args.task.encode("utf-8")
-        source = "explicit-text"
+        sources = [(args.task.encode("utf-8"), "explicit-text", "task.md")]
     else:
-        payload = args.conversation_summary.encode("utf-8")
-        source = "conversation-summary"
-    try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ConfigError(f"task input is not UTF-8: {error}") from error
-    if not text.strip():
-        raise ConfigError("task input is empty")
-    return payload, source
+        sources = [(args.conversation_summary.encode("utf-8"), "conversation-summary", "task.md")]
+    for payload, source, _ in sources:
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ConfigError(f"task input {source} is not UTF-8: {error}") from error
+        if not text.strip():
+            raise ConfigError(f"task input {source} is empty")
+    return sources
 
 
 def ensure_runs_root_ignored(runs_root: Path) -> None:
@@ -722,10 +721,19 @@ def finish_input_validation(run_dir: Path) -> dict[str, Any]:
 
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
-    task_bytes, task_source = task_input(args)
+    sources = task_inputs(args)
+    task_bytes = sources[0][0]
     runs_root = Path(args.runs_root)
     now = utc_now()
-    slug = args.slug if args.slug is not None else slugify(task_bytes.decode("utf-8").strip().splitlines()[0])
+    lines = task_bytes.decode("utf-8").strip().splitlines()
+    title, fenced = lines[0], False
+    for line in lines:
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        elif not fenced and re.match(r"^#{1,6}\s+", line):
+            title = line.lstrip("#").strip()
+            break
+    slug = args.slug if args.slug is not None else slugify(title)
     if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
         raise ConfigError("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
     if any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
@@ -830,8 +838,12 @@ def init_run(args: argparse.Namespace) -> int:
     ensure_runs_root_ignored(runs_root)
     for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)
-    task_path = run_dir / "task.md"
-    atomic_write(task_path, task_bytes)
+    inputs = []
+    for number, (payload, original, basename) in enumerate(sources, 1):
+        relative = f"inputs/task-files/{number:02d}-{basename}"
+        atomic_write(run_dir / relative, payload)
+        inputs.append({"kind": "task-file", "original_path": original,
+                       "path": relative, "sha256": sha256_bytes(payload)})
     grilling_state = None
     if grilling is not None:
         json_copy = run_dir / "inputs" / "grilling-source.json"
@@ -878,11 +890,7 @@ def init_run(args: argparse.Namespace) -> int:
         "workspace_id": workspace,
         "configuration_source": str(configuration_source),
         "configuration_created_and_accepted": changed,
-        "task": {
-            "path": "task.md",
-            "source": task_source,
-            "sha256": sha256_bytes(task_bytes),
-        },
+        "inputs": inputs,
         "grilling_import": grilling_state,
         "grilling_revalidation": None,
         "normalized_grilling_input": None,
@@ -919,17 +927,12 @@ def init_run(args: argparse.Namespace) -> int:
             "prepared_stage": initial_pointer,
         },
     }
-    task_entry = record_artifact(
-        state,
-        run_dir,
-        "task.md",
-        kind="task",
-        stage="input",
-        pass_num=1,
-        attempt=1,
-        producer="run.init",
-    )
-    state["task"]["manifest_id"] = task_entry["id"]
+    for item in inputs:
+        entry = record_artifact(
+            state, run_dir, item["path"], kind=item["kind"], stage="input",
+            pass_num=1, attempt=1, producer="run.init",
+        )
+        item["manifest_id"] = entry["id"]
     if grilling_state is not None:
         json_entry = record_artifact(
             state,
@@ -1111,7 +1114,7 @@ def revalidate(args: argparse.Namespace) -> int:
     normalized = normalize_revalidation(
         imported,
         outcomes,
-        task_path=run_dir / state["task"]["path"],
+        input_paths=[run_dir / item["path"] for item in planning_inputs(state)],
         repository=Path(state["repository"]),
     )
     if normalized is None:

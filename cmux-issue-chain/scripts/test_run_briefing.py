@@ -250,6 +250,30 @@ class RunBriefing(RunDirTestCase):
         self.assertIn("höchstens 4 Runden · Lanes codebase, codebase2, docs, web", text)
         self.assertIn("`.scratch/grilling`", text)
 
+    def test_inline_planning_sources_use_text_labels(self):
+        for lang, text_label, summary_label in (
+            ("en", "task text", "conversation summary"),
+            ("de", "Task-Text", "Gesprächszusammenfassung"),
+        ):
+            for source, expected in (("explicit-text", text_label),
+                                     ("conversation-summary", summary_label)):
+                with self.subTest(lang=lang, source=source):
+                    state = {**PLANNING_STATE,
+                             "inputs": [{"kind": "task-file", "original_path": source}]}
+                    self.assertEqual(run_briefing.planning_source(state, run_briefing.LABELS[lang]),
+                                     expected)
+
+    def test_multiple_planning_sources_are_named_with_grilling(self):
+        state = {**PLANNING_STATE,
+                 "inputs": [{"original_path": "/repo/one/plan.md"},
+                            {"original_path": "/repo/two/plan.md"}],
+                 "grilling_import": {"source_json": "/x/result.json"}}
+        run_dir = self.run_dir(state)
+        self.draft(run_dir, lang="en")
+        text = (run_dir / "briefing.md").read_text()
+        self.assertIn("task file /repo/one/plan.md; task file /repo/two/plan.md", text)
+        self.assertIn("grilling result result.json", text)
+
     def test_grilling_input_source_is_named(self):
         state = {**PLANNING_STATE, "grilling_import": {"source_json": "/x/.scratch/grilling/result.json"}}
         run_dir = self.run_dir(state)

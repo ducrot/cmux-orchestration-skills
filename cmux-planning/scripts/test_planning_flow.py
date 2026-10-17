@@ -221,7 +221,7 @@ class PlanningFlow(unittest.TestCase):
                                "--grilling-markdown", str(markdown), "--repo", str(self.repo),
                                "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
-        (self.run_dir / "task.md").write_text("changed task\n")
+        (self.run_dir / "inputs/task-files/01-task.md").write_text("changed task\n")
         outcomes = self.root / "outcomes.json"
         outcomes.write_text('{"accepted": false}')
         accepted = self.cli(STATE, "revalidate", "--run-dir", str(self.run_dir), "--outcomes", str(outcomes))
@@ -333,7 +333,7 @@ class PlanningFlow(unittest.TestCase):
                 state = json.loads((run_dir / "state.json").read_text())
                 self.assertEqual(state["current_stage"], "spec")
                 self.assertEqual(state["artifact_audit"]["unexpected"], [])
-                self.assertEqual((run_dir / "task.md").read_text(), "Title\nSecond line\nThird line")
+                self.assertEqual((run_dir / "inputs/task-files/01-task.md").read_text(), "Title\nSecond line\nThird line")
                 for entry in state["artifact_manifest"].values():
                     self.assertFalse(Path(entry["path"]).is_absolute())
                     self.assertEqual(
@@ -345,15 +345,15 @@ class PlanningFlow(unittest.TestCase):
                 self.assertEqual(printed, str(expected))
 
     def test_initialization_retries_a_directory_without_state(self):
-        (self.run_dir / "inputs").mkdir(parents=True)
-        (self.run_dir / "task.md").write_text("Task left by a failed initialization\n")
+        (self.run_dir / "inputs/task-files").mkdir(parents=True)
+        (self.run_dir / "inputs/task-files/01-task.md").write_text("Task left by a failed initialization\n")
         orphan = self.run_dir / "inputs" / "unclaimed.md"
         orphan.write_text("Preserve this evidence\n")
 
         result = self.init_direct()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.run_dir / "task.md").read_text(), "Bitte sichere Planung erstellen.")
+        self.assertEqual((self.run_dir / "inputs/task-files/01-task.md").read_text(), "Bitte sichere Planung erstellen.")
         self.assertEqual(orphan.read_text(), "Preserve this evidence\n")
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["artifact_audit"]["unexpected"], ["inputs/unclaimed.md"])
@@ -391,7 +391,7 @@ class PlanningFlow(unittest.TestCase):
             state = json.loads(state_path.read_text())
             effective = language or "English"
             self.assertEqual(state["artifact_language"], effective)
-            self.assertEqual((run_dir / "task.md").read_text(), "Sprachwahl")
+            self.assertEqual((run_dir / "inputs/task-files/01-task.md").read_text(), "Sprachwahl")
             for legacy in (False, True):
                 if legacy:
                     state.pop("artifact_language")
@@ -495,10 +495,10 @@ class PlanningFlow(unittest.TestCase):
     def test_relative_run_path_still_rejects_a_symlink_to_an_artifact_inside_the_run(self):
         self.relative_cli_paths = True
         self.assertEqual(self.init_direct().returncode, 0)
-        task = self.run_dir / "task.md"
+        task = self.run_dir / "inputs/task-files/01-task.md"
         moved = self.run_dir / "inputs" / "moved-task.md"
         task.rename(moved)
-        task.symlink_to("inputs/moved-task.md")
+        task.symlink_to("../moved-task.md")
 
         result = self.cli(
             STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
@@ -625,7 +625,8 @@ PASS
         return draft
 
     def approve_spec_to_tickets(self) -> Path:
-        self.assertEqual(self.init_direct().returncode, 0)
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
         self.render_and_baseline("spec")
         draft = self.write_author_handoff()
         self.assertEqual(
@@ -859,6 +860,129 @@ sha256 {resulting_digest or digest}
                 self.assertIn(marker, prompt.split("## Write Boundary")[1])
                 self.assertIn("Rewrite an existing marker", prompt)
 
+    def test_tracker_slug_skips_headings_inside_fenced_code(self):
+        for index, fence in enumerate(("```", "~~~")):
+            with self.subTest(fence=fence):
+                plan = self.repo / f"plan-{index}.md"
+                plan.write_text(
+                    f"Intro before heading\n{fence}markdown\n# Example heading\n"
+                    f"{fence}\n## Actual plan heading\nBuild the feature.\n"
+                )
+                result = self.cli(
+                    STATE, "init", "--task-file", str(plan),
+                    "--run-id", f"fenced-{index}", "--new-run", "--no-workspace"
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                state = json.loads((self.runs / f"fenced-{index}" / "state.json").read_text())
+                self.assertEqual(state["tracker_slug"], "actual-plan-heading")
+
+    def test_malformed_inputs_remain_inspectable_by_status_and_recovery(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        original = json.loads(state_path.read_text())
+        cases = (("null", None), ("object", {}), ("empty", []),
+                 ("non-pointer", ["bad"]), ("missing", None))
+        for label, inputs in cases:
+            with self.subTest(inputs=label):
+                state = {**original, "inputs": inputs}
+                if label == "missing":
+                    state.pop("inputs")
+                state_path.write_text(json.dumps(state))
+                before = file_contents(self.run_dir)
+                for command in ("status", "resume"):
+                    result = self.cli(STATE, command, "--run-dir", str(self.run_dir))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload["classification"], "inconsistent")
+                    self.assertTrue(any("persisted inputs are malformed" in error
+                                        for error in payload["consistency_errors"]))
+                    self.assertIsNone(payload["input"]["task"])
+                    self.assertEqual(payload["input"]["inputs"], [])
+                    self.assertIsNone(payload["context_recovery"]["paths"]["task"])
+                    self.assertEqual(payload["context_recovery"]["paths"]["inputs"], [])
+                context = self.cli(STATE, "context", "--run-dir", str(self.run_dir))
+                self.assertEqual(context.returncode, 0, context.stderr)
+                paths = json.loads(context.stdout)["paths"]
+                self.assertIsNone(paths["task"])
+                self.assertEqual(paths["inputs"], [])
+                self.assertEqual(file_contents(self.run_dir), before)
+
+    def test_multiple_plan_files_survive_all_stages_and_recovery(self):
+        first = self.repo / "plans" / "plan.md"
+        first.parent.mkdir()
+        first.write_bytes(b"Intro before heading\r\n# First heading\r\nFIRST INPUT ONLY\r\n")
+        second = self.root / "outside" / "plan.md"
+        second.parent.mkdir()
+        second.write_text("# Second heading\nSECOND INPUT ONLY\n")
+        self.init_direct = lambda: self.cli(
+            STATE, "init", "--task-file", str(first), "--task-file", str(second),
+            "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+        self.approve_spec_to_tickets()
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertNotIn("task", state)
+        self.assertEqual(state["tracker_slug"], "first-heading")
+        self.assertEqual([item["path"] for item in state["inputs"]],
+                         ["inputs/task-files/01-plan.md", "inputs/task-files/02-plan.md"])
+        for item, original in zip(state["inputs"], (first, second)):
+            self.assertEqual(set(item), {"kind", "path", "original_path", "sha256", "manifest_id"})
+            self.assertEqual(item["original_path"], str(original.resolve()))
+            self.assertEqual((self.run_dir / item["path"]).read_bytes(), original.read_bytes())
+            self.assertEqual(state["artifact_manifest"][item["manifest_id"]]["kind"], "task-file")
+        self.render_and_baseline("tickets")
+        proposal = tracker_proposal(Path(state["approved_spec"]["path"]))
+        proposal["tracker"]["slug"] = state["tracker_slug"]
+        self.write_tickets_handoff(data=proposal)
+        result = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.render_and_baseline("tickets-review")
+        for stage in ("spec", "spec-review", "tickets", "tickets-review"):
+            prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            for name in ("plans/plan.md", str(second.resolve())):
+                self.assertIn(f"`{name}`", prompt)
+            for item in state["inputs"]:
+                self.assertIn(item["sha256"], prompt)
+            for content in ("FIRST INPUT ONLY", "SECOND INPUT ONLY", "unpinned context"):
+                if stage.startswith("spec"):
+                    self.assertIn(content, prompt)
+                else:
+                    self.assertNotIn(content, prompt)
+        status = self.cli(STATE, "status", "--run-dir", str(self.run_dir))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertTrue(all(item["valid"] for item in json.loads(status.stdout)["input"]["inputs"]))
+        context = self.cli(STATE, "context", "--run-dir", str(self.run_dir))
+        self.assertEqual(context.returncode, 0, context.stderr)
+        self.assertEqual(len(json.loads(context.stdout)["paths"]["inputs"]), 2)
+        (self.run_dir / state["inputs"][1]["path"]).write_text("tampered")
+        refused = self.cli(RENDER, "--run-dir", str(self.run_dir), "--stage", "tickets-review", "--pass", "1")
+        self.assertNotEqual(refused.returncode, 0)
+
+    def test_legacy_task_pointer_renders_resumes_and_validates(self):
+        from artifact_manifest import record_artifact
+        self.assertEqual(self.init_direct().returncode, 0)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        item = state.pop("inputs")[0]
+        state["artifact_manifest"].pop(item["manifest_id"])
+        legacy = self.run_dir / "task.md"
+        (self.run_dir / item["path"]).rename(legacy)
+        entry = record_artifact(state, self.run_dir, "task.md", kind="task", stage="input",
+                                pass_num=1, attempt=1, producer="run.init")
+        state["task"] = {"path": "task.md", "sha256": entry["sha256"], "manifest_id": entry["id"]}
+        state_path.write_text(json.dumps(state))
+        self.init_direct = lambda: self.cli(STATE, "init", "--task", "legacy", "--run-id", "plan-test", "--no-workspace")
+        self.approve_spec_to_tickets()
+        self.render_and_baseline("tickets")
+        self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review")
+        for stage in ("spec", "spec-review", "tickets", "tickets-review"):
+            prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            self.assertIn("task.md", prompt)
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(json.loads(resumed.stdout)["input"]["inputs"][0]["sha256"], entry["sha256"])
+
     def test_direct_task_runs_end_to_end_through_review_and_explicit_approval(self):
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -868,13 +992,13 @@ sha256 {resulting_digest or digest}
         task_entries = [
             entry
             for entry in state["artifact_manifest"].values()
-            if entry["kind"] == "task"
+            if entry["kind"] == "task-file"
         ]
         self.assertEqual(len(task_entries), 1)
-        self.assertEqual(task_entries[0]["path"], "task.md")
+        self.assertEqual(task_entries[0]["path"], "inputs/task-files/01-task.md")
         self.assertTrue(task_entries[0]["finalized"])
         self.assertEqual(state["current_stage"], "spec")
-        self.assertEqual((self.run_dir / "task.md").read_text(), "Bitte sichere Planung erstellen.")
+        self.assertEqual((self.run_dir / "inputs/task-files/01-task.md").read_text(), "Bitte sichere Planung erstellen.")
         self.assertIsNotNone(state["prepared_stage"])
         self.assertIsNone(state["tree_baseline"])
         author_snapshot = json.loads(
@@ -934,7 +1058,7 @@ sha256 {resulting_digest or digest}
         kinds = {entry["kind"] for entry in entries}
         self.assertTrue(
             {
-                "task",
+                "task-file",
                 "stage-snapshot",
                 "prompt",
                 "tree-baseline",
@@ -1018,7 +1142,7 @@ sha256 {resulting_digest or digest}
 
     def test_missing_task_and_artifact_kind_substitution_gate_before_transition(self):
         self.assertEqual(self.init_direct().returncode, 0)
-        (self.run_dir / "task.md").unlink()
+        (self.run_dir / "inputs/task-files/01-task.md").unlink()
         missing = self.cli(
             STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1"
         )
@@ -1052,7 +1176,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         second_state_path = second / "state.json"
         second_state = json.loads(second_state_path.read_text(encoding="utf-8"))
-        manifest_id = second_state["task"]["manifest_id"]
+        manifest_id = second_state["inputs"][0]["manifest_id"]
         second_state["artifact_manifest"][manifest_id]["kind"] = "prompt"
         second_state_path.write_text(json.dumps(second_state), encoding="utf-8")
         substituted = self.cli(
@@ -1069,7 +1193,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         state_path = self.run_dir / "state.json"
         before = json.loads(state_path.read_text(encoding="utf-8"))
-        task_manifest_id = before["task"]["manifest_id"]
+        task_manifest_id = before["inputs"][0]["manifest_id"]
         task_identity = dict(before["artifact_manifest"][task_manifest_id])
         task_path = self.run_dir / task_identity["path"]
         task_path.unlink()
@@ -3457,11 +3581,11 @@ Option?
         self.assertIn("render_prompt.py", payload["recommended_next"]["command"])
         self.assertEqual(payload["input"]["task"]["sha256"], json.loads(
             (self.run_dir / "state.json").read_text(encoding="utf-8")
-        )["task"]["sha256"])
+        )["inputs"][0]["sha256"])
         recovered_context = json.loads(
             self.cli(STATE, "context", "--run-dir", str(self.run_dir)).stdout
         )
-        self.assertEqual(recovered_context["paths"]["task"], str((self.run_dir / "task.md").resolve()))
+        self.assertEqual(recovered_context["paths"]["task"], str((self.run_dir / "inputs/task-files/01-task.md").resolve()))
         self.assertEqual(recovered_context["paths"]["state"], str((self.run_dir / "state.json").resolve()))
         self.assertTrue(
             any("stage-snapshots/spec-1-" in item["path"] for item in recovered_context["history"])
