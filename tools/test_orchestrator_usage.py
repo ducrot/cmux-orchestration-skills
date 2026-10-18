@@ -499,5 +499,167 @@ class RunAttribution(GrillingFixture):
         self.assertIn("new-start", (self.root / "out/orchestrator-usage-runs.csv").read_text())
 
 
+UNITTEST_LOG = """test_a (x.T) ... ok
+----------------------------------------------------------------------
+Ran 384 tests in 120.000s
+
+OK
+"""
+PHPUNIT_LOG = """PHPUnit 11.5.0 by Sebastian Bergmann and contributors.
+
+.....                                                               5 / 5 (100%)
+
+Time: 01:30.500, Memory: 22.00 MB
+
+OK (52 tests, 103 assertions)
+"""
+PHPUNIT_FAILED_LOG = """Time: 00:00.007, Memory: 4.00 MB
+
+FAILURES!
+Tests: 1315, Assertions: 3651, Errors: 177, Skipped: 9.
+"""
+VITEST_LOG = """ Test Files  12 passed (12)
+      Tests  122 passed (122)
+   Start at  07:40:01
+   Duration  4.81s (transform 13%)
+"""
+
+
+class WallTime(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.run_dir = self.root / ".scratch/orchestrator/runs/chain-issue-001-demo"
+        self.run_dir.mkdir(parents=True)
+
+    def write_events(self, *events):
+        (self.run_dir / "events.jsonl").write_text(
+            "\n".join(json.dumps({"type": t, "time": f"2026-10-17T{clock}+00:00", **extra})
+                      for clock, t, extra in events), encoding="utf-8")
+
+    def write_log(self, stage, name, text):
+        directory = self.run_dir / "artifacts" / stage
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(text, encoding="utf-8")
+
+    def snapshot(self, clock, label):
+        return (clock, "tree.snapshot", {"message": label})
+
+    def test_stage_durations_and_orchestrator_gap(self):
+        self.write_events(
+            ("10:00:00", "run.init", {}),
+            self.snapshot("10:01:00", "launched implement-1"),
+            self.snapshot("10:07:00", "report-captured implement-1"),
+            self.snapshot("10:07:30", "launched simplify-1"),
+            self.snapshot("10:20:00", "report-captured simplify-1"),
+            ("10:27:00", "orchestrator.verified", {"data": {"commands": [
+                "python3 -m unittest discover -s a", "python3 -m unittest discover -s b",
+                "git diff"], "pass": "1", "stage": "simplify"}}),
+            ("10:27:00", "gate", {"decision": "advance"}),
+            self.snapshot("10:27:06", "launched review-1"),
+            self.snapshot("10:40:00", "report-captured review-1"),
+            ("10:40:30", "run.completed", {}),
+        )
+        stages = {s["stage"]: s for s in ou.read_run_timing(self.run_dir)["stages"]}
+        self.assertEqual(list(stages), ["implement-1", "simplify-1", "review-1"])
+        self.assertEqual(stages["implement-1"]["worker_minutes"], 6.0)
+        self.assertEqual(stages["implement-1"]["orchestrator_gap_minutes"], 0.5)
+        self.assertEqual(stages["simplify-1"]["worker_minutes"], 12.5)
+        self.assertEqual(stages["simplify-1"]["orchestrator_gap_minutes"], 7.1)
+        self.assertEqual(stages["simplify-1"]["suite_runs_orchestrator"], 2)
+        self.assertEqual(stages["review-1"]["gap_minutes"], 0.5)
+        columns = ou.run_timing_columns(list(stages.values()), CHAIN)
+        self.assertEqual(columns["wall_worker_minutes"], 31.4)
+        self.assertEqual(columns["wall_simplify_minutes"], 12.5)
+        self.assertEqual(columns["wall_test_minutes"], "")
+        self.assertEqual(columns["suite_runs_orchestrator"], 2)
+
+    def test_human_wait_is_split_from_the_orchestrator_gap(self):
+        self.write_events(
+            self.snapshot("10:00:00", "launched test-1"),
+            self.snapshot("10:10:00", "report-captured test-1"),
+            ("10:12:00", "gate", {"decision": "hitl"}),
+            ("10:30:00", "decision.human", {}),
+            ("10:42:00", "hitl.resolved", {}),
+            self.snapshot("10:43:00", "launched implement-2"),
+            self.snapshot("10:50:00", "report-captured implement-2"),
+        )
+        [test, implement] = ou.read_run_timing(self.run_dir)["stages"]
+        self.assertEqual(test["gap_minutes"], 33.0)
+        self.assertEqual(test["human_wait_minutes"], 30.0)
+        self.assertEqual(test["orchestrator_gap_minutes"], 3.0)
+        self.assertEqual(implement["role"], "implement")
+
+    def test_pane_and_waiter_events_time_stages_without_snapshots(self):
+        self.write_events(
+            ("10:00:00", "pane.launched", {"data": {"stage": "spec", "pass": "1"}}),
+            ("10:09:00", "worker.waiting", {"data": {"stage": "spec", "pass": "1",
+                                                     "outcome": "report"}}),
+        )
+        [spec] = ou.read_run_timing(self.run_dir)["stages"]
+        self.assertEqual((spec["stage"], spec["worker_minutes"]), ("spec-1", 9.0))
+
+    def test_suite_logs_count_unittest_phpunit_and_vitest_runs(self):
+        self.assertEqual(ou.test_runs_in_log(UNITTEST_LOG), [120.0])
+        self.assertEqual(ou.test_runs_in_log(PHPUNIT_LOG), [90.5])
+        self.assertEqual(ou.test_runs_in_log(PHPUNIT_FAILED_LOG), [0.007])
+        self.assertEqual(ou.test_runs_in_log(VITEST_LOG), [4.81])
+        self.assertEqual(ou.test_runs_in_log("== 3 passed, 1 failed in 2.50s =="), [2.5])
+        self.assertEqual(ou.test_runs_in_log("Build at: x - Time: 21746ms\nPASS smoke"), [])
+        self.assertEqual(ou.test_commands({"commands": ["ddev composer test -- x",
+                                                        "ddev make check-all", "phpstan"]}), 2)
+        self.assertIsNone(ou.test_commands({"verdict": "clean"}))
+
+    def test_missing_or_unparsed_logs_are_unknown(self):
+        self.write_events(
+            self.snapshot("10:00:00", "launched implement-1"),
+            self.snapshot("10:05:00", "report-captured implement-1"),
+            ("10:06:00", "orchestrator.verified", {"data": {"verdict": "clean"}}),
+            self.snapshot("10:06:00", "launched simplify-1"),
+            self.snapshot("10:10:00", "report-captured simplify-1"),
+            self.snapshot("10:11:00", "launched test-1"),
+            self.snapshot("10:20:00", "report-captured test-1"),
+        )
+        self.write_log("implement-1", "phpunit.log", PHPUNIT_LOG)
+        self.write_log("implement-1-attempt-2", "cmux-suite.log", UNITTEST_LOG)
+        self.write_log("simplify-1", "build.log", "Build at: x - Time: 21746ms\n")
+        stages = {s["stage"]: s for s in ou.read_run_timing(self.run_dir)["stages"]}
+        self.assertEqual(stages["implement-1"]["suite_runs_worker"], 2)
+        self.assertEqual(stages["implement-1"]["suite_minutes_worker"], 3.5)
+        self.assertEqual(stages["implement-1"]["suite_runs_orchestrator"], ou.UNKNOWN)
+        self.assertEqual(stages["simplify-1"]["suite_runs_worker"], ou.UNKNOWN)
+        self.assertEqual(stages["test-1"]["suite_minutes_worker"], ou.UNKNOWN)
+        columns = ou.run_timing_columns(list(stages.values()), CHAIN)
+        self.assertEqual(columns["suite_runs_worker"], 2)
+        self.assertEqual(columns["suite_unknown_stages"], 2)
+        self.assertEqual(columns["suite_runs_orchestrator"], 0)
+        self.assertEqual(ou.run_timing_columns([], CHAIN)["wall_worker_minutes"], "")
+
+    def test_runs_csv_keeps_columns_and_stages_csv_lists_stages(self):
+        self.write_events(
+            ("10:00:00", "run.init", {}),
+            self.snapshot("10:01:00", "launched implement-1"),
+            self.snapshot("10:07:00", "report-captured implement-1"),
+        )
+        call = ou.Call("2026-10-17T10:02:00+00:00", 100, 0, 0, 0, None)
+        call.category, call.run_id = "other-bash", "chain-issue-001-demo"
+        session = ou.build_session("claude", "s1", "p", str(self.root), [call])
+        rows = ou.aggregate_runs([session])
+        self.assertEqual(rows[0]["wall_implement_minutes"], 6.0)
+        out = self.root / "out"
+        out.mkdir()
+        header = (ou.write_runs_csv(rows, out).read_text().splitlines()[0]).split(",")
+        self.assertNotIn("stage_timings", header)
+        self.assertIn("calls_per_stage", header)
+        self.assertIn("wall_worker_minutes", header)
+        stages = ou.write_stages_csv(rows, out).read_text().splitlines()
+        self.assertEqual(len(stages), 2)
+        self.assertIn("implement-1", stages[1])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            ou.print_wall_time(rows, CHAIN)
+        self.assertIn("orch-gap", output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

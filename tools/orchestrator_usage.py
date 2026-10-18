@@ -13,8 +13,12 @@ run.recap. Open runs end at the next owned init or the transcript end. Worker
 prompts identify separate worker totals, never orchestrator medians. Grilling
 per-question and worker per-round metrics exclude calls before the first question.
 
-Stdlib only. Writes orchestrator-usage-sessions.csv and
-orchestrator-usage-runs.csv, plus a median-based terminal summary.
+Wall time per stage (launch to report capture, the gap until the next launch,
+human waits) and test-runner summaries in the workers' artifact logs come from
+the run directory alone.
+
+Stdlib only. Writes orchestrator-usage-sessions.csv, orchestrator-usage-runs.csv
+and orchestrator-usage-stages.csv, plus a median-based terminal summary.
 """
 
 from __future__ import annotations
@@ -42,11 +46,12 @@ class Workflow:
     came from a shell variable), and the prefix of its run ids."""
 
     def __init__(self, name: str, subdir: str, only_scripts: tuple[str, ...],
-                 run_prefix: str | None):
+                 run_prefix: str | None, roles: tuple[str, ...] = ()):
         self.name = name
         self.subdir = subdir
         self.only_scripts = only_scripts
         self.run_prefix = run_prefix
+        self.roles = roles
         self.only_re = re.compile(r"(?:" + "|".join(only_scripts) + r")\.py")
 
     def owns_run(self, run_id: str) -> bool:
@@ -57,11 +62,12 @@ class Workflow:
 
 
 WORKFLOWS = {w.name: w for w in (
-    Workflow("issue-chain", "cmux-issue-chain", ("adopt_tracker", "issue_state"), None),
+    Workflow("issue-chain", "cmux-issue-chain", ("adopt_tracker", "issue_state"), None,
+             ("implement", "simplify", "review", "test", "triage")),
     Workflow("planning", "cmux-planning",
              ("planning_state", "stage_snapshot", "tree_integrity", "spec_contract",
               "tracker_contract", "artifact_manifest", "grilling_input", "planning_recovery",
-              "planning_diversity"), "plan-"),
+              "planning_diversity"), "plan-", ("spec", "spec-review", "tickets", "tickets-review")),
     Workflow("grilling", "cmux-grilling", ("launch_wave", "parse_research_report"), "grill-"),
 )}
 
@@ -847,6 +853,203 @@ def read_run_state(run_dir: Path, workflow: Workflow | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# wall time and test runs
+# --------------------------------------------------------------------------- #
+
+UNKNOWN = "unknown"
+HUMAN_EVENTS = ("decision.human", "hitl.resolved", "spec.approved", "tickets.approved",
+                "spec.revision_requested", "tickets.revision_requested",
+                "tickets.spec_revision_requested", "run.relaunch_approved")
+TEST_COMMAND = re.compile(
+    r"\bunittest\b|\bpytest\b|phpunit|\bvitest\b|\bjest\b"
+    r"|\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b|\bcomposer\s+(?:run(?:-script)?\s+)?test\b"
+    r"|\bmake\s+(?:check|test)|\b(?:go|cargo)\s+test\b|\bartisan\s+test\b")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+UNITTEST_SUMMARY = re.compile(r"^Ran (\d+) tests? in ([\d.]+)s")
+PYTEST_SUMMARY = re.compile(r"^=+ .*?\b\d+ (?:passed|failed|errors?)\b.* in ([\d.]+)s")
+PHPUNIT_SUMMARY = re.compile(r"^(?:OK \(\d+ tests?,|Tests: \d+, Assertions)")
+JS_SUMMARY = re.compile(r"^\s*Tests:?\s+.*(?:\(\d+\)|\d+ total)\s*$")
+RUN_TIME = re.compile(r"^\s*(?:Time:|Duration)\s+([\d:.]+)\s*(ms|s|m|seconds?|minutes?)?")
+
+
+def log_seconds(value: str, unit: str | None) -> float | None:
+    try:
+        if ":" in value:  # PHPUnit's mm:ss.fff or hh:mm:ss
+            seconds = 0.0
+            for part in value.split(":"):
+                seconds = seconds * 60 + float(part)
+            return seconds
+        number = float(value)
+    except ValueError:
+        return None
+    if unit == "ms":
+        return number / 1000
+    if unit and unit.startswith("m"):
+        return number * 60
+    return number
+
+
+def test_runs_in_log(text: str) -> list[float | None]:
+    """Durations of the test-runner summaries in one log, None where a summary
+    carries no time. PHPUnit prints its time before the summary, Jest and Vitest
+    after it."""
+    runs: list[float | None] = []
+    pending, last_summary = None, None
+    for index, line in enumerate(ANSI.sub("", text).splitlines()):
+        match = UNITTEST_SUMMARY.match(line) or PYTEST_SUMMARY.match(line)
+        if match:
+            runs.append(float(match.groups()[-1]))
+            continue
+        if PHPUNIT_SUMMARY.match(line) or JS_SUMMARY.match(line):
+            runs.append(pending)
+            pending, last_summary = None, index
+            continue
+        match = RUN_TIME.match(line)
+        if match:
+            seconds = log_seconds(*match.groups())
+            if last_summary is not None and index - last_summary <= 5 and runs[-1] is None:
+                runs[-1] = seconds
+            else:
+                pending = seconds
+    return runs
+
+
+def stage_test_runs(artifacts: Path) -> dict[str, list[float | None]]:
+    """Test-runner summaries per stage in the workers' artifact logs. A stage without
+    a recognized summary is absent: its logs may be in a format not parsed here."""
+    found: dict[str, list[float | None]] = {}
+    if not artifacts.is_dir():
+        return found
+    for stage_dir in artifacts.iterdir():
+        if not stage_dir.is_dir():
+            continue
+        runs = []
+        for log in sorted(stage_dir.rglob("*.log")):
+            try:
+                runs += test_runs_in_log(log.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        if runs:
+            found.setdefault(ATTEMPT_SUFFIX.sub("", stage_dir.name), []).extend(runs)
+    return found
+
+
+def test_commands(data: dict) -> int | None:
+    commands = data.get("commands")
+    if commands is None:
+        return None
+    if not isinstance(commands, list):
+        commands = [commands]
+    return sum(1 for c in commands if TEST_COMMAND.search(str(c)))
+
+
+def read_run_timing(run_dir: Path) -> dict:
+    """Worker time per stage, from the launch to the report capture, and the gap
+    after each capture until the next launch. A gap holding a human decision is
+    split: the human wait runs from the last gate before the first human event to
+    the last human event, the rest of the gap is the orchestrator's."""
+    events = []
+    path = run_dir / "events.jsonl"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and iso(ev.get("time")):
+                events.append((iso(ev["time"]), ev))
+    events.sort(key=lambda item: item[0])
+    stages: dict[str, dict] = {}
+    snapshot_keys = set()
+    for when, ev in events:
+        etype, data = ev.get("type"), ev.get("data") or {}
+        message = ev.get("message") or ""
+        if etype == "tree.snapshot" and message.startswith(("launched ", "report-captured ")):
+            label, _, key = message.partition(" ")
+            stage = stages.setdefault(key.strip(), {})
+            if label == "launched":
+                stage.setdefault("launch", when)
+            else:
+                stage["capture"] = when
+            snapshot_keys.add((key.strip(), label))
+            continue
+        role = data.get("role") or data.get("stage")
+        if not role or data.get("pass") in (None, ""):
+            continue
+        key = f"{role}-{data['pass']}"
+        if etype == "pane.launched" and (key, "launched") not in snapshot_keys:
+            stages.setdefault(key, {}).setdefault("launch", when)
+        elif etype == "worker.waiting" and data.get("outcome") == "report" \
+                and (key, "report-captured") not in snapshot_keys:
+            stages.setdefault(key, {})["capture"] = when
+
+    timed = sorted(((k, v) for k, v in stages.items() if "launch" in v and "capture" in v),
+                   key=lambda kv: kv[1]["launch"])
+    end = None
+    for when, ev in events:
+        if ev.get("type") in ("run.completed", "run.recap"):
+            end = when
+            break
+    end = end or (events[-1][0] if events else None)
+    suites = stage_test_runs(run_dir / "artifacts")
+    rows = []
+    for index, (key, stage) in enumerate(timed):
+        gap_end = timed[index + 1][1]["launch"] if index + 1 < len(timed) else end
+        capture = stage["capture"]
+        gap = max((gap_end - capture).total_seconds(), 0) if gap_end else 0
+        window = [(t, ev) for t, ev in events if capture <= t <= (gap_end or capture)]
+        humans = [t for t, ev in window if ev.get("type") in HUMAN_EVENTS]
+        human = 0.0
+        if humans:
+            gates = [t for t, ev in window if ev.get("type") == "gate" and t <= humans[0]]
+            human = (humans[-1] - (gates[-1] if gates else capture)).total_seconds()
+        orchestrator_tests: int | str = 0
+        verified = [test_commands(ev.get("data") or {}) for t, ev in window
+                    if ev.get("type") == "orchestrator.verified"]
+        if verified and all(v is None for v in verified):
+            orchestrator_tests = UNKNOWN
+        else:
+            orchestrator_tests = sum(v for v in verified if v)
+        runs = suites.get(key)
+        rows.append({
+            "stage": key, "role": key.rpartition("-")[0],
+            "launch_ts": stage["launch"].isoformat(), "capture_ts": capture.isoformat(),
+            "worker_minutes": round((capture - stage["launch"]).total_seconds() / 60, 1),
+            "gap_minutes": round(gap / 60, 1),
+            "human_wait_minutes": round(human / 60, 1),
+            "orchestrator_gap_minutes": round((gap - human) / 60, 1),
+            "suite_runs_worker": len(runs) if runs else UNKNOWN,
+            "suite_minutes_worker": round(sum(r for r in runs if r) / 60, 1) if runs else UNKNOWN,
+            "suite_runs_orchestrator": orchestrator_tests,
+        })
+    return {"stages": rows}
+
+
+def run_timing_columns(stages: list[dict], workflow: Workflow) -> dict:
+    """Per-run wall-time and test-run columns; blank when no stage was timed."""
+    def total(field):
+        known = [s[field] for s in stages if s[field] != UNKNOWN]
+        return round(sum(known), 1) if known else UNKNOWN
+
+    columns = {"wall_worker_minutes": "", **{f"wall_{r}_minutes": "" for r in workflow.roles},
+               "wall_orchestrator_gap_minutes": "", "wall_human_wait_minutes": "",
+               "suite_runs_worker": "", "suite_minutes_worker": "",
+               "suite_unknown_stages": "", "suite_runs_orchestrator": ""}
+    if not stages:
+        return columns
+    columns["wall_worker_minutes"] = total("worker_minutes")
+    for role in workflow.roles:
+        minutes = [s["worker_minutes"] for s in stages if s["role"] == role]
+        columns[f"wall_{role}_minutes"] = round(sum(minutes), 1) if minutes else ""
+    columns["wall_orchestrator_gap_minutes"] = total("orchestrator_gap_minutes")
+    columns["wall_human_wait_minutes"] = total("human_wait_minutes")
+    for field in ("suite_runs_worker", "suite_minutes_worker", "suite_runs_orchestrator"):
+        columns[field] = total(field)
+    columns["suite_unknown_stages"] = sum(1 for s in stages if s["suite_runs_worker"] == UNKNOWN)
+    return columns
+
+
+# --------------------------------------------------------------------------- #
 # skill versions
 # --------------------------------------------------------------------------- #
 
@@ -1060,10 +1263,12 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
             continue  # a sibling workflow's run the session also touched
         state = empty_run_state()
         have_state = False
+        stage_timings = []
         if run["root"]:
             run_dir = run["root"] / ".scratch" / "orchestrator" / "runs" / run_id
             if run_dir.is_dir():
                 state = read_run_state(run_dir, workflow)
+                stage_timings = read_run_timing(run_dir)["stages"]
                 have_state = True
         start = iso(state["start"] or run["start"])
         end = iso(state["end"] or run["end"])
@@ -1119,6 +1324,8 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
             row["tokens_per_question"] = round(round_tokens / state["questions"]) if state["questions"] else ""
             row["session_start_calls"] = start_calls
             row["session_start_tokens"] = start_tokens
+        row.update(run_timing_columns(stage_timings, workflow))
+        row["stage_timings"] = stage_timings
         rows.append(row)
     return rows
 
@@ -1212,12 +1419,65 @@ def write_sessions_csv(sessions: list[dict], out_dir: Path) -> Path:
 
 def write_runs_csv(rows: list[dict], out_dir: Path) -> Path:
     target = out_dir / "orchestrator-usage-runs.csv"
-    columns = list(rows[0].keys()) if rows else ["run_id"]
+    columns = [k for k in rows[0] if k != "stage_timings"] if rows else ["run_id"]
     with target.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=columns)
+        writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     return target
+
+
+STAGE_COLUMNS = ["project", "run_id", "skill_commit", "stage", "role", "launch_ts", "capture_ts",
+                 "worker_minutes", "gap_minutes", "orchestrator_gap_minutes",
+                 "human_wait_minutes", "suite_runs_worker", "suite_minutes_worker",
+                 "suite_runs_orchestrator"]
+
+
+def write_stages_csv(rows: list[dict], out_dir: Path) -> Path:
+    target = out_dir / "orchestrator-usage-stages.csv"
+    with target.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=STAGE_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            for stage in row.get("stage_timings", []):
+                writer.writerow({**{k: row[k] for k in ("project", "run_id", "skill_commit")},
+                                 **stage})
+    return target
+
+
+def print_wall_time(runs: list[dict], workflow: Workflow) -> None:
+    """Wall-time medians per skill commit over the runs with at least one timed stage.
+    Unlike the token columns these do not depend on the harness."""
+    timed = [r for r in runs if r.get("stage_timings")
+             and (r["workflow"] in ("issue-chain", "") if workflow.name == "issue-chain"
+                  else workflow.owns_run(r["run_id"]))]
+    if not timed:
+        return
+    fields = [("total", "wall_clock_minutes"), ("worker", "wall_worker_minutes"),
+              ("orch-gap", "wall_orchestrator_gap_minutes"), ("human", "wall_human_wait_minutes")]
+    fields += [(role[:8], f"wall_{role}_minutes") for role in workflow.roles]
+    fields += [("w-tests", "suite_runs_worker"), ("w-test-m", "suite_minutes_worker"),
+               ("o-tests", "suite_runs_orchestrator")]
+    header = f"{'commit':<10}{'date':<12}{'runs':>5}" + "".join(f"{label:>10}" for label, _ in fields)
+    print()
+    print(f"{workflow.subdir} wall time in minutes and test runs, medians per skill commit")
+    print("worker = launch to report capture; orch-gap = capture to next launch minus human "
+          "wait; w-tests = test-runner summaries in worker logs, o-tests = orchestrator test commands")
+    print(header)
+    print("-" * len(header))
+    groups: dict[str, list[dict]] = {}
+    for run in timed:
+        groups.setdefault(run["skill_commit"] or "-", []).append(run)
+    for commit, rows in sorted(groups.items(),
+                               key=lambda kv: (kv[1][0]["skill_commit_date"], kv[0])):
+        values = [median([r[key] for r in rows if r[key] not in ("", UNKNOWN)])
+                  for _, key in fields]
+        print(f"{commit:<10}{rows[0]['skill_commit_date']:<12}{len(rows):>5}"
+              + "".join(f"{fmt(v, 1):>10}" for v in values))
+    unknown = sum(r["suite_unknown_stages"] or 0 for r in timed)
+    stages = sum(len(r["stage_timings"]) for r in timed)
+    print(f"{len(timed)} runs with timed stages; {unknown} of {stages} stages have no "
+          "recognized test summary in their logs (counted as unknown, not zero)")
 
 
 def print_summary(sessions: list[dict], runs: list[dict],
@@ -1283,6 +1543,7 @@ def print_summary(sessions: list[dict], runs: list[dict],
             )
 
     print_start_summary(sessions, runs, workflow)
+    print_wall_time(runs, workflow)
 
     if workflow.name == "grilling":
         started = [r for r in runs if r["calls"] and r["stages_completed"]]
@@ -1376,6 +1637,7 @@ def main(argv=None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     s_csv = write_sessions_csv(sessions, out_dir)
     r_csv = write_runs_csv(runs, out_dir)
+    t_csv = write_stages_csv(runs, out_dir)
 
     excluded = [s for s in sessions if any(
         text in s["project"] or text in s["cwd"] for text in args.exclude_project)]
@@ -1387,6 +1649,7 @@ def main(argv=None) -> int:
     print_summary(scored_sessions, scored_runs, workflow)
     print(f"\nwrote {s_csv}")
     print(f"wrote {r_csv}")
+    print(f"wrote {t_csv}")
     return 0
 
 
