@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 from agents_config import ConfigError, git_root
+from evidence_contract import CAPTURE, snapshot_label
 from worker_readiness import Gate, ReadinessError, add_commands, begin_start, read_events
 
 from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, read_run_state, utc_now
@@ -317,7 +318,7 @@ def require_force_allowed(run_dir: Path, role: str, pass_num: int, surface: str)
     )
     if not launched:
         raise SystemExit(f"--force refused: {surface} has no pane.launched record for {role}-{pass_num} in this run")
-    label = f"report-captured {role}-{pass_num}"
+    label = snapshot_label(CAPTURE, role, pass_num)
     if not any(event.get("type") == "tree.snapshot" and event.get("message") == label for event in events):
         raise SystemExit(f"--force refused: no '{label}' snapshot yet; the worker may still be working")
 

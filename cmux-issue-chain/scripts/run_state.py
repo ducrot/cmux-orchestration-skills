@@ -13,6 +13,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from evidence_contract import (
+    EVIDENCE_GATED_STAGES, LAUNCH, TEST_EVIDENCE_EVENT, read_events, snapshot_label_pattern,
+)
 from run_commit import capture_baseline
 from git_status import porcelain_entries
 from agents_config import (
@@ -46,7 +49,6 @@ from worker_snapshot import (
 
 # Must stay in sync with parse_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
-EVIDENCE_GATED_STAGES = tuple(stage for stage in ISSUE_WORKERS if stage != "triage")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -411,7 +413,7 @@ def prepare_stage(args: argparse.Namespace) -> int:
 def append_event(args: argparse.Namespace) -> int:
     if args.type.startswith("commit."):
         raise SystemExit("commit events are recorded by run_commit.py")
-    if args.type == "orchestrator.verified" and args.message == "test evidence":
+    if (args.type, args.message) == TEST_EVIDENCE_EVENT:
         raise SystemExit("test evidence events are recorded by check_evidence.py")
     read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
@@ -455,21 +457,18 @@ def append_gate(args: argparse.Namespace) -> int:
 
 def require_gate_evidence(run_dir: Path, stage: str) -> None:
     """Require a passing check after the latest capture, using append order."""
-    path = run_dir / "events.jsonl"
     try:
-        events = [json.loads(line) for line in path.read_text().splitlines()] if path.is_file() else []
-        if any(not isinstance(event, dict) for event in events):
-            raise ValueError("events.jsonl holds a non-object line")
+        events = read_events(run_dir)
     except ValueError as error:
         raise SystemExit(f"cannot advance {stage} pass unknown: invalid evidence events: {error}") from error
 
-    capture_label = re.compile(rf"(launched|report-captured) {re.escape(stage)}-([1-9][0-9]*)")
+    capture_label = snapshot_label_pattern(stage)
     for index, capture in reversed(list(enumerate(events))):
         message = capture.get("message")
         if (capture.get("type") == "tree.snapshot" and isinstance(message, str)
                 and (match := capture_label.fullmatch(message))):
             pass_num = int(match[2])
-            if match[1] == "launched":
+            if match[1] == LAUNCH:
                 raise SystemExit(
                     f"cannot advance {stage} pass {pass_num}: launched without a later "
                     "report-captured snapshot and passing test evidence"
@@ -481,7 +480,7 @@ def require_gate_evidence(run_dir: Path, stage: str) -> None:
         )
 
     expected = {"stage": stage, "pass": pass_num, "verdict": "pass"}
-    if any(event.get("type") == "orchestrator.verified" and event.get("message") == "test evidence"
+    if any((event.get("type"), event.get("message")) == TEST_EVIDENCE_EVENT
            and isinstance(event.get("data"), dict)
            and {key: event["data"].get(key) for key in expected} == expected
            for event in events[index + 1:]):

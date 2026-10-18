@@ -76,6 +76,38 @@ class EvidenceCli(unittest.TestCase):
     def log_path(self):
         return next((self.run_dir / "artifacts/implement-1").glob("*.log"))
 
+    def test_gate_accepts_the_real_evidence_check_event(self):
+        self.green()
+        checked = self.check()
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        event = self.event()
+        self.assertEqual((event["type"], event["message"]),
+                         ("orchestrator.verified", "test evidence"))
+        gated = self.cli("run_state.py", "gate", "--run-dir", self.run_dir,
+                         "--stage", "implement", "--decision", "advance",
+                         "--reason", "real evidence", "--next-stage", "simplify")
+        self.assertEqual(gated.returncode, 0, gated.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "simplify")
+
+    def test_blank_and_nonobject_events_are_refused_by_both_clis(self):
+        self.green()
+        self.assertEqual(self.check().returncode, 0)
+        path = self.run_dir / "events.jsonl"
+        valid = path.read_text()
+        for bad_line in ("\n", "[]\n"):
+            with self.subTest(bad_line=bad_line):
+                path.write_text(valid + bad_line)
+                before = path.read_bytes()
+                checked = self.check()
+                self.assertNotEqual(checked.returncode, 0)
+                gated = self.cli("run_state.py", "gate", "--run-dir", self.run_dir,
+                                 "--stage", "implement", "--decision", "advance",
+                                 "--reason", "invalid events")
+                self.assertNotEqual(gated.returncode, 0)
+                self.assertIn("invalid evidence events", gated.stderr)
+                self.assertEqual(path.read_bytes(), before)
+
     def event(self):
         return json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
 

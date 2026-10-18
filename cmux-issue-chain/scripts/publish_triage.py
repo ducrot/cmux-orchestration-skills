@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from collect_recommendations import FOLLOWUP_ALLOWED, UNSUPPORTED_PASS_ERROR, collected_data, read_items
+from evidence_contract import CAPTURE, snapshot_label
 from orchestrator_lib import append_jsonl, load_issues, normalize_issue_id, read_run_state, slugify, utc_now
 from parse_report import parse_report
 from triage_contract import VERDICTS
@@ -23,9 +24,9 @@ def publish(run_dir: Path, pass_num: int) -> dict:
     data = collected_data(run_dir, pass_num)
     if not data or not data["item_count"]:
         raise ValueError("missing nonempty triage.collected event")
-    snapshot_label = f"report-captured triage-{pass_num}"
-    if not any(e.get("type") == "tree.snapshot" and (e.get("message") == snapshot_label or e.get("data", {}).get("label") == snapshot_label) for e in audit):
-        raise ValueError(f"missing tree.snapshot labelled {snapshot_label}")
+    capture_label = snapshot_label(CAPTURE, "triage", pass_num)
+    if not any(e.get("type") == "tree.snapshot" and (e.get("message") == capture_label or e.get("data", {}).get("label") == capture_label) for e in audit):
+        raise ValueError(f"missing tree.snapshot labelled {capture_label}")
     items_path = run_dir / f"triage-items-{pass_num}.md"
     items = read_items(items_path)
     report = run_dir / "reports" / f"triage-{pass_num}.md"

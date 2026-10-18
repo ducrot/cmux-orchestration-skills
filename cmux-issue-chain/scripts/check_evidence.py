@@ -21,6 +21,9 @@ from parse_report import ADVANCE, EXIT_CODES, STOP, parse_report, pending_payloa
 from render_prompt import tracker_ground_rules
 from run_check import repository_root
 from check_commands import applicable_commands
+from evidence_contract import (
+    CAPTURE, LAUNCH, EVIDENCE_EXEMPT_STAGES, TEST_EVIDENCE_EVENT, read_events, snapshot_label,
+)
 
 
 def read_log(path: Path) -> dict:
@@ -97,14 +100,10 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     if not tracker.is_absolute():
         tracker = repository / tracker
     commands = applicable_commands(tracker_ground_rules(tracker), stage, require_canonical=True)
-    events_path = run_dir / "events.jsonl"
-    lines = events_path.read_text().splitlines() if events_path.is_file() else []
-    events = [json.loads(line) for line in lines]
-    if any(not isinstance(event, dict) for event in events):
-        raise ValueError("events.jsonl holds a non-object line")
+    events = read_events(run_dir)
 
     def snapshot(prefix):
-        label = f"{prefix} {stage}-{pass_num}"
+        label = snapshot_label(prefix, stage, pass_num)
         matches = [event for event in events
                    if event.get("type") == "tree.snapshot" and event.get("message") == label]
         if not matches:
@@ -113,7 +112,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
         return {"label": label, "time": event["time"], "repository": str(repository),
                 "head": event["data"]["head"], "fingerprint": event["data"]["fingerprint"]}
 
-    capture = snapshot("report-captured")
+    capture = snapshot(CAPTURE)
     preparation = next((event["data"] for event in reversed(events)
                         if event.get("type") == "stage.prepared"
                         and event.get("data", {}).get("stage") == stage
@@ -122,7 +121,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     # no marker and retain the regular implement contract, regardless of pass number.
     needs_before = stage == "simplify" or (
         stage == "implement" and preparation.get("followup") is True)
-    launch = snapshot("launched") if needs_before or stage == "review" else None
+    launch = snapshot(LAUNCH) if needs_before or stage == "review" else None
     unchanged_review = stage == "review" and all(
         launch[key] == capture[key] for key in ("head", "fingerprint"))
     citations = cited_paths(report_text)
@@ -209,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                 gate = parse_report(report_text)["gate"]
             else:
                 gate = pending_payload(args.report)["gate"]
-        if args.stage == "triage":
+        if args.stage in EVIDENCE_EXEMPT_STAGES:
             print(f"verdict=exempt gate={gate}")
             return EXIT_CODES[gate]
         if not args.report:
@@ -224,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
                       *(sys.argv[1:] if argv is None else argv)]
         data["commands"] = [shlex.join(invocation)]
         append_jsonl(args.run_dir / "events.jsonl", {"time": utc_now(),
-                     "type": "orchestrator.verified", "message": "test evidence", "data": data})
+                     "type": TEST_EVIDENCE_EVENT[0], "message": TEST_EVIDENCE_EVENT[1], "data": data})
         print(f"verdict={data['verdict']} gate={gate}")
         for item in data["results"]:
             detail = ""
