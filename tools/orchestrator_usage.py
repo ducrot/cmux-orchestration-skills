@@ -27,6 +27,7 @@ import argparse
 import csv
 import json
 import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -940,7 +941,19 @@ def test_commands(data: dict) -> int | None:
         return None
     if not isinstance(commands, list):
         commands = [commands]
-    return sum(1 for c in commands if TEST_COMMAND.search(str(c)))
+    count = 0
+    for command in commands:
+        command = str(command)
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = []
+        # Evidence checks run no suites, even when their paths name a test runner.
+        if (len(argv) >= 2 and Path(argv[1]).name == "check_evidence.py"
+                and re.fullmatch(r"(?:python|pypy)(?:\d+(?:\.\d+)*)?", Path(argv[0]).name)):
+            continue
+        count += bool(TEST_COMMAND.search(command))
+    return count
 
 
 def read_run_timing(run_dir: Path) -> dict:

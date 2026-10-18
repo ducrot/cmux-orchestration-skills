@@ -529,6 +529,12 @@ VITEST_LOG = """ Test Files  12 passed (12)
 """
 
 
+def isolated_git_env() -> dict:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return env
+
+
 class WallTime(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -539,8 +545,8 @@ class WallTime(unittest.TestCase):
 
     def write_events(self, *events):
         (self.run_dir / "events.jsonl").write_text(
-            "\n".join(json.dumps({"type": t, "time": f"2026-10-17T{clock}+00:00", **extra})
-                      for clock, t, extra in events), encoding="utf-8")
+            "".join(json.dumps({"type": t, "time": f"2026-10-17T{clock}+00:00", **extra}) + "\n"
+                    for clock, t, extra in events), encoding="utf-8")
 
     def write_log(self, stage, name, text):
         directory = self.run_dir / "artifacts" / stage
@@ -562,8 +568,7 @@ class WallTime(unittest.TestCase):
         # A throwaway repository keeps the check independent of this checkout's Git state.
         target = self.root / "target"
         target.mkdir()
-        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        env = isolated_git_env()
         subprocess.run(["git", "init", "-q"], cwd=target, env=env, check=True)
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                         "commit", "-q", "--allow-empty", "-m", "base"], cwd=target, env=env, check=True)
@@ -578,6 +583,50 @@ class WallTime(unittest.TestCase):
         stage, = ou.read_run_timing(self.run_dir)["stages"]
         self.assertEqual(stage["suite_runs_worker"], 1)
         self.assertEqual(stage["suite_minutes_worker"], 2.0)
+
+    def test_real_evidence_event_counts_zero_orchestrator_suite_runs(self):
+        self.test_real_wrapper_log_counts_runner_summary_below_header()
+        scripts = Path(__file__).resolve().parents[1] / "cmux-issue-chain/scripts"
+        command = shlex.join([sys.executable, "-c", f"print({UNITTEST_LOG!r}, end='')"])
+        tracker = self.root / "tracker"
+        tracker.mkdir()
+        (tracker / "README.md").write_text(
+            f"## Ground rules\n\n- Canonical check commands:\n  - `{command}`\n")
+        (self.run_dir / "state.json").write_text(json.dumps({
+            "workflow": "issue-chain", "layout_version": 1,
+            "deliverables": {"tracker": str(tracker)},
+        }))
+        for script, args in (
+            ("run_state.py", ["snapshot", "--run-dir", str(self.run_dir),
+                              "--label", "report-captured implement-1"]),
+            ("check_evidence.py", ["--run-dir", str(self.run_dir), "--stage", "implement", "--pass", "1"]),
+        ):
+            result = subprocess.run([sys.executable, str(scripts / script), *args],
+                                    cwd=self.root / "target", env=isolated_git_env(),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        stage, = ou.read_run_timing(self.run_dir)["stages"]
+        self.assertEqual(stage["suite_runs_orchestrator"], 0)
+        self.assertEqual(stage["suite_runs_worker"], 1)
+        self.assertEqual(stage["suite_minutes_worker"], 2.0)
+
+    def test_real_evidence_event_with_test_runner_in_run_path(self):
+        self.run_dir = self.run_dir.with_name("chain-pytest-demo")
+        self.run_dir.mkdir()
+        self.test_real_evidence_event_counts_zero_orchestrator_suite_runs()
+
+    def test_evidence_invocation_paths_are_not_suite_commands(self):
+        for runner in ("unittest", "pytest", "phpunit", "vitest", "jest"):
+            with self.subTest(runner=runner):
+                invocation = shlex.join([
+                    f"/tmp/{runner}/bin/python3",
+                    f"/tmp/{runner}/repo with spaces/cmux-issue-chain/scripts/check_evidence.py",
+                    "--run-dir", f"/tmp/chain-{runner}-demo", "--stage", "implement", "--pass", "1",
+                ])
+                self.assertEqual(ou.test_commands({"commands": [invocation]}), 0)
+                self.assertEqual(ou.test_commands({"commands": [
+                    invocation, "python3 -m pytest tests/check_evidence.py", "git diff",
+                ]}), 1)
 
     def test_stage_durations_and_orchestrator_gap(self):
         self.write_events(
