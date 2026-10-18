@@ -43,6 +43,29 @@ def adopt(tracker: Path, *extra: str) -> subprocess.CompletedProcess:
 
 
 class Adoption(unittest.TestCase):
+    def test_scaffold_uses_neutral_commands_and_preserves_readme_on_repeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = make_tracker(Path(tmp), {"01-first.md": ticket("01", "First")})
+            proc = adopt(tracker, "--check-command", "pnpm test", "--check-command", "pnpm lint")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            readme = tracker / "README.md"
+            original = readme.read_bytes()
+            self.assertIn(b"- Canonical check commands:\n  - `pnpm test`\n  - `pnpm lint`\n", original)
+            self.assertNotIn(b"run as the baseline suite", original)
+            proc = adopt(tracker, "--check-command", "different test command")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(readme.read_bytes(), original)
+
+    def test_adoption_preserves_existing_legacy_readme(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = make_tracker(Path(tmp), {"01-first.md": ticket("01", "First")})
+            readme = tracker / "README.md"
+            original = b"# Existing\n\n## Ground rules\n\n- Canonical check commands, run as the baseline suite by every worker:\n  - `pnpm test`\n"
+            readme.write_bytes(original)
+            proc = adopt(tracker, "--check-command", "pnpm lint")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(readme.read_bytes(), original)
+
     def test_adopted_tracker_loads_with_types_and_blockers(self):
         with tempfile.TemporaryDirectory() as tmp:
             tracker = make_tracker(

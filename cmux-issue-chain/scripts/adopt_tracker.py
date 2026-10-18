@@ -230,7 +230,7 @@ def plan_scaffolds(tracker: Path, check_commands: list[str], branch: str | None)
                 f"# {tracker.name}\n\n"
                 "## Ground rules\n\n"
                 f"- Working branch: `{branch or '<TODO: working branch>'}`\n"
-                "- Canonical check commands, run as the baseline suite by every worker:\n"
+                "- Canonical check commands:\n"
                 f"{commands}\n",
             )
         )

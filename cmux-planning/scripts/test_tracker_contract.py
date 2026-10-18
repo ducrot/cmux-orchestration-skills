@@ -16,6 +16,7 @@ from spec_contract import ContractError  # noqa: E402
 from test_spec_contract import checked_evidence, review_report  # noqa: E402
 from tracker_contract import (  # noqa: E402
     issue_slug,
+    render_readme,
     render_summary,
     stage_native_tracker,
     validate_native_tracker,
@@ -582,6 +583,51 @@ sha256 {resulting}
         self.assertEqual([item["id"] for item in issues], ["ISSUE-001", "ISSUE-002"])
         self.assertTrue(issues[0]["ready"])
         self.assertFalse(issues[1]["ready"])
+
+    def test_readme_uses_neutral_canonical_command_label(self):
+        result = self.write_proposal()
+        readme = render_readme(result)
+        self.assertIn(
+            "- Canonical check commands:\n  - `python3 -m unittest discover -s tests`\n",
+            readme,
+        )
+        self.assertNotIn("run as the baseline suite", readme)
+
+    def check_native_readme(self, tracker: Path, command_rules: str) -> subprocess.CompletedProcess:
+        (tracker / "README.md").write_text(
+            f"# Tracker\n\n## Ground rules\n\n- Working branch: `main`\n{command_rules}",
+            encoding="utf-8",
+        )
+        return self.contract_cli("native-tracker", str(tracker))
+
+    def test_native_readme_accepts_legacy_neutral_and_targeted_forms(self):
+        tracker = self.root / "planned-feature"
+        stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
+        for label, extra in (
+            ("Canonical check commands, run as the baseline suite by every worker", ""),
+            ("Canonical check commands", ""),
+            ("Canonical check commands", "\n- Targeted check commands for implement, simplify, and review:\n  - `python3 -m unittest tests.test_cli`\n"),
+        ):
+            with self.subTest(label=label, targeted=bool(extra)):
+                checked = self.check_native_readme(
+                    tracker, f"- {label}:\n  - `python3 -m unittest discover -s tests`\n{extra}"
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_native_readme_rejects_missing_runnable_canonical_command(self):
+        tracker = self.root / "planned-feature"
+        stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
+        for commands, extra in (
+            ("", ""),
+            ("  - `   `\n", ""),
+            ("  - `<TODO: canonical test command>`\n", ""),
+            ("", "- Targeted check commands for implement, simplify, and review:\n  - `python3 -m unittest tests.test_cli`\n"),
+            ("", "\n## Notes\n\n  - `python3 -m unittest discover -s tests`\n"),
+        ):
+            with self.subTest(commands=commands, extra=extra):
+                checked = self.check_native_readme(tracker, f"- Canonical check commands:\n{commands}{extra}")
+                self.assertNotEqual(checked.returncode, 0)
+                self.assertIn("no runnable canonical check command", checked.stderr)
 
     def test_native_validation_rejects_partial_issue_set_and_changed_spec(self):
         result = self.write_proposal()

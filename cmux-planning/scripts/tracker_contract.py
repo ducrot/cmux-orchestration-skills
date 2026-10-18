@@ -551,7 +551,7 @@ def render_readme(proposal: dict[str, Any]) -> str:
 ## Ground rules
 
 - Working branch: `{tracker["working_branch"]}`
-- Canonical check commands, run as the baseline suite by every worker:
+- Canonical check commands:
 {commands}
 '''
 
@@ -636,7 +636,15 @@ def validate_native_tracker(
         raise ContractError("native tracker README has no canonical Ground rules section")
     if "Working branch: `" not in readme or "Canonical check commands" not in readme:
         raise ContractError("native tracker README has incomplete ground rules")
-    if not re.search(r"^\s+- `[^`]+`\s*$", readme, re.MULTILINE):
+    rules = sections(readme).get("Ground rules", "")
+    canonical = re.search(
+        r"^- Canonical check commands(?:, run as the baseline suite by every worker)?:[ \t]*$"
+        r"((?:\n[ \t]+- `[^`]*`[ \t]*|\n[ \t]*$)*)",
+        rules,
+        re.MULTILINE,
+    )
+    commands = re.findall(r"`([^`]*)`", canonical[1]) if canonical else []
+    if not any(command.strip() and "<TODO" not in command for command in commands):
         raise ContractError("native tracker README has no runnable canonical check command")
     spec_digest = sha256_bytes(required_raw["spec.md"])
     if expected_spec_sha256 is not None and spec_digest != expected_spec_sha256:
