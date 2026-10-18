@@ -4,6 +4,10 @@
 import contextlib
 import io
 import json
+import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -545,6 +549,35 @@ class WallTime(unittest.TestCase):
 
     def snapshot(self, clock, label):
         return (clock, "tree.snapshot", {"message": label})
+
+    def test_real_wrapper_log_counts_runner_summary_below_header(self):
+        repository = Path(__file__).resolve().parents[1]
+        wrapper = repository / "cmux-issue-chain/scripts/run_check.py"
+        if not wrapper.is_file():
+            self.skipTest("issue-chain wrapper is absent in independent installation")
+        self.write_events(
+            self.snapshot("10:00:00", "launched implement-1"),
+            self.snapshot("10:03:00", "report-captured implement-1"),
+        )
+        # A throwaway repository keeps the check independent of this checkout's Git state.
+        target = self.root / "target"
+        target.mkdir()
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        subprocess.run(["git", "init", "-q"], cwd=target, env=env, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "base"], cwd=target, env=env, check=True)
+        command = shlex.join([sys.executable, "-c", f"print({UNITTEST_LOG!r}, end='')"])
+        result = subprocess.run(
+            [sys.executable, str(wrapper), "--artifact-dir",
+             str(self.run_dir / "artifacts" / "implement-1"), "--command", command],
+            cwd=target, env=env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, UNITTEST_LOG)
+        stage, = ou.read_run_timing(self.run_dir)["stages"]
+        self.assertEqual(stage["suite_runs_worker"], 1)
+        self.assertEqual(stage["suite_minutes_worker"], 2.0)
 
     def test_stage_durations_and_orchestrator_gap(self):
         self.write_events(

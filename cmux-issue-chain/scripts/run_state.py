@@ -485,11 +485,17 @@ def untracked_content(repository: Path, raw: bytes) -> tuple[list[tuple[str, str
     return entries, states, block
 
 
-def append_snapshot(args: argparse.Namespace) -> int:
-    read_run_state(Path(args.run_dir))
+def tree_fingerprint(directory: Path | None = None) -> dict:
+    """Read Git-visible tree identity without writing files or lifecycle events.
+
+    Keep the hashing inputs identical to snapshot: raw porcelain status, binary
+    unstaged and staged diffs, and bounded untracked content, in that order.
+    Status and diffs run from the top level so the caller's subdirectory cannot
+    narrow them (diff.relative).
+    """
     def git(*argv: str) -> bytes:
         # Diffs can contain non-UTF-8 bytes; replacement decoding loses fingerprint input.
-        result = subprocess.run(["git", *argv], capture_output=True)
+        result = subprocess.run(["git", *argv], cwd=directory, capture_output=True)
         if result.returncode != 0:
             detail = result.stderr.decode("utf-8", "replace").strip()
             raise SystemExit(f"git {' '.join(argv)} failed: {detail}")
@@ -503,17 +509,14 @@ def append_snapshot(args: argparse.Namespace) -> int:
     except ValueError as error:
         raise SystemExit(str(error)) from error
     # Raw binary diffs and bounded untracked content cover Git-visible tree changes.
-    diff = git("diff", "--binary", "--no-ext-diff")
-    cached_diff = git("diff", "--cached", "--binary", "--no-ext-diff")
+    diff = git("-C", str(repository), "diff", "--binary", "--no-ext-diff")
+    cached_diff = git("-C", str(repository), "diff", "--cached", "--binary", "--no-ext-diff")
     digest = hashlib.sha256()
     for block in (status, diff, cached_diff, untracked_block):
         digest.update(block)
     fingerprint = digest.hexdigest()[:16]
 
-    data = json.loads(args.data) if args.data else {}
-    if not isinstance(data, dict):
-        raise SystemExit("--data must be a JSON object")
-    data.update({
+    return {
         "head": head, "fingerprint": fingerprint,
         "dirty_paths": len({path for _, path in entries}),
         "staged_paths": sorted({path for code, path in entries if code[0] not in " ?"}),
@@ -523,12 +526,20 @@ def append_snapshot(args: argparse.Namespace) -> int:
             {"path": path, "reason": value["skipped"]}
             for path, value in sorted(untracked.items()) if "skipped" in value
         ],
-    })
+    }
+
+
+def append_snapshot(args: argparse.Namespace) -> int:
+    read_run_state(Path(args.run_dir))
+    data = json.loads(args.data) if args.data else {}
+    if not isinstance(data, dict):
+        raise SystemExit("--data must be a JSON object")
+    data.update(tree_fingerprint())
     append_jsonl(
         Path(args.run_dir) / "events.jsonl",
         {"time": utc_now(), "type": "tree.snapshot", "message": args.label, "data": data},
     )
-    print(f"fingerprint={fingerprint} head={head[:12]} dirty_paths={data['dirty_paths']}")
+    print(f"fingerprint={data['fingerprint']} head={data['head'][:12]} dirty_paths={data['dirty_paths']}")
     return 0
 
 
