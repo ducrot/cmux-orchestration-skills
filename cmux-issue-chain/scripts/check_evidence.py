@@ -163,8 +163,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
         if needs_before:
             # A cited command takes its before evidence from citations only; others may use own before-runs.
             cited_command = [log for log in cited if log["command"] == command]
-            before = evidence_result(command, cited_command or own_before, launch, "before",
-                                     cited_source=bool(citations))
+            before = evidence_result(command, cited_command or own_before, launch, "before")
             results.append(before)
             # Even a no-op pass must supply a distinct own after-run.
             if "log" in before:

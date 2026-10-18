@@ -401,6 +401,56 @@ class EvidenceCli(unittest.TestCase):
         result = self.check("simplify")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_before_source_is_per_command_with_partial_or_broken_citations(self):
+        for stage, number in self.BASELINE_STAGES:
+            for baseline in ("pass", "red", "stale", "broken"):
+                with self.subTest(stage=stage, baseline=baseline):
+                    self.report_text()
+                    self.file.write_text("base\n")
+                    command = "exit 7" if baseline == "red" else self.command
+                    self.rules(commands=[command, self.commands[1]])
+                    baseline_dir = self.run_dir / "artifacts/test-1"
+                    previous = set(baseline_dir.glob("*.log"))
+                    wrapped = self.wrap(command, "test")
+                    self.assertEqual(wrapped.returncode, 7 if baseline == "red" else 0)
+                    path, = set(baseline_dir.glob("*.log")) - previous
+                    if baseline == "broken":
+                        path.write_text("broken wrapper header\n")
+                    if baseline == "stale":
+                        self.file.write_text("different launch tree\n")
+                    if stage == "implement":
+                        self.prepared(True, stage, number)
+                    self.capture(stage, number, prefix="launched")
+                    self.cite([path])
+                    # All own logs belong to the after tree, leaving no own before-runs.
+                    self.file.write_text(f"after {stage} {baseline}\n")
+                    for after_command in (command, self.commands[1]):
+                        self.wrap(after_command, stage, number)
+                    self.capture(stage, number)
+                    checked = self.check(stage, number)
+                    self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                    self.assertIn(
+                        f"missing: {self.commands[1]} phase=before source=own", checked.stdout)
+                    self.assertEqual(self.event()["type"], "orchestrator.verified")
+                    before = {item["command"]: item for item in self.phase_results("before")}
+                    self.assertEqual(before[self.commands[1]]["verdict"], "missing")
+                    self.assertIs(before[self.commands[1]]["cited"], False)
+                    if baseline == "broken":
+                        self.assertEqual(before[command]["verdict"], "missing")
+                        self.assertIs(before[command]["cited"], False)
+                        citations = self.phase_results("citation")
+                        self.assertTrue(citations)
+                        self.assertTrue(all(item["cited"] for item in citations))
+                        self.assertTrue(all(item["citation"] == str(path.relative_to(self.run_dir))
+                                            for item in citations))
+                    else:
+                        self.assertEqual(before[command]["verdict"], baseline)
+                        self.assertIs(before[command]["cited"], True)
+                        detail = (" exit_code=7" if baseline == "red" else
+                                  " differed=fingerprint" if baseline == "stale" else "")
+                        self.assertIn(
+                            f"{baseline}: {command}{detail} phase=before source=cited", checked.stdout)
+
     def test_pass_event_has_separate_logs_and_invocation_and_does_not_mutate(self):
         self.green()
         state = (self.run_dir / "state.json").read_bytes()
