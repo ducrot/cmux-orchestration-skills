@@ -74,7 +74,7 @@ def differences(log: dict, identity: dict) -> list[str]:
     return differed
 
 
-def evidence_result(command: str, logs: list[dict], identity: dict, phase: str, cited_source: bool = False) -> dict:
+def evidence_result(command: str, logs: list[dict], identity: dict, phase: str) -> dict:
     candidates = []
     for log in logs:
         if log["command"] != command:
@@ -87,7 +87,7 @@ def evidence_result(command: str, logs: list[dict], identity: dict, phase: str, 
     chosen = min(candidates, key=lambda item: (item["verdict"] != "pass",
                                               bool(item["differed"])), default=None)
     return {"command": command, "phase": phase,
-            **(chosen or {"verdict": "missing", "cited": cited_source})}
+            **(chosen or {"verdict": "missing", "cited": False})}
 
 
 def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
@@ -172,8 +172,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
                 after_logs = [log for log in own if log["path"] != before["log"]["path"]]
         elif unchanged_review:
             after_logs = own + cited
-        results.append(evidence_result(command, after_logs, capture, "after",
-                                       cited_source=unchanged_review and bool(citations) and not own))
+        results.append(evidence_result(command, after_logs, capture, "after"))
     # A forbidden or unreadable citation cannot be silently rescued by own logs.
     rejected = ([{"citation": path, "error": citation_refusal}
                  for path in citations] if citation_refusal else [])

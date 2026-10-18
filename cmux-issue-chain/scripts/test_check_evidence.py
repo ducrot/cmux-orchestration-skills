@@ -377,11 +377,49 @@ class EvidenceCli(unittest.TestCase):
         self.cite()
         result = self.check("review")
         self.assertEqual(result.returncode, 3)
-        self.assertIn("red: exit 7 exit_code=7", result.stdout)
-        for item in self.event()["data"]["results"]:
-            self.assertTrue(item["cited"])
-        self.assertEqual([item["verdict"] for item in self.event()["data"]["results"]],
-                         ["red", "missing"])
+        self.assertIn("red: exit 7 exit_code=7 phase=after source=cited", result.stdout)
+        self.assertIn(f"missing: {self.command} phase=after source=own", result.stdout)
+        self.assertEqual([(item["verdict"], item["cited"]) for item in self.event()["data"]["results"]],
+                         [("red", True), ("missing", False)])
+
+    def test_unchanged_review_missing_source_with_partial_or_broken_citations(self):
+        for number, baseline in enumerate(("pass", "stale", "broken"), start=1):
+            with self.subTest(baseline=baseline):
+                self.report_text()
+                self.file.write_text(f"baseline {baseline}\n")
+                baseline_dir = self.run_dir / "artifacts/test-1"
+                previous = set(baseline_dir.glob("*.log"))
+                wrapped = self.wrap(self.command, "test")
+                self.assertEqual(wrapped.returncode, 0, wrapped.stderr)
+                path, = set(baseline_dir.glob("*.log")) - previous
+                if baseline == "stale":
+                    self.file.write_text("different review tree\n")
+                elif baseline == "broken":
+                    path.write_text("broken wrapper header\n")
+                self.capture("review", number, prefix="launched")
+                self.capture("review", number)
+                self.cite([path])
+                checked = self.check("review", number)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                self.assertIn(f"missing: {self.commands[1]} phase=after source=own", checked.stdout)
+                self.assertEqual(self.event()["type"], "orchestrator.verified")
+                after = {item["command"]: item for item in self.phase_results("after")}
+                self.assertEqual(after[self.commands[1]]["verdict"], "missing")
+                self.assertIs(after[self.commands[1]]["cited"], False)
+                broken = baseline == "broken"
+                verdict, source = ("missing", "own") if broken else (baseline, "cited")
+                detail = " differed=fingerprint" if baseline == "stale" else ""
+                self.assertEqual(after[self.command]["verdict"], verdict)
+                self.assertIs(after[self.command]["cited"], not broken)
+                self.assertIn(
+                    f"{verdict}: {self.command}{detail} phase=after source={source}", checked.stdout)
+                if broken:
+                    citations = self.phase_results("citation")
+                    self.assertEqual({item["command"] for item in citations}, set(self.commands))
+                    self.assertTrue(all(item["verdict"] == "missing" and item["cited"]
+                                        for item in citations))
+                    self.assertTrue(all(item["citation"] == str(path.relative_to(self.run_dir))
+                                        for item in citations))
 
     def test_missing_launch_fails_closed_for_roles_using_baselines(self):
         for stage, number in (("review", 1), ("simplify", 1), ("implement", 2)):
