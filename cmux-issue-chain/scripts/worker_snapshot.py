@@ -81,11 +81,16 @@ def build_stage_snapshot(
     config_sha256: str,
     data: dict[str, Any],
     overrides: dict[str, dict[str, str]],
+    followup: bool = False,
     probe_profiles: bool = False,
     probe_timeout_seconds: float = DEFAULT_PROBE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     if stage not in ISSUE_WORKERS:
         raise SnapshotError(f"unknown issue-chain stage: {stage}")
+    if followup and stage != "implement":
+        raise SnapshotError("--followup applies to the implement stage only")
+    if followup and pass_num < 2:
+        raise SnapshotError("--followup requires an implement pass after the first")
     if pass_num < 1:
         raise SnapshotError("stage pass must be a positive integer")
     repository = str(git_root(Path.cwd()))
@@ -103,6 +108,7 @@ def build_stage_snapshot(
         "run_id": run_id,
         "stage": stage,
         "pass": pass_num,
+        "followup": followup,
         "status": "passed",
         "resolved_at": resolved_at,
         "config": {
@@ -141,6 +147,7 @@ def snapshot_from_args(
         config_sha256=config_sha256,
         data=data,
         overrides=overrides,
+        followup=getattr(args, "followup", False),
         probe_profiles=probe_profiles,
         probe_timeout_seconds=probe_timeout,
     )

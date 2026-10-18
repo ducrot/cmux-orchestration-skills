@@ -542,6 +542,27 @@ class RenderCli(unittest.TestCase):
                     self.assertIn(REGRESSION_CLARIFICATION, text)
                     self.assertNotIn("earlier reports of this pass", text)
 
+    def test_cli_requires_followup_file_and_prepared_marker_to_agree(self):
+        self.assertEqual(self.init().returncode, 0)
+        items = self.repo / "followup-items.md"
+        items.write_text(FOLLOWUP_ITEMS)
+        refused = self.run_script(
+            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            "--role", "implement", "--pass", "1", "--run-dir", str(self.run_dir),
+            "--followup-file", str(items),
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("not prepared with --followup", refused.stderr)
+        prepared = self.run_script(
+            RUN_STATE, "prepare", "--run-dir", str(self.run_dir),
+            "--stage", "implement", "--pass", "2", "--followup",
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        refused = self.render("implement", 2)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("requires --followup-file", refused.stderr)
+        self.assertFalse((self.run_dir / "prompts/implement-2.md").exists())
+
     def test_cli_renders_followup_pass_after_the_final_test(self):
         self.assertEqual(self.init().returncode, 0)
         items = self.repo / "followup-items.md"
@@ -558,7 +579,7 @@ class RenderCli(unittest.TestCase):
         )
         self.assertEqual(gate.returncode, 0, gate.stderr)
         prepared = self.run_script(
-            RUN_STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "implement", "--pass", "2",
+            RUN_STATE, "prepare", "--run-dir", str(self.run_dir), "--stage", "implement", "--pass", "2", "--followup",
         )
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         missing = self.run_script(

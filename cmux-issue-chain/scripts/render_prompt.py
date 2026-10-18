@@ -289,6 +289,10 @@ def main() -> int:
         snapshot = load_launchable_snapshot(run_dir, args.role, args.pass_number)
     except SnapshotError as error:
         raise SystemExit(f"cannot render {args.role}-{args.pass_number}: {error}")
+    prepared_followup = bool(snapshot.get("followup"))
+    if prepared_followup != bool(args.followup_file):
+        raise SystemExit("stage prepared with --followup requires --followup-file" if prepared_followup
+                         else "--followup-file requires an implement snapshot; stage not prepared with --followup")
     harness = snapshot["selected_worker"]["harness"]
     stem = f"{args.role}-{args.pass_number}"
     out = Path(args.out) if args.out else run_dir / "prompts" / f"{stem}.md"

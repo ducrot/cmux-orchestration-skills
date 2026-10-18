@@ -19,7 +19,7 @@ Procedure:
    In human mode record the human verdicts and write the same approved item list.
 2. In autonomous mode record the triage gate as `advance` with `--next-stage implement`; the final test
    gate already moved the run to triage. In human mode the final test gate moves to implement instead.
-3. Prepare `implement` with the next pass number and render with `--followup-file`. Anchor the follow-up
+3. Prepare `implement` with the next pass number and `--followup`, then render with `--followup-file`. Anchor the follow-up
    implement pane to the triage pane (the test pane in human mode). The variant replaces the implement
    contract: apply exactly the listed items, prove behavior preservation with the baseline suite before
    and after instead of a failing regression test, leave existing tests unedited.
@@ -44,3 +44,8 @@ Findings from the follow-up implement or test
 report gate `hitl` like findings after review changes. Select a lighter implement profile for the pass
 with the typed `prepare` overrides when the default is oversized for the items.
 
+`prepare --followup` is valid only for implement passes after the first and records the choice in the immutable stage
+snapshot and `stage.prepared` event. The renderer requires `--followup-file` exactly when that
+marker is set. A corrective pass after a HITL is a regular implement pass: prepare it without
+`--followup`, render without `--followup-file`, and require regression proof and green own
+after-evidence, with no before-evidence duty. Only a follow-up implement pass owes before-evidence.

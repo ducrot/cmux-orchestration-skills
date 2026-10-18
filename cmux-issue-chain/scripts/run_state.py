@@ -83,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--run-dir", required=True)
     prepare.add_argument("--stage", required=True, choices=ISSUE_WORKERS)
     prepare.add_argument("--pass", dest="pass_num", required=True, type=int)
+    prepare.add_argument("--followup", action="store_true", help="Prepare an implement follow-up pass")
     add_override_options(prepare, workflow=WORKFLOW)
     add_probe_options(prepare)
 
@@ -344,12 +345,17 @@ def append_prepared_event(run_dir: Path, pointer: dict, snapshot: dict) -> None:
                 "snapshot_id": pointer["snapshot_id"],
                 "snapshot_sha256": pointer["sha256"],
                 "config_sha256": snapshot["config"]["sha256"],
+                "followup": snapshot.get("followup", False),
             },
         },
     )
 
 
 def prepare_stage(args: argparse.Namespace) -> int:
+    if args.followup and args.stage != "implement":
+        raise SnapshotError("--followup applies to the implement stage only")
+    if args.followup and args.pass_num < 2:
+        raise SnapshotError("--followup requires an implement pass after the first")
     read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
     state_path = run_dir / "state.json"

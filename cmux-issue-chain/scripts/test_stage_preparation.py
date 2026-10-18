@@ -588,7 +588,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertNotEqual(self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1").returncode, 0)
         self.assertEqual(file_contents(self.repo), before)
         self.assertEqual(self.gate("triage", "implement").returncode, 0)
-        self.assertEqual(self.prepare("implement", 2).returncode, 0)
+        self.assertEqual(self.prepare("implement", 2, "--followup").returncode, 0)
         result = self.script("render_prompt.py", "--tracker", tracker, "--issue", "ISSUE-001", "--role", "implement",
                              "--pass", "2", "--run-dir", self.run_dir, "--followup-file", self.run_dir / "followup-items.md")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1062,6 +1062,29 @@ class PreparedStageCli(unittest.TestCase):
         self.assertIn("schema_version", proc.stderr)
         self.assertFalse((self.run_dir / "state.json").exists())
         self.assertFalse((self.run_dir / "stage-snapshots").exists())
+
+    def test_followup_marker_is_implement_only_and_bound_to_snapshot_identity(self):
+        from agents_config import snapshot_identity
+        self.assertEqual(self.init().returncode, 0)
+        self.assertFalse(self.read_snapshot().get("followup", False))
+        prepared = self.prepare("implement", 2, "--followup")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        snapshot = self.read_snapshot()
+        self.assertIs(snapshot["followup"], True)
+        events = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
+        self.assertIs(events[-1]["data"]["followup"], True)
+        identity = snapshot["snapshot_id"]
+        snapshot["followup"] = False
+        self.assertNotEqual(snapshot_identity(snapshot), identity)
+        self.assertEqual(self.prepare("implement", 2).returncode, 0)
+        self.assertIs(self.read_snapshot()["followup"], False)
+        refused = self.prepare("implement", 1, "--followup")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--followup requires an implement pass after the first", refused.stderr)
+        for stage in ("simplify", "review", "test", "triage"):
+            refused = self.prepare(stage, 2, "--followup")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("--followup applies to the implement stage only", refused.stderr)
 
     def test_prepare_reloads_live_config_but_start_uses_only_the_prepared_snapshot(self):
         initialized = self.init()

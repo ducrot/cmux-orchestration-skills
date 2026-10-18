@@ -7,6 +7,7 @@ import subprocess
 import sys
 import unittest
 
+from orchestrator_lib import append_jsonl
 import test_snapshot
 
 
@@ -55,6 +56,10 @@ class EvidenceCli(unittest.TestCase):
 
     BASELINE_STAGES = (("simplify", 1), ("implement", 2))
 
+    def prepared(self, followup, stage="implement", pass_num=2):
+        append_jsonl(self.run_dir / "events.jsonl", {"type": "stage.prepared", "data": {
+            "stage": stage, "pass": pass_num, "followup": followup}})
+
     def capture(self, stage="implement", pass_num=1, prefix="report-captured"):
         result = self.cli("run_state.py", "snapshot", "--run-dir", self.run_dir,
                           "--label", f"{prefix} {stage}-{pass_num}")
@@ -72,8 +77,10 @@ class EvidenceCli(unittest.TestCase):
     def event(self):
         return json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
 
-    def green(self, stage="implement", pass_num=1):
-        needs_before = stage == "simplify" or (stage == "implement" and pass_num > 1)
+    def green(self, stage="implement", pass_num=1, followup=False):
+        if stage == "implement":
+            self.prepared(followup, stage, pass_num)
+        needs_before = stage == "simplify" or (stage == "implement" and followup)
         if needs_before or stage == "review":
             self.capture(stage, pass_num, prefix="launched")
         if needs_before:
@@ -91,6 +98,32 @@ class EvidenceCli(unittest.TestCase):
         paths = paths or sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
         bullets = "\n".join(f"- cited: {path.relative_to(self.run_dir)}" for path in paths)
         self.report.write_text(self.report.read_text().replace("- `example`: passed", bullets))
+
+    def test_corrective_pass_after_red_test_owes_only_after_evidence(self):
+        self.assertNotEqual(self.wrap("false", "test").returncode, 0)
+        self.capture("test")
+        self.assertEqual(self.check("test").returncode, 3)
+        self.prepared(True)
+        self.prepared(False)  # Latest preparation replaces the earlier follow-up choice.
+        for command in self.commands:
+            self.assertEqual(self.wrap(command, "implement", 2).returncode, 0)
+        self.capture("implement", 2)
+        checked = self.check("implement", 2)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual({item["phase"] for item in self.event()["data"]["results"]}, {"after"})
+
+    def test_before_evidence_follows_marker_not_pass_number(self):
+        self.prepared(True, pass_num=1)
+        self.capture(prefix="launched")
+        for command in self.commands:
+            self.wrap(command)
+        self.capture()
+        checked = self.check()
+        self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+        self.assertTrue(self.phase_results("before"))
+        for command in self.commands:
+            self.wrap(command)
+        self.assertEqual(self.check().returncode, 0)
 
     def test_unchanged_review_accepts_citations_and_records_identities(self):
         self.green()
@@ -146,6 +179,8 @@ class EvidenceCli(unittest.TestCase):
     def test_baseline_citation_matches_launch_and_own_after_matches_capture(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                if stage == "implement":
+                    self.prepared(True, stage, number)
                 self.report_text()
                 self.green()
                 self.capture(stage, number, prefix="launched")
@@ -165,6 +200,8 @@ class EvidenceCli(unittest.TestCase):
         for stage, number in self.BASELINE_STAGES:
             for changed in (False, True):
                 with self.subTest(stage=stage, changed=changed):
+                    if stage == "implement":
+                        self.prepared(True, stage, number)
                     self.report_text()
                     self.green()
                     self.capture(stage, number, prefix="launched")
@@ -180,6 +217,8 @@ class EvidenceCli(unittest.TestCase):
     def test_own_before_and_after_and_missing_before(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                if stage == "implement":
+                    self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")
                 self.file.write_text(f"{stage} after\n")
                 for command in self.commands:
@@ -201,6 +240,8 @@ class EvidenceCli(unittest.TestCase):
     def test_noop_own_before_requires_distinct_after(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                if stage == "implement":
+                    self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")
                 for command in self.commands:
                     self.wrap(command, stage, number)
@@ -213,6 +254,8 @@ class EvidenceCli(unittest.TestCase):
     def test_cited_baseline_rejects_wrong_launch_identity(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                if stage == "implement":
+                    self.prepared(True, stage, number)
                 self.report_text()
                 self.green()
                 self.cite()
@@ -271,6 +314,8 @@ class EvidenceCli(unittest.TestCase):
 
     def test_missing_launch_fails_closed_for_roles_using_baselines(self):
         for stage, number in (("review", 1), ("simplify", 1), ("implement", 2)):
+            if stage == "implement":
+                self.prepared(True, stage, number)
             self.capture(stage, number)
             result = self.check(stage, number)
             self.assertNotEqual(result.returncode, 0)
@@ -405,7 +450,7 @@ class EvidenceCli(unittest.TestCase):
             with self.subTest(stage=stage):
                 self.green(stage, 1)
                 self.file.write_text(f"{stage} pass 2\n")
-                self.green(stage, 2)
+                self.green(stage, 2, followup=stage == "implement")
                 self.assertEqual(self.check(stage, 2).returncode, 0)
                 self.assertEqual(self.event()["data"]["capture"]["label"], f"report-captured {stage}-2")
                 self.file.write_text("later\n")

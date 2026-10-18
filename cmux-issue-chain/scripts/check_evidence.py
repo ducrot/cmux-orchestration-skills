@@ -134,7 +134,14 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
                 "head": event["data"]["head"], "fingerprint": event["data"]["fingerprint"]}
 
     capture = snapshot("report-captured")
-    needs_before = stage == "simplify" or (stage == "implement" and pass_num > 1)
+    preparation = next((event["data"] for event in reversed(events)
+                        if event.get("type") == "stage.prepared"
+                        and event.get("data", {}).get("stage") == stage
+                        and event.get("data", {}).get("pass") == pass_num), {})
+    # stage.prepared records the immutable snapshot's marker. Older preparations have
+    # no marker and retain the regular implement contract, regardless of pass number.
+    needs_before = stage == "simplify" or (
+        stage == "implement" and preparation.get("followup") is True)
     launch = snapshot("launched") if needs_before or stage == "review" else None
     unchanged_review = stage == "review" and all(
         launch[key] == capture[key] for key in ("head", "fingerprint"))
