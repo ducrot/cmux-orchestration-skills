@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a stage's own wrapper logs against its report-captured tree.
+"""Verify own and cited wrapper logs against stage launch and capture trees.
 
 Run from the repository root with --run-dir, --stage, --pass and optionally
 --report. Only events.jsonl is appended; checks are never executed here.
@@ -16,7 +16,8 @@ import subprocess
 import sys
 
 from orchestrator_lib import ROLE_LABELS, append_jsonl, read_run_state, utc_now
-from parse_report import ADVANCE, EXIT_CODES, STOP, parse_report, pending_payload
+from await_report import report_path
+from parse_report import ADVANCE, EXIT_CODES, STOP, parse_report, pending_payload, split_sections, tests_section
 from render_prompt import tracker_ground_rules
 from run_check import repository_root
 
@@ -78,54 +79,124 @@ def read_log(path: Path) -> dict:
     return {"path": str(path), **fields}
 
 
-def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path) -> dict:
+def cited_paths(report_text: str) -> list[str]:
+    checks = tests_section(split_sections(report_text))
+    return list(dict.fromkeys(re.findall(r"^[ \t]*[-*][ \t]+cited:[ \t]*`?(.*?)`?[ \t]*$", checks, re.MULTILINE)))
+
+
+def differences(log: dict, identity: dict) -> list[str]:
+    differed = []
+    if log["repository"] != identity["repository"]:
+        differed.append("repository")
+    for key, name in (("head", "HEAD"), ("fingerprint", "fingerprint")):
+        if any(log[f"{key}_{when}"] != identity[key] for when in ("before", "after")):
+            differed.append(name)
+    return differed
+
+
+def evidence_result(command: str, logs: list[dict], identity: dict, phase: str, cited_source: bool = False) -> dict:
+    candidates = []
+    for log in logs:
+        if log["command"] != command:
+            continue
+        differed = differences(log, identity)
+        verdict = "red" if log["exit_code"] else "stale" if differed else "pass"
+        candidates.append({"verdict": verdict, "differed": differed,
+                           "cited": log["cited"], "log": log})
+    # A valid repeat supersedes all earlier attempts.
+    chosen = min(candidates, key=lambda item: (item["verdict"] != "pass",
+                                              bool(item["differed"])), default=None)
+    return {"command": command, "phase": phase,
+            **(chosen or {"verdict": "missing", "cited": cited_source})}
+
+
+def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
+                   report_text: str = "") -> dict:
     state = read_run_state(run_dir)
     tracker = Path(state["deliverables"]["tracker"])
     if not tracker.is_absolute():
         tracker = repository / tracker
     commands = canonical_commands(tracker)
-    label = f"report-captured {stage}-{pass_num}"
     events_path = run_dir / "events.jsonl"
     lines = events_path.read_text().splitlines() if events_path.is_file() else []
-    captures = []
-    for line in lines:
-        event = json.loads(line)
-        if not isinstance(event, dict):
-            raise ValueError("events.jsonl holds a non-object line")
-        if event.get("type") == "tree.snapshot" and event.get("message") == label:
-            captures.append(event)
-    if not captures:
-        raise ValueError(f"missing snapshot: {label}")
-    capture = captures[-1]
-    identity = {"repository": str(repository), "head": capture["data"]["head"],
-                "fingerprint": capture["data"]["fingerprint"]}
-    logs, invalid = [], []
-    for path in sorted((run_dir / "artifacts" / f"{stage}-{pass_num}").glob("check-*.log")):
+    events = [json.loads(line) for line in lines]
+    if any(not isinstance(event, dict) for event in events):
+        raise ValueError("events.jsonl holds a non-object line")
+
+    def snapshot(prefix):
+        label = f"{prefix} {stage}-{pass_num}"
+        matches = [event for event in events
+                   if event.get("type") == "tree.snapshot" and event.get("message") == label]
+        if not matches:
+            raise ValueError(f"missing snapshot: {label}")
+        event = matches[-1]
+        return {"label": label, "time": event["time"], "repository": str(repository),
+                "head": event["data"]["head"], "fingerprint": event["data"]["fingerprint"]}
+
+    capture = snapshot("report-captured")
+    needs_before = stage == "simplify" or (stage == "implement" and pass_num > 1)
+    launch = snapshot("launched") if needs_before or stage == "review" else None
+    unchanged_review = stage == "review" and all(
+        launch[key] == capture[key] for key in ("head", "fingerprint"))
+    citations = cited_paths(report_text)
+    allowed_citations = needs_before or unchanged_review
+    own, cited, invalid = [], [], []
+    artifact_root = (run_dir / "artifacts").resolve()
+    own_dir = artifact_root / f"{stage}-{pass_num}"
+
+    def load(path, citation=None):
+        is_cited = citation is not None
+        tag = {"citation": citation} if is_cited else {}
         try:
-            logs.append(read_log(path))
+            resolved = path.resolve()
+            # Both own and cited logs must remain inside their artifact boundary.
+            relative = resolved.relative_to(artifact_root if is_cited else own_dir)
+            if is_cited and len(relative.parts) < 2:
+                raise ValueError("citation must be inside a stage artifact directory")
+            (cited if is_cited else own).append({**read_log(resolved), "cited": is_cited, **tag})
         except (OSError, ValueError, KeyError) as error:
-            invalid.append({"path": str(path), "error": str(error)})
+            invalid.append({"path": str(path), "cited": is_cited, "error": str(error), **tag})
+
+    for path in sorted(own_dir.glob("check-*.log")):
+        load(path)
+    for citation in citations if allowed_citations else ():
+        path = Path(citation)
+        if path.is_absolute() or not citation:
+            invalid.append({"path": citation, "citation": citation, "cited": True,
+                            "error": "citation must be relative to the run directory"})
+        else:
+            load(run_dir / path, citation)
+
+    if needs_before:
+        # Own logs from the capture tree are after-evidence, not stale before-runs.
+        own_before = [log for log in own if not differences(log, launch)]
     results = []
     for command in commands:
-        candidates = []
-        for log in logs:
-            if log["command"] != command:
-                continue
-            differed = []
-            if log["repository"] != identity["repository"]:
-                differed.append("repository")
-            for key, name in (("head", "HEAD"), ("fingerprint", "fingerprint")):
-                if any(log[f"{key}_{when}"] != identity[key] for when in ("before", "after")):
-                    differed.append(name)
-            verdict = "red" if log["exit_code"] else "stale" if differed else "pass"
-            candidates.append({"verdict": verdict, "differed": differed, "log": log})
-        # A valid repeat supersedes all earlier attempts, including before-runs.
-        chosen = min(candidates, key=lambda item: (item["verdict"] != "pass",
-                                                  bool(item["differed"])), default=None)
-        results.append({"command": command, **(chosen or {"verdict": "missing"})})
-    return {"stage": stage, "pass": pass_num, "capture": {"label": label,
-            "time": capture["time"], **identity}, "results": results,
-            "checked_logs": [log for log in logs if log["command"] in commands],
+        after_logs = own
+        if needs_before:
+            # A cited command takes its before evidence from citations only; others may use own before-runs.
+            cited_command = [log for log in cited if log["command"] == command]
+            before = evidence_result(command, cited_command or own_before, launch, "before",
+                                     cited_source=bool(citations))
+            results.append(before)
+            # Even a no-op pass must supply a distinct own after-run.
+            if "log" in before:
+                after_logs = [log for log in own if log["path"] != before["log"]["path"]]
+        elif unchanged_review:
+            after_logs = own + cited
+        results.append(evidence_result(command, after_logs, capture, "after",
+                                       cited_source=unchanged_review and bool(citations) and not own))
+    # A forbidden or unreadable citation cannot be silently rescued by own logs.
+    rejected = ([{"citation": path, "error": "citations are not allowed for this stage"}
+                 for path in citations] if not allowed_citations else [])
+    rejected += [item for item in invalid if item["cited"]]
+    for citation in rejected:
+        for command in commands:
+            results.append({"command": command, "phase": "citation", "verdict": "missing",
+                            "cited": True, **citation})
+    return {"stage": stage, "pass": pass_num, "capture": capture, "launch": launch,
+            "results": results,
+            "checked_logs": [log for log in own + cited if log["command"] in commands],
             "invalid_logs": invalid,
             "verdict": "pass" if all(item["verdict"] == "pass" for item in results) else "fail"}
 
@@ -144,14 +215,20 @@ def main(argv: list[str] | None = None) -> int:
         if Path.cwd().resolve() != repository.resolve():
             raise ValueError("invoke check_evidence.py from the repository root")
         gate = ADVANCE
+        report_text = ""
         if args.report:
-            report = (parse_report(args.report.read_text()) if args.report.is_file()
-                      else pending_payload(args.report))
-            gate = report["gate"]
+            if args.report.is_file():
+                report_text = args.report.read_text()
+                gate = parse_report(report_text)["gate"]
+            else:
+                gate = pending_payload(args.report)["gate"]
         if args.stage == "triage":
             print(f"verdict=exempt gate={gate}")
             return EXIT_CODES[gate]
-        data = check_evidence(args.run_dir, args.stage, args.pass_num, repository)
+        if not args.report:
+            default_report = report_path(args.run_dir, args.stage, args.pass_num)
+            report_text = default_report.read_text() if default_report.is_file() else ""
+        data = check_evidence(args.run_dir, args.stage, args.pass_num, repository, report_text)
         if data["verdict"] != "pass" and gate == ADVANCE:
             gate = STOP
         data["gate"] = gate
@@ -168,7 +245,9 @@ def main(argv: list[str] | None = None) -> int:
                 detail = f" exit_code={item['log']['exit_code']}"
             elif item["verdict"] == "stale":
                 detail = " differed=" + ",".join(item["differed"])
-            print(f"{item['verdict']}: {item['command']}{detail}")
+            source = "cited" if item["cited"] else "own"
+            citation = f" citation={item['citation']}" if "citation" in item else ""
+            print(f"{item['verdict']}: {item['command']}{detail} phase={item['phase']} source={source}{citation}")
         for item in data["invalid_logs"]:
             print(f"invalid log: {item['path']}: {item['error']}")
         return EXIT_CODES[gate]

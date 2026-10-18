@@ -76,12 +76,16 @@ def pending_payload(path: Path) -> dict:
     }
 
 
+def tests_section(sections: dict[str, str]) -> str:
+    return sections.get("tests / checks", "") or sections.get("tests", "") or sections.get("checks", "")
+
+
 def parse_report(text: str, items_file: Path | None = None) -> dict:
     sections = split_sections(text)
     missing = [name for name in REQUIRED_SECTIONS if not sections.get(name, "").strip()]
 
     result_text = sections.get("result", "")
-    tests_text = sections.get("tests / checks", "") or sections.get("tests", "") or sections.get("checks", "")
+    tests_text = tests_section(sections)
     findings_text = sections.get("findings", "")
     blockers_text = sections.get("blockers", "")
     drift_text = sections.get("plan drift", "")

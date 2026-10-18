@@ -48,6 +48,12 @@ class GateSeverity(unittest.TestCase):
     def test_clean_report_advances(self):
         self.assertEqual(parse_report(CLEAN)["gate"], "advance")
 
+    def test_citation_only_checks_are_substantive(self):
+        parsed = parse_report(report(**{
+            "Tests / Checks": "- cited: artifacts/implement-1/check-example.log"}))
+        self.assertTrue(parsed["has_tests"])
+        self.assertEqual(parsed["gate"], "advance")
+
     def test_blocker_outranks_plan_drift(self):
         """Regression: last-write-wins let plan drift downgrade a BLOCKER to 'review-plan'."""
         result = parse_report(report(Result="BLOCKER", Blockers="- Needs prod credentials", **{"Plan Drift": "- Command renamed"}))

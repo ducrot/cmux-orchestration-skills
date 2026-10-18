@@ -53,9 +53,11 @@ class EvidenceCli(unittest.TestCase):
                         self.run_dir / "artifacts" / f"{stage}-{pass_num}",
                         "--command", command or self.command, cwd=cwd)
 
-    def capture(self, stage="implement", pass_num=1):
+    BASELINE_STAGES = (("simplify", 1), ("implement", 2))
+
+    def capture(self, stage="implement", pass_num=1, prefix="report-captured"):
         result = self.cli("run_state.py", "snapshot", "--run-dir", self.run_dir,
-                          "--label", f"report-captured {stage}-{pass_num}")
+                          "--label", f"{prefix} {stage}-{pass_num}")
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def check(self, stage="implement", pass_num=1, report=True, cwd=None):
@@ -71,10 +73,243 @@ class EvidenceCli(unittest.TestCase):
         return json.loads((self.run_dir / "events.jsonl").read_text().splitlines()[-1])
 
     def green(self, stage="implement", pass_num=1):
+        needs_before = stage == "simplify" or (stage == "implement" and pass_num > 1)
+        if needs_before or stage == "review":
+            self.capture(stage, pass_num, prefix="launched")
+        if needs_before:
+            for command in self.commands:
+                self.assertEqual(self.wrap(command, stage, pass_num).returncode, 0)
         for command in self.commands:
             result = self.wrap(command, stage, pass_num)
             self.assertEqual(result.returncode, 0, result.stderr)
         self.capture(stage, pass_num)
+
+    def phase_results(self, phase):
+        return [item for item in self.event()["data"]["results"] if item["phase"] == phase]
+
+    def cite(self, paths=None):
+        paths = paths or sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
+        bullets = "\n".join(f"- cited: {path.relative_to(self.run_dir)}" for path in paths)
+        self.report.write_text(self.report.read_text().replace("- `example`: passed", bullets))
+
+    def test_unchanged_review_accepts_citations_and_records_identities(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        self.cite()
+        result = self.check("review")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(all(log["cited"] for log in self.event()["data"]["checked_logs"]))
+        self.assertTrue(all(item["cited"] for item in self.event()["data"]["results"]))
+
+    def test_review_stale_citations_and_changed_review_rejects_citations(self):
+        for movement in ("tree", "HEAD"):
+            with self.subTest(movement=movement):
+                self.report_text()
+                self.green()
+                if movement == "tree":
+                    self.file.write_text("moved\n")
+                else:
+                    self.git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "moved")
+                self.capture("review", prefix="launched")
+                self.capture("review")
+                self.cite()
+                result = self.check("review")
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertIn("stale:", result.stdout)
+                self.assertIn("cited", result.stdout)
+        self.report_text()
+        self.green()
+        self.capture("review", prefix="launched")
+        self.file.write_text("review changed\n")
+        self.capture("review")
+        self.cite()
+        result = self.check("review")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("cited", result.stdout)
+        self.assertIn("missing:", result.stdout)
+        self.report_text()
+        for command in self.commands:
+            self.wrap(command, "review")
+        self.assertEqual(self.check("review").returncode, 0)
+
+    def test_test_stage_rejects_citations_even_with_own_logs(self):
+        self.green()
+        self.cite()
+        self.green("test")
+        result = self.check("test")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("cited", result.stdout)
+        self.report_text()
+        self.assertEqual(self.check("test").returncode, 0)
+
+    def test_baseline_citation_matches_launch_and_own_after_matches_capture(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.report_text()
+                self.green()
+                self.capture(stage, number, prefix="launched")
+                self.cite()
+                self.file.write_text(f"changed by {stage}\n")
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.capture(stage, number)
+                result = self.check(stage, number)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                results = self.event()["data"]["results"]
+                self.assertEqual({item["phase"] for item in results}, {"before", "after"})
+                self.assertTrue(all(item["cited"] for item in results if item["phase"] == "before"))
+                self.assertTrue(all(not item["cited"] for item in results if item["phase"] == "after"))
+
+    def test_baseline_only_never_satisfies_after_even_for_noop(self):
+        for stage, number in self.BASELINE_STAGES:
+            for changed in (False, True):
+                with self.subTest(stage=stage, changed=changed):
+                    self.report_text()
+                    self.green()
+                    self.capture(stage, number, prefix="launched")
+                    self.cite()
+                    if changed:
+                        self.file.write_text(f"{stage} changed\n")
+                    self.capture(stage, number)
+                    result = self.check(stage, number)
+                    self.assertEqual(result.returncode, 3)
+                    after = self.phase_results("after")
+                    self.assertTrue(all(item["verdict"] == "missing" for item in after))
+
+    def test_own_before_and_after_and_missing_before(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.capture(stage, number, prefix="launched")
+                self.file.write_text(f"{stage} after\n")
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.capture(stage, number)
+                result = self.check(stage, number)
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("before", result.stdout)
+                before = self.phase_results("before")
+                self.assertTrue(all(item["verdict"] == "missing" for item in before))
+                self.file.write_text("base\n")
+                self.capture(stage, number, prefix="launched")
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.file.write_text(f"{stage} after\n")
+                self.capture(stage, number)
+                self.assertEqual(self.check(stage, number).returncode, 0)
+
+    def test_noop_own_before_requires_distinct_after(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.capture(stage, number, prefix="launched")
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.capture(stage, number)
+                self.assertEqual(self.check(stage, number).returncode, 3)
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.assertEqual(self.check(stage, number).returncode, 0)
+
+    def test_cited_baseline_rejects_wrong_launch_identity(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.report_text()
+                self.green()
+                self.cite()
+                self.file.write_text(f"new launch {stage}\n")
+                self.capture(stage, number, prefix="launched")
+                for command in self.commands:
+                    self.wrap(command, stage, number)
+                self.capture(stage, number)
+                result = self.check(stage, number)
+                self.assertEqual(result.returncode, 3)
+                before = self.phase_results("before")
+                self.assertTrue(all(item["verdict"] == "stale" and item["cited"] for item in before))
+
+    def test_unsafe_or_headerless_citation_is_missing_and_named(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        outside = self.run_dir / "outside.log"
+        outside.write_bytes(self.log_path().read_bytes())
+        bad = self.run_dir / "artifacts/implement-1/bad.log"
+        bad.write_text("no wrapper header\n")
+        link = self.run_dir / "artifacts/implement-1/link.log"
+        link.symlink_to(outside)
+        for path in ("", "outside.log", "../run/outside.log", str(outside),
+                     "artifacts/implement-1/bad.log", "artifacts/implement-1/link.log"):
+            with self.subTest(path=path):
+                self.report_text()
+                self.report.write_text(self.report.read_text().replace("- `example`: passed", f"- cited: {path}"))
+                result = self.check("review")
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("missing:", result.stdout)
+                self.assertIn(path, result.stdout)
+                self.assertIn("cited", result.stdout)
+
+    def test_citing_own_baseline_does_not_reuse_it_as_after_evidence(self):
+        self.capture("simplify", prefix="launched")
+        for command in self.commands:
+            self.wrap(command, "simplify")
+        self.capture("simplify")
+        self.cite(sorted((self.run_dir / "artifacts/simplify-1").glob("*.log")))
+        self.assertEqual(self.check("simplify").returncode, 3)
+
+    def test_missing_and_red_cited_commands_are_identified(self):
+        self.rules(commands=["exit 7", self.command])
+        self.wrap("exit 7")
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        self.cite()
+        result = self.check("review")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("red: exit 7 exit_code=7", result.stdout)
+        for item in self.event()["data"]["results"]:
+            self.assertTrue(item["cited"])
+        self.assertEqual([item["verdict"] for item in self.event()["data"]["results"]],
+                         ["red", "missing"])
+
+    def test_missing_launch_fails_closed_for_roles_using_baselines(self):
+        for stage, number in (("review", 1), ("simplify", 1), ("implement", 2)):
+            self.capture(stage, number)
+            result = self.check(stage, number)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing snapshot: launched", result.stderr)
+
+    def test_citations_default_to_stage_report_path_and_remain_valid_on_recheck(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        self.cite()
+        reports = self.run_dir / "reports"
+        reports.mkdir()
+        (reports / "review-1.md").write_text(self.report.read_text())
+        self.assertEqual(self.check("review", report=False).returncode, 0)
+        self.assertEqual(self.check("review", report=False).returncode, 0)
+
+    def test_backticked_citation_is_accepted(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        bullets = "\n".join(f"- cited: `{path.relative_to(self.run_dir)}`"
+                             for path in sorted((self.run_dir / "artifacts/implement-1").glob("*.log")))
+        self.report.write_text(self.report.read_text().replace("- `example`: passed", bullets))
+        result = self.check("review")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_baseline_mixes_cited_and_own_before_per_command(self):
+        self.rules(commands=[self.command, "true"])
+        self.wrap(self.command)
+        self.capture()
+        self.capture("simplify", prefix="launched")
+        self.cite()
+        self.wrap("true", "simplify")
+        self.file.write_text("changed\n")
+        for command in (self.command, "true"):
+            self.wrap(command, "simplify")
+        self.capture("simplify")
+        result = self.check("simplify")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_pass_event_has_separate_logs_and_invocation_and_does_not_mutate(self):
         self.green()
