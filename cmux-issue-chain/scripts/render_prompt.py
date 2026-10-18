@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 from pathlib import Path
 
 from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
@@ -119,8 +120,8 @@ def render_triage_contract(pass_number: int) -> str:
 Triage workers extend the Worker Report Contract with `## Verdicts` and exactly one verdict per input ID.
 Keep `## Findings` exactly `- None`; defect evidence belongs to the item's verdict, never a finding.
 
-Read `git diff HEAD` plus untracked files, `decisions.md`, the run's reports, and code. Read-only checks
-and the canonical suite may reproduce items. Never edit product code, tests, tracker files, or lifecycle
+Read `git diff HEAD` plus untracked files, `decisions.md`, the run's reports, and code. Use read-only checks
+and existing evidence to assess items. Never edit product code, tests, tracker files, or lifecycle
 state. Check output that would land in a non-ignored repository path must go to your artifact directory.
 
 Decide every item autonomously. Never ask the human or the orchestrator anything.
@@ -182,11 +183,49 @@ def parser_path() -> str:
     The skill may live under .agents/skills/ (canonical), as a copy under .claude/skills/,
     or outside the repo entirely; hardcoding one location broke the first cross-repo pilot.
     """
-    script = Path(__file__).resolve().parent / "parse_report.py"
+    return script_path("parse_report.py")
+
+
+def script_path(name: str) -> str:
+    """Resolve an installed sibling script for invocation from the worker's repo root."""
+    script = Path(__file__).resolve().parent / name
     try:
         return str(script.relative_to(Path.cwd()))
     except ValueError:
         return str(script)
+
+
+def test_duties(role: str, artifact_path: str, followup: bool) -> str:
+    common = f"""- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording.
+- Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
+- For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.
+- Pass the declared command byte-for-byte as that one quoted argument; write each single quote inside it as `'\\''`, because evidence only counts when the logged command equals the declared one exactly.
+- A stage that reports or cites a suite run must deposit one wrapper log per applicable check command or name the cited log; without evidence there is no advance.
+- When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the log's path relative to the run directory, for example:
+  - cited: artifacts/<earlier-stage>/check-<hash>.log
+"""
+    if followup or role == "simplify":
+        duty = (
+            "- If the previous stage left green evidence for the same starting tree, skip the before-run and cite that log "
+            "for each applicable check command. Otherwise, run your own before-run of the full applicable suite through the wrapper.\n"
+            "- Always run your own after-run of the full applicable suite through the wrapper, even when nothing was applied. "
+            "List the before evidence (own logs or citations) and your own after logs under `## Tests / Checks`."
+        )
+    elif role == "review":
+        duty = (
+            "- If the review changed anything, run the full applicable suite through the wrapper into your own artifact directory. "
+            "Otherwise, cite the previous stage's green evidence for the same working tree, one log per applicable check command."
+        )
+    elif role == "triage":
+        duty = "- Do not run any test suite. List your read-only checks under `## Tests / Checks`."
+    elif role == "test":
+        duty = (
+            "- In every pass, run the full canonical suite declared in the tracker ground rules through your own wrapper runs "
+            "into your own artifact directory. Do not cite earlier evidence."
+        )
+    else:
+        duty = "- At the end, run the full applicable suite declared in the tracker ground rules through the wrapper into your own artifact directory."
+    return common + duty
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -389,7 +428,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 - Finish with the Worker Report Contract below.
 - A gate can advance only on `NO FINDINGS` plus concrete tests/checks.
 - The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes, outside the worker.
-- Use the canonical check commands declared in the tracker ground rules as the baseline suite. Narrower targeted checks may be added, but never substitute a different suite.
+{test_duties(role, artifact_path_text, bool(followup))}
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
 {contract_lines}
 {ground_rules_block}{decisions_block}{followup_block}{items_block}
@@ -469,7 +508,7 @@ def role_specific_contract(role: str, harness: str = CLAUDE_CODE) -> str:
     return (
         "- Implement the assigned issue scope only. Do not take over review self-fixes unless explicitly instructed after HITL.\n"
         "- Prove your change: add or extend regression tests and verify at least one fails without the change; state that verification in the report.\n"
-        "- Run the full relevant suite and execute the changed path end-to-end; list both under `## Tests / Checks`."
+        "- Execute the changed path end-to-end; list that execution and the full applicable suite's wrapper logs under `## Tests / Checks`."
     )
 
 
@@ -495,8 +534,7 @@ def review_contract_lines(harness: str) -> str:
             "context reports.\n"
             "- Smell baseline for the Standards axis:\n"
             f"{indent_block(SMELL_BASELINE)}\n"
-            "- Apply safe fixes from all three axes yourself when they stay inside the current issue scope, then "
-            "re-run the baseline suite.\n"
+            "- Apply safe fixes from all three axes yourself when they stay inside the current issue scope.\n"
         )
     fix = review_fix_label(harness)
     return head + (
@@ -511,7 +549,7 @@ def review_contract_lines(harness: str) -> str:
         "under a `## Not Applied` section and every behavior-preserving choice explained under "
         "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
         "never revert one. If the fix pass reverted "
-        "such an item without that approval, restore it before running the baseline suite.\n"
+        "such an item without that approval, restore it before running the required checks.\n"
         "- Report a proposal to revert such a decision by its reason. A quality-only reason (reuse, "
         "simplification, efficiency, altitude, style) is never a finding: the earlier decision stands, and "
         "the proposal goes under `## Recommendations` marked `Counter-proposal`, naming the earlier decision "
@@ -551,8 +589,7 @@ def simplify_contract_lines(harness: str) -> str:
             "helper already covers (reuse), needless indirection or over-general abstractions (simplification), "
             "obvious inefficiencies on the changed path (efficiency), and code sitting at the wrong abstraction "
             "level (altitude). This is a quality pass, not a bug hunt; leave correctness to the review stage.\n"
-            "- Apply behavior-preserving refactorings yourself when they stay inside the current issue scope, and "
-            "run the baseline suite before and after.\n"
+            "- Apply behavior-preserving refactorings yourself when they stay inside the current issue scope.\n"
         )
     return head + (
         "- Include a `## Change Summary` section listing changed files and the behavior-preserving refactorings applied.\n"
@@ -666,9 +703,9 @@ def followup_contract_lines() -> str:
         "- Apply only the approved follow-up items. Anything beyond them is scope expansion and stops the chain.\n"
         "- The approval recorded in the tracker decisions supersedes the earlier decision an item names, "
         "within that item's scope only.\n"
-        "- Prove behavior preservation instead of a failing regression test: run the baseline suite before and "
-        "after your change with identical outcomes, do not edit existing tests, and add an A/B comparison of "
-        "the changed path where one is practical. List both runs under `## Tests / Checks`.\n"
+        "- Prove behavior preservation instead of a failing regression test: compare the before evidence and your own "
+        "after-run for identical outcomes, do not edit existing tests, and add an A/B comparison of "
+        "the changed path where one is practical. List that comparison under `## Tests / Checks`.\n"
         "- If an item no longer fits the current code, do not adapt or redesign it: leave the code unchanged "
         "for that item and list it under `## Not Applied` with a one-line reason.\n"
         "- Include a `## Change Summary` section listing the changed files per item."

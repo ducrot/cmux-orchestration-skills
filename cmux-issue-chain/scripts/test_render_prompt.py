@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import render_prompt
@@ -42,10 +43,89 @@ COUNTER_PROPOSAL_RULE = (
     "and its report and linking any proposal artifact. A correctness, regression, acceptance, security, "
     "or data-safety reason is a finding with `Recommendation: ask-user` and that reason."
 )
+LEGACY_GROUND_RULES = "- Canonical check commands, run as the baseline suite by every worker:\n  - `python3 check.py`"
 FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Applied item 5.\n"
 
 
 class RenderFunction(unittest.TestCase):
+    def test_role_test_duties_and_evidence_for_every_harness(self):
+        for harness in ("claude-code", "codex", "other-harness"):
+            for role in render_prompt.ROLES:
+                with self.subTest(role=role, harness=harness):
+                    text = self.render(role, harness)
+                    for phrase in (
+                        "These role-specific test duties override the embedded README wording",
+                        "one after another, never in parallel",
+                        "never substitute a different suite",
+                        "one wrapper log per applicable check command",
+                        "without evidence there is no advance",
+                        "- cited: artifacts/<earlier-stage>/check-<hash>.log",
+                        "path relative to the run directory",
+                        f"python3 {render_prompt.script_path('run_check.py')} ",
+                        "write each single quote inside it as",
+                        "--artifact-dir", "--command",
+                    ):
+                        self.assertIn(phrase, text)
+                    self.assertNotIn("Use the canonical check commands declared in the tracker ground rules as the baseline suite", text)
+                    self.assertNotIn("run the baseline suite before and after", text)
+                    if role == "implement":
+                        self.assertIn("At the end, run the full applicable suite", text)
+                        self.assertIn("verify at least one fails without the change", text)
+                        self.assertIn("execute the changed path end-to-end", text)
+                    elif role == "simplify":
+                        self.assert_before_after_duty(text)
+                    elif role == "review":
+                        self.assertIn("If the review changed anything, run the full applicable suite", text)
+                        self.assertIn("Otherwise, cite the previous stage's green evidence for the same working tree", text)
+                        self.assertNotIn("re-run the baseline suite", text)
+                    elif role == "test":
+                        self.assertIn("In every pass, run the full canonical suite", text)
+                        self.assertIn("your own wrapper runs", text)
+                        self.assertIn("Do not cite earlier evidence", text)
+                    else:
+                        self.assertIn("Do not run any test suite", text)
+                        self.assertIn("List your read-only checks under `## Tests / Checks`", text)
+                        self.assertNotIn("canonical suite may reproduce items", text)
+
+    def assert_before_after_duty(self, text):
+        for phrase in (
+            "previous stage left green evidence for the same starting tree",
+            "skip the before-run and cite that log",
+            "Otherwise, run your own before-run of the full applicable suite through the wrapper",
+            "Always run your own after-run of the full applicable suite through the wrapper",
+            "even when nothing was applied",
+        ):
+            self.assertIn(phrase, text)
+
+    def test_followup_evidence_duties_are_harness_neutral(self):
+        prompts = []
+        for harness in ("claude-code", "codex"):
+            text = render_prompt.render("implement", "ISSUE-001", ISSUE, {},
+                                        harness=harness, followup=FOLLOWUP_ITEMS)
+            self.assert_before_after_duty(text)
+            self.assertNotIn("run the baseline suite before and after", text)
+            prompts.append(strip_created(text.replace(f"Harness: {harness}", "Harness: X")))
+        self.assertEqual(*prompts)
+
+    def test_legacy_ground_rules_remain_verbatim_with_role_override(self):
+        text = render_prompt.render("review", "ISSUE-001", ISSUE, {}, ground_rules=LEGACY_GROUND_RULES)
+        self.assertIn(LEGACY_GROUND_RULES, text)
+        self.assertIn("These role-specific test duties override the embedded README wording", text)
+
+    def test_wrapper_path_uses_installed_script_location_like_parser(self):
+        for cwd in (SCRIPT_DIR.parent.parent, Path("/tmp/unrelated-repository")):
+            with self.subTest(cwd=cwd), patch.object(render_prompt.Path, "cwd", return_value=cwd):
+                text = self.render("implement", "codex")
+                wrapper = render_prompt.script_path("run_check.py")
+                self.assertIn(f"python3 {wrapper}", text)
+                self.assertTrue((cwd / wrapper).is_file())
+
+    def test_citation_only_report_satisfies_checks_requirement(self):
+        from parse_report import parse_report
+        from test_parse_report import report
+        text = report(**{"Tests / Checks": "- cited: artifacts/implement-1/check-abc.log\n- cited: artifacts/implement-1/check-def.log"})
+        self.assertEqual(parse_report(text)["gate"], "advance")
+
     def test_marker_is_first_section(self):
         text = render_prompt.render("implement", "ISSUE-001", ISSUE, {},
                                     artifact_path=Path("/run/artifacts/implement-2"), pass_number=2)
@@ -144,7 +224,7 @@ class RenderFunction(unittest.TestCase):
             "under a `## Not Applied` section and every behavior-preserving choice explained under "
             "`## Change Summary` or `## Notes`. Unless explicitly superseded by recorded human approval, "
             "never revert one. If the fix pass reverted "
-            "such an item without that approval, restore it before running the baseline suite."
+            "such an item without that approval, restore it before running the required checks."
         )
         for harness in ("claude-code", "codex"):
             with self.subTest(harness=harness):
@@ -197,7 +277,7 @@ class RenderFunction(unittest.TestCase):
                 self.assertIn("## Approved Follow-up Items", text)
                 self.assertIn(FOLLOWUP_ITEMS.strip(), text)
                 self.assertIn("Apply only the approved follow-up items.", text)
-                self.assertIn("run the baseline suite before and after your change", text)
+                self.assertIn("compare the before evidence and your own after-run for identical outcomes", text)
                 self.assertIn("list it under `## Not Applied` with a one-line reason", text)
                 self.assertIn("\n## Not Applied\n- None", text)
                 self.assertNotIn("verify at least one fails without the change", text)
@@ -325,6 +405,23 @@ class RenderCli(unittest.TestCase):
                     expected = self.run_dir / "artifacts" / f"implement-{pass_num}"
                     text = out.read_text(encoding="utf-8")
                     self.assertIn(f"Worker artifact directory: `{expected}`", text)
+                    self.assertIn(
+                        f"python3 {SCRIPT_DIR / 'run_check.py'} --artifact-dir {expected} --command '<declared check command>'",
+                        text,
+                    )
+
+    def test_cli_delivers_role_override_with_verbatim_legacy_readme(self):
+        (self.repo / ".scratch/tracker/README.md").write_text(f"# Tracker\n\n## Ground rules\n\n{LEGACY_GROUND_RULES}\n")
+        initialized = self.init()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        rendered = self.render("implement")
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        prompt = (self.run_dir / "prompts/implement-1.md").read_text()
+        self.assertIn(LEGACY_GROUND_RULES, prompt)
+        self.assertIn("These role-specific test duties override the embedded README wording", prompt)
+        self.assertIn("At the end, run the full applicable suite", prompt)
+        self.assertIn("one after another, never in parallel", prompt)
+        self.assertIn("- cited: artifacts/<earlier-stage>/check-<hash>.log", prompt)
 
     def test_cli_renders_decision_contracts_for_both_harnesses(self):
         initialized = self.init()
@@ -352,7 +449,7 @@ class RenderCli(unittest.TestCase):
                     self.assertIn(f"Harness: {harness}", text)
                     self.assertIn("## Not Applied", text)
                     if role == "review":
-                        self.assertIn("restore it before running the baseline suite", text)
+                        self.assertIn("restore it before running the required checks", text)
                         self.assertIn("Recommendation: ask-user", text)
                         self.assertIn(REGRESSION_CLARIFICATION, text)
                     else:
