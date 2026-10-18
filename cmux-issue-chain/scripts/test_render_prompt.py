@@ -45,7 +45,20 @@ COUNTER_PROPOSAL_RULE = (
     "or data-safety reason is a finding with `Recommendation: ask-user` and that reason."
 )
 LEGACY_GROUND_RULES = "- Canonical check commands, run as the baseline suite by every worker:\n  - `python3 check.py`"
+SIMPLIFY_BEFORE_DUTY = (
+    "If the previous stage left green evidence for the same starting tree, "
+    "skip the before-run and cite that log for each applicable check command."
+)
+FOLLOWUP_BEFORE_DUTY = (
+    "If the most recent stage that left wrapper logs for the same starting tree has green evidence "
+    "(normally the test stage), skip the before-run and cite that log for each applicable check command."
+)
 FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Applied item 5.\n"
+
+
+def duties_section(text: str) -> str:
+    start = text.index("- These role-specific test duties override")
+    return text[start:text.index("- Stay inside the assigned role.", start)]
 
 
 class RenderFunction(unittest.TestCase):
@@ -115,10 +128,13 @@ class RenderFunction(unittest.TestCase):
                         self.assertIn("List your read-only checks under `## Tests / Checks`", text)
                         self.assertNotIn("canonical suite may reproduce items", text)
 
-    def assert_before_after_duty(self, text):
+    def assert_before_after_duty(self, text, followup=False):
+        if followup:
+            self.assertIn(FOLLOWUP_BEFORE_DUTY, text)
+            self.assertNotIn("previous stage", duties_section(text))
+        else:
+            self.assertIn(SIMPLIFY_BEFORE_DUTY, text)
         for phrase in (
-            "previous stage left green evidence for the same starting tree",
-            "skip the before-run and cite that log",
             "Otherwise, run your own before-run of the full applicable suite through the wrapper",
             "Always run your own after-run of the full applicable suite through the wrapper",
             "even when nothing was applied",
@@ -127,13 +143,15 @@ class RenderFunction(unittest.TestCase):
 
     def test_followup_evidence_duties_are_harness_neutral(self):
         prompts = []
-        for harness in ("claude-code", "codex"):
+        for harness in ("claude-code", "codex", "other-harness"):
             text = render_prompt.render("implement", "ISSUE-001", ISSUE, {},
                                         harness=harness, followup=FOLLOWUP_ITEMS)
-            self.assert_before_after_duty(text)
-            self.assertNotIn("run the baseline suite before and after", text)
+            with self.subTest(harness=harness):
+                self.assert_before_after_duty(text, followup=True)
+                self.assertNotIn("run the baseline suite before and after", text)
             prompts.append(strip_created(text.replace(f"Harness: {harness}", "Harness: X")))
-        self.assertEqual(*prompts)
+        for prompt in prompts[1:]:
+            self.assertEqual(prompts[0], prompt)
 
     def test_legacy_ground_rules_remain_verbatim_with_role_override(self):
         text = render_prompt.render("review", "ISSUE-001", ISSUE, {}, ground_rules=LEGACY_GROUND_RULES)
@@ -648,6 +666,8 @@ class RenderCli(unittest.TestCase):
         self.assertIn("## Approved Follow-up Items", text)
         self.assertIn(FOLLOWUP_ITEMS.strip(), text)
         self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'implement-2'}`", text)
+        self.assertIn(FOLLOWUP_BEFORE_DUTY, text)
+        self.assertNotIn("previous stage", duties_section(text))
 
     def test_renders_the_snapshot_harness_variant(self):
         self.assertEqual(self.init("--harness", "implement=claude-code").returncode, 0)

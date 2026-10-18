@@ -207,8 +207,12 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
 - A cited log counts only when its logged command equals one of the applicable check commands for this role; for any other command, run your own wrapper run instead.
 """
     if followup or role == "simplify":
+        baseline = (
+            "the most recent stage that left wrapper logs for the same starting tree has green evidence (normally the test stage)"
+            if followup else "the previous stage left green evidence for the same starting tree"
+        )
         duty = (
-            "- If the previous stage left green evidence for the same starting tree, skip the before-run and cite that log "
+            f"- If {baseline}, skip the before-run and cite that log "
             "for each applicable check command. Otherwise, run your own before-run of the full applicable suite through the wrapper.\n"
             "- Always run your own after-run of the full applicable suite through the wrapper, even when nothing was applied. "
             "List the before evidence (own logs or citations) and your own after logs under `## Tests / Checks`."
