@@ -33,7 +33,7 @@ CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS = Path.home() / ".codex" / "sessions"
 SKILL_REPO = Path.home() / "Sites" / "agentic-workflows" / "cmux-orchestration-skills"
 CACHE_DIR = Path.home() / ".cache" / "orchestrator-usage"
-CACHE_VERSION = 14
+CACHE_VERSION = 15
 
 
 class Workflow:
@@ -272,7 +272,8 @@ def iso(ts: str | None) -> datetime | None:
 # --------------------------------------------------------------------------- #
 
 
-INIT_COMMAND = re.compile(r"run_state\.py[\"']?\s+init(?:\s|$)")
+INIT_SCRIPTS = ("run_state.py", "planning_state.py")
+INIT_COMMAND = re.compile(r"(?:run|planning)_state\.py[\"']?\s+init(?:\s|$)")
 
 
 def transcript_role(path: Path, harness: str) -> tuple[list[str], list[str]]:
@@ -328,9 +329,9 @@ def transcript_role(path: Path, harness: str) -> tuple[list[str], list[str]]:
 
 def executed_init(command: str) -> bool:
     command = strip_quoted_examples(command)
-    return any(INIT_COMMAND.match(command, m.end() - len("run_state.py"))
+    return any(INIT_COMMAND.match(command, m.end() - len(script))
                for m in ORCHESTRATOR_CALL.finditer(command)
-               if m.group().endswith("run_state.py"))
+               for script in INIT_SCRIPTS if m.group().endswith(script))
 
 
 def init_command_runs(command: str) -> list[str]:

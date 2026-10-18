@@ -321,6 +321,17 @@ class RunAttribution(GrillingFixture):
         self.assertFalse(ou.executed_init("grep 'python3 cmux-grilling/scripts/run_state.py init' log"))
         self.assertEqual(ou.owned_session_windows([self.parsed([])], GRILLING), [])
 
+    def test_planning_init_pair(self):
+        path = self.root / "planner.jsonl"
+        write_transcript(path, ["python3 cmux-planning/scripts/planning_state.py init --task-file t.md --repo ."])
+        events = [json.loads(l) for l in path.read_text().splitlines()]
+        events[1]["message"]["content"][0]["id"] = "init"
+        events += [{"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/plan-demo"}]}}]
+        path.write_text("\n".join(map(json.dumps, events)))
+        self.assertEqual(ou.parse_claude(path, PLANNING)["owned_runs"], ["plan-demo"])
+        self.assertFalse(ou.executed_init("python3 cmux-planning/scripts/planning_state.py status"))
+
     def worker(self, harness, workflow, prompt_name):
         run = {"grilling": "grill-demo", "planning": "plan-demo", "issue-chain": "chain-demo"}[workflow.name]
         prompt = f"Your standing contract is in .scratch/orchestrator/runs/{run}/prompts/{prompt_name}.md."
