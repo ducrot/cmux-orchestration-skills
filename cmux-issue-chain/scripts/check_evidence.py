@@ -20,27 +20,7 @@ from await_report import report_path
 from parse_report import ADVANCE, EXIT_CODES, STOP, parse_report, pending_payload, split_sections, tests_section
 from render_prompt import tracker_ground_rules
 from run_check import repository_root
-
-
-def canonical_commands(tracker: Path) -> list[str]:
-    rules = tracker_ground_rules(tracker)
-    label = re.search(
-        r"^[-*] Canonical check commands(?:, run as the baseline suite by every worker)?:\s*$",
-        rules, re.MULTILINE,
-    )
-    if not label:
-        raise ValueError("tracker ground rules have no canonical check commands")
-    commands = []
-    for line in rules[label.end():].splitlines():
-        if not line.strip():
-            continue
-        match = re.fullmatch(r"\s+[-*]\s+`(.+)`\s*", line)
-        if not match:
-            break
-        commands.append(match[1])
-    if not commands or any("<TODO" in command for command in commands):
-        raise ValueError("tracker canonical check commands are empty or contain placeholders")
-    return list(dict.fromkeys(commands))
+from check_commands import applicable_commands
 
 
 def read_log(path: Path) -> dict:
@@ -116,7 +96,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     tracker = Path(state["deliverables"]["tracker"])
     if not tracker.is_absolute():
         tracker = repository / tracker
-    commands = canonical_commands(tracker)
+    commands = applicable_commands(tracker_ground_rules(tracker), stage, require_canonical=True)
     events_path = run_dir / "events.jsonl"
     lines = events_path.read_text().splitlines() if events_path.is_file() else []
     events = [json.loads(line) for line in lines]

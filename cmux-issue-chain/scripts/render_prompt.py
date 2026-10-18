@@ -11,6 +11,7 @@ from pathlib import Path
 
 from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
 from worker_snapshot import SnapshotError, load_launchable_snapshot
+from check_commands import applicable_commands
 
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
@@ -195,7 +196,7 @@ def script_path(name: str) -> str:
         return str(script)
 
 
-def test_duties(role: str, artifact_path: str, followup: bool) -> str:
+def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str) -> str:
     common = f"""- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording.
 - Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
 - For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.
@@ -203,6 +204,7 @@ def test_duties(role: str, artifact_path: str, followup: bool) -> str:
 - A stage that reports or cites a suite run must deposit one wrapper log per applicable check command or name the cited log; without evidence there is no advance.
 - When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the log's path relative to the run directory, for example:
   - cited: artifacts/<earlier-stage>/check-<hash>.log
+- A cited log counts only when its logged command equals one of the applicable check commands for this role; for any other command, run your own wrapper run instead.
 """
     if followup or role == "simplify":
         duty = (
@@ -225,7 +227,10 @@ def test_duties(role: str, artifact_path: str, followup: bool) -> str:
         )
     else:
         duty = "- At the end, run the full applicable suite declared in the tracker ground rules through the wrapper into your own artifact directory."
-    return common + duty
+    commands = applicable_commands(ground_rules, role)
+    suite = ("\n- Full applicable suite for this role:\n"
+             + "\n".join(f"  - `{command}`" for command in commands)) if commands else ""
+    return common + duty + suite
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -299,23 +304,26 @@ def main() -> int:
     report_path = Path(args.report_path) if args.report_path else run_dir / "reports" / f"{stem}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt = render(
-        args.role,
-        issue.id,
-        markdown,
-        blockers,
-        [Path(path) for path in args.context_file],
-        out,
-        report_path,
-        args.pass_number,
-        tracker_ground_rules(tracker),
-        tracker_decisions(tracker),
-        harness=harness,
-        snapshot_id=snapshot["snapshot_id"],
-        artifact_path=run_dir / "artifacts" / stem,
-        followup=followup,
-        items_file=args.items_file,
-    )
+    try:
+        prompt = render(
+            args.role,
+            issue.id,
+            markdown,
+            blockers,
+            [Path(path) for path in args.context_file],
+            out,
+            report_path,
+            args.pass_number,
+            tracker_ground_rules(tracker),
+            tracker_decisions(tracker),
+            harness=harness,
+            snapshot_id=snapshot["snapshot_id"],
+            artifact_path=run_dir / "artifacts" / stem,
+            followup=followup,
+            items_file=args.items_file,
+        )
+    except ValueError as error:
+        raise SystemExit(f"cannot render {stem}: {error}") from error
     out.write_text(prompt, encoding="utf-8")
     print(out)
     return 0
@@ -432,7 +440,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 - Finish with the Worker Report Contract below.
 - A gate can advance only on `NO FINDINGS` plus concrete tests/checks.
 - The chain runs on a deliberately uncommitted working tree. Never report the uncommitted state or a missing commit, push, PR, or CI run as a finding; commit and push happen after the chain completes, outside the worker.
-{test_duties(role, artifact_path_text, bool(followup))}
+{test_duties(role, artifact_path_text, bool(followup), ground_rules)}
 - Stay inside the assigned role. Do not perform adjacent roles unless explicitly instructed by the orchestrator.
 {contract_lines}
 {ground_rules_block}{decisions_block}{followup_block}{items_block}

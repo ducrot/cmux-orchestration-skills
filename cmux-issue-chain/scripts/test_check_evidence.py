@@ -31,11 +31,13 @@ class EvidenceCli(unittest.TestCase):
         self.report = self.root / "report.md"
         self.report_text()
 
-    def rules(self, legacy=False, commands=None):
+    def rules(self, legacy=False, commands=None, targeted=None):
         wording = ", run as the baseline suite by every worker" if legacy else ""
         (self.tracker / "README.md").write_text(
             "# Tracker\n\n## Ground rules\n\n- Canonical check commands" + wording + ":\n"
             + "".join(f"  - `{command}`\n" for command in (commands or self.commands))
+            + (("- Targeted check commands for implement, simplify, and review:\n"
+                + "".join(f"  - `{command}`\n" for command in targeted)) if targeted is not None else "")
             + "- Unrelated rule: `never execute this`\n\n## Other\n"
             + "- Canonical check commands:\n  - `false`\n")
 
@@ -111,6 +113,33 @@ class EvidenceCli(unittest.TestCase):
         checked = self.check("implement", 2)
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertEqual({item["phase"] for item in self.event()["data"]["results"]}, {"after"})
+
+    def test_targeted_commands_for_each_stage_through_real_clis(self):
+        canonical = self.commands[:]
+        targeted = ["printf 'targeted one\\n'", "printf 'targeted two\\n'"]
+        self.rules(targeted=targeted)
+        for stage, number, followup in (("implement", 1, False), ("implement", 2, True),
+                                        ("simplify", 1, False), ("review", 1, False),
+                                        ("test", 1, False)):
+            with self.subTest(stage=stage, followup=followup):
+                expected, wrong = (canonical, targeted) if stage == "test" else (targeted, canonical)
+                self.commands = wrong
+                self.green(stage, number, followup)
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
+                self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
+                self.commands = expected
+                self.green(stage, number, followup)
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
+
+    def test_targeted_triage_still_exempt_without_capture_or_logs(self):
+        self.rules(targeted=["false"])
+        checked = self.check("triage")
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("verdict=exempt", checked.stdout)
 
     def test_before_evidence_follows_marker_not_pass_number(self):
         self.prepared(True, pass_num=1)
