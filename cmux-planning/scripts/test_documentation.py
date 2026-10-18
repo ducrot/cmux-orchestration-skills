@@ -606,6 +606,76 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                 self.assertNotIn("migrates a schema-v1 file as a side effect", text)
 
 
+class IssueChainEvidenceDocumentation(unittest.TestCase):
+    def setUp(self):
+        self.guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not self.guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+        self.text = normalized(self.guide)
+        self.references = self.guide.parent / "references"
+
+    def section(self, start, end):
+        return self.text.split(start, 1)[1].split(end, 1)[0]
+
+    def test_default_chain_and_gate_require_evidence(self):
+        chain = self.section("## default chain", "## review self-fix policy")
+        for phrase in ("evidence check", "before every gate", "simplify after-run",
+                       "review cites or runs"):
+            self.assertIn(phrase, chain)
+        gate = self.section("## gate rule", "### diff inspection at code-changing gates")
+        for phrase in ("passing evidence check", "blocked` > `hitl` > `stop` > `advance",
+                       "never downgrades a `blocked` or `hitl`", "latest `report-captured",
+                       "newer `launched", "run_state.py event"):
+            self.assertIn(phrase, gate)
+
+    def test_check_commands_and_diff_inspection(self):
+        commands = self.section("## canonical check commands", "## worker wait policy")
+        for phrase in ("targeted check commands for implement, simplify, and review:",
+                       "test worker always runs the full canonical suite", "one after another",
+                       "run_check.py", "byte-for-byte"):
+            self.assertIn(phrase, commands)
+        diff = self.section("### diff inspection at code-changing gates", "## canonical check commands")
+        self.assertIn("evidence check", diff)
+
+    def test_script_invocations_and_pane_guidance(self):
+        self.assertNotIn("quick-check", self.text)
+        scripts = self.text.split("## scripts", 1)[1]
+        for phrase in ("run_check.py --artifact-dir", "--command",
+                       "check_evidence.py --run-dir <run-dir> --stage <role> --pass <n> --report",
+                       "evidence check passed"):
+            self.assertIn(phrase, scripts)
+
+    def test_references_describe_evidence_and_citations(self):
+        followup = normalized(self.references / "follow-up-pass.md")
+        for phrase in ("cite-before, run-after", "most recent stage with green evidence",
+                       "same starting tree", "normally test", "own after-run"):
+            self.assertIn(phrase, followup)
+        self.assertNotIn("baseline suite before and after", followup)
+        events = documentation(self.references / "event-vocabulary.md").lower()
+        row = next(line for line in events.splitlines() if "`orchestrator.verified`" in line)
+        for phrase in ("test evidence", "check_evidence.py", "diff inspection"):
+            self.assertIn(phrase, row)
+        self.assertNotIn("quick-check", events)
+        infrastructure = normalized(self.references / "infrastructure-blockers.md")
+        for phrase in ("resume the same stage", "own evidence", "does not rerun checks"):
+            self.assertIn(phrase, infrastructure)
+        report = normalized(self.references / "worker-report-contract.md")
+        for phrase in ("- cited: artifacts/", "run_check.py", "byte-for-byte",
+                       "relative to the run directory"):
+            self.assertIn(phrase, report)
+        scripts = normalized(self.references / "script-tests.md")
+        for name in ("run_check", "check_evidence", "check_commands", "evidence_contract", "gate_evidence"):
+            self.assertIn(f"test_{name}.py", scripts)
+
+    @unittest.skipUnless(README.is_file(), "repository README absent in independent installation")
+    def test_readme_chain_step_uses_evidence_check(self):
+        step = next(line.lower() for line in documentation(README).splitlines()
+                    if line.startswith("3. **Orchestrator"))
+        self.assertIn("evidence check", step)
+        self.assertIn("before every", step)
+        self.assertNotIn("rerun", step)
+
+
 class CommitModeDocumentation(unittest.TestCase):
     def test_question_only_at_fresh_init(self):
         for guide in SIBLINGS:

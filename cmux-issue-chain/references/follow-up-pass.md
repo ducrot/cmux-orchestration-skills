@@ -21,8 +21,11 @@ Procedure:
    gate already moved the run to triage. In human mode the final test gate moves to implement instead.
 3. Prepare `implement` with the next pass number and `--followup`, then render with `--followup-file`. Anchor the follow-up
    implement pane to the triage pane (the test pane in human mode). The variant replaces the implement
-   contract: apply exactly the listed items, prove behavior preservation with the baseline suite before
-   and after instead of a failing regression test, leave existing tests unedited.
+   contract: apply exactly the listed items, prove behavior preservation with cite-before, run-after
+   instead of a failing regression test, and leave existing tests unedited. Cite the most recent stage
+   with green evidence for the same starting tree (normally test), one log per applicable command;
+   otherwise, run your own before-run of the full applicable suite through `run_check.py` before editing. Always produce an
+   own after-run of every applicable command through `run_check.py`, even for a no-op.
 4. Gate the implement report as usual, including diff inspection against the item list, then run the
    final test for the same pass with the follow-up report and the item list as context files.
 5. In autonomous mode, after the follow-up test report parses `advance` and before that gate event is recorded,

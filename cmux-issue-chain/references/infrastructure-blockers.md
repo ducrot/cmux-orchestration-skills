@@ -15,7 +15,8 @@ Handle an infrastructure blocker in this order:
    wait to the harness (`Bash run_in_background`, or Monitor with re-arm) with a stated
    deadline, and stop as HITL when the deadline passes without recovery. Never wait without an armed
    watcher and never poll indefinitely.
-4. After recovery, verify before advancing: the orchestrator re-runs the issue's checks over the changes the
-   blocked pass applied but could not verify, and records an `orchestrator.verified` event with commands and
-   outcomes. Only then resume the same stage — the interrupted pass continues; the chain does not skip ahead.
+4. After recovery, resume the same stage — the interrupted pass continues and produces its own evidence
+   through `run_check.py` over the changes it could not verify. Capture its report and tree, then run
+   `check_evidence.py` before its gate. The orchestrator does not rerun checks; it verifies the resumed
+   stage's logs. The chain does not skip ahead.
 

@@ -121,10 +121,10 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
    that fail without it and an end-to-end execution of the changed path.
 2. Simplify/refactor, applying behavior-preserving refactorings when appropriate. On Claude Code the
    worker runs `/simplify`; on any other harness the rendered prompt spells out the same pass inline.
-3. Orchestrator quick-check — an orchestrator step, not a worker pane: before recording the simplify gate,
-   re-run the tracker's canonical check commands yourself (see Canonical Check Commands) and record an
-   `orchestrator.verified` event with commands and outcomes. A red suite makes the simplify gate `stop`
-   regardless of what the report claims.
+3. Evidence check — an orchestrator step before every gate of a test-reporting stage (implement,
+   simplify, review, test): after the report-capture snapshot, run `check_evidence.py` with the report
+   (see Scripts). It validates worker wrapper logs against the required trees without rerunning tests.
+   Missing, red, or stale evidence prevents advancement.
 4. Code review, applying review fixes when appropriate. On Claude Code the worker runs
    `/code-review medium --fix`; on any other harness the rendered prompt spells out a three-axis review pass
    (standards with a smell baseline, spec, correctness) inline.
@@ -138,11 +138,10 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
-There is deliberately no test worker between simplify and review: it would re-run the suite the simplifier
-already ran before and after its changes, and the review pass covers the full working diff, simplify
-changes included — in the pilot runs a post-simplify tester found nothing three times while the one real
-gap sailed past it and was caught by review. The final test after review is the one that stays: it is the
-only check after the last code-changing stage, and reviewers must not accept their own fixes.
+There is deliberately no test worker between simplify and review: the simplify after-run is verified
+evidence, and review cites or runs the applicable suite. Review covers the full working diff, including
+simplify changes. The final test after review remains independent and always runs the full canonical
+suite on the final tree; reviewers must not accept their own fixes.
 
 Simplify is an editing role, not a passive reviewer. If the simplify pass proposes behavior-preserving cleanup within the current issue scope, the simplify worker may apply it and must report changed files plus the checks used to confirm behavior preservation.
 
@@ -165,7 +164,7 @@ same way. Earlier-stage decisions include every item under `## Not Applied` and 
 kept choice explained under `## Change Summary` or `## Notes`. Unless explicitly superseded by recorded
 human approval, the review worker never reverts one. If the fix pass reverted such an item without that
 approval — `/code-review --fix` briefs its internal agents from the diff alone and does not see the
-`## Not Applied` list — the worker restores it before running the baseline suite.
+`## Not Applied` list — the worker restores it before its own after-run of the applicable suite.
 
 How the proposal is reported depends on its reason. A quality-only reason (reuse, simplification,
 efficiency, altitude, style) is never a finding: the earlier decision stands, and the proposal goes under
@@ -200,10 +199,11 @@ Read when resuming after a confirming HITL: [references/resume-hitl.md](referenc
 
 ## Gate Rule
 
-Advance only when the latest relevant worker report contains:
+Advance only when the latest relevant worker report is clean and its evidence passes:
 
 - `NO FINDINGS`
 - Concrete tests/checks run
+- A passing evidence check for test-reporting stages (implement, simplify, review, test)
 - No `BLOCKER`
 - No unresolved `PLAN DRIFT`
 - Every required section present and non-empty
@@ -220,7 +220,13 @@ same five. Never invent a sixth.
 | `pending` | Report not written yet                          | 6         | Keep waiting per the wait policy   |
 
 The gate is the **most severe** triggered condition, not the last one evaluated: `blocked` > `hitl` > `stop` >
-`advance`. A report carrying both a blocker and plan drift is `blocked`.
+`advance`. A report carrying both a blocker and plan drift is `blocked`. A failing evidence check never downgrades a
+`blocked` or `hitl` result; it changes an otherwise advancing result to `stop`.
+
+Run `check_evidence.py --report <report>` after the latest `report-captured <role>-<pass>` snapshot and
+before recording the gate. `run_state.py gate` refuses `advance` without that passing evidence event,
+or when a newer `launched <role>-<pass>` snapshot exists. `run_state.py event` refuses to write the
+reserved test-evidence event; only `check_evidence.py` writes it. Triage is evidence-exempt.
 
 A required section (`## Result`, `## Blockers`, `## Plan Drift`) that is absent or empty makes the report
 malformed and yields `hitl`. An omitted section never reads as `None`.
@@ -270,17 +276,30 @@ Look for:
   any edit outside them gates `stop`.
 
 Record the inspection as an `orchestrator.verified` event with the commands used and a one-line verdict.
-This is diff-reading only and distinct from the orchestrator quick-check, which re-runs the test suite
-before the simplify gate; neither replaces the other. The product-code boundary holds: inspect, never edit.
+This diff inspection and the evidence check are both required at code-changing gates.
+The product-code boundary holds: inspect, never edit.
 
 ## Canonical Check Commands
 
-The tracker README's ground-rules section declares the canonical check commands for the tracker — at
-minimum the test suite, optionally lint — as exact runnable commands. `render_prompt.py` embeds the ground
-rules into every prompt, so every worker sees the same commands, and the prompt contract requires workers
-to use them as the baseline suite instead of guessing their own. The orchestrator quick-check before the
-simplify gate runs exactly these commands. Determinism is the point: implementer, tester, and quick-check
-must not run three different suites.
+The tracker README's ground-rules section declares canonical check commands — at minimum the test
+suite, optionally lint — as exact runnable commands. `render_prompt.py` embeds these rules and the
+role's applicable suite. Workers must use those commands byte-for-byte through `run_check.py`, one
+wrapper log per command, instead of guessing their own suite.
+
+An optional ground-rules entry `Targeted check commands for implement, simplify, and review:` followed
+by indented command bullets opts those three roles into a targeted suite. Without it they use the
+canonical suite. The test worker always runs the full canonical suite. An empty or placeholder targeted
+entry is an error, not a fallback. Triage has no suite duty.
+
+Regular implement passes prove a failing regression and run their own applicable suite after the change.
+Simplify and marked follow-up implement passes may cite matching green before-evidence, but must run
+their own suite after the pass, even for a no-op. An unchanged review may cite matching green evidence
+or run its own suite; a review that changes the tree must run its own after-suite. A test worker runs
+its own full canonical suite. Citations must match the applicable command and starting tree; see the
+worker report contract for their exact form.
+
+Workers run suites one after another, never in parallel. The orchestrator runs no suite; it validates
+evidence rather than rerunning the worker's checks.
 
 Verify the declaration during run preflight, together with the branch check: if the ground rules declare
 no runnable check commands, record a `hitl` gate instead of starting the chain — the human adds the
@@ -707,7 +726,7 @@ Use this pane layout for the default chain:
 
 - Implement: first worker pane may be opened from the orchestrator pane.
 - Simplify: keep the implementer pane open and place the simplify pane to the right (preferred) or down of that implementer pane.
-- Review after simplify: keep the simplify pane open and place the review pane to the right (preferred) or down of that simplify pane. The orchestrator quick-check between them opens no pane.
+- Review after simplify: keep the simplify pane open and place the review pane to the right (preferred) or down of that simplify pane.
 - Final test after review: keep the review pane open and place the test pane to the right (preferred) or down of that review pane.
 - Triage: anchor the fresh Triager pane to the test pane; anchor any follow-up implement pane to the triage pane.
 
@@ -723,7 +742,8 @@ Close completed worker panes promptly:
 1. Confirm the worker wrote its final report to the rendered report handoff path.
 2. Record a working-tree fingerprint for the capture: `run_state.py snapshot --label "report-captured <role>-<pass>"`.
 3. Compare the launch/capture staged fields and HEAD under Diff inspection at code-changing gates for every
-   role, including test; then parse the report and record the gate/event state.
+   role, including test; then parse the report, run the evidence check for each test-reporting stage,
+   and record the combined gate/event state.
 4. If the chain continues, run `run_state.py prepare --stage <next-role> --pass <n>`. This reloads and
    validates live configuration and publishes the only snapshot that `pane_ctl.py` may launch. A failed
    preparation stops before CMUX creates a pane. Render the next prompt only after this step:
@@ -800,6 +820,25 @@ a non-zero exit. Board failures never change command results.
 `run_state.py publish-triage --run-dir <run-dir> --pass <1|2>` publishes a passing triage report;
 `parse_report.py --items-file <path> <report>` validates the verdicts.
 
+Workers run each declared command through the wrapper from the repository root; the log records the
+exact command, exit code, duration, repository, HEAD, and before/after tree fingerprints. Repeat runs
+create new logs rather than overwriting earlier evidence. The rendered prompt gives workers the
+installed wrapper path; the form is:
+
+```bash
+python3 scripts/run_check.py --artifact-dir <run-dir>/artifacts/<role>-<pass> --command '<declared check command>'
+```
+
+After capturing the report and tree, the orchestrator checks evidence before the gate:
+
+```bash
+python3 scripts/check_evidence.py --run-dir <run-dir> --stage <role> --pass <n> --report <report-path>
+```
+
+The check reports `pass`, `missing`, `red`, or `stale` per command and phase, including whether evidence
+was cited. It writes the reserved `orchestrator.verified` / `test evidence` event and combines evidence
+with the parsed report's gate. It never executes the worker check commands.
+
 The scripts are deterministic helpers. They live canonically at `scripts/`
 (`~/.claude/skills/cmux-issue-chain` is a symlink to the same directory). Run them from the repo root.
 `--tracker` is always required and points at the local tracker directory (e.g. `.scratch/<tracker>`).
@@ -870,7 +909,7 @@ python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/<run-
 Record a gate decision. `--next-stage` moves `current_stage` forward on `advance`:
 
 ```bash
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --decision advance --reason "no findings, checks run, quick-check green" --next-stage review
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --decision advance --reason "no findings, evidence check passed" --next-stage review
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage review --decision hitl --reason "unresolved must-fix after --fix"
 ```
 

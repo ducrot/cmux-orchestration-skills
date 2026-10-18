@@ -29,6 +29,6 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `triage.collected` | Immutable recommendations list: pass, item count, scanned reports, items path and SHA-256 (null for zero items) |
 | `triage.published` | Counts per verdict, created issues, follow-up IDs, for-the-human IDs and follow-up file path |
 | `artifact.written`, `hitl.verified`, `hitl.counterproof` | HITL-issue assistance (see HITL Issues)                                                                                                          |
-| `orchestrator.verified`                                  | Orchestrator-run verification: quick-check test rerun before the simplify gate, or diff inspection at a code-changing gate (commands + outcomes) |
+| `orchestrator.verified`                                  | Evidence check (`check_evidence.py`, reserved message `test evidence`, command/phase verdicts and combined gate), or diff inspection at a code-changing gate (commands + outcomes) |
 | `orchestrator.halted`, `orchestrator.unverified_input`   | Orchestrator-side anomalies                                                                                                                      |
 

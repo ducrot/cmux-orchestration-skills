@@ -125,7 +125,7 @@ Point it at a ready issue in a local tracker. Each worker stage starts fresh:
 
 1. **Implement:** build the change, prove it with regression tests and an end-to-end run of the changed path.
 2. **Simplify:** apply behavior-preserving refactorings.
-3. **Orchestrator check:** rerun the tracker's canonical checks; a failing suite stops advancement.
+3. **Orchestrator evidence check:** before every test-reporting stage's gate, validate worker check logs against the tested tree; missing, red, or stale evidence prevents advancement.
 4. **Review:** inspect the full diff and apply safe fixes within the issue's intent.
 5. **Final test:** independently verify the result after the last code-changing stage. The tester does not edit product code.
 

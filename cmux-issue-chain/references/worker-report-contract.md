@@ -10,7 +10,7 @@ literal `NO FINDINGS | FINDINGS | BLOCKER` line is an unfilled template and is r
 NO FINDINGS
 
 ## Tests / Checks
-- `command`: outcome
+- `command`: outcome; evidence: artifacts/<role>-<pass>/check-<hash>.log
 
 ## Findings
 - None
@@ -24,6 +24,21 @@ NO FINDINGS
 ## Notes
 - Optional: caveats, method notes, context. Never must-fix content.
 ```
+
+For every own check, use `run_check.py --artifact-dir <own-artifact-dir> --command '<declared command>'`
+and list the resulting evidence log under `## Tests / Checks`. Commands must match the applicable
+tracker declaration byte-for-byte. Cite earlier logs only when the role permits citation, using a bullet
+beginning with the literal `cited:` label and a path relative to the run directory, one citation per
+applicable command:
+
+```markdown
+- cited: artifacts/<earlier-stage>/check-<hash>.log
+```
+
+Simplify and marked follow-up implement passes may cite before-evidence but always owe distinct own
+after-runs. An unchanged review may cite; a changed review, regular implement, and test require own
+after-evidence. The evidence check validates commands, repository, HEAD, and tree fingerprints rather
+than accepting the report's claims alone.
 
 Use exact section labels where possible. Treat missing tests/checks as a failed gate even if the report says `NO FINDINGS`.
 
