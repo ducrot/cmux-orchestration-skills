@@ -51,6 +51,9 @@ def normalized(guide: Path) -> str:
 class OnDemandDocumentation(unittest.TestCase):
     # Entry-point sizes measured before conditional procedures moved to references/.
     BASELINE_BYTES = {"cmux-issue-chain": 109325, "cmux-grilling": 75894, "cmux-planning": 51689}
+    CAP_RATIO = .7
+    # Room reserved under the cap for planned planning rule additions.
+    HEADROOM_BYTES = {"cmux-planning": 2000}
     NORMAL_HEADINGS = {
         "cmux-issue-chain": ("## gate rule", "## default chain"),
         "cmux-grilling": ("## gate rule", "## round loop"),
@@ -60,7 +63,9 @@ class OnDemandDocumentation(unittest.TestCase):
     def test_entrypoints_reduce_start_context_by_at_least_thirty_percent(self):
         for guide in SIBLINGS:
             with self.subTest(skill=guide.parent.name):
-                self.assertLessEqual(guide.stat().st_size, self.BASELINE_BYTES[guide.parent.name] * .7)
+                name = guide.parent.name
+                self.assertLessEqual(guide.stat().st_size,
+                                     self.BASELINE_BYTES[name] * self.CAP_RATIO - self.HEADROOM_BYTES.get(name, 0))
 
     def test_conditional_routes_resolve_to_nonempty_local_references(self):
         for guide in SIBLINGS:
@@ -720,6 +725,12 @@ class ConversationBriefDocumentation(unittest.TestCase):
 
 
 class PlanningOperatorDocumentation(unittest.TestCase):
+    def test_entrypoint_states_integrity_boundary_once(self):
+        text = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        for phrase in ("skipped untracked content", "8 MiB", "artifact manifest",
+                       "never recaptured against different product-tree bytes"):
+            self.assertEqual(text.count(phrase), 1, phrase)
+
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)
         procedure = text.split("## run one stage", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
