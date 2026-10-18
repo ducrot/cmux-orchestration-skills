@@ -134,7 +134,8 @@ Read when installing planning or setting it up for first use: [references/instal
 
 Before a fresh init: unfinished-run check (exit 3), commit mode, language, draft and confirm the
 conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
-for its six English headings, human-language content and verbatim quotes; show it fully for confirmation.
+for its six English headings, human-language content and verbatim quotes; show it fully as its own message,
+then confirm it with one `AskUserQuestion` single-select as described there.
 Require a plan file or brief; grilling is additional. Explicit brief decisions beat revalidated grilling
 decisions, which beat plans; other contradictions go to `Open Decisions`.
 

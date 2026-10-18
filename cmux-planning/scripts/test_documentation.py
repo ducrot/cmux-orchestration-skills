@@ -637,6 +637,18 @@ class ArtifactLanguageDocumentation(unittest.TestCase):
             self.assertNotIn("one english frontmatter issue", content)
 
 
+class ConversationBriefDocumentation(unittest.TestCase):
+    def test_brief_is_confirmed_through_a_structured_question(self):
+        initialize = normalized(PLANNING).split("## initialize", 1)[1].split("## ", 1)[0]
+        self.assertIn("askuserquestion", initialize)
+        brief = normalized(PLANNING.parent / "references" / "conversation-brief.md")
+        for phrase in ("complete brief as its own message", "askuserquestion", "single-select",
+                       "human's language", "first and recommended", "did not state",
+                       "show the revised brief in full and ask again",
+                       "`--brief-confirmed` only after \"confirm\""):
+            self.assertIn(phrase, brief)
+
+
 class PlanningOperatorDocumentation(unittest.TestCase):
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)
