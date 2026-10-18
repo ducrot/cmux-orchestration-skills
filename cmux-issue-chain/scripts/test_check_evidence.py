@@ -96,6 +96,12 @@ class EvidenceCli(unittest.TestCase):
     def phase_results(self, phase):
         return [item for item in self.event()["data"]["results"] if item["phase"] == phase]
 
+    def assert_citations_rejected(self, reason):
+        rejected = self.phase_results("citation")
+        self.assertEqual({item["command"] for item in rejected}, set(self.commands))
+        self.assertTrue(all(item["verdict"] == "missing" and item["cited"] for item in rejected))
+        self.assertEqual({item["error"] for item in rejected}, {reason})
+
     def test_gate_accepts_real_check_then_refuses_after_recapture(self):
         self.green()
         checked = self.check()
@@ -211,6 +217,25 @@ class EvidenceCli(unittest.TestCase):
             self.wrap(command, "review")
         self.assertEqual(self.check("review").returncode, 0)
 
+    def test_changed_review_citation_reason_requires_own_logs(self):
+        for pass_num, movement in enumerate(("fingerprint", "HEAD"), start=1):
+            with self.subTest(movement=movement):
+                self.report_text()
+                self.green()
+                self.capture("review", pass_num, prefix="launched")
+                if movement == "fingerprint":
+                    self.file.write_text("review changed the tree\n")
+                else:
+                    self.git("-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "review moved HEAD")
+                for command in self.commands:
+                    self.assertEqual(self.wrap(command, "review", pass_num).returncode, 0)
+                self.capture("review", pass_num)
+                self.cite()
+                result = self.check("review", pass_num)
+                self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                self.assert_citations_rejected("review changed the tree; own logs required")
+                self.assertTrue(all(item["verdict"] == "pass" for item in self.phase_results("after")))
+
     def test_test_stage_rejects_citations_even_with_own_logs(self):
         self.green()
         self.cite()
@@ -218,6 +243,7 @@ class EvidenceCli(unittest.TestCase):
         result = self.check("test")
         self.assertEqual(result.returncode, 3)
         self.assertIn("cited", result.stdout)
+        self.assert_citations_rejected("citations are not allowed for this stage")
         self.report_text()
         self.assertEqual(self.check("test").returncode, 0)
 

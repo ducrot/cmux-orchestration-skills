@@ -126,7 +126,9 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     unchanged_review = stage == "review" and all(
         launch[key] == capture[key] for key in ("head", "fingerprint"))
     citations = cited_paths(report_text)
-    allowed_citations = needs_before or unchanged_review
+    citation_refusal = (None if needs_before or unchanged_review
+                        else "review changed the tree; own logs required" if stage == "review"
+                        else "citations are not allowed for this stage")
     own, cited, invalid = [], [], []
     artifact_root = (run_dir / "artifacts").resolve()
     own_dir = artifact_root / f"{stage}-{pass_num}"
@@ -146,7 +148,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
 
     for path in sorted(own_dir.glob("check-*.log")):
         load(path)
-    for citation in citations if allowed_citations else ():
+    for citation in citations if not citation_refusal else ():
         path = Path(citation)
         if path.is_absolute() or not citation:
             invalid.append({"path": citation, "citation": citation, "cited": True,
@@ -173,8 +175,8 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
         results.append(evidence_result(command, after_logs, capture, "after",
                                        cited_source=unchanged_review and bool(citations) and not own))
     # A forbidden or unreadable citation cannot be silently rescued by own logs.
-    rejected = ([{"citation": path, "error": "citations are not allowed for this stage"}
-                 for path in citations] if not allowed_citations else [])
+    rejected = ([{"citation": path, "error": citation_refusal}
+                 for path in citations] if citation_refusal else [])
     rejected += [item for item in invalid if item["cited"]]
     for citation in rejected:
         for command in commands:
