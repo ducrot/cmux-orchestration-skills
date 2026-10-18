@@ -13,6 +13,9 @@ with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
 if os.environ.get("FAKE_CMUX_EXIT"):
     sys.exit(int(os.environ["FAKE_CMUX_EXIT"]))
 args = sys.argv[1:]
+if "close-surface" in args and os.environ.get("FAKE_CMUX_CONFIRM") and "--force" not in args:
+    sys.stderr.write("Error: confirmation_required: live process\\n")
+    sys.exit(1)
 if "new-split" in args:
     print(json.dumps({
         "pane_id": "PANE-UUID", "pane_ref": "pane:9",

@@ -600,7 +600,7 @@ The lifecycle verbs cover the error-prone multi-step sequences and record their 
 python3 scripts/run_state.py prepare --run-dir <run-dir> --stage review --pass 1
 python3 scripts/render_prompt.py --tracker <tracker> --issue <issue> --run-dir <run-dir> --role review --pass 1
 python3 scripts/pane_ctl.py launch --run-dir <run-dir> --role review --pass 1 --anchor <prev-worker-surface-id>
-python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <prev-worker-surface-id> --role <previous-role> --pass <previous-pass>
+python3 scripts/pane_ctl.py close --run-dir <run-dir> --surface <prev-worker-surface-id> --role <previous-role> --pass <previous-pass> --force
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "launched review-1"
 python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --surface <surface-id> --role review --pass 1
 # Arm via background Bash (or Monitor with re-arm) as described above.
@@ -626,7 +626,10 @@ python3 scripts/await_report.py --run-dir <run-dir> --surface <surface-id> --rol
   wording is skill policy like the launch command, and getting it wrong stalls the worker (see the
   send/Enter rule below). `--text` is for follow-ups into a working pane — re-emission requests,
   clarifications, HITL messages.
-- `close` closes the surface and records `pane.closed`.
+- `close` closes the surface and records `pane.closed`. Worker CLIs keep running after their report, so
+  cmux answers `confirmation_required`; with `--force` the verb retries with `close-surface --force`, but
+  only for a surface this run launched for that role/pass after its `report-captured <role>-<pass>`
+  snapshot. `pane.closed` records `forced`.
 
 Everything else (diagnosis, `read-screen`, `list-pane-surfaces`, `set-status`, …) runs through the
 generic injector, which inserts `--workspace <pinned>` into any cmux command:

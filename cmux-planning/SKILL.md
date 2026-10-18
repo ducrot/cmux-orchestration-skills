@@ -298,7 +298,7 @@ that worker's pane:
 
 ```bash
 python3 scripts/pane_ctl.py close --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
+  --surface <launch-surface-id> --force
 ```
 
 `close` closes the surface and records `pane.closed`. A repeated `mark-started` for an already

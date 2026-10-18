@@ -213,6 +213,18 @@ if "new-split" in args:'''))
                 self.assertIn('stable surface UUIDs', proc.stderr)
                 self.assertEqual(self.cmux_calls(), [])
 
+    def test_open_next_round_force_closes_live_captured_lanes(self):
+        old = self.open_round(1)
+        self.snapshot('reports-captured round-1')
+        for lane in LANES:
+            append_jsonl(self.run_dir / 'events.jsonl', {'type': 'gate', 'stage': f'round-1-{lane}', 'decision': 'advance'})
+        proc = self.run_ctl('open-round', '--run-dir', str(self.run_dir), '--round', '2', FAKE_CMUX_CONFIRM='1')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        forced = [call[-2] for call in self.cmux_calls() if call[0] == 'close-surface' and call[-1] == '--force']
+        self.assertEqual(set(forced), set(old.values()))
+        closes = [e for e in self.events() if e['type'] == 'pane.closed']
+        self.assertEqual([e['data']['forced'] for e in closes], [True] * 4)
+
     def test_close_failure_preserves_new_layout_and_reports_partial_closure(self):
         old = self.open_round(1)
         self.snapshot('reports-captured round-1')

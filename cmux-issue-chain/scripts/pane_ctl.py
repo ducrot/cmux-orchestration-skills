@@ -13,7 +13,7 @@ focused workspace or an environment fallback. Verbs:
   deliver     consume readiness + send + send-key enter + screen + worker.prompt_sent
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
-  close       close-surface + pane.closed event
+  close       close-surface + pane.closed event (--force: retry a live, captured worker pane forced)
 
 Normal starts attach the assignment and let the watcher confirm its marker.
 The readiness gate enforces observation and assessment for recovery and follow-up input.
@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from agents_config import ConfigError, git_root
-from worker_readiness import Gate, ReadinessError, add_commands, begin_start
+from worker_readiness import Gate, ReadinessError, add_commands, begin_start, read_events
 
 from orchestrator_lib import ROLE_LABELS, append_jsonl, delivery_text, read_json, read_run_state, utc_now
 from worker_snapshot import (
@@ -93,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--surface", required=True)
     close.add_argument("--role", required=True, choices=sorted(ROLE_LABELS))
     close.add_argument("--pass", dest="pass_num", type=int, required=True)
+    close.add_argument(
+        "--force", action="store_true",
+        help="Retry with close-surface --force when cmux asks to confirm killing the live worker; "
+        "only for a pane this run launched for the role/pass whose report is already captured",
+    )
 
     add_commands(subparsers, selector="role")
     return parser
@@ -301,15 +306,42 @@ def cmd_deliver(args: argparse.Namespace) -> int:
     return 0
 
 
+def require_force_allowed(run_dir: Path, role: str, pass_num: int, surface: str) -> None:
+    events = read_events(run_dir)
+    launched = any(
+        event.get("type") == "pane.launched"
+        and event.get("data", {}).get("role") == role
+        and event.get("data", {}).get("pass") == pass_num
+        and event.get("data", {}).get("surface_id") == surface
+        for event in events
+    )
+    if not launched:
+        raise SystemExit(f"--force refused: {surface} has no pane.launched record for {role}-{pass_num} in this run")
+    label = f"report-captured {role}-{pass_num}"
+    if not any(event.get("type") == "tree.snapshot" and event.get("message") == label for event in events):
+        raise SystemExit(f"--force refused: no '{label}' snapshot yet; the worker may still be working")
+
+
 def cmd_close(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     workspace_id = pinned_workspace(run_dir)
-    run_cmux(args, ["close-surface", "--workspace", workspace_id, "--surface", args.surface])
+    if args.force:
+        require_force_allowed(run_dir, args.role, args.pass_num, args.surface)
+    argv = ["close-surface", "--workspace", workspace_id, "--surface", args.surface]
+    forced = False
+    try:
+        run_cmux(args, argv)
+    except SystemExit as error:
+        # Worker CLIs keep running after their report, so cmux asks before killing them.
+        if not args.force or "confirmation_required" not in str(error):
+            raise
+        run_cmux(args, [*argv, "--force"])
+        forced = True
     record_event(
         run_dir,
         "pane.closed",
         f"closed {args.role}-{args.pass_num} pane",
-        {"role": args.role, "pass": args.pass_num, "surface_id": args.surface},
+        {"role": args.role, "pass": args.pass_num, "surface_id": args.surface, "forced": forced},
     )
     return 0
 

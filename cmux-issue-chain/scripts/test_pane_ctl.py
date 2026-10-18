@@ -49,8 +49,8 @@ class PaneCtlCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_ctl(self, *argv: str) -> subprocess.CompletedProcess:
-        env = dict(os.environ, FAKE_CMUX_LOG=str(self.log))
+    def run_ctl(self, *argv: str, **extra_env: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ, FAKE_CMUX_LOG=str(self.log), **extra_env)
         return subprocess.run(
             [sys.executable, SCRIPT, "--cmux-cmd", self.cmux_cmd, *argv],
             capture_output=True, text=True, timeout=30, env=env,
@@ -490,6 +490,58 @@ class Close(PaneCtlCase):
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["pane.closed"])
         self.assertEqual(events[0]["data"]["role"], "test")
+
+    def record(self, event_type: str, message: str, data: dict) -> None:
+        with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"type": event_type, "message": message, "data": data}) + "\n")
+
+    def close(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
+        return self.run_ctl(
+            "close", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--role", "test", "--pass", "1", *extra, **env,
+        )
+
+    def captured_launch(self) -> None:
+        self.record("pane.launched", "launched", {"role": "test", "pass": 1, "surface_id": "SURF-UUID"})
+        self.record("tree.snapshot", "report-captured test-1", {"role": "test", "pass": 1})
+
+    def test_confirmation_without_force_fails_and_records_nothing(self):
+        proc = self.close(FAKE_CMUX_CONFIRM="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("confirmation_required", proc.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_force_retries_confirmation_for_captured_worker(self):
+        self.captured_launch()
+        proc = self.close("--force", FAKE_CMUX_CONFIRM="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        base = ["close-surface", "--workspace", "WS-UUID", "--surface", "SURF-UUID"]
+        self.assertEqual(self.cmux_calls(), [base, [*base, "--force"]])
+        closed = self.events()[-1]
+        self.assertEqual(closed["type"], "pane.closed")
+        self.assertTrue(closed["data"]["forced"])
+
+    def test_force_closes_idle_pane_without_forcing(self):
+        self.captured_launch()
+        proc = self.close("--force")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(len(self.cmux_calls()), 1)
+        self.assertFalse(self.events()[-1]["data"]["forced"])
+
+    def test_force_refused_before_report_capture(self):
+        self.record("pane.launched", "launched", {"role": "test", "pass": 1, "surface_id": "SURF-UUID"})
+        proc = self.close("--force", FAKE_CMUX_CONFIRM="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("report-captured test-1", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
+
+    def test_force_refused_for_surface_this_run_did_not_launch(self):
+        self.record("pane.launched", "launched", {"role": "test", "pass": 1, "surface_id": "OTHER-UUID"})
+        self.record("tree.snapshot", "report-captured test-1", {"role": "test", "pass": 1})
+        proc = self.close("--force", FAKE_CMUX_CONFIRM="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("no pane.launched record", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
 
 
 if __name__ == "__main__":

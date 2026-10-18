@@ -11,6 +11,9 @@ import json, os, sys
 with open(os.environ["FAKE_CMUX_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
 args = sys.argv[1:]
+if "close-surface" in args and os.environ.get("FAKE_CMUX_CONFIRM") and "--force" not in args:
+    sys.stderr.write("Error: confirmation_required: live process\\n")
+    sys.exit(1)
 if "new-split" in args:
     counter = sum("new-split" in json.loads(line) for line in open(os.environ["FAKE_CMUX_LOG"]))
     print(json.dumps({

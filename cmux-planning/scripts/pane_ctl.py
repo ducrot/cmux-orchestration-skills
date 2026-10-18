@@ -20,6 +20,7 @@ from orchestrator_lib import (
     STAGES,
     append_event,
     delivery_text,
+    matching_stage_pass_event,
     planning_events,
     read_planning_state,
     surface_event_recorded,
@@ -54,7 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
     deliver.add_argument("--prompt", required=True)
     deliver.add_argument("--settle-seconds", type=float, default=3)
     subparsers.add_parser("mark-started", parents=[launched_pane])
-    subparsers.add_parser("close", parents=[launched_pane])
+    close = subparsers.add_parser("close", parents=[launched_pane])
+    close.add_argument(
+        "--force", action="store_true",
+        help="Retry with close-surface --force when cmux asks to confirm killing the live worker; "
+        "only after this stage pass's report was captured",
+    )
     add_commands(subparsers, parents=[launched_pane])
     return parser
 
@@ -248,12 +254,30 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command != "close":
         raise SnapshotError(f"unhandled command: {args.command}")
-    cmux(args, ["close-surface", "--workspace", workspace(run_dir), "--surface", surface])
+    if args.force and not any(
+        matching_stage_pass_event(entry, "worker.waiting", args.stage, args.pass_num)
+        and entry["data"].get("outcome") == "report"
+        for entry in events
+    ):
+        raise SnapshotError(
+            f"--force refused: no captured report for {args.stage} pass {args.pass_num}; "
+            "the worker may still be working"
+        )
+    argv = ["close-surface", "--workspace", workspace(run_dir), "--surface", surface]
+    forced = False
+    try:
+        cmux(args, argv)
+    except SnapshotError as error:
+        # Worker CLIs keep running after their report, so cmux asks before killing them.
+        if not args.force or "confirmation_required" not in str(error):
+            raise
+        cmux(args, [*argv, "--force"])
+        forced = True
     event(
         run_dir,
         "pane.closed",
         "closed planning worker pane",
-        {"stage": args.stage, "pass": args.pass_num, "surface_id": surface},
+        {"stage": args.stage, "pass": args.pass_num, "surface_id": surface, "forced": forced},
     )
     return 0
 

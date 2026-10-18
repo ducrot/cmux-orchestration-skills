@@ -63,6 +63,9 @@ with open(os.environ["FAKE_BOARD_LOG" if board else "FAKE_CMUX_LOG"], "a", encod
     handle.write(json.dumps(sys.argv[1:]) + "\\n")
 if board and os.environ.get("FAKE_BOARD_FAIL"):
     raise SystemExit("board offline")
+if "close-surface" in sys.argv and os.environ.get("FAKE_CMUX_CONFIRM") and "--force" not in sys.argv:
+    sys.stderr.write("Error: confirmation_required: live process\\n")
+    sys.exit(1)
 if "new-split" in sys.argv:
     created = {"surface_ref": "surface:1", "pane_id": "PANE-1"}
     if not os.environ.get("FAKE_CMUX_POSITIONAL_ONLY"):
@@ -3019,8 +3022,43 @@ sha256 {resulting_digest or digest}
         self.assertEqual(events[-1]["type"], "pane.closed")
         self.assertEqual(set(events[-1]), {"time", "type", "message", "data"})
         self.assertEqual(
-            events[-1]["data"], {"stage": "spec", "pass": 1, "surface_id": "SURF-1"}
+            events[-1]["data"], {"stage": "spec", "pass": 1, "surface_id": "SURF-1", "forced": False}
         )
+
+    def force_close(self, *, captured: bool) -> subprocess.CompletedProcess[str]:
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        self.launch_prepared_stage("spec")
+        if captured:
+            with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "time": "2026-10-18T00:00:00+00:00", "type": "worker.waiting",
+                    "message": "planning report captured",
+                    "data": {"stage": "spec", "pass": 1, "surface_id": "SURF-1", "outcome": "report"},
+                }) + "\n")
+        env = self.env()
+        env["FAKE_CMUX_CONFIRM"] = "1"
+        self.cmux_log.unlink(missing_ok=True)
+        return self.cli(
+            PANE, "--cmux-cmd", str(self.cmux), "close", "--force",
+            "--run-dir", str(self.run_dir),
+            "--stage", "spec", "--pass", "1", "--surface", "SURF-1", env=env,
+        )
+
+    def test_close_force_retries_confirmation_after_report_capture(self):
+        closed = self.force_close(captured=True)
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+        calls = [json.loads(line) for line in self.cmux_log.read_text(encoding="utf-8").splitlines()]
+        base = ["close-surface", "--workspace", "WORKSPACE-1", "--surface", "SURF-1"]
+        self.assertEqual([call for call in calls if call[0] == "close-surface"], [base, [*base, "--force"]])
+        last = json.loads((self.run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual((last["type"], last["data"]["forced"]), ("pane.closed", True))
+
+    def test_close_force_refused_before_report_capture(self):
+        refused = self.force_close(captured=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("no captured report", refused.stderr)
+        self.assertFalse(self.cmux_log.exists() and "close-surface" in self.cmux_log.read_text(encoding="utf-8"))
 
     def test_close_reaches_a_pane_orphaned_by_a_retried_launch(self):
         self.assertEqual(self.init_direct().returncode, 0)

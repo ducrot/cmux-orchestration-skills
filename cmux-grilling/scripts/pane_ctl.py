@@ -13,7 +13,7 @@ focused workspace or an environment fallback. Verbs:
   deliver     consume readiness + send + send-key enter + screen + worker.prompt_sent
               (--prompt hands over a rendered prompt with the skill's own wording;
                --text is for follow-ups)
-  close       close-surface + pane.closed event
+  close       close-surface + pane.closed event (--force: retry a live, captured lane pane forced)
 
 The round watcher confirms normal starts from markers. The readiness gate enforces
 observation and assessment for exception-path input and follow-ups.
@@ -104,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--run-dir", required=True)
     close.add_argument("--surface", required=True)
     close.add_argument("--lane", required=True, choices=sorted(LANES))
+    close.add_argument(
+        "--force", action="store_true",
+        help="Retry with close-surface --force when cmux asks to confirm killing the live worker; "
+        "needs --round, a pane this run launched for the lane, and captured round reports",
+    )
 
     for command in (launch, start, close, deliver):
         command.add_argument("--round", dest="round_number", type=int, required=command is start)
@@ -330,16 +335,38 @@ def cmd_deliver(args: argparse.Namespace) -> int:
     return 0
 
 
+def require_force_allowed(run_dir: Path, lane: str, number: int | None, surface: str) -> None:
+    if number is None:
+        raise SystemExit("--force needs --round")
+    events = read_events(run_dir)
+    if round_surfaces(events, number).get(lane) != surface:
+        raise SystemExit(f"--force refused: {surface} is not the recorded {lane} pane of round {number}")
+    label = f"reports-captured round-{number}"
+    if not any(event.get("type") == "tree.snapshot" and event.get("message") == label for event in events):
+        raise SystemExit(f"--force refused: no '{label}' snapshot yet; the lane may still be working")
+
+
 def cmd_close(args: argparse.Namespace) -> int:
     require_surface_id(args.surface)
     run_dir = Path(args.run_dir)
     workspace_id = pinned_workspace(run_dir)
-    run_cmux(args, ["close-surface", "--workspace", workspace_id, "--surface", args.surface])
+    if args.force:
+        require_force_allowed(run_dir, args.lane, args.round_number, args.surface)
+    argv = ["close-surface", "--workspace", workspace_id, "--surface", args.surface]
+    forced = False
+    try:
+        run_cmux(args, argv)
+    except SystemExit as error:
+        # Worker CLIs keep running after their report, so cmux asks before killing them.
+        if not args.force or "confirmation_required" not in str(error):
+            raise
+        run_cmux(args, [*argv, "--force"])
+        forced = True
     record_event(
         run_dir,
         "pane.closed",
         f"closed {args.lane} lane pane",
-        {"lane": args.lane, "round": args.round_number, "surface_id": args.surface},
+        {"lane": args.lane, "round": args.round_number, "surface_id": args.surface, "forced": forced},
     )
     return 0
 
@@ -399,7 +426,8 @@ def cmd_open_round(args: argparse.Namespace) -> int:
             launched[lane] = json.loads(output.getvalue())["surface_id"]
         for lane, surface in previous.items():
             cmd_close(argparse.Namespace(**{
-                **vars(args), "lane": lane, "surface": surface, "round_number": args.round_number - 1}))
+                **vars(args), "lane": lane, "surface": surface, "round_number": args.round_number - 1,
+                "force": True}))
             closed.append(surface)
     except (SystemExit, OSError, subprocess.SubprocessError, LaunchWaveError) as error:
         new_events = read_events(run_dir)[before:]

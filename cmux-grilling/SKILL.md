@@ -684,7 +684,10 @@ Read when the watcher exits 9 or re-delivering a round assignment: [references/s
 
 Keep current round panes open until the next `open-round` or session end, after reports,
 re-emission, gates, and snapshot are recorded. At session end use `close --round N --lane
-<lane> --surface <UUID>` per lane. Never close a pending report's pane during a normal wait.
+<lane> --surface <UUID> --force` per lane. Never close a pending report's pane during a normal wait.
+Worker CLIs keep running after their report, so cmux answers `confirmation_required`; `--force`
+retries with `close-surface --force`, but only for the round's recorded lane surface after its
+`reports-captured round-<N>` snapshot. `open-round` closes the previous round the same way.
 
 While a round is in flight, the four reports belong to the lanes: do not edit anything under
 `reports/` yourself, and compare snapshot fingerprints before any `report.integrity` claim.

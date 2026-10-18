@@ -103,10 +103,10 @@ class PaneCtlCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_ctl(self, *argv: str) -> subprocess.CompletedProcess:
+    def run_ctl(self, *argv: str, **extra_env: str) -> subprocess.CompletedProcess:
         if argv[0] == "start-agent" and "--round" not in argv:
             argv = (*argv, "--round", "1")
-        env = dict(os.environ, FAKE_CMUX_LOG=str(self.log))
+        env = dict(os.environ, FAKE_CMUX_LOG=str(self.log), **extra_env)
         return subprocess.run(
             [sys.executable, SCRIPT, "--cmux-cmd", self.cmux_cmd, *argv],
             capture_output=True, text=True, timeout=30, env=env,
@@ -396,6 +396,47 @@ class Close(PaneCtlCase):
         events = self.events()
         self.assertEqual([event["type"] for event in events], ["pane.closed"])
         self.assertEqual(events[0]["data"]["lane"], "docs")
+
+    def record(self, event_type: str, message: str, data: dict) -> None:
+        with (self.run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"type": event_type, "message": message, "data": data}) + "\n")
+
+    def close(self, *extra: str, **env: str) -> subprocess.CompletedProcess:
+        return self.run_ctl(
+            "close", "--run-dir", str(self.run_dir),
+            "--surface", "SURF-UUID", "--lane", "docs", *extra, **env,
+        )
+
+    def test_confirmation_without_force_fails_and_records_nothing(self):
+        proc = self.close("--round", "1", FAKE_CMUX_CONFIRM="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("confirmation_required", proc.stderr)
+        self.assertEqual(self.events(), [])
+
+    def test_force_retries_confirmation_for_captured_round(self):
+        self.record("pane.launched", "launched", {"lane": "docs", "round": 1, "surface_id": "SURF-UUID"})
+        self.record("tree.snapshot", "reports-captured round-1", {})
+        proc = self.close("--round", "1", "--force", FAKE_CMUX_CONFIRM="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        base = ["close-surface", "--workspace", "WS-UUID", "--surface", "SURF-UUID"]
+        self.assertEqual(self.cmux_calls(), [base, [*base, "--force"]])
+        self.assertTrue(self.events()[-1]["data"]["forced"])
+
+    def test_force_refused_before_round_capture(self):
+        self.record("pane.launched", "launched", {"lane": "docs", "round": 1, "surface_id": "SURF-UUID"})
+        proc = self.close("--round", "1", "--force", FAKE_CMUX_CONFIRM="1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("reports-captured round-1", proc.stderr)
+        self.assertEqual(self.cmux_calls(), [])
+
+    def test_force_refused_for_unrecorded_surface_or_missing_round(self):
+        self.record("pane.launched", "launched", {"lane": "docs", "round": 1, "surface_id": "OTHER-UUID"})
+        self.record("tree.snapshot", "reports-captured round-1", {})
+        for extra in (("--round", "1", "--force"), ("--force",)):
+            with self.subTest(extra=extra):
+                proc = self.close(*extra, FAKE_CMUX_CONFIRM="1")
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(self.cmux_calls(), [])
 
 
 if __name__ == "__main__":
