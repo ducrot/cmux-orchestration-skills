@@ -46,6 +46,7 @@ from worker_snapshot import (
 
 # Must stay in sync with parse_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
+EVIDENCE_GATED_STAGES = tuple(stage for stage in ISSUE_WORKERS if stage != "triage")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -410,6 +411,8 @@ def prepare_stage(args: argparse.Namespace) -> int:
 def append_event(args: argparse.Namespace) -> int:
     if args.type.startswith("commit."):
         raise SystemExit("commit events are recorded by run_commit.py")
+    if args.type == "orchestrator.verified" and args.message == "test evidence":
+        raise SystemExit("test evidence events are recorded by check_evidence.py")
     read_run_state(Path(args.run_dir))
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
@@ -425,8 +428,10 @@ def append_event(args: argparse.Namespace) -> int:
 
 
 def append_gate(args: argparse.Namespace) -> int:
-    read_run_state(Path(args.run_dir))
     run_dir = Path(args.run_dir)
+    read_run_state(run_dir)
+    if args.decision == "advance" and args.stage in EVIDENCE_GATED_STAGES:
+        require_gate_evidence(run_dir, args.stage)
     event = {
         "time": utc_now(),
         "type": "gate",
@@ -446,6 +451,44 @@ def append_gate(args: argparse.Namespace) -> int:
         state["updated_at"] = event["time"]
         write_json(state_path, state)
     return 0
+
+
+def require_gate_evidence(run_dir: Path, stage: str) -> None:
+    """Require a passing check after the latest capture, using append order."""
+    path = run_dir / "events.jsonl"
+    try:
+        events = [json.loads(line) for line in path.read_text().splitlines()] if path.is_file() else []
+        if any(not isinstance(event, dict) for event in events):
+            raise ValueError("events.jsonl holds a non-object line")
+    except ValueError as error:
+        raise SystemExit(f"cannot advance {stage} pass unknown: invalid evidence events: {error}") from error
+
+    capture_label = re.compile(rf"(launched|report-captured) {re.escape(stage)}-([1-9][0-9]*)")
+    for index, capture in reversed(list(enumerate(events))):
+        message = capture.get("message")
+        if (capture.get("type") == "tree.snapshot" and isinstance(message, str)
+                and (match := capture_label.fullmatch(message))):
+            pass_num = int(match[2])
+            if match[1] == "launched":
+                raise SystemExit(
+                    f"cannot advance {stage} pass {pass_num}: launched without a later "
+                    "report-captured snapshot and passing test evidence"
+                )
+            break
+    else:
+        raise SystemExit(
+            f"cannot advance {stage} pass unknown: missing report-captured snapshot and passing test evidence"
+        )
+
+    expected = {"stage": stage, "pass": pass_num, "verdict": "pass"}
+    if any(event.get("type") == "orchestrator.verified" and event.get("message") == "test evidence"
+           and isinstance(event.get("data"), dict)
+           and {key: event["data"].get(key) for key in expected} == expected
+           for event in events[index + 1:]):
+        return
+    raise SystemExit(
+        f"cannot advance {stage} pass {pass_num}: missing passing test evidence after latest report-captured snapshot"
+    )
 
 
 UNTRACKED_HASH_LIMIT_BYTES = 8 * 1024 * 1024

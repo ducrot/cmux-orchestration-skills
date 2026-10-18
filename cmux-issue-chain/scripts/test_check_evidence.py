@@ -96,6 +96,22 @@ class EvidenceCli(unittest.TestCase):
     def phase_results(self, phase):
         return [item for item in self.event()["data"]["results"] if item["phase"] == phase]
 
+    def test_gate_accepts_real_check_then_refuses_after_recapture(self):
+        self.green()
+        checked = self.check()
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        args = ("gate", "--run-dir", self.run_dir, "--stage", "implement",
+                "--decision", "advance", "--reason", "verified", "--next-stage", "simplify")
+        accepted = self.cli("run_state.py", *args)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads((self.run_dir / "state.json").read_text())["current_stage"], "simplify")
+        self.capture()
+        before = (self.run_dir / "events.jsonl").read_bytes()
+        refused = self.cli("run_state.py", *args)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("implement pass 1", refused.stderr)
+        self.assertEqual((self.run_dir / "events.jsonl").read_bytes(), before)
+
     def cite(self, paths=None):
         paths = paths or sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
         bullets = "\n".join(f"- cited: {path.relative_to(self.run_dir)}" for path in paths)

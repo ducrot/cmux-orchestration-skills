@@ -20,19 +20,20 @@ python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --dry-run
 python3 scripts/issue_state.py list --tracker .scratch/<tracker>
 python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
 python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --run-id smoke-issue-001
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "prepare repeatable smoke" --next-stage implement
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision pending --reason "prepare repeatable smoke"
 python3 scripts/run_state.py prepare --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --pass 1
 python3 scripts/collect_recommendations.py --run-dir .scratch/orchestrator/runs/smoke-issue-001 --pass 1
 python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/smoke-issue-001
 python3 scripts/parse_report.py references/sample-no-findings.md --json
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/smoke-issue-001 --label "smoke snapshot"
-python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision advance --reason "smoke test" --next-stage simplify
+python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/smoke-issue-001 --stage implement --decision stop --reason "smoke test"
 python3 scripts/run_state.py complete --run-dir .scratch/orchestrator/runs/smoke-issue-001 --message "smoke complete"
 ```
 
 The collector on the fresh smoke run exits 0 with zero items and no items file; on the second run it
 exits 0 again without an extra collection event. The smoke-only gate and preparation reset the reusable
-smoke stage before rendering.
+smoke stage before rendering. The smoke gates use `pending` and `stop` because an `advance` gate
+requires passing `check_evidence.py` evidence the smoke block cannot produce.
 
 The smoke test must prove gate correctness, issue parsing, blocker DAG evaluation, prompt rendering, run-state writing, tree fingerprinting, run closing, and report parsing without requiring product-code changes.
 

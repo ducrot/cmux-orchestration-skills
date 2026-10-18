@@ -14,6 +14,7 @@ from pathlib import Path
 
 import render_prompt
 from test_stage_preparation import AGENTS_CONFIG, FAKE_HARNESS, ISSUE, RUN_STATE
+from test_support import passing_gate_evidence
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -475,6 +476,7 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         previous_role = "implement"
         for role in ("simplify", "review"):
+            passing_gate_evidence(self.run_dir, previous_role)
             gate = self.run_script(
                 RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", previous_role,
                 "--decision", "advance", "--reason", "test", "--next-stage", role,
@@ -506,6 +508,7 @@ class RenderCli(unittest.TestCase):
         """Verify delivered evidence and instructions, not a live model's decisions."""
         initialized = self.init()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        passing_gate_evidence(self.run_dir, "implement")
         gate = self.run_script(
             RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "implement",
             "--decision", "advance", "--reason", "test", "--next-stage", "review",
@@ -620,6 +623,7 @@ class RenderCli(unittest.TestCase):
         )
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("--followup-file applies to --role implement only", refused.stderr)
+        passing_gate_evidence(self.run_dir, "test")
         gate = self.run_script(
             RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "test",
             "--decision", "advance", "--reason", "follow-up accepted", "--next-stage", "implement",
@@ -654,6 +658,7 @@ class RenderCli(unittest.TestCase):
         self.assertIn("Stage snapshot: ", text)
         self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'implement-1'}`", text)
 
+        passing_gate_evidence(self.run_dir, "implement")
         gate = self.run_script(
             RUN_STATE, "gate", "--run-dir", str(self.run_dir), "--stage", "implement",
             "--decision", "advance", "--reason", "test", "--next-stage", "review",

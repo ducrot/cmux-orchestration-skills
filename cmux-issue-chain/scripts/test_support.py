@@ -4,6 +4,30 @@
 from __future__ import annotations
 
 
+def seed_capture(run_dir, stage, pass_num, **fields):
+    from orchestrator_lib import append_jsonl
+
+    append_jsonl(run_dir / "events.jsonl", {
+        "type": "tree.snapshot", "message": f"report-captured {stage}-{pass_num}",
+        "data": {}, **fields,
+    })
+
+
+def seed_evidence(run_dir, stage, pass_num, verdict="pass", **fields):
+    from orchestrator_lib import append_jsonl
+
+    append_jsonl(run_dir / "events.jsonl", {
+        "type": "orchestrator.verified", "message": "test evidence",
+        "data": {"stage": stage, "pass": pass_num, "verdict": verdict}, **fields,
+    })
+
+
+def passing_gate_evidence(run_dir, stage, pass_num=1):
+    """Seed capture/check events for tests concerned with later workflow steps."""
+    seed_capture(run_dir, stage, pass_num)
+    seed_evidence(run_dir, stage, pass_num)
+
+
 # One stub for the whole cmux CLI contract: a second copy drifts from the real output shape
 # without any test noticing.
 FAKE_CMUX = '''#!/usr/bin/env python3

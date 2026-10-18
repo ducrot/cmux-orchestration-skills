@@ -113,7 +113,7 @@ else:
     raise SystemExit("unexpected fake harness invocation: " + repr(args))
 '''
 
-from test_support import FAKE_CMUX
+from test_support import FAKE_CMUX, passing_gate_evidence
 
 
 def file_contents(root: Path) -> dict[Path, bytes]:
@@ -159,6 +159,7 @@ class PreparedStageCli(unittest.TestCase):
         failed = self.env(FAKE_CMUX_EXIT="7")
         self.assertEqual(self.init(env=failed).returncode, 0)
         self.assertEqual([c[0] for c in self.board_calls()], ["workspace-action"])
+        passing_gate_evidence(self.run_dir, "implement")
         for args in (("gate", "--stage", "implement", "--decision", "advance", "--reason", "ok", "--next-stage", "simplify"),
                      ("prepare", "--stage", "simplify", "--pass", "1"),
                      ("prepare", "--stage", "simplify", "--pass", "2"),
@@ -316,6 +317,9 @@ class PreparedStageCli(unittest.TestCase):
         )
 
     def gate(self, stage: str, next_stage: str) -> subprocess.CompletedProcess[str]:
+        if stage in run_state.EVIDENCE_GATED_STAGES:
+            prepared = self.read_state().get("prepared_stage") or {}
+            passing_gate_evidence(self.run_dir, stage, prepared.get("pass", 1))
         return self.run_state(
             "gate", "--run-dir", str(self.run_dir),
             "--stage", stage, "--decision", "advance", "--reason", "test",
