@@ -111,6 +111,7 @@ from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_
 from tracker_contract import (
     ascii_fold,
     stage_native_tracker,
+    ticket_modes,
     validate_native_tracker,
     validate_proposal,
     validate_ticket_author_report,
@@ -2158,6 +2159,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
                 checked_staging_path(run_dir, staged_state.get("path")),
                 expected_spec_sha256=approved_spec["sha256"],
                 expected_ticket_ids=proposal["ticket_ids"],
+                expected_ticket_modes=ticket_modes(proposal),
             )
             if validated["artifacts"] != staged_state.get("artifacts"):
                 raise ContractError("recorded staged tracker changed after ticket approval")
@@ -2213,6 +2215,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
                 staged,
                 expected_spec_sha256=approved_spec["sha256"],
                 expected_ticket_ids=proposal["ticket_ids"],
+                expected_ticket_modes=ticket_modes(proposal),
             )
         except Exception as error:
             append_event(
@@ -2335,6 +2338,7 @@ def publish_tracker(run_dir: Path) -> int:
             target,
             expected_spec_sha256=approved_spec["sha256"],
             expected_ticket_ids=proposal["ticket_ids"],
+            expected_ticket_modes=ticket_modes(proposal),
         )
         if published["artifacts"] != staged_state["artifacts"]:
             raise ContractError("existing publication target does not match the approved staged tracker")
@@ -2364,6 +2368,7 @@ def publish_tracker(run_dir: Path) -> int:
         staged,
         expected_spec_sha256=approved_spec["sha256"],
         expected_ticket_ids=proposal["ticket_ids"],
+        expected_ticket_modes=ticket_modes(proposal),
     )
     if validated["artifacts"] != staged_state["artifacts"]:
         raise ContractError("staged tracker changed after ticket approval")
@@ -2374,6 +2379,7 @@ def publish_tracker(run_dir: Path) -> int:
         target,
         expected_spec_sha256=approved_spec["sha256"],
         expected_ticket_ids=proposal["ticket_ids"],
+        expected_ticket_modes=ticket_modes(proposal),
     )
     now = utc_now()
     state["published_tracker"] = {

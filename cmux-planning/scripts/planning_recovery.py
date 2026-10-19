@@ -32,7 +32,7 @@ from orchestrator_lib import (
 )
 from planning_diversity import DECISION_STATUSES, pending_confirmation, public_warning
 from stage_snapshot import SnapshotError, load_prepared_snapshot
-from tracker_contract import ContractError, validate_native_tracker, validate_proposal
+from tracker_contract import ContractError, ticket_modes, validate_native_tracker, validate_proposal
 from tree_integrity import snapshot_digest
 
 
@@ -362,6 +362,7 @@ def validate_publication_tracker(
         path,
         expected_spec_sha256=approved_spec["sha256"],
         expected_ticket_ids=proposal["ticket_ids"],
+        expected_ticket_modes=ticket_modes(proposal),
     )
     if expected_artifacts is not None and validated["artifacts"] != expected_artifacts:
         raise ContractError("publication artifact identities changed")

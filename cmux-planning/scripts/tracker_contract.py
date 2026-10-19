@@ -29,7 +29,8 @@ from spec_contract import (
 )
 
 
-PROPOSAL_SCHEMA_VERSION = 1
+PROPOSAL_SCHEMA_VERSION = 2
+EXECUTION_LABELS = {"AFK": "ready-for-agent", "HITL": "ready-for-human"}
 ISSUE_ID_RE = re.compile(r"\AISSUE-(\d{3})\Z")
 SLUG_BODY = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 SLUG_RE = re.compile(rf"\A{SLUG_BODY}\Z")
@@ -151,7 +152,7 @@ def validate_proposal(
         raise ContractError(
             "ticket proposal keys must be exactly schema_version, source_spec, tracker, and tickets"
         )
-    if data["schema_version"] != PROPOSAL_SCHEMA_VERSION:
+    if type(data["schema_version"]) is not int or data["schema_version"] not in {1, PROPOSAL_SCHEMA_VERSION}:
         raise ContractError(f"unsupported ticket proposal schema: {data['schema_version']!r}")
 
     source = _object(data["source_spec"], "source_spec")
@@ -203,12 +204,17 @@ def validate_proposal(
         "technical_layers",
         "wide_refactor",
     }
+    if data["schema_version"] == PROPOSAL_SCHEMA_VERSION:
+        required_ticket_keys.add("execution_mode")
     for index, value in enumerate(tickets_value, 1):
         ticket = _object(value, f"tickets[{index}]")
         if set(ticket) != required_ticket_keys:
             raise ContractError(
                 f"tickets[{index}] keys must be exactly {', '.join(sorted(required_ticket_keys))}"
             )
+        execution_mode = ticket["execution_mode"] if data["schema_version"] == PROPOSAL_SCHEMA_VERSION else "AFK"
+        if not isinstance(execution_mode, str) or execution_mode not in EXECUTION_LABELS:
+            raise ContractError(f"tickets[{index}].execution_mode must be AFK or HITL")
         issue_id = _text(ticket["id"], f"tickets[{index}].id")
         if not ISSUE_ID_RE.fullmatch(issue_id):
             raise ContractError(f"tickets[{index}].id must use ISSUE-NNN")
@@ -255,6 +261,7 @@ def validate_proposal(
                 # Every normalized value goes back, or the renderer would see the raw text the
                 # validator never judged.
                 "id": issue_id,
+                "execution_mode": execution_mode,
                 "slice_type": slice_type,
                 "title": ticket_title,
                 "delivered_behavior": delivered,
@@ -329,10 +336,11 @@ def render_summary(proposal: dict[str, Any]) -> str:
         "",
     ]
     for number, ticket in enumerate(proposal["tickets"], 1):
+        mode_marker = " [HITL]" if ticket["execution_mode"] == "HITL" else ""
         blockers = ", ".join(ticket["blocked_by"]) or "None"
         lines.extend(
             [
-                f"### {number}. {ticket['id']} — {ticket['title']}",
+                f"### {number}. {ticket['id']} — {ticket['title']}{mode_marker}",
                 "",
                 f"Delivered behavior: {ticket['delivered_behavior']}",
                 "",
@@ -504,7 +512,12 @@ def issue_slug(title: str) -> str:
     return slug[:72].rstrip("-") or "work"
 
 
+def ticket_modes(proposal: dict[str, Any]) -> dict[str, str]:
+    return {ticket["id"]: ticket["execution_mode"] for ticket in proposal["tickets"]}
+
+
 def render_issue(ticket: dict[str, Any]) -> str:
+    mode = ticket["execution_mode"]
     title = ticket["title"].replace('"', "'")
     blockers = "\n".join(f"- {item}" for item in ticket["blocked_by"]) or "- None"
     criteria = "\n".join(f"- [ ] {item}" for item in ticket["acceptance_criteria"])
@@ -521,10 +534,10 @@ def render_issue(ticket: dict[str, Any]) -> str:
     return f'''---
 id: {ticket["id"]}
 title: "{title}"
-type: AFK
+type: {mode}
 status: todo
 labels:
-  - ready-for-agent
+  - {EXECUTION_LABELS[mode]}
 ---
 
 # {ticket["id"]} — {ticket["title"]}
@@ -591,6 +604,7 @@ def stage_native_tracker(
         destination,
         expected_spec_sha256=proposal["source_spec_sha256"],
         expected_ticket_ids=proposal["ticket_ids"],
+        expected_ticket_modes=ticket_modes(proposal),
     )
 
 
@@ -620,6 +634,7 @@ def validate_native_tracker(
     *,
     expected_spec_sha256: str | None = None,
     expected_ticket_ids: list[str] | None = None,
+    expected_ticket_modes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not tracker.is_dir():
         raise ContractError(f"native tracker directory is missing: {tracker}")
@@ -675,10 +690,14 @@ def validate_native_tracker(
             raise ContractError(f"{path.name} id does not match its filename")
         if issue_id in ids:
             raise ContractError(f"duplicate native issue id: {issue_id}")
-        if frontmatter["type"] != "AFK" or frontmatter["status"] != "todo":
-            raise ContractError(f"{path.name} must be fully specified AFK todo work")
-        if frontmatter["labels"] != ["ready-for-agent"]:
-            raise ContractError(f"{path.name} must carry only the ready-for-agent label")
+        mode = frontmatter["type"]
+        if not isinstance(mode, str) or mode not in EXECUTION_LABELS or frontmatter["status"] != "todo":
+            raise ContractError(f"{path.name} must be fully specified AFK or HITL todo work")
+        label = EXECUTION_LABELS[mode]
+        if frontmatter["labels"] != [label]:
+            raise ContractError(f"{path.name} must carry only the {label} label")
+        if expected_ticket_modes is not None and expected_ticket_modes.get(issue_id, mode) != mode:
+            raise ContractError(f"{path.name} type differs from approved ticket execution mode")
         parsed = sections(body)
         for heading in ("What to build", "Acceptance Criteria", "Blocked by"):
             if not parsed.get(heading, "").strip():

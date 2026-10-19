@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -16,6 +17,7 @@ from spec_contract import ContractError  # noqa: E402
 from test_spec_contract import checked_evidence, review_report  # noqa: E402
 from tracker_contract import (  # noqa: E402
     issue_slug,
+    render_issue,
     render_readme,
     render_summary,
     stage_native_tracker,
@@ -90,6 +92,15 @@ def proposal(spec: Path, tickets: list[dict] | None = None, *, slug: str = "plan
             ),
         ],
     }
+
+
+def mixed_proposal(spec: Path) -> dict:
+    data = proposal(spec)
+    data["schema_version"] = 2
+    for item, mode in zip(data["tickets"], ("AFK", "HITL")):
+        item["execution_mode"] = mode
+        item["blocked_by"] = []
+    return data
 
 
 class TrackerContractTests(unittest.TestCase):
@@ -560,6 +571,102 @@ sha256 {resulting}
         )
         with self.assertRaisesRegex(ContractError, "blocked tickets review must state"):
             validate_ticket_review_report(review, self.proposal_path, candidate, **kwargs)
+
+    def test_v2_modes_are_required_and_exact(self):
+        data = mixed_proposal(self.spec)
+        result = self.write_proposal(data)
+        self.assertEqual(result["ready_frontier"], ["ISSUE-001", "ISSUE-002"])
+        for value in (None, "human", "afk", " HITL ", 2, [], {}):
+            with self.subTest(value=value):
+                data = mixed_proposal(self.spec)
+                if value is None:
+                    del data["tickets"][1]["execution_mode"]
+                else:
+                    data["tickets"][1]["execution_mode"] = value
+                with self.assertRaises(ContractError):
+                    self.write_proposal(data)
+
+    def test_mixed_tracker_renders_validates_and_loads_in_issue_chain(self):
+        result = self.write_proposal(mixed_proposal(self.spec))
+        summary = render_summary(result)
+        self.assertIn("### 2. ISSUE-002 — Build on the first behavior [HITL]", summary)
+        self.assertEqual(summary.count("[HITL]"), 1)
+        tracker = self.root / "mixed"
+        native = stage_native_tracker(tracker, result, approved_spec=self.spec)
+        self.assertEqual(native["ready_frontier"], ["ISSUE-001", "ISSUE-002"])
+        for item in result["tickets"]:
+            body = next((tracker / "issues").glob(item["id"] + "-*.md")).read_text()
+            label = "ready-for-human" if item["execution_mode"] == "HITL" else "ready-for-agent"
+            self.assertIn(f"type: {item['execution_mode']}\nstatus: todo\nlabels:\n  - {label}\n---", body)
+        checked = self.contract_cli("native-tracker", str(tracker))
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        chain = subprocess.run([sys.executable, str(ISSUE_STATE), "list", "--tracker", str(tracker), "--json"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(chain.returncode, 0, chain.stderr)
+        self.assertEqual([(i["id"], i["ready"]) for i in json.loads(chain.stdout)], [("ISSUE-001", True), ("ISSUE-002", False)])
+        issue = next((tracker / "issues").glob("ISSUE-002-*.md"))
+        original = issue.read_text()
+        for changed in (original.replace("ready-for-human", "ready-for-agent"), original.replace("type: HITL", "type: AFK"), original.replace("type: HITL", "type: OTHER")):
+            issue.write_text(changed)
+            with self.assertRaises(ContractError):
+                validate_native_tracker(tracker)
+        issue.write_text(original)
+
+    def test_staging_rejects_valid_native_issue_with_wrong_approved_mode(self):
+        result = self.write_proposal(mixed_proposal(self.spec))
+        def wrong_mode(item):
+            return render_issue({**item, "execution_mode": "AFK" if item["execution_mode"] == "HITL" else "HITL"})
+        with patch("tracker_contract.render_issue", side_effect=wrong_mode):
+            with self.assertRaisesRegex(ContractError, "execution mode"):
+                stage_native_tracker(self.root / "wrong", result, approved_spec=self.spec)
+
+    def test_v1_and_v2_afk_preserve_legacy_output_bytes(self):
+        # SHA-256 values captured from the v1 contract before execution-mode support.
+        expected = {
+            "issues/ISSUE-001-deliver-the-first-behavior.md": "2b8bea0a83940b2f67767f959836a9bbb86a17ac008bd6725d70ed6604793805",
+            "issues/ISSUE-002-build-on-the-first-behavior.md": "84bc8ccf83bf565248560bc7ab144dcf504dba57d86d1dd0ecc13d68b2b70055",
+            "README.md": "38c03ed4f45ef2b4e454c1305cd3678166ed561670b7f96b3dec857fc64eb764",
+            "decisions.md": "507553905fec583977cbea80d9a4c6189e2a802548d0669b44150327156e1e11",
+            "map.md": "024bade90da167b05576bba1ea9f71f47984d75ed63a817541f601ebbad080fc",
+            "spec.md": "a3f72996485006dfb58fedda12d240b07c5a6afa8657dda64f91b648fff0f80d",
+        }
+        for version in (1, 2):
+            data = proposal(self.spec)
+            data["schema_version"] = version
+            if version == 2:
+                for item in data["tickets"]:
+                    item["execution_mode"] = "AFK"
+            result = self.write_proposal(data)
+            native = stage_native_tracker(self.root / str(version), result, approved_spec=self.spec)
+            self.assertEqual(native["artifacts"], expected)
+
+    def test_v1_and_mixed_v2_approval_publish_unchanged_through_cli(self):
+        # Reuse the real CLI lifecycle fixture without inheriting its unrelated tests.
+        from test_planning_flow import PlanningFlow, STATE
+        for version in (1, 2):
+            with self.subTest(version=version):
+                flow = PlanningFlow()
+                flow.setUp()
+                try:
+                    original = flow.write_tickets_handoff
+                    def handoff():
+                        state = json.loads((flow.run_dir / "state.json").read_text())
+                        spec = Path(state["approved_spec"]["path"])
+                        return original(data=mixed_proposal(spec) if version == 2 else proposal(spec))
+                    with patch.object(flow, "write_tickets_handoff", side_effect=handoff):
+                        result = flow.reach_ticket_approval()
+                    target = flow.repo / "trackers" / result["tracker"]["slug"]
+                    approved = flow.ticket_approval("approve", "Approve mixed tracker", target=target)
+                    self.assertEqual(approved.returncode, 0, approved.stderr)
+                    state = json.loads((flow.run_dir / "state.json").read_text())
+                    staged = Path(state["staged_tracker"]["path"])
+                    before = {str(p.relative_to(staged)): p.read_bytes() for p in staged.rglob("*") if p.is_file()}
+                    published = flow.cli(STATE, "publish", "--run-dir", str(flow.run_dir))
+                    self.assertEqual(published.returncode, 0, published.stderr)
+                    self.assertEqual(before, {str(p.relative_to(target)): p.read_bytes() for p in target.rglob("*") if p.is_file()})
+                    for item in result["tickets"]:
+                        self.assertEqual(next((target / "issues").glob(item["id"] + "-*.md")).read_text(), render_issue(item))
+                finally:
+                    flow.tearDown()
 
     def test_staged_output_is_native_and_independently_accepted_by_issue_chain(self):
         result = self.write_proposal()
