@@ -266,7 +266,7 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
             raise SnapshotError("resume context points outside this planning run") from error
         if not isinstance(item.get("manifest_id"), str):
             raise SnapshotError("resume context handoff has no immutable manifest identity")
-        verify_entry(
+        entry = verify_entry(
             state,
             run_dir,
             item["manifest_id"],
@@ -275,7 +275,7 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
         if not path.is_file() or sha256_file(path) != item.get("sha256"):
             raise SnapshotError(f"resume context handoff is missing or changed: {path}")
         block = f"### {item.get('label', 'Prior handoff')}\n\n`{path}` (sha256 `{item['sha256']}`)"
-        if not reviewer:
+        if not reviewer and not (stage == "tickets" and entry["kind"] == "tickets-summary"):
             try:
                 content = path.read_text(encoding="utf-8").rstrip()
             except UnicodeError as error:

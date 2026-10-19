@@ -4384,6 +4384,20 @@ Option?
         self.assertIn("## Interrupted-Pass Recovery Context", prompt)
         self.assertIn(report.read_text().rstrip(), prompt)
         self.assertEqual(prompt.count(reason), 1)
+        following_section = "Specification Contract" if stage == "spec" else "Tracker Ground Rules"
+        self.assertIn(f"\n## {following_section}\n", prompt)
+        author_recovery = prompt.split("## Interrupted-Pass Recovery Context", 1)[1].split(
+            f"\n## {following_section}\n", 1
+        )[0]
+        for item in recovery["prior_handoffs"]:
+            self.assertIn(item["path"], author_recovery)
+            self.assertIn(item["sha256"], author_recovery)
+            kind = state["artifact_manifest"][item["manifest_id"]]["kind"]
+            content = Path(item["path"]).read_text().rstrip()
+            if stage == "tickets" and kind == "tickets-summary":
+                self.assertNotIn(content, author_recovery)
+            else:
+                self.assertIn("```text\n" + content + "\n```", author_recovery)
         if stage == "spec":
             self.write_author_handoff(2)
         else:

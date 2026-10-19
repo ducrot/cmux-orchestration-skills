@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Recovery consumes one attempt and expires before unrelated prompts are read."""
+import json
 import sys
 import tempfile
 import unittest
@@ -12,18 +13,54 @@ from planning_state import resume_inputs
 from render_prompt import resumed_context
 
 
+def record_handoff(state, root, stage, number, attempt, kind, content=None):
+    path = Path(stage_paths(root, stage, number, attempt)[ROLE_KEYS[kind]])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{path.name} contents" if content is None else content)
+    return record_artifact(state, root, path, kind=kind, stage=stage,
+                           pass_num=number, attempt=attempt, producer="test")
+
+
 class RelaunchContext(unittest.TestCase):
+    def test_stored_ticket_context_uses_manifest_kind_to_omit_only_summary_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = {"artifact_manifest": {}}
+            inputs = []
+            contents = {"tickets-proposal": '{"prior": "proposal"}',
+                        "tickets-summary": "Prior rendered summary contents",
+                        "worker-report": "Prior author report contents"}
+            for kind, content in contents.items():
+                entry = record_handoff(state, root, "tickets", 1, 1, kind, content)
+                # Stored contexts have no kind field; labels are display text only.
+                inputs.append({"manifest_id": entry["id"], "path": str(root / entry["path"]),
+                               "sha256": entry["sha256"], "label": "Prior handoff"})
+            state["resume_context"] = {
+                "reason": "Human resolved the interruption", "from_stage": "tickets-review",
+                "from_pass": 1, "to_stage": "tickets", "to_pass": 2,
+                "to_review_pass": 2, "prior_handoffs": inputs,
+            }
+            state = json.loads(json.dumps(state))
+            author = resumed_context(root, state, "tickets", 2)
+            self.assertIn("```text\n" + contents["tickets-proposal"] + "\n```", author)
+            self.assertIn(contents["worker-report"], author)
+            self.assertNotIn(contents["tickets-summary"], author)
+            reviewer = resumed_context(root, state, "tickets-review", 2)
+            self.assertNotIn("```", reviewer)
+            for prompt in (author, reviewer):
+                self.assertIn("Human resolved the interruption", prompt)
+                self.assertIn("tickets-review-1 -> tickets-2", prompt)
+                for item in inputs:
+                    self.assertIn(item["path"], prompt)
+                    self.assertIn(item["sha256"], prompt)
+
     def test_only_latest_attempt_and_reviewed_author_handoffs_are_attached(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             state = {"artifact_manifest": {}, "attempt_history": []}
 
             def handoff(stage, number, attempt, kind):
-                path = Path(stage_paths(root, stage, number, attempt)[ROLE_KEYS[kind]])
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(f"{path.name} contents")
-                return record_artifact(state, root, path, kind=kind, stage=stage,
-                                       pass_num=number, attempt=attempt, producer="test")
+                return record_handoff(state, root, stage, number, attempt, kind)
 
             stale = handoff("spec-review", 4, 1, "worker-report")
             draft = handoff("spec", 2, 2, "spec-draft")
