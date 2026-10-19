@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 from pathlib import Path
 
@@ -55,6 +56,13 @@ LANE_RULES = {
         "under `## Sources`."
     ),
 }
+
+def fenced_content(content: str, language: str) -> str:
+    """Use a fence longer than any backtick run so embedded fences cannot close it."""
+    longest = max(map(len, re.findall(r"`+", content)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{content.rstrip()}\n{fence}"
+
 
 def parser_path() -> str:
     """Parser path as lanes invoke it from the repo root, wherever the skill is installed.
@@ -199,9 +207,7 @@ smallest accurate correction under `### Plan Drift`.
 
 ## Task Under Grilling
 
-```markdown
-{task}
-```
+{fenced_content(task, "markdown")}
 
 ## Questions ({count})
 

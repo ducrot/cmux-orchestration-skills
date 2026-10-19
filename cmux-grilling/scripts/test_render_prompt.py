@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -149,6 +150,37 @@ class RenderCli(unittest.TestCase):
              "--lane", "docs", *args],
             capture_output=True, text=True,
         )
+
+    def test_task_fences_preserve_content_and_following_sections(self):
+        tasks = (
+            ("Research `code` and ``inline ticks``", "```"),
+            ("Plan\n```python\nprint('hello')\n```\n\n````markdown\nNested ``` fence\n````\nEnd", "`````"),
+            ("A longer inline run: ``````` and Unicode: Grüße", "````````"),
+        )
+        (self.run_dir / "events.jsonl").write_text(json.dumps({
+            "type": "grill.question", "data": {
+                "round": 1, "id": "Q1", "question": "What exists?", "depends_on": [],
+            },
+        }) + "\n", encoding="utf-8")
+        for task, fence in tasks:
+            with self.subTest(task=task):
+                (self.run_dir / "task.md").write_text(task + "\n", encoding="utf-8")
+                proc = self.render("--round", "1", "--question", "What exists?")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                prompt = Path(proc.stdout.strip()).read_text(encoding="utf-8")
+                block, following = prompt.split("## Task Under Grilling\n\n", 1)[1].split(
+                    "\n\n## Questions (1)\n\n", 1
+                )
+                opening, content = block.split("\n", 1)
+                self.assertEqual(opening, fence + "markdown")
+                # Find the first Markdown closing fence, not merely the last line.
+                closing = re.search(r"(?m)^`{" + str(len(fence)) + r",}[ \t]*$", content)
+                self.assertIsNotNone(closing)
+                self.assertEqual(content[:closing.start()], task + "\n")
+                self.assertEqual(content[closing.start():], fence)
+                self.assertIn("### Q1\n\nWhat exists?", following)
+                self.assertIn("## Handoff\n", following)
+                self.assertIn(f"- Report handoff path: `{self.run_dir / 'reports/round-1-docs.md'}`", following)
 
     def test_repeated_question_flags_become_numbered_questions(self):
         question_file = self.run_dir / "q3.md"
