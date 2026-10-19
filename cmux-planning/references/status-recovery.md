@@ -48,8 +48,17 @@ python3 scripts/planning_state.py resume --run-dir <run-dir> \
   --decision relaunch --reason <human-authored-reason>
 ```
 
-The recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback only by
-their finalized manifest identities; failed panes, snapshots, events, and handoffs remain in history.
+For relaunch and revise, `--reason` quotes the human's answer verbatim without orchestrator additions.
+Reviewer findings arrive only as the attached review report. Both relaunch and revise attach the latest
+applicable review report by its finalized manifest identity and render it inline for the next author.
+`approval --decision revise` attaches the latest finalized spec review; `ticket-approval --decision revise`
+attaches the latest finalized tickets review, including when `--scope spec` returns to a spec author.
+A revise without a finalized review keeps the existing reason-only feedback. A relaunch clears earlier
+revision feedback only when a later pass already acted on it. Relaunching a dead revised author before
+it finalizes a handoff keeps the unconsumed feedback and attached review in the new recovery context.
+
+The relaunch recovery prompt includes the reason plus prior candidates, reports, reviews, and feedback
+only by their finalized manifest identities; failed panes, snapshots, events, and handoffs remain in history.
 Unexpected files are listed as audit information and are never attached implicitly. A dead author gets
 a new author pass. A dead reviewer gets a new reviewer pass over the unchanged author identity. A
 blocked review routes back to an author and cannot be relabeled as another reviewer pass. If ticket

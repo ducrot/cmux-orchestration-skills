@@ -4423,6 +4423,7 @@ Option?
         state = json.loads(state_path.read_text())
         # Review counters can diverge after reviewer-only recovery.
         state[f"{stage}_review_pass"] = 4
+        state["revision_context"] = {"to_stage": stage, "to_pass": 1, "prior_handoffs": []}
         state["spec_revision_feedback"] = "Keep the specification revision request"
         state["ticket_revision_feedback"] = "Keep the ticket revision request"
         state_path.write_text(json.dumps(state))
@@ -4457,14 +4458,17 @@ Option?
         self.assertEqual((recovery["from_stage"], recovery["from_pass"]), (f"{stage}-review", 4))
         self.assertEqual((recovery["to_stage"], recovery["to_pass"], recovery["to_review_pass"]), (stage, 2, 5))
         self.assertEqual({entry["manifest_id"] for entry in recovery["prior_handoffs"]}, author_ids | report_ids)
-        self.assertEqual(state["spec_revision_feedback"], "Keep the specification revision request")
-        self.assertEqual(state["ticket_revision_feedback"], "Keep the ticket revision request")
+        self.assertIsNone(state["spec_revision_feedback"])
+        self.assertIsNone(state["ticket_revision_feedback"])
+        self.assertNotIn("revision_context", state)
         self.render_and_baseline(stage, 2)
         state = json.loads(state_path.read_text())
         prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
         self.assertIn("## Interrupted-Pass Recovery Context", prompt)
         self.assertIn(report.read_text().rstrip(), prompt)
         self.assertEqual(prompt.count(reason), 1)
+        self.assertNotIn("Keep the specification revision request", prompt)
+        self.assertNotIn("Keep the ticket revision request", prompt)
         following_section = "Specification Contract" if stage == "spec" else "Tracker Ground Rules"
         self.assertIn(f"\n## {following_section}\n", prompt)
         author_recovery = prompt.split("## Interrupted-Pass Recovery Context", 1)[1].split(
@@ -4518,11 +4522,203 @@ Option?
         events = [json.loads(line) for line in (self.run_dir / "events.jsonl").read_text().splitlines()]
         self.assertEqual([event["data"] for event in events if event["type"] == "run.relaunch_approved"], [recovery])
 
-    def test_spec_relaunch_context_is_scoped_and_revision_feedback_survives(self):
+    def test_spec_relaunch_context_is_scoped_and_revision_feedback_is_cleared(self):
         self.exercise_scoped_relaunch("spec")
 
-    def test_ticket_relaunch_context_is_scoped_and_revision_feedback_survives(self):
+    def test_ticket_relaunch_context_is_scoped_and_revision_feedback_is_cleared(self):
         self.exercise_scoped_relaunch("tickets")
+
+    def exercise_revision_review_attachment(self, stage, verdict, scope=None):
+        if stage == "spec":
+            self.assertEqual(self.init_direct().returncode, 0)
+        else:
+            self.approve_spec_to_tickets()
+        blockers = "- Human must decide." if verdict == "blocked" else "- None"
+        reason = 'Human says: "Keep these exact words."\nNo extra workaround.'
+        # Two reviews prove that a second revision selects the latest finalized identity.
+        for pass_num in ((1,) if scope == "spec" else (1, 2)):
+            if pass_num == 1:
+                self.render_and_baseline(stage, pass_num)
+            if stage == "spec":
+                self.write_author_handoff(pass_num)
+            else:
+                self.write_tickets_handoff(pass_num)
+            accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.render_and_baseline(f"{stage}-review", pass_num)
+            state = json.loads((self.run_dir / "state.json").read_text())
+            report = Path(state["current_attempt"]["paths"]["report"])
+            if stage == "spec":
+                digest = state["author_spec"]["draft_sha256"]
+                report.write_text(review_report(verdict, digest, digest, blockers=blockers))
+            else:
+                self.write_tickets_review(verdict, blockers=blockers)
+            accepted = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+            self.assertEqual(accepted.returncode, 2 if verdict == "blocked" else 0, accepted.stderr)
+            state = json.loads((self.run_dir / "state.json").read_text())
+            identity = next(entry["id"] for entry in state["artifact_manifest"].values()
+                            if entry["kind"] == "worker-report" and entry["stage"] == f"{stage}-review"
+                            and entry["pass"] == pass_num)
+            if stage == "spec":
+                revised = self.cli(STATE, "approval", "--run-dir", str(self.run_dir),
+                                   "--decision", "revise", "--reason", reason)
+            else:
+                revised = self.ticket_approval("revise", reason, scope=scope)
+            self.assertEqual(revised.returncode, 0, revised.stderr)
+            target = scope or stage
+            self.render_and_baseline(target, pass_num + 1)
+            state = json.loads((self.run_dir / "state.json").read_text())
+            prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+            self.assertIn("## Revision Review Context", prompt)
+            following_section = "Specification Contract" if target == "spec" else "Tracker Ground Rules"
+            block = prompt.split("## Revision Review Context", 1)[1].split(f"\n## {following_section}\n", 1)[0]
+            self.assertIn(identity, block)
+            self.assertIn(report.read_text().rstrip(), block)
+            self.assertEqual(prompt.count(reason), 1)
+            self.assertEqual(len(state["revision_context"]["prior_handoffs"]), 1)
+
+    def test_spec_revision_attaches_blocked_review(self):
+        self.exercise_revision_review_attachment("spec", "blocked")
+
+    def test_spec_revision_attaches_passed_review(self):
+        self.exercise_revision_review_attachment("spec", "pass")
+
+    def test_ticket_revision_attaches_blocked_review(self):
+        self.exercise_revision_review_attachment("tickets", "blocked")
+
+    def test_ticket_revision_attaches_passed_review(self):
+        self.exercise_revision_review_attachment("tickets", "pass")
+
+    def test_ticket_spec_revision_attaches_blocked_ticket_review(self):
+        self.exercise_revision_review_attachment("tickets", "blocked", "spec")
+
+    def test_ticket_spec_revision_attaches_passed_ticket_review(self):
+        self.exercise_revision_review_attachment("tickets", "pass", "spec")
+
+    def exercise_unconsumed_revision_relaunch(self, stage, interruption="dead"):
+        if stage == "spec":
+            self.assertEqual(self.init_direct().returncode, 0)
+        else:
+            self.approve_spec_to_tickets()
+        self.render_and_baseline(stage)
+        if stage == "spec":
+            self.write_author_handoff()
+        else:
+            self.write_tickets_handoff()
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline(f"{stage}-review")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        report = Path(state["current_attempt"]["paths"]["report"])
+        if stage == "spec":
+            digest = state["author_spec"]["draft_sha256"]
+            report.write_text(review_report("blocked", digest, digest, blockers="- Original review finding."))
+        else:
+            self.write_tickets_review("blocked", blockers="- Original review finding.")
+        accepted = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 2, accepted.stderr)
+        feedback = 'Human revision F: "Keep these words."\nAnd this line.'
+        if stage == "spec":
+            revised = self.cli(STATE, "approval", "--run-dir", str(self.run_dir),
+                               "--decision", "revise", "--reason", feedback)
+        else:
+            revised = self.ticket_approval("revise", feedback)
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.render_and_baseline(stage, 2)
+        state = json.loads(state_path.read_text())
+        attached = state["revision_context"]["prior_handoffs"]
+        dead_env = self.env()
+        if interruption == "dead":
+            self.launch_prepared_stage(stage, 2)
+            dead_env["FAKE_CMUX_DEAD"] = "1"
+        elif interruption == "blocked":
+            state["current_stage"] = f"{stage}-blocked"
+            state_path.write_text(json.dumps(state))
+        else:
+            (self.repo / "product.txt").write_text("unauthorized edit")
+            blocked = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+            self.assertEqual(blocked.returncode, 2, blocked.stderr)
+            state = json.loads(state_path.read_text())
+            self.assertEqual(state["current_stage"], "integrity-violation")
+            (self.repo / "product.txt").write_text("baseline\n")
+        resumed = self.cli(STATE, "resume", "--run-dir", str(self.run_dir),
+                           "--decision", "relaunch", "--reason", "Human approved another author",
+                           "--cmux-cmd", str(self.cmux), env=dead_env)
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.render_and_baseline(stage, 3)
+        state = json.loads(state_path.read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertEqual(prompt.count(feedback), 1)
+        self.assertIn("Human approved another author", prompt)
+        self.assertIn("## Interrupted-Pass Recovery Context", prompt)
+        self.assertNotIn("revision_context", state)
+        prior = state["resume_context"]["prior_handoffs"]
+        self.assertEqual(prior, attached)
+        self.assertEqual(len({item["manifest_id"] for item in prior}), len(prior))
+        for item in attached:
+            self.assertIn(item["path"], prompt)
+            self.assertIn(item["sha256"], prompt)
+            entry = state["artifact_manifest"][item["manifest_id"]]
+            self.assertTrue(entry["finalized"])
+            self.assertEqual(entry["kind"], "worker-report")
+        self.assertIn(report.read_text().rstrip(), prompt)
+
+    def test_dead_revised_spec_author_relaunch_keeps_unconsumed_feedback_and_review(self):
+        self.exercise_unconsumed_revision_relaunch("spec")
+
+    def test_dead_revised_ticket_author_relaunch_keeps_unconsumed_feedback_and_review(self):
+        self.exercise_unconsumed_revision_relaunch("tickets")
+
+    def test_blocked_revised_author_relaunch_keeps_unconsumed_feedback_and_review(self):
+        self.exercise_unconsumed_revision_relaunch("spec", "blocked")
+
+    def test_revised_author_integrity_relaunch_keeps_unconsumed_feedback_and_review(self):
+        self.exercise_unconsumed_revision_relaunch("tickets", "integrity")
+
+    def test_revision_without_review_keeps_original_feedback_rendering(self):
+        self.assertEqual(self.init_direct().returncode, 0)
+        self.render_and_baseline("spec")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["current_stage"] = "spec-blocked"
+        state_path.write_text(json.dumps(state))
+        revised = self.cli(STATE, "approval", "--run-dir", str(self.run_dir),
+                           "--decision", "revise", "--reason", "Exact human feedback")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.render_and_baseline("spec", 2)
+        state = json.loads(state_path.read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertIn("Exact human feedback", prompt)
+        self.assertNotIn("## Revision Review Context", prompt)
+        self.assertNotIn("revision_context", state)
+
+    def test_revision_after_blocked_author_does_not_attach_an_earlier_pass_review(self):
+        self.exercise_revision_review_attachment("spec", "blocked", "spec")
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["current_stage"] = "spec-blocked"
+        state_path.write_text(json.dumps(state))
+        revised = self.cli(STATE, "approval", "--run-dir", str(self.run_dir),
+                           "--decision", "revise", "--reason", "Author blocked feedback")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        state = json.loads(state_path.read_text())
+        self.assertNotIn("revision_context", state)
+
+    def test_ticket_revision_without_review_keeps_original_feedback_rendering(self):
+        self.approve_spec_to_tickets()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        state["current_stage"] = "tickets-blocked"
+        state_path.write_text(json.dumps(state))
+        revised = self.ticket_approval("revise", "Exact ticket feedback")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.render_and_baseline("tickets", 2)
+        state = json.loads(state_path.read_text())
+        prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
+        self.assertIn("Exact ticket feedback", prompt)
+        self.assertNotIn("## Revision Review Context", prompt)
+        self.assertNotIn("revision_context", state)
 
     def test_dead_reviewer_relaunches_as_a_new_reviewer_pass_without_replacing_the_author(self):
         self.assertEqual(self.init_direct().returncode, 0)

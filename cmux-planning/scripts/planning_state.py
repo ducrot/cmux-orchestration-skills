@@ -1784,14 +1784,45 @@ def checked_staging_path(run_dir: Path, value: Any) -> Path:
     return staged
 
 
-def reset_ticket_state(state: dict[str, Any], keep_feedback: bool = False) -> None:
+def reset_ticket_state(state: dict[str, Any]) -> None:
     state["approved_spec"] = None
     state["author_tickets"] = None
     state["reviewed_tickets"] = None
     state["approved_tickets"] = None
-    if not keep_feedback:
-        state["ticket_revision_feedback"] = None
+    state["ticket_revision_feedback"] = None
     state["staged_tracker"] = None
+
+
+def handoff_ref(
+    run_dir: Path, state: dict[str, Any], entry: dict[str, Any], label: str, expected_kind: str | None = None
+) -> dict[str, str]:
+    path = (run_dir / entry["path"]).resolve()
+    verify_entry(state, run_dir, entry["id"], expected_kind=expected_kind, expected_path=path)
+    return {"label": label, "path": str(path), "sha256": entry["sha256"], "manifest_id": entry["id"]}
+
+
+def attach_revision_review(
+    run_dir: Path, state: dict[str, Any], source: str, review_pass: int, target: str
+) -> None:
+    """Carry the gate's finalized review, independently of the human's revision reason."""
+    state.pop("revision_context", None)
+    # Earlier passes reviewed superseded candidates; an author-blocked pass has no review to carry.
+    reports = [
+        entry for entry in state.get("artifact_manifest", {}).values()
+        if entry.get("kind") == "worker-report" and entry.get("stage") == source
+        and entry.get("pass") == review_pass and entry.get("finalized")
+    ]
+    if not reports:
+        return
+    entry = max(reports, key=lambda item: (item["pass"], item["attempt"]))
+    state["revision_context"] = {
+        "to_stage": target,
+        "to_pass": stage_pass(state, target),
+        "to_review_pass": stage_pass(state, f"{target}-review"),
+        "prior_handoffs": [
+            handoff_ref(run_dir, state, entry, "Latest finalized review report", expected_kind="worker-report")
+        ],
+    }
 
 
 def approval(args: argparse.Namespace) -> int:
@@ -1897,14 +1928,16 @@ def approval(args: argparse.Namespace) -> int:
     if state.get("current_stage") == "integrity-violation":
         ensure_integrity_resolved(run_dir, state)
     old_pass = state["spec_pass"]
+    old_review_pass = state.get("spec_review_pass", old_pass)
     state["spec_pass"] = old_pass + 1
-    state["spec_review_pass"] = state.get("spec_review_pass", old_pass) + 1
+    state["spec_review_pass"] = old_review_pass + 1
     state["current_stage"] = "spec"
     state["prepared_stage"] = None
     state["tree_baseline"] = None
     state["author_spec"] = None
     state["reviewed_spec"] = None
     state["spec_revision_feedback"] = args.reason
+    attach_revision_review(run_dir, state, "spec-review", old_review_pass, "spec")
     state.pop("resume_context", None)
     # A revision from an integrity violation can arrive after the spec boundary, and a new spec pass
     # invalidates every ticket artifact derived from the old approved spec.
@@ -2063,6 +2096,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
             "tickets-review-blocked",
         }:
             raise ContractError(f"ticket revision is not available from {state.get('current_stage')!r}")
+        old_review_pass = state.get("tickets_review_pass", state["tickets_pass"])
         if args.scope == "spec":
             old_spec = state["spec_pass"]
             old_tickets = state["tickets_pass"]
@@ -2102,6 +2136,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
             }
             next_stage = "tickets"
             next_pass = state["tickets_pass"]
+        attach_revision_review(run_dir, state, "tickets-review", old_review_pass, next_stage)
         state["prepared_stage"] = None
         state["tree_baseline"] = None
         state["staged_tracker"] = None
@@ -2444,16 +2479,8 @@ def resume_inputs(
         path = (run_dir / entry["path"]).resolve()
         if str(path) in seen:
             continue
-        verify_entry(state, run_dir, entry["id"], expected_path=path)
+        result.append(handoff_ref(run_dir, state, entry, label))
         seen.add(str(path))
-        result.append(
-            {
-                "label": label,
-                "path": str(path),
-                "sha256": entry["sha256"],
-                "manifest_id": entry["id"],
-            }
-        )
     return result
 
 
@@ -2531,6 +2558,19 @@ def resume_run(args: argparse.Namespace) -> int:
 
     old_pass = stage_pass(state, source_stage)
     prior = resume_inputs(run_dir, state, source_stage, old_pass)
+    revision = state.get("revision_context") or {}
+    # An interrupted revised author has not yet consumed its human feedback or review.
+    keep_revision = (
+        source_stage == target and target in {"spec", "tickets"}
+        and state.get("author_spec" if target == "spec" else "author_tickets") is None
+        and revision.get("to_stage") == target and revision.get("to_pass") == old_pass
+    )
+    if keep_revision:
+        seen = {item["manifest_id"] for item in prior}
+        for item in revision.get("prior_handoffs", []):
+            if item["manifest_id"] not in seen:
+                prior.append(item)
+                seen.add(item["manifest_id"])
     now = utc_now()
     if target == "spec-review":
         state["spec_review_pass"] = state.get("spec_review_pass", state["spec_pass"]) + 1
@@ -2549,7 +2589,7 @@ def resume_run(args: argparse.Namespace) -> int:
         if state.get("approved_spec") is not None:
             state["tickets_pass"] += 1
             state["tickets_review_pass"] = state.get("tickets_review_pass", state["tickets_pass"] - 1) + 1
-            reset_ticket_state(state, keep_feedback=True)
+            reset_ticket_state(state)
             discard_staging(run_dir)
     else:
         state["tickets_pass"] += 1
@@ -2564,6 +2604,11 @@ def resume_run(args: argparse.Namespace) -> int:
     state["current_stage"] = target
     state["prepared_stage"] = None
     state["tree_baseline"] = None
+    if not (keep_revision and target == "spec"):
+        state["spec_revision_feedback"] = None
+    if not (keep_revision and target == "tickets"):
+        state["ticket_revision_feedback"] = None
+    state.pop("revision_context", None)
     state["resume_context"] = {
         "recorded_at": now,
         "reason": args.reason,

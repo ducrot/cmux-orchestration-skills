@@ -244,6 +244,9 @@ def normalized_context(run_dir: Path, state: dict) -> str:
 
 def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> str:
     recovery = state.get("resume_context")
+    revision = not isinstance(recovery, dict)
+    if revision:
+        recovery = state.get("revision_context")
     if not isinstance(recovery, dict):
         return ""
     target = recovery.get("to_stage")
@@ -256,7 +259,8 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
     }:
         return ""
     reviewer = stage.endswith("-review")
-    blocks = [
+    context_name = "revision context" if revision else "resume context"
+    blocks = ["## Revision Review Context"] if revision else [
         "## Interrupted-Pass Recovery Context",
         f"Human resume reason: {recovery.get('reason', '')}",
         (
@@ -266,14 +270,14 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
     ]
     for item in recovery.get("prior_handoffs", []):
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            raise SnapshotError("resume context contains a malformed prior handoff")
+            raise SnapshotError(f"{context_name} contains a malformed prior handoff")
         path = Path(item["path"]).resolve()
         try:
             path.relative_to(run_dir.resolve())
         except ValueError as error:
-            raise SnapshotError("resume context points outside this planning run") from error
+            raise SnapshotError(f"{context_name} points outside this planning run") from error
         if not isinstance(item.get("manifest_id"), str):
-            raise SnapshotError("resume context handoff has no immutable manifest identity")
+            raise SnapshotError(f"{context_name} handoff has no immutable manifest identity")
         entry = verify_entry(
             state,
             run_dir,
@@ -281,13 +285,15 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
             expected_path=path,
         )
         if not path.is_file() or sha256_file(path) != item.get("sha256"):
-            raise SnapshotError(f"resume context handoff is missing or changed: {path}")
+            raise SnapshotError(f"{context_name} handoff is missing or changed: {path}")
         block = f"### {item.get('label', 'Prior handoff')}\n\n`{path}` (sha256 `{item['sha256']}`)"
+        if revision:
+            block += f" (manifest `{item['manifest_id']}`)"
         if not reviewer and not (stage == "tickets" and entry["kind"] == "tickets-summary"):
             try:
                 content = path.read_text(encoding="utf-8")
             except UnicodeError as error:
-                raise SnapshotError(f"resume context handoff is not UTF-8: {path}") from error
+                raise SnapshotError(f"{context_name} handoff is not UTF-8: {path}") from error
             block += f"\n\n{fenced_content(content, 'text')}"
         blocks.append(block)
     return "\n\n".join(blocks)

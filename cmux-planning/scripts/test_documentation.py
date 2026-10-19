@@ -757,11 +757,17 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "the orchestrator never changes a tracker after publication.",
             "every option offered at a gate, including the recommended one, stays within "
             "the planning contract and states its consequences for validation and digests.",
-            "a relaunch reason consists of the human's answer plus the reviewer findings, "
-            "without additions by the orchestrator.",
+            "relaunch and revise reasons quote the human's answer verbatim without orchestrator additions; "
+            "reviewer findings arrive only as the attached review report.",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
+
+    def test_recovery_reference_describes_verbatim_reasons_and_review_attachments(self):
+        text = " ".join((PLANNING.parent / "references/status-recovery.md").read_text().split())
+        for phrase in ("human's answer verbatim", "Both relaunch and revise attach",
+                       "review report by its finalized manifest identity", "--scope spec"):
+            self.assertIn(phrase, text)
 
     def test_entrypoint_states_integrity_boundary_once(self):
         text = " ".join(PLANNING.read_text(encoding="utf-8").split())

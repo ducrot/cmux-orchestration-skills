@@ -53,8 +53,8 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - The orchestrator never changes a tracker after publication.
 - Every option offered at a gate, including the recommended one, stays within the planning
   contract and states its consequences for validation and digests.
-- A relaunch reason consists of the human's answer plus the reviewer findings, without additions
-  by the orchestrator.
+- Relaunch and revise reasons quote the human's answer verbatim without orchestrator additions;
+  reviewer findings arrive only as the attached review report.
 - Only after successful completion, the orchestrator's new Git writes through `run_commit.py commit`
   are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and compare-and-swap
   `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must never change the Git index or
