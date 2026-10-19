@@ -58,14 +58,15 @@ def mask_fences(markdown: str) -> str:
     lines = markdown.split("\n")
     fence: str | None = None
     for index, line in enumerate(lines):
-        stripped = line.lstrip()
+        marker = re.match(r"\s*(`{3,}|~{3,})(.*)$", line)
         if fence is None:
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                fence = stripped[:3]
+            if marker:
+                fence = marker.group(1)
                 lines[index] = " " * len(line)
             continue
         lines[index] = " " * len(line)
-        if stripped.startswith(fence) and not stripped.strip(fence[0]).strip():
+        if (marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence)
+                and not marker.group(2).strip()):
             fence = None
     return "\n".join(lines)
 

@@ -1225,6 +1225,87 @@ sha256 {resulting_digest or digest}
                 self.assertEqual(paths["inputs"], [])
                 self.assertEqual(file_contents(self.run_dir), before)
 
+    def assert_embedded_file(self, prompt, content, language, following):
+        opening = "`````" + language + "\n"
+        self.assertIn(opening, prompt)
+        embedded, rest = prompt.split(opening, 1)[1].split("\n`````", 1)
+        self.assertEqual(embedded, content.rstrip())
+        self.assertIn(following, rest)
+
+    def test_nested_fences_survive_all_planning_prompt_clis(self):
+        nested = "Before\n```python\nprint('hello')\n```\n````text\ninner\n````\nAfter"
+        brief = self.brief_file()
+        brief.write_text(brief.read_text() + "\n" + nested)
+        self.init_direct = lambda: self.cli(
+            STATE, "init", "--task-file", self.plan_file(nested),
+            "--conversation-brief", str(brief), "--brief-confirmed",
+            "--slug", "planned-feature", "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+        write_spec = self.write_author_handoff
+        write_tickets = self.write_tickets_handoff
+
+        def append_nested_handoff(writer, *args, **kwargs):
+            result = writer(*args, **kwargs)
+            state = json.loads((self.run_dir / "state.json").read_text())
+            paths = state["current_attempt"]["paths"]
+            if "draft" in paths:
+                draft = Path(paths["draft"])
+                draft.write_text(draft.read_text() + "\n" + nested)
+            if "report" in paths:
+                report = Path(paths["report"])
+                report.write_text(report.read_text().replace(
+                    "## Repository Sources / Methods\n", "## Repository Sources / Methods\n" + nested + "\n"))
+            return result
+
+        self.write_author_handoff = lambda *a, **kw: append_nested_handoff(write_spec, *a, **kw)
+        self.write_tickets_handoff = lambda *a, **kw: append_nested_handoff(write_tickets, *a, **kw)
+        self.reach_ticket_approval()
+        state = json.loads((self.run_dir / "state.json").read_text())
+        for stage in ("spec", "spec-review", "tickets", "tickets-review"):
+            prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            with self.subTest(stage=stage):
+                if stage.startswith("spec"):
+                    for item in state["inputs"]:
+                        content = (self.run_dir / item["path"]).read_text()
+                        self.assertIn("`````text\n" + content.rstrip() + "\n`````", prompt)
+                    self.assert_embedded_file(prompt, nested, "text", "## Specification Contract")
+                else:
+                    self.assert_embedded_file(
+                        prompt, Path(state["approved_spec"]["path"]).read_text(),
+                        "markdown", "## Tracker Ground Rules")
+                if stage.endswith("review"):
+                    author = state["author_spec" if stage == "spec-review" else "author_tickets"]
+                    self.assertIn("`````markdown\n" + Path(author["report"]).read_text().rstrip()
+                                  + "\n`````", prompt)
+
+    def test_dynamic_fences_in_verified_grilling_and_recovery_context(self):
+        from artifact_manifest import record_artifact
+        from render_prompt import normalized_context, resumed_context
+
+        self.assertEqual(self.init_direct().returncode, 0)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        nested = "Before\n```\nthree\n```\n````\nfour\n````\nAfter"
+        report_name = str(Path(state["current_attempt"]["paths"]["report"]).relative_to(self.run_dir.resolve()))
+        for name, kind in (("grilling-input.json", "normalized-grilling-input"),
+                           (report_name, "worker-report")):
+            path = self.run_dir / name
+            content = json.dumps({"decision": nested}) if name.endswith("json") else nested
+            path.write_text(content)
+            entry = record_artifact(state, self.run_dir, name, kind=kind, stage="spec",
+                                    pass_num=1, attempt=1, producer="fixture")
+            if name.endswith("json"):
+                state["normalized_grilling_input"] = {
+                    "path": name, "sha256": entry["sha256"], "manifest_id": entry["id"]}
+                context = normalized_context(self.run_dir, state) + "\nFOLLOWING SECTION"
+                self.assert_embedded_file(context, content, "json", "FOLLOWING SECTION")
+            else:
+                for stage in ("spec", "tickets"):
+                    state["resume_context"] = {
+                        "to_stage": stage, "to_pass": 2, "prior_handoffs": [{
+                            "path": str(path), "sha256": entry["sha256"],
+                            "manifest_id": entry["id"]}]}
+                    context = resumed_context(self.run_dir, state, stage, 2) + "\nFOLLOWING SECTION"
+                    self.assert_embedded_file(context, content, "text", "FOLLOWING SECTION")
+
     def test_multiple_plan_files_survive_all_stages_and_recovery(self):
         first = self.repo / "plans" / "plan.md"
         first.parent.mkdir()
@@ -5049,6 +5130,32 @@ Option?
             str(self.config),
         )
         self.assertEqual(next_run.returncode, 0, next_run.stderr)
+
+
+class EmbeddedFenceRules(unittest.TestCase):
+    def test_plain_content_keeps_legacy_bytes(self):
+        from render_prompt import fenced_content
+
+        for language in ("text", "markdown", "json"):
+            for content in ("", "plain\n", "inline `code` and ``two``\n\n", "trailing space \t\n"):
+                with self.subTest(language=language, content=content):
+                    self.assertEqual(fenced_content(content, language),
+                                     f"```{language}\n{content.rstrip()}\n```")
+
+    def test_fence_exceeds_every_backtick_run_including_inline_runs(self):
+        from render_prompt import fenced_content
+
+        for length in (3, 4, 7, 20):
+            content = "inline " + "`" * length + " tail"
+            fence = "`" * (length + 1)
+            self.assertEqual(fenced_content(content, "text"), f"{fence}text\n{content}\n{fence}")
+
+    def test_contract_sections_ignore_shorter_fences_inside_long_fence(self):
+        from render_prompt import fenced_content
+        from spec_contract import sections
+
+        quoted = fenced_content("```\n## Result\n```", "markdown")
+        self.assertEqual(sections(quoted + "\n\n## Result\nPASS\n"), {"Result": "PASS"})
 
 
 class TicketPolicyRules(unittest.TestCase):

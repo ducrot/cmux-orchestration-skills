@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -213,6 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def fenced_content(content: str, language: str) -> str:
+    """Use a fence longer than any backtick run so embedded fences cannot close it."""
+    longest = max(map(len, re.findall(r"`+", content)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{content.rstrip()}\n{fence}"
+
+
 def normalized_context(run_dir: Path, state: dict) -> str:
     pointer = state.get("normalized_grilling_input")
     if not pointer:
@@ -230,7 +238,7 @@ def normalized_context(run_dir: Path, state: dict) -> str:
         raise SnapshotError("normalized grilling input changed after revalidation")
     return (
         "Consume only this complete human-revalidated handoff; do not use or recover the copied "
-        f"source pair: `{path}`\n\n```json\n{payload.decode('utf-8').rstrip()}\n```"
+        f"source pair: `{path}`\n\n{fenced_content(payload.decode('utf-8'), 'json')}"
     )
 
 
@@ -277,10 +285,10 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
         block = f"### {item.get('label', 'Prior handoff')}\n\n`{path}` (sha256 `{item['sha256']}`)"
         if not reviewer and not (stage == "tickets" and entry["kind"] == "tickets-summary"):
             try:
-                content = path.read_text(encoding="utf-8").rstrip()
+                content = path.read_text(encoding="utf-8")
             except UnicodeError as error:
                 raise SnapshotError(f"resume context handoff is not UTF-8: {path}") from error
-            block += f"\n\n```text\n{content}\n```"
+            block += f"\n\n{fenced_content(content, 'text')}"
         blocks.append(block)
     return "\n\n".join(blocks)
 
@@ -312,7 +320,7 @@ def input_context(state: dict, inputs: list[tuple[dict, Path]], *, inline: bool)
         block = (f"- {item['kind']}: `{original_display(state, item)}`; "
                  f"run copy: `{path.resolve()}` (sha256 `{item['sha256']}`)")
         if inline:
-            block += f"\n\n```text\n{path.read_text(encoding='utf-8').rstrip()}\n```"
+            block += f"\n\n{fenced_content(path.read_text(encoding='utf-8'), 'text')}"
         blocks.append(block)
     if inline and any(item["original_path"] not in INLINE_SOURCES and item["kind"] != "conversation-brief"
                       for item, _ in inputs):
@@ -477,9 +485,7 @@ the complete draft, and the contract below.
 
 ### Author Report
 
-```markdown
-{author_report.read_text(encoding='utf-8').rstrip()}
-```
+{fenced_content(author_report.read_text(encoding='utf-8'), 'markdown')}
 
 {resumed_context(run_dir, state, "spec-review", pass_num)}
 
@@ -695,9 +701,7 @@ tests. Do not make product or scope decisions that the approved specification di
 
 ### Approved Specification
 
-```markdown
-{approved_spec.read_text(encoding='utf-8').rstrip()}
-```
+{fenced_content(approved_spec.read_text(encoding='utf-8'), 'markdown')}
 
 ### Human Ticket Revision Feedback
 
@@ -843,15 +847,11 @@ tracker contract.
 
 ### Approved Specification and Decisions
 
-```markdown
-{approved_spec.read_text(encoding='utf-8').rstrip()}
-```
+{fenced_content(approved_spec.read_text(encoding='utf-8'), 'markdown')}
 
 ### Author Report
 
-```markdown
-{report.read_text(encoding='utf-8').rstrip()}
-```
+{fenced_content(report.read_text(encoding='utf-8'), 'markdown')}
 
 {resumed_context(run_dir, state, "tickets-review", pass_num)}
 
