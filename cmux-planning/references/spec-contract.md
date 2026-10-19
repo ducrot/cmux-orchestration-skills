@@ -75,8 +75,10 @@ not trigger automatic model re-review.
 ## Ticket and native tracker contract
 
 Ticket authoring starts only from the immutable digest of an explicitly approved specification from the
-same planning run. Its schema-version-one JSON proposal contains the source spec identity, tracker slug,
-title, branch and canonical checks, plus a complete ordered ticket list. The accompanying Markdown is a
+same planning run. Its schema-version-two JSON proposal contains the source spec identity, tracker slug,
+title, branch and canonical checks, plus a complete ordered ticket list with required `execution_mode`
+(`AFK` or `HITL`) on every ticket. Legacy version 1 proposals remain accepted and every ticket defaults
+to AFK. The accompanying Markdown is a
 deterministic numbered rendering of that JSON, never an independent source of truth.
 
 `tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication
@@ -100,6 +102,7 @@ blockers as the initial ready frontier.
 
 After explicit human approval, the orchestrator renders a native tracker containing `README.md`,
 `spec.md`, `map.md`, `decisions.md`, and one frontmatter issue per approved ticket under
-`issues/`. Only fully specified work is `AFK` and `ready-for-agent`. The standalone planning validator
+`issues/`: AFK issues with ready-for-agent and HITL issues with ready-for-human. Only fully specified
+approved work is ready for execution. The standalone planning validator
 must accept the complete staged tracker before one collision-checked atomic publication move; no sibling
 skill or adoption conversion is a runtime dependency.

@@ -94,11 +94,16 @@ def proposal(spec: Path, tickets: list[dict] | None = None, *, slug: str = "plan
     }
 
 
-def mixed_proposal(spec: Path) -> dict:
-    data = proposal(spec)
+def with_execution_modes(data: dict, modes) -> dict:
     data["schema_version"] = 2
-    for item, mode in zip(data["tickets"], ("AFK", "HITL")):
+    for item, mode in zip(data["tickets"], modes, strict=True):
         item["execution_mode"] = mode
+    return data
+
+
+def mixed_proposal(spec: Path) -> dict:
+    data = with_execution_modes(proposal(spec), ("AFK", "HITL"))
+    for item in data["tickets"]:
         item["blocked_by"] = []
     return data
 

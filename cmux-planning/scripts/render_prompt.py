@@ -27,7 +27,7 @@ from planning_inputs import INLINE_SOURCES, manifest_kind, original_display, pla
 from planning_recovery import DEFAULT_ARTIFACT_LANGUAGE
 from spec_contract import SPEC_SECTIONS
 from stage_snapshot import SnapshotError, approved_spec_from_state, load_prepared_snapshot
-from tracker_contract import validate_proposal
+from tracker_contract import EXECUTION_LABELS, validate_proposal
 
 DETECTOR_BOUNDARY = """The detector covers tracked changes, staged changes, untracked paths and their content (regular files
 up to the 8 MiB size cap and symlink target bytes), and commits (HEAD movement). It excludes ignored
@@ -564,6 +564,12 @@ the mechanical tickets of a wide refactor.
 **Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand–contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there."""
 
 
+PUBLICATION_LABEL_RULE = (
+    f"Only fully specified approved work is published: AFK tickets with {EXECUTION_LABELS['AFK']} "
+    f"and HITL tickets with {EXECUTION_LABELS['HITL']}"
+)
+
+
 def ticket_ground_rules(state: dict) -> str:
     return f"""- Artifact language: {state.get('artifact_language', DEFAULT_ARTIFACT_LANGUAGE)}. Write ticket content in this language:
   `title`, `delivered_behavior`, `acceptance_criteria`, `merge_split_rationale`, and `tracker.title`.
@@ -578,18 +584,27 @@ def ticket_ground_rules(state: dict) -> str:
   except for the standalone prefactor and wide-refactor tickets described in the vertical-slice policy.
 - Number tickets in dependency order: every blocker must have a smaller numeric ID than its dependent.
 - Record the target repository's current working branch and exact runnable baseline check commands.
-- Only fully specified approved work may be AFK and ready-for-agent.
+- {PUBLICATION_LABEL_RULE}.
 - The published tracker must contain README.md, spec.md, map.md, decisions.md, and one native issue file
   per complete proposed ticket under issues/."""
 
 
-NATIVE_TRACKER_POLICY = """The machine proposal uses schema version 1 with exactly four top-level keys:
+HUMAN_TICKET_POLICY = """Choose execution_mode deliberately for every ticket. Cut human steps such as
+production pulls, deployments, and approvals as their own HITL tickets, with genuine blocking edges
+to the work they enable or depend on; do not bury human steps in prose inside AFK tickets.
+Check every ticket for over-HITL (a human ticket an agent could complete) and under-HITL (an AFK
+ticket containing a human step). Keep work an agent can complete AFK; reserve HITL for work requiring
+human action or authority."""
+
+
+NATIVE_TRACKER_POLICY = f"""The machine proposal uses schema version 2 with exactly four top-level keys:
 `schema_version`, `source_spec`, `tracker`, and `tickets`. `source_spec` contains exact `path` and
 `sha256`. `tracker` contains lowercase kebab-case `slug`, non-empty `title`, `working_branch`, and a
 non-empty list of exact runnable `canonical_check_commands`. `tracker.slug` must equal the
 Tracker slug (fixed) value under Inputs and Identity. Every ticket contains exactly `id` in
 ISSUE-NNN form, `title`, `delivered_behavior`, non-empty `acceptance_criteria`, `blocked_by`,
-`merge_split_rationale`, `slice_type`, non-empty `technical_layers`, and `wide_refactor`. A normal ticket
+`merge_split_rationale`, `slice_type`, non-empty `technical_layers`, `wide_refactor`, and required
+`execution_mode`, whose value is `AFK` or `HITL`. A normal ticket
 uses `slice_type: vertical` and `wide_refactor: null`. A standalone prefactor uses
 `slice_type: prefactor` and `wide_refactor: null`. A wide-refactor ticket uses
 `slice_type: wide-refactor` and an object with `phase`, `sequence: expand-migrate-contract`, and
@@ -598,8 +613,7 @@ uses `slice_type: vertical` and `wide_refactor: null`. A standalone prefactor us
 every migrate ticket, and the integrate-and-verify ticket uses phase `integration` and is blocked by a
 contract ticket. IDs are unique, blockers must
 exist, every blocker must have a smaller numeric ID than its dependent, and dependencies must be
-acyclic. All approved work is fully specified AFK work with the
-ready-for-agent label when published; no adoption conversion is used."""
+acyclic. {PUBLICATION_LABEL_RULE}; no adoption conversion is used."""
 
 
 def tickets_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> str:
@@ -655,6 +669,10 @@ tests. Do not make product or scope decisions that the approved specification di
 ## Vertical-Slice Policy
 
 {VERTICAL_SLICE_POLICY}
+
+## Human Work Boundaries
+
+{HUMAN_TICKET_POLICY}
 
 ## Native Proposal Contract
 
@@ -768,7 +786,8 @@ Harness: {snapshot['selected_worker']['harness']}
 
 Review independently in this fresh pane without either author session. Inspect the repository read-only
 where useful. Check the task, immutable approved specification and its decisions, exact author proposal
-and report identities, tracker ground rules, vertical-slice policy, and native tracker contract.
+and report identities, tracker ground rules, vertical-slice policy, human work boundaries, and native
+tracker contract.
 
 ## Inputs and Identity
 
@@ -801,13 +820,18 @@ and report identities, tracker ground rules, vertical-slice policy, and native t
 
 {VERTICAL_SLICE_POLICY}
 
+## Human Work Boundaries
+
+{HUMAN_TICKET_POLICY}
+
 ## Native Tracker Contract
 
 {NATIVE_TRACKER_POLICY}
 
 Check each ticket for user perspective (with the standalone prefactor and wide-refactor exceptions),
 no file paths or code snippets (except the documented prototype
-exception), prefactoring first, no horizontal slices, and dependency-ordered IDs. Verify the chosen
+exception), prefactoring first, no horizontal slices, dependency-ordered IDs, and a deliberate
+`execution_mode` without over-HITL or under-HITL. Verify the chosen
 artifact language, glossary and ADR alignment, narrow but complete behavior, justified merges and splits,
 existing-test verification for preserved prefactor behavior, and any wide-refactor sequence or integration
 exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.

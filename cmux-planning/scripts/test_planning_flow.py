@@ -23,7 +23,7 @@ from planning_state import PUBLISHING_COMMANDS  # noqa: E402
 from run_briefing import project_board, read_events  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
-from test_tracker_contract import proposal as tracker_proposal  # noqa: E402
+from test_tracker_contract import proposal as tracker_proposal, with_execution_modes  # noqa: E402
 from tracker_contract import render_summary, validate_proposal  # noqa: E402
 from tree_integrity import capture_tree, compare_tree  # noqa: E402
 
@@ -922,7 +922,7 @@ sha256 {resulting_digest or digest}
             args += ["--target", str(target)]
         return self.cli(STATE, *args)
 
-    def reach_ticket_approval(self, *, launch_panes: bool = False) -> dict:
+    def reach_ticket_approval(self, *, launch_panes: bool = False, execution_modes=None) -> dict:
         self.approve_spec_to_tickets()
         self.render_and_baseline("tickets")
         author_prompt = (self.run_dir / "prompts" / "tickets-1.md").read_text()
@@ -932,7 +932,11 @@ sha256 {resulting_digest or digest}
         self.assertIn("Approved Specification", author_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets")
-        proposal_result = self.write_tickets_handoff()
+        data = None
+        if execution_modes is not None:
+            state = json.loads((self.run_dir / "state.json").read_text())
+            data = with_execution_modes(tracker_proposal(Path(state["approved_spec"]["path"])), execution_modes)
+        proposal_result = self.write_tickets_handoff() if data is None else self.write_tickets_handoff(data=data)
         accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         state = json.loads((self.run_dir / "state.json").read_text())
@@ -1045,6 +1049,35 @@ sha256 {resulting_digest or digest}
     def test_ticket_rules_render_through_cli_in_chosen_language(self):
         self.artifact_language = "German"
         self.check_ticket_prompt_rules("German")
+
+    def test_human_ticket_rules_are_rendered_only_for_ticket_workers(self):
+        self.reach_ticket_approval()
+        rules = (
+            "schema version 2", "`execution_mode`", "`AFK` or `HITL`",
+            "AFK tickets with ready-for-agent", "HITL tickets with ready-for-human",
+            "production pulls, deployments, and approvals", "their own HITL tickets",
+            "over-HITL", "under-HITL",
+        )
+        for stage in ("tickets", "tickets-review"):
+            prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            for rule in rules:
+                self.assertIn(rule, prompt, stage)
+            self.assertNotIn("All approved work is fully specified AFK", prompt)
+            self.assertNotIn("schema version 1", prompt)
+        reviewer = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
+        self.assertIn("Check every ticket for over-HITL", reviewer)
+        for stage in ("spec", "spec-review"):
+            prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            for rule in ("their own HITL tickets", "over-HITL", "under-HITL"):
+                self.assertNotIn(rule, prompt, stage)
+
+    def test_ticket_approval_view_lists_every_execution_mode(self):
+        self.reach_ticket_approval(execution_modes=("AFK", "HITL"))
+        view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
+        self.assertEqual(view.returncode, 0, view.stderr)
+        tickets = json.loads(view.stdout)["tickets"]
+        self.assertEqual([(ticket["id"], ticket["execution_mode"]) for ticket in tickets],
+                         [("ISSUE-001", "AFK"), ("ISSUE-002", "HITL")])
 
     def test_all_four_prompts_disclose_unreadable_untracked_directory_exclusion(self):
         self.reach_ticket_approval()
@@ -2122,6 +2155,8 @@ sha256 {resulting_digest or digest}
         self.assertEqual(view.returncode, 0, view.stderr)
         walkthrough = json.loads(view.stdout)
         self.assertEqual(walkthrough["ticket_count"], 2)
+        self.assertEqual([ticket["execution_mode"] for ticket in walkthrough["tickets"]],
+                         ["AFK", "AFK"], "version 1 candidates must show every ticket as AFK")
         self.assertEqual(walkthrough["ready_frontier"], ["ISSUE-001"])
         self.assertEqual(walkthrough["blocking_edges"], [{"blocked": "ISSUE-002", "prerequisite": "ISSUE-001"}])
 

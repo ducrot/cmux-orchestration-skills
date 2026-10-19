@@ -391,6 +391,7 @@ python3 scripts/planning_state.py ticket-approval-view --run-dir <run-dir>
 ```
 
 Show a compact numbered list: title, blocked by, and what to build (`delivered_behavior`) per ticket.
+Show each ticket's execution mode (AFK or HITL) in that list so granularity and edges include the human work.
 Below it, state the review verdict, its correction summary, and any wide-refactor exceptions, because
 safe reviewer fixes reach this gate without another author pass. Provide full acceptance criteria and
 merge/split rationale on request. The view also includes the ready frontier, blocking edges, and

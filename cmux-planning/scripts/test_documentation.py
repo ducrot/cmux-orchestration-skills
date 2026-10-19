@@ -112,6 +112,18 @@ class TicketApprovalQuizDocumentation(unittest.TestCase):
         self.assertLess(self.approval.index("ticket-approval-view --run-dir <run-dir>"),
                         self.approval.index("one `askuserquestion` with three"))
 
+    def test_walkthrough_shows_human_work_before_the_quiz(self):
+        self.assertIn("show each ticket's execution mode (afk or hitl)", self.approval)
+        self.assertIn("granularity and edges include the human work", self.approval)
+        self.assertLess(self.approval.index("show each ticket's execution mode"),
+                        self.approval.index("one `askuserquestion` with three"))
+
+    def test_native_contract_describes_both_execution_modes(self):
+        contract = normalized(PLANNING.parent / "references/spec-contract.md")
+        for phrase in ("schema-version-two", "`execution_mode`", "version 1",
+                       "afk issues with ready-for-agent", "hitl issues with ready-for-human"):
+            self.assertIn(phrase, contract)
+
     def test_single_quiz_asks_all_three_dimensions_in_human_language(self):
         for phrase in (
             "one `askuserquestion` with three single-select questions in the human's language",

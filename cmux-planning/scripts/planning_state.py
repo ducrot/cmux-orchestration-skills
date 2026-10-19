@@ -1999,6 +1999,7 @@ def ticket_approval_view(run_dir: Path) -> int:
         "tickets": [
             {
                 "id": ticket["id"],
+                "execution_mode": ticket["execution_mode"],
                 "title": ticket["title"],
                 "delivered_behavior": ticket["delivered_behavior"],
                 "acceptance_criteria": ticket["acceptance_criteria"],
