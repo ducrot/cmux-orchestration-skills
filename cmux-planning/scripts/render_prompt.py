@@ -593,6 +593,9 @@ and substantially the same context; split independent outcomes, decision boundar
 requirements, or excessive context. Add only blocking edges whose prerequisite genuinely prevents
 the blocked ticket from starting, leaving every initially ready ticket visible in the frontier.
 
+A ticket of any slice type creating rules, conventions, or configuration for agents blocks every
+AFK ticket that works under those rules.
+
 Look for prefactoring: "make the change easy, then make the easy change." Create a standalone ticket
 when it prepares several slices or is substantial; otherwise make it the first step of its slice.
 A standalone prefactor uses `slice_type: prefactor` and `wide_refactor: null`, comes before and blocks
@@ -875,6 +878,8 @@ and prototype exceptions), prefactoring first, no horizontal slices, dependency-
 artifact language, glossary and ADR alignment, narrow but complete behavior, justified merges and splits,
 existing-test verification for preserved prefactor behavior, and any wide-refactor sequence or integration
 exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.
+Check that every ticket creating rules, conventions, or configuration for agents blocks all affected
+AFK tickets.
 {PATH_REVIEW_PRESERVATION}
 
 Return exactly one verdict:

@@ -1103,6 +1103,30 @@ sha256 {resulting_digest or digest}
         self.artifact_language = "German"
         self.check_ticket_prompt_rules("German")
 
+    def test_agent_rule_dependencies_render_only_for_ticket_workers(self):
+        self.reach_ticket_approval()
+        policy = (
+            "A ticket of any slice type creating rules, conventions, or configuration for agents blocks "
+            "every AFK ticket that works under those rules."
+        )
+        reviewer_check = (
+            "Check that every ticket creating rules, conventions, or configuration for agents "
+            "blocks all affected AFK tickets."
+        )
+        prompts = {
+            stage: " ".join((self.run_dir / "prompts" / f"{stage}-1.md").read_text().split())
+            for stage in ("spec", "spec-review", "tickets", "tickets-review")
+        }
+        for stage in ("tickets", "tickets-review"):
+            self.assertEqual(prompts[stage].count(policy), 1, stage)
+            self.assertIn(
+                "every blocker must have a smaller numeric ID than its dependent", prompts[stage], stage
+            )
+        self.assertIn(reviewer_check, prompts["tickets-review"])
+        self.assertNotIn(reviewer_check, prompts["tickets"])
+        for stage in ("spec", "spec-review"):
+            self.assertNotIn("rules, conventions, or configuration for agents", prompts[stage], stage)
+
     def test_human_ticket_rules_are_rendered_only_for_ticket_workers(self):
         self.reach_ticket_approval()
         rules = (
