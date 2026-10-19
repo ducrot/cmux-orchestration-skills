@@ -456,9 +456,7 @@ Stage snapshot: {snapshot_id or "(not provided)"}
 
 ## Issue
 
-```markdown
-{markdown.rstrip()}
-```
+{fenced_content(markdown.rstrip(), "markdown")}
 {context}
 
 ## Worker Report Contract

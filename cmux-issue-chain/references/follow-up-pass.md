@@ -17,6 +17,7 @@ Procedure:
 1. In autonomous mode `publish-triage` records the verdicts and writes `followup-items.md`, one bullet
    per accepted eligible item with ID, source, supersedes, files, verbatim item text and triage reason.
    In human mode record the human verdicts and write the same approved item list.
+   Fence each item with a fence longer than any backtick run in its text, matching autonomous mode.
 2. In autonomous mode record the triage gate as `advance` with `--next-stage implement`; the final test
    gate already moved the run to triage. In human mode the final test gate moves to implement instead.
 3. Prepare `implement` with the next pass number and `--followup`, then render with `--followup-file`. Anchor the follow-up

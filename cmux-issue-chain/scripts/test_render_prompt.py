@@ -62,6 +62,40 @@ def duties_section(text: str) -> str:
 
 
 class RenderFunction(unittest.TestCase):
+    def test_issue_body_chooses_fence_and_keeps_following_sections(self):
+        from test_parse_report import items_fixture
+        markdown = ISSUE + "\n```python\nthree\n```\n````text\nfour\n````\n"
+        with tempfile.TemporaryDirectory() as root:
+            items = items_fixture(Path(root))
+            context = Path(root) / "context.md"
+            context.write_text("Additional evidence\n")
+            for role in render_prompt.ROLES:
+                with self.subTest(role=role):
+                    prompt = render_prompt.render(
+                        role, "ISSUE-001", markdown, {}, context_files=[context],
+                        items_file=items if role == "triage" else None)
+                    rest = prompt.split("## Issue\n\n", 1)[1]
+                    self.assertTrue(rest.startswith("`````markdown\n"))
+                    embedded, rest = rest[len("`````markdown\n"):].split("\n`````\n", 1)
+                    self.assertEqual(embedded, markdown.rstrip())
+                    self.assertIn("## Additional Context", rest)
+                    self.assertIn("## Worker Report Contract", rest)
+
+    def test_ordinary_issue_keeps_legacy_bytes(self):
+        markdown = ISSUE + "\nplain `code` and ``ticks``  \n\n"
+        with patch("render_prompt.utc_now", return_value="fixed-time"):
+            prompt = render_prompt.render("implement", "ISSUE-001", markdown, {})
+            with patch("render_prompt.fenced_content", side_effect=lambda content, language:
+                       f"```{language}\n{content}\n```"):
+                legacy = render_prompt.render("implement", "ISSUE-001", markdown, {})
+        self.assertEqual(prompt.encode(), legacy.encode())
+        self.assertIn(f"## Issue\n\n```markdown\n{markdown.rstrip()}\n```\n", prompt)
+
+    def test_human_followup_items_require_longer_fences(self):
+        instructions = (SCRIPT_DIR.parent / "references/follow-up-pass.md").read_text()
+        self.assertIn("In human mode record the human verdicts and write the same approved item list.", instructions)
+        self.assertIn("Fence each item with a fence longer than any backtick run in its text", instructions)
+
     def test_embedded_files_choose_fences_and_keep_following_sections(self):
         from test_parse_report import items_fixture
         with tempfile.TemporaryDirectory() as root:
@@ -452,6 +486,25 @@ class RenderCli(unittest.TestCase):
         self.assertNotEqual(rendered.returncode, 0)
         self.assertIn("cannot render simplify-1", rendered.stderr)
         self.assertFalse((self.run_dir / "prompts" / "simplify-1.md").exists())
+
+    def test_cli_delivers_issue_body_with_nested_fences(self):
+        markdown = ISSUE + "\n```python\nthree\n```\n````text\nfour\n````\n"
+        (self.repo / ".scratch/tracker/issues/ISSUE-001-prepared.md").write_text(markdown)
+        initialized = self.init()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        context = self.repo / "context.md"
+        context.write_text("Additional evidence\n")
+        rendered = self.run_script(
+            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            "--role", "implement", "--pass", "1", "--run-dir", str(self.run_dir),
+            "--context-file", str(context))
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        prompt = (self.run_dir / "prompts/implement-1.md").read_text()
+        rest = prompt.split("## Issue\n\n`````markdown\n", 1)[1]
+        embedded, rest = rest.split("\n`````\n", 1)
+        self.assertEqual(embedded, markdown.rstrip())
+        self.assertIn("## Additional Context", rest)
+        self.assertIn("## Worker Report Contract", rest)
 
     def test_artifact_path_stays_in_run_when_handoff_paths_are_overridden(self):
         initialized = self.init()
