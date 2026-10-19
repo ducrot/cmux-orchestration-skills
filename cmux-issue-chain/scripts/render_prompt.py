@@ -9,7 +9,7 @@ import re
 import shlex
 from pathlib import Path
 
-from orchestrator_lib import blocker_status, issue_ready, load_issues, read_issue_markdown, utc_now
+from orchestrator_lib import blocker_status, fenced_content, issue_ready, load_issues, read_issue_markdown, utc_now
 from worker_snapshot import SnapshotError, load_launchable_snapshot
 from check_commands import applicable_commands
 
@@ -363,7 +363,7 @@ def render(
     items_block = ""
     validation_args = ""
     if items_file:
-        items_block = "\n## Triage Items\n\n```markdown\n" + items_file.read_text(encoding="utf-8") + "\n```\n"
+        items_block = "\n## Triage Items\n\n" + fenced_content(items_file.read_text(encoding="utf-8"), "markdown") + "\n"
         validation_args = f"--items-file {items_file} "
     context_files = context_files or []
     context = render_context(context_files)
@@ -650,7 +650,7 @@ def render_context(context_files: list[Path]) -> str:
         return ""
     chunks = ["\n## Additional Context\n"]
     for path in context_files:
-        chunks.append(f"\n### {path}\n\n```markdown\n{path.read_text(encoding='utf-8').rstrip()}\n```\n")
+        chunks.append(f"\n### {path}\n\n" + fenced_content(path.read_text(encoding="utf-8").rstrip(), "markdown") + "\n")
     return "".join(chunks)
 
 

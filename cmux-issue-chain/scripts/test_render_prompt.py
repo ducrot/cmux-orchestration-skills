@@ -62,6 +62,36 @@ def duties_section(text: str) -> str:
 
 
 class RenderFunction(unittest.TestCase):
+    def test_embedded_files_choose_fences_and_keep_following_sections(self):
+        from test_parse_report import items_fixture
+        with tempfile.TemporaryDirectory() as root:
+            for content, fence in (("plain `code` and ``ticks``", "```"),
+                                   ("```python\nthree\n```\n````text\nfour\n````", "`````"),
+                                   ("inline ``````` run", "````````")):
+                with self.subTest(content=content):
+                    items = items_fixture(Path(root))
+                    items.write_text(items.read_text() + content + "\n")
+                    context = Path(root) / "context.md"
+                    context.write_text(content)
+                    prompt = render_prompt.render("triage", "ISSUE-001", ISSUE, {},
+                                                  context_files=[context], items_file=items)
+                    rest = prompt.split("## Triage Items\n\n", 1)[1]
+                    self.assertTrue(rest.startswith(fence + "markdown\n"))
+                    embedded, rest = rest[len(fence + "markdown\n"):].split("\n" + fence + "\n", 1)
+                    self.assertEqual(embedded, items.read_text())
+                    self.assertIn("## Blocker Status", rest)
+                    self.assertIn("## Issue", rest)
+                    embedded, rest = rest.split(f"### {context}\n\n{fence}markdown\n", 1)[1].split("\n" + fence + "\n", 1)
+                    self.assertEqual(embedded, context.read_text())
+                    self.assertIn("## Worker Report Contract", rest)
+
+    def test_ordinary_context_keeps_legacy_whitespace(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "context.md"
+            path.write_text("plain `code` and ``ticks``  \n\n")
+            self.assertEqual(render_prompt.render_context([path]),
+                             f"\n## Additional Context\n\n### {path}\n\n```markdown\nplain `code` and ``ticks``\n```\n")
+
     def test_applicable_commands_for_every_role_and_followup(self):
         from test_parse_report import items_fixture
         targeted = "- Targeted check commands for implement, simplify, and review:\n  - `python3 targeted.py`"

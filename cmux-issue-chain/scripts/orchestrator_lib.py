@@ -42,6 +42,13 @@ def delivery_text(prompt_path: str) -> str:
     return PROMPT_DELIVERY_TEMPLATE.format(prompt_path=prompt_path)
 
 
+def fenced_content(content: str, language: str) -> str:
+    """Preserve content inside a fence longer than any embedded backtick run."""
+    longest = max(map(len, re.findall(r"`+", content)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{content}\n{fence}"
+
+
 def normalize_issue_id(number: str | int) -> str:
     return f"ISSUE-{int(number):03d}"
 

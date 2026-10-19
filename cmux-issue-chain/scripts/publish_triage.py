@@ -6,7 +6,7 @@ from pathlib import Path
 
 from collect_recommendations import FOLLOWUP_ALLOWED, UNSUPPORTED_PASS_ERROR, collected_data, read_items
 from evidence_contract import CAPTURE, snapshot_label
-from orchestrator_lib import append_jsonl, load_issues, normalize_issue_id, read_run_state, slugify, utc_now
+from orchestrator_lib import append_jsonl, fenced_content, load_issues, normalize_issue_id, read_run_state, slugify, utc_now
 from parse_report import parse_report
 from triage_contract import VERDICTS
 from worker_readiness import read_events
@@ -95,8 +95,9 @@ def publish(run_dir: Path, pass_num: int) -> dict:
                             "consequence": consequence, "issue": created_by_item.get(key), "authority": "triage-worker"})
         if key in gate["followup_items"]:
             followups.append(f'- {key} ({verdict["source"]})\n  Supersedes: {verdict["supersedes"]}\n'
-                             f'  Files: {", ".join(verdict["files"])}\n\n```markdown\n'
-                             + source_items[key]["text"] + f'\n```\n\nTriage reason: {verdict["reason"]}\n')
+                             f'  Files: {", ".join(verdict["files"])}\n\n'
+                             + fenced_content(source_items[key]["text"], "markdown")
+                             + f'\n\nTriage reason: {verdict["reason"]}\n')
     published = {"pass": pass_num, "counts": {v: sum(i["verdict"] == v for i in gate["verdicts"]) for v in VERDICTS},
                  "created_issues": list(created_by_item.values()), "followup_items": gate["followup_items"],
                  "for_the_human": gate["for_the_human"],

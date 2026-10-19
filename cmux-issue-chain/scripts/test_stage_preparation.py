@@ -439,7 +439,7 @@ class PreparedStageCli(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCRIPT_DIR / name), *map(str, args)],
                               cwd=self.repo, env=self.env(), capture_output=True, text=True)
 
-    def triage_fixture(self, *, followup=True, numeric=False):
+    def triage_fixture(self, *, followup=True, numeric=False, item_content=""):
         from test_parse_report import report, verdict, DRAFT
         tracker = self.repo / ".scratch" / "tracker"
         if numeric:
@@ -449,7 +449,7 @@ class PreparedStageCli(unittest.TestCase):
             self.assertEqual(self.gate(stage, following).returncode, 0)
         (self.repo / "a.py").write_text("print('fixture')\n")
         (self.run_dir / "reports" / "review-1.md").write_text(report(Recommendations=
-            "- Counter-proposal: simplify-1 Not Applied 1; extract the duplicated helper.\n"
+            "- Counter-proposal: simplify-1 Not Applied 1; extract the duplicated helper.\n" + item_content +
             "- Add a separate dashboard status view.\n- Human should remove the browser artifacts.\n"))
         (self.run_dir / "reports" / "simplify-1.md").write_text(report(**{"Not Applied": "- Keep the helper inline until measured."}))
         collected = self.script("collect_recommendations.py", "--run-dir", self.run_dir, "--pass", "1")
@@ -608,6 +608,40 @@ class PreparedStageCli(unittest.TestCase):
         prompt = (self.run_dir / "prompts" / "review-2.md").read_text()
         self.assertIn(ledger.strip(), prompt)
         self.assertIn("Only non-opted-out runs produce the marker", prompt)
+
+    def test_nested_fences_survive_prompt_and_followup_cli(self):
+        self.check_embedded_files_cli("```python\nthree\n```\n````text\nfour\n````\n", "`````")
+
+    def test_ordinary_followup_keeps_legacy_bytes(self):
+        self.check_embedded_files_cli("Inline `code` and ``ticks``.\n", "```")
+
+    def check_embedded_files_cli(self, content, fence):
+        from collect_recommendations import read_items
+        from test_parse_report import report, verdict
+        self.triage_fixture(item_content=content)
+        items_path = self.run_dir / "triage-items-1.md"
+        items = read_items(items_path)["items"]
+        prompt = (self.run_dir / "prompts" / "triage-1.md").read_text()
+        self.assertIn(f"## Triage Items\n\n{fence}markdown\n" + items_path.read_text() + f"\n{fence}\n\n## Blocker Status", prompt)
+        context = self.run_dir / "reports" / "review-1.md"
+        self.assertIn(f"### {context}\n\n{fence}markdown\n" + context.read_text().rstrip() + f"\n{fence}\n", prompt)
+        self.assertIn("## Worker Report Contract", prompt.split("## Additional Context", 1)[1])
+        # Publish two follow-ups so the second entry also checks the first one's boundary.
+        body = verdict(Files="`a.py`", Supersedes="simplify-1 Not Applied 1")
+        body += verdict(Files="`a.py`", Title="Second change").replace("- R1", "- R2")
+        body += verdict(Verdict="recorded", **{"Follow-up eligible": "no", "Files": "none"}).replace("- R1", "- R3")
+        (self.run_dir / "reports" / "triage-1.md").write_text(report(Verdicts=body))
+        proc = self.run_state("publish-triage", "--run-dir", str(self.run_dir), "--pass", "1")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        expected = "# Approved Follow-up Items\n\n"
+        entries = []
+        for item, delimiter, supersedes in ((items[0], fence, "simplify-1 Not Applied 1"),
+                                             (items[1], "```", "none")):
+            entries.append(f'- {item["id"]} (review-1)\n  Supersedes: {supersedes}\n'
+                           f'  Files: a.py\n\n{delimiter}markdown\n' + item["text"] +
+                           f'\n{delimiter}\n\nTriage reason: Measured duplication\n')
+        self.assertEqual((self.run_dir / "followup-items.md").read_bytes(),
+                         (expected + "\n".join(entries)).encode())
 
     def test_publish_triage_two_completes_followup_cli_walk(self):
         self.triage_two_cli_walk(existing_followup=True)
