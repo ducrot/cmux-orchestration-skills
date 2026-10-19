@@ -67,6 +67,9 @@ decision it cannot make, so it may cover only what it reached, but it must still
 non-empty `Checked` section with at least one structurally valid bullet alongside its substantive
 blocker. Identity binding and the prohibition on an approval candidate are unchanged.
 
+Author and reviewer share the state and recovery check. A missing recovery point before a
+production mutation the spec prescribes is `blocked`, never `pass_with_fixes`.
+
 Any current-scope open decision blocks a passing review. A deferred decision is non-blocking only
 after the candidate explicitly moves it outside current scope. A passing review is still not human
 approval. `pass_with_fixes` goes through deterministic validation and a human-visible diff; it does

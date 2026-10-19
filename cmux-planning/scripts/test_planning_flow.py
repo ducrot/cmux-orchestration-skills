@@ -994,6 +994,34 @@ sha256 {resulting_digest or digest}
         self.artifact_language = "German"
         self.check_spec_prompt_rules("German")
 
+    def test_state_and_recovery_checks_render_only_for_spec_workers(self):
+        from render_prompt import STATE_AND_RECOVERY_CHECK
+
+        for rule in (
+            "recovery point before every state-changing operation the spec prescribes",
+            "such as migrations, data changes, deployments, and cleanups",
+            "the delivered feature's runtime writes are not such operations",
+            "snapshots relative to baselines and references",
+            "side effects of prescribed commands",
+            "hooks, scripts, and providers",
+            "gates stay consistent with the steps they guard",
+        ):
+            self.assertIn(rule, STATE_AND_RECOVERY_CHECK)
+        self.reach_ticket_approval()
+        prompts = {
+            stage: (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+            for stage in ("spec", "spec-review", "tickets", "tickets-review")
+        }
+        for stage in ("spec", "spec-review"):
+            self.assertEqual(prompts[stage].count(STATE_AND_RECOVERY_CHECK), 1, stage)
+        self.assertIn(
+            "A missing recovery point before a production mutation the spec prescribes is a `blocked` finding.",
+            prompts["spec-review"],
+        )
+        self.assertIn("Do not silently patch this gap with `pass_with_fixes`", prompts["spec-review"])
+        for stage in ("tickets", "tickets-review"):
+            self.assertNotIn("<state-and-recovery-check>", prompts[stage], stage)
+
     def check_ticket_prompt_rules(self, language):
         self.reach_ticket_approval()
         author = (self.run_dir / "prompts" / "tickets-1.md").read_text()

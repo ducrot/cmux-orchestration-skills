@@ -144,6 +144,22 @@ language throughout the specification.
 </spec-template>"""
 
 
+STATE_AND_RECOVERY_CHECK = """## State and Recovery Check
+
+<state-and-recovery-check>
+Require a recovery point before every state-changing operation the spec prescribes, such as migrations, data changes, deployments, and cleanups; the delivered feature's runtime writes are not such operations.
+Check that the spec identifies
+the recoverable state and how to restore it before the operation begins.
+Check the ordering of snapshots relative to baselines and references: capture recoverable state
+before mutations and establish each baseline or reference before the steps that depend on it.
+Account for side effects of prescribed commands, including hooks, scripts, and providers;
+include their state changes in the recovery and ordering checks.
+Check that gates stay consistent with the steps they guard, including prerequisites, approval
+conditions, and recovery steps. Record these checks within the existing spec sections and review;
+do not add a spec section or an extra review round.
+</state-and-recovery-check>"""
+
+
 def spec_language(state: dict) -> str:
     return f"""Artifact language: {state.get('artifact_language', DEFAULT_ARTIFACT_LANGUAGE)}
 Write specification content in this language, including the actor, want, benefit story pattern.
@@ -347,6 +363,8 @@ When information is genuinely missing, record it under `Open Decisions` instead 
 
 {spec_template_section(state)}
 
+{STATE_AND_RECOVERY_CHECK}
+
 ## Write Boundary
 
 {INDEX_HEAD_PROHIBITION}
@@ -457,6 +475,8 @@ the complete draft, and the contract below.
 
 {spec_template_section(state)}
 
+{STATE_AND_RECOVERY_CHECK}
+
 Check Problem Statement and Solution from the user's perspective, story structure and coverage in
 the artifact language, no file paths or code snippets (except the documented prototype exception),
 seam minimalism (prefer existing seams, the highest useful seam, as few as possible, ideally one;
@@ -466,6 +486,9 @@ the author's own conclusions must be Assumptions with their basis.
 Removing file paths or moving an author inference into Assumptions while retaining established intent
 is `pass_with_fixes`. If an inference presented as a decision
 requires a real product, scope, behavior, priority, or architecture decision, return `blocked`.
+
+A missing recovery point before a production mutation the spec prescribes is a `blocked` finding.
+Do not silently patch this gap with `pass_with_fixes` or overlook it; report it for the human.
 
 No unresolved current-scope Open Decision may pass. A deferred decision passes only after the candidate
 explicitly moves it to Out of Scope or a follow-up area.
