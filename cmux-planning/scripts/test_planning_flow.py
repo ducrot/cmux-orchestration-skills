@@ -1022,6 +1022,31 @@ sha256 {resulting_digest or digest}
         for stage in ("tickets", "tickets-review"):
             self.assertNotIn("<state-and-recovery-check>", prompts[stage], stage)
 
+    def test_path_exceptions_render_through_cli_for_all_workers(self):
+        self.reach_ticket_approval()
+        exception = (
+            "Handover locations may be named by path: artifacts one ticket produces and another reads, "
+            "and the tracker's documentation folder. Prescribed commands whose flags carry the safety "
+            "of a step may be stated verbatim."
+        )
+        preservation = (
+            "When removing ordinary file paths, keep exempt handover locations and "
+            "safety-carrying commands verbatim."
+        )
+        for stage in ("spec", "spec-review", "tickets", "tickets-review"):
+            with self.subTest(stage=stage):
+                prompt = (self.run_dir / "prompts" / f"{stage}-1.md").read_text()
+                normalized = " ".join(prompt.split())
+                self.assertEqual(normalized.count(exception), 1)
+                self.assertEqual(preservation in normalized, stage.endswith("review"))
+                if stage.startswith("tickets"):
+                    self.assertIn("`canonical_check_commands` may contain paths", prompt)
+                    self.assertIn("note its prototype origin", prompt)
+                    self.assertIn("trim it to the decision-rich parts", prompt)
+                else:
+                    self.assertIn("that it came from a prototype", prompt)
+                    self.assertIn("Trim to the decision-rich parts", prompt)
+
     def check_ticket_prompt_rules(self, language):
         self.reach_ticket_approval()
         author = (self.run_dir / "prompts" / "tickets-1.md").read_text()

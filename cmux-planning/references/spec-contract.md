@@ -23,8 +23,13 @@ decision contains the question, context, options, an evidence-backed recommendat
 available, and the reason it remains open. Use `- None` only when no open decision remains.
 `User Stories` is a numbered list in the artifact language. `Implementation Decisions` holds only
 decisions established by the inputs or imposed by the repository; the author's own inferences go to
-`Assumptions` with their basis. The specification contains no file paths or code snippets, except a
-trimmed prototype snippet that encodes a decision more precisely than prose.
+`Assumptions` with their basis. Specifications and tickets contain no ordinary file paths or code
+snippets, with the following exceptions. Handover locations may be named by path: artifacts one
+ticket produces and another reads, and the tracker's documentation folder. Prescribed commands whose
+flags carry the safety of a step may be stated verbatim. A trimmed prototype snippet that encodes a
+decision more precisely than prose is also allowed. Ticket `canonical_check_commands` may contain
+paths. Spec and tickets reviewers, when removing ordinary file paths, keep exempt handover locations
+and safety-carrying commands verbatim.
 
 The author report is separate from the draft. It names concrete repository sources and methods,
 proposed test seams, blockers, plan drift, and the exact draft path. A clean author handoff moves

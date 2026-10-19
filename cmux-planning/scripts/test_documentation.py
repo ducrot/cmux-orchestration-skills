@@ -95,6 +95,21 @@ def notice(text: str) -> str:
     return lines[0]
 
 
+class PathFreedomDocumentation(unittest.TestCase):
+    def test_contract_preserves_handover_paths_and_safety_commands(self):
+        contract = normalized(PLANNING.parent / "references/spec-contract.md")
+        for rule in (
+            "handover locations may be named by path: artifacts one ticket produces and another reads, "
+            "and the tracker's documentation folder.",
+            "prescribed commands whose flags carry the safety of a step may be stated verbatim.",
+            "when removing ordinary file paths, keep exempt handover locations and safety-carrying commands verbatim.",
+            "trimmed prototype snippet that encodes a decision more precisely than prose",
+            "`canonical_check_commands` may contain paths",
+            "specifications and tickets",
+        ):
+            self.assertIn(rule, contract)
+
+
 class TicketApprovalQuizDocumentation(unittest.TestCase):
     def setUp(self):
         self.approval = normalized(PLANNING).split("## ticket approval, staging, and publication", 1)[1].split("## commit", 1)[0]

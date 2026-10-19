@@ -64,8 +64,20 @@ list item. Under Testing Decisions include entries containing
 have no open decisions."""
 
 
+PATH_FREEDOM_EXCEPTION = (
+    "Handover locations may be named by path: artifacts one ticket produces and another reads, "
+    "and the tracker's documentation folder. Prescribed commands whose flags carry the safety "
+    "of a step may be stated verbatim."
+)
+
+PATH_REVIEW_PRESERVATION = (
+    "When removing ordinary file paths, keep exempt handover locations and "
+    "safety-carrying commands verbatim."
+)
+
+
 # Adapted from mattpocock/skills to-spec, pinned in the planning-to-spec design document.
-SPEC_TEMPLATE = """<spec-template>
+SPEC_TEMPLATE = f"""<spec-template>
 ## Problem Statement
 
 The problem that the user is facing, from the user's perspective.
@@ -105,7 +117,8 @@ Include only decisions established by plan files, the confirmed brief, revalidat
 or necessarily imposed by the repository's current behavior. Put your own inferences in Assumptions,
 with their basis, and unresolved choices in Open Decisions. Do not present an inference as a decision.
 
-Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+Do NOT include ordinary file paths or code snippets. They may end up being outdated very quickly.
+{PATH_FREEDOM_EXCEPTION}
 Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can
 (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly
 that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
@@ -337,7 +350,8 @@ When information is genuinely missing, record it under `Open Decisions` instead 
    you can. The fewer seams across the codebase, the better; the ideal number is one. Record the
    proposed seams in your report for the human approval walkthrough; do not create a separate seam gate.
 3. Write the spec using the template below and the supplied inputs. Do not publish it yourself.
-   No file paths or code snippets in the spec, except the narrowly defined prototype snippet below.
+   No file paths or code snippets in the spec, except the handover locations, safety-carrying commands,
+   and narrowly defined prototype snippet allowed by the template below.
    Name modules, tests, and seams by name and behavior. Paths and line references belong in the
    author report under `Repository Sources / Methods`.
 
@@ -478,13 +492,15 @@ the complete draft, and the contract below.
 {STATE_AND_RECOVERY_CHECK}
 
 Check Problem Statement and Solution from the user's perspective, story structure and coverage in
-the artifact language, no file paths or code snippets (except the documented prototype exception),
+the artifact language, no file paths or code snippets (except the documented handover-location,
+safety-carrying-command, and prototype exceptions),
 seam minimalism (prefer existing seams, the highest useful seam, as few as possible, ideally one;
 new seams at the highest useful point), and decision/assumption separation. Check that every
 Implementation Decision comes from the inputs or is necessarily imposed by the repository;
 the author's own conclusions must be Assumptions with their basis.
-Removing file paths or moving an author inference into Assumptions while retaining established intent
-is `pass_with_fixes`. If an inference presented as a decision
+{PATH_REVIEW_PRESERVATION}
+Removing file paths outside those exceptions or moving an author inference into Assumptions while
+retaining established intent is `pass_with_fixes`. If an inference presented as a decision
 requires a real product, scope, behavior, priority, or architecture decision, return `blocked`.
 
 A missing recovery point before a production mutation the spec prescribes is a `blocked` finding.
@@ -600,7 +616,8 @@ def ticket_ground_rules(state: dict) -> str:
 - Keep headings, markers, JSON keys, `technical_layers`, fixed labels, frontmatter values, and worker
   reports in English; preserve the native contract's exact structure and machine-readable values.
 - Ticket titles, `delivered_behavior` (What to build), and acceptance criteria contain no file paths or code snippets.
-  A prototype snippet is the sole snippet exception when it encodes a decision more precisely than prose:
+  {PATH_FREEDOM_EXCEPTION}
+  A prototype snippet is also allowed when it encodes a decision more precisely than prose:
   note its prototype origin and trim it to the decision-rich parts, rather than a working demo.
   `canonical_check_commands` may contain paths.
 - Describe end-to-end behavior from the user's perspective, not a layer-by-layer implementation list,
@@ -852,12 +869,13 @@ tracker contract.
 {NATIVE_TRACKER_POLICY}
 
 Check each ticket for user perspective (with the standalone prefactor and wide-refactor exceptions),
-no file paths or code snippets (except the documented prototype
-exception), prefactoring first, no horizontal slices, dependency-ordered IDs, and a deliberate
+no file paths or code snippets (except the documented handover-location, safety-carrying-command,
+and prototype exceptions), prefactoring first, no horizontal slices, dependency-ordered IDs, and a deliberate
 `execution_mode` without over-HITL or under-HITL. Verify the chosen
 artifact language, glossary and ADR alignment, narrow but complete behavior, justified merges and splits,
 existing-test verification for preserved prefactor behavior, and any wide-refactor sequence or integration
 exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.
+{PATH_REVIEW_PRESERVATION}
 
 Return exactly one verdict:
 
