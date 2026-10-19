@@ -706,6 +706,12 @@ class PlanningFlow(unittest.TestCase):
         self.assertIn("8 MiB size cap and symlink target bytes", prompt)
         self.assertIn("skipped untracked content", prompt)
         self.assertNotIn("files already untracked in the baseline", prompt)
+        report = state["current_attempt"]["paths"]["report"]
+        report_draft = str(Path(state["current_attempt"]["paths"]["started"]).parent / "report-draft.md")
+        self.assertIn(f"Report draft for self-validation: `{report_draft}`", prompt)
+        self.assertIn(f"-report {report_draft}", prompt)
+        self.assertNotIn(f"-report {report}", prompt)
+        self.assertIn("only once, as your final action", prompt)
         if stage in {"spec-review", "tickets-review"}:
             self.assertIn("`Checked` cannot be `- None`, including for `blocked`.", prompt)
         if stage in {"tickets", "tickets-review"}:
@@ -761,7 +767,7 @@ PASS
         self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
         self.assertIn("Put explanatory context in Methods", reviewer_prompt)
         self.assertIn("exit 2 with `\"gate\": \"blocked\"` validates `blocked`", reviewer_prompt)
-        self.assertIn("do not touch the report again after that final run", reviewer_prompt)
+        self.assertIn("never touch it again", reviewer_prompt)
         self.assertIn("exact bytes handed off", reviewer_prompt)
         digest = validate_spec(draft)["sha256"]
         (self.run_dir / "reports" / "spec-review-1.md").write_text(
@@ -954,7 +960,7 @@ sha256 {resulting_digest or digest}
         self.assertIn("exactly `- None`, with no period, explanation, second bullet, or trailing paragraph", reviewer_prompt)
         self.assertIn("Put explanatory context in Methods", reviewer_prompt)
         self.assertIn("exit 2 with `\"gate\": \"blocked\"` validates `blocked`", reviewer_prompt)
-        self.assertIn("do not touch the report again after that final run", reviewer_prompt)
+        self.assertIn("never touch it again", reviewer_prompt)
         self.assertIn("exact bytes handed off", reviewer_prompt)
         if launch_panes:
             self.launch_prepared_stage("tickets-review")
@@ -2975,6 +2981,52 @@ sha256 {resulting_digest or digest}
                 patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
             self.assertEqual(await_report.watch(args), 8)
         self.assert_board("hitl", "spec-1: report deadline exceeded, extension decision needed", 0.0, "Spec · Author 1")
+
+    def started_watch_args(self, *tail):
+        import await_report
+        common = self.start_prompt_fixture()
+        launch = self.start_prompt_launch(common)
+        marker = Path(launch["marker_path"])
+        marker.parent.mkdir(parents=True)
+        marker.write_text("started")
+        return await_report.build_parser().parse_args([
+            *common, "--cmux-cmd", str(self.cmux), "--poll-seconds", "0.01", *tail])
+
+    def test_watcher_waits_while_the_author_corrects_an_invalid_report(self):
+        from unittest.mock import patch
+        import await_report
+        args = self.started_watch_args("--deadline-minutes", "5")
+        self.write_author_handoff()
+        report = self.run_dir / "reports/spec-1.md"
+        report.write_text(report.read_text().replace(
+            "## Plan Drift\n- None", "## Plan Drift\n- noted while validating"))
+        polls = []
+
+        def poll(_seconds):
+            polls.append(_seconds)
+            if len(polls) == 5:
+                self.write_author_handoff()
+            if len(polls) > 50:
+                raise AssertionError("valid report was never captured")
+
+        with patch("time.sleep", side_effect=poll), \
+                patch("await_report.health_says_dead", return_value=False):
+            self.assertEqual(await_report.watch(args), 0)
+        self.assertGreater(len(polls), 5)
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+    def test_watcher_captures_an_invalid_report_once_it_stays_unchanged(self):
+        from unittest.mock import patch
+        import await_report
+        args = self.started_watch_args("--deadline-minutes", "5", "--invalid-settle-seconds", "0.05")
+        report = self.run_dir / "reports/spec-1.md"
+        report.write_text("handoff")
+        with patch("await_report.health_says_dead", return_value=False):
+            self.assertEqual(await_report.watch(args), 0)
+        captured = [e for e in self.run_events() if e["data"].get("outcome") == "report"]
+        self.assertEqual(captured[-1]["data"]["report_sha256"],
+                         hashlib.sha256(b"handoff").hexdigest())
 
     def test_start_prompt_stale_markers_and_older_launch_do_not_confirm(self):
         common = self.start_prompt_fixture()

@@ -286,7 +286,10 @@ Event vocabulary: `worker.starting` and `worker.launch_sent` bind launch time an
 
 Use the prompt and handoff paths recorded under the current attempt in `state.json`; do not construct
 them from stage/pass alone. The watcher accepts a report only after observing identical non-empty bytes
-twice, records that exact identity in the manifest before emitting its captured-report event, and the
+twice that also pass the stage's report contract; a contract-failing report is captured only once it
+has stayed unchanged for `--invalid-settle-seconds` (default 300) or the deadline is reached. Workers
+self-validate in `report-draft.md` beside their started marker and write the handoff report once,
+last. The watcher records that exact identity in the manifest before emitting its captured-report event, and the
 gate repeats a stable capture when invoked directly. A missing, truncated, replaced, or changed
 finalized artifact records `artifact.integrity_violation`, closes the attempt, and gates HITL before
 the artifact can be parsed or launched.

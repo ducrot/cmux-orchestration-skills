@@ -39,21 +39,29 @@ handoff artifacts are gated by digest instead."""
 INDEX_HEAD_PROHIBITION = 'Never run `git add`, `git rm --cached`, `git stash`, `git commit`, `git reset`, or any other command that changes the index or HEAD; staging and committing happen after the run, outside the worker.'
 
 
-REVIEW_HANDOFF_CONTRACT = """Empty sections are machine-readable sentinels: their entire body must be
+REPORT_HANDOFF_STEP = """Write the report to the report handoff path only once, as your final action,
+with exactly the validated bytes of the report draft, after every other file is complete. Never
+write a provisional report there and never touch it again: the orchestrator may capture it at any
+moment, and a report changed after capture fails the handoff. If validation cannot complete,
+report the failure honestly in that single write instead of claiming a validated handoff."""
+
+
+REVIEW_HANDOFF_CONTRACT = f"""Empty sections are machine-readable sentinels: their entire body must be
 exactly `- None`, with no period, explanation, second bullet, or trailing paragraph. For `pass`,
 this applies to Findings, Corrections, Blockers, and Plan Drift; for `pass_with_fixes`, Blockers and
 Plan Drift must remain exactly `- None`. Put explanatory context in Methods, not after a sentinel.
 For example, `- None. The proposal remains unchanged.` is invalid.
 
-Run the self-validation command below on the final saved report and inspect its exit code and output.
+Write the report to the report draft first and run the self-validation command below on it.
+Inspect its exit code and output.
 Exit 0 validates `pass` or `pass_with_fixes`; exit 2 with `"gate": "blocked"` validates `blocked` and
-is a complete handoff, not a failure. Exit 1 means the report or candidate is malformed: fix it within
-your write boundary and rerun until it validates. Never remove a real finding, blocker, or drift
-merely to pass validation; use the appropriate verdict. Any subsequent report or candidate edit
+is a complete handoff, not a failure. Exit 1 means the report draft or candidate is malformed: fix it
+within your write boundary and rerun until it validates. Never remove a real finding, blocker, or drift
+merely to pass validation; use the appropriate verdict. Any subsequent report draft or candidate edit
 invalidates that check and requires another run. Claim successful self-validation only for the
-exact bytes handed off, and do not touch the report again after that final run: the orchestrator may
-capture it at any moment. If validation cannot complete, report the failure honestly instead of
-claiming a validated handoff."""
+exact bytes handed off.
+
+{REPORT_HANDOFF_STEP}"""
 
 
 # Named from the enforced list, so a prompt can never instruct a section set the gate rejects.
@@ -299,6 +307,10 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
     return "\n\n".join(blocks)
 
 
+def report_draft_path(paths: dict) -> str:
+    return str(Path(paths["started"]).parent / "report-draft.md")
+
+
 def first_step(marker: str) -> str:
     return f"""## First Step
 
@@ -401,6 +413,7 @@ You may inspect the repository read-only. Physically write only these exact file
 
 - Complete draft: `{paths['draft']}`
 - Started marker: `{paths['started']}`
+- Report draft for self-validation: `{report_draft_path(paths)}`
 - Structured report: `{paths['report']}`
 
 Do not edit product code, configuration, lifecycle state, prompts, snapshots, or any other path. The
@@ -431,12 +444,15 @@ PASS
 `{paths['draft']}`
 ```
 
-Self-validate before handoff (skip the first command for `BLOCKED`, which has no complete draft):
+Write the report to the report draft first and self-validate it (skip the first command for
+`BLOCKED`, which has no complete draft). Fix the report draft and rerun until both pass:
 
 ```bash
 python3 {contract_path()} spec {paths['draft']}
-python3 {contract_path()} author-report {paths['report']} --draft {paths['draft']}
+python3 {contract_path()} author-report {report_draft_path(paths)} --draft {paths['draft']}
 ```
+
+{REPORT_HANDOFF_STEP}
 """
 
 
@@ -537,6 +553,7 @@ Return exactly one verdict:
 You may physically write only:
 
 - Started marker: `{paths['started']}`
+- Report draft for self-validation: `{report_draft_path(paths)}`
 - Review report: `{paths['report']}`
 - Complete corrected candidate only for `pass_with_fixes`: `{paths['candidate']}`
 
@@ -588,7 +605,7 @@ sha256 {author['draft_sha256']}
 Self-validate before handoff (the candidate path may be absent for `pass` or `blocked`):
 
 ```bash
-python3 {contract_path()} review-report {paths['report']} \\
+python3 {contract_path()} review-report {report_draft_path(paths)} \\
   --input {draft} --candidate {paths['candidate']}
 ```
 """
@@ -744,6 +761,7 @@ You may physically write only these exact files:
 - Machine-readable proposal: `{paths['proposal']}`
 - Human-readable numbered summary: `{paths['summary']}`
 - Started marker: `{paths['started']}`
+- Report draft for self-validation: `{report_draft_path(paths)}`
 - Structured report: `{paths['report']}`
 
 Do not edit the approved spec, product code, configuration, lifecycle state, or any other path. Mandatory
@@ -779,17 +797,20 @@ sha256 {spec_digest}
 - `{paths['summary']}`
 ```
 
-Use `BLOCKED` only for a real blocker, and then state it under Blockers. Self-validate a passing handoff:
+Use `BLOCKED` only for a real blocker, and then state it under Blockers. Write the report to the report
+draft first and self-validate a passing handoff, fixing the report draft and rerunning until it passes:
 
 ```bash
 python3 {tracker_contract_path()} proposal {paths['proposal']} \\
   --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}
 python3 {tracker_contract_path()} render-summary \\
   --proposal {paths['proposal']} --out {paths['summary']}
-python3 {tracker_contract_path()} author-report {paths['report']} \\
+python3 {tracker_contract_path()} author-report {report_draft_path(paths)} \\
   --proposal {paths['proposal']} --summary {paths['summary']} \\
   --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}
 ```
+
+{REPORT_HANDOFF_STEP}
 """
 
 
@@ -906,6 +927,7 @@ Return exactly one verdict:
 You may physically write only:
 
 - Started marker: `{paths['started']}`
+- Report draft for self-validation: `{report_draft_path(paths)}`
 - Review report: `{paths['report']}`
 - Complete corrected machine proposal only for `pass_with_fixes`: `{paths['candidate']}`
 
@@ -957,7 +979,7 @@ sha256 {author['proposal_sha256']}
 Self-validate before handoff (the candidate may be absent for `pass` or `blocked`):
 
 ```bash
-python3 {tracker_contract_path()} review-report {paths['report']} \\
+python3 {tracker_contract_path()} review-report {report_draft_path(paths)} \\
   --input {proposal} --candidate {paths['candidate']} \\
   --input-sha256 {author['proposal_sha256']} \\
   --spec {approved_spec} --spec-sha256 {spec_digest} --tracker-slug {tracker_slug}

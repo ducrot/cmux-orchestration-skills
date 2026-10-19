@@ -28,7 +28,9 @@ from orchestrator_lib import (
     write_json,
 )
 from run_briefing import publish_board
+from spec_contract import validate_author_report, validate_review_report
 from stage_snapshot import load_prepared_snapshot
+from tracker_contract import validate_ticket_author_report, validate_ticket_review_report
 from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
 
 
@@ -36,6 +38,10 @@ EXIT_REPORT = 0
 EXIT_PANE_DEAD = 7
 EXIT_DEADLINE = 8
 EXIT_NOT_STARTED = 9
+# A report the stage contract rejects is usually mid-correction after the worker's own
+# self-validation. Capture it anyway once it has stayed unchanged this long, so a worker that
+# is genuinely done with a malformed report still reaches the accept gate before the deadline.
+INVALID_REPORT_SETTLE_SECONDS = 300
 # 1 = crash, 2 = argparse usage. Outcomes stay clear of both so a usage error is never
 # mistaken for a deadline.
 
@@ -43,6 +49,37 @@ EXIT_NOT_STARTED = 9
 def report_path(run_dir: Path, stage: str, pass_num: int) -> Path:
     snapshot = load_prepared_snapshot(run_dir, stage, pass_num)
     return Path(snapshot["allowed_worker_writes"]["report"])
+
+
+def report_validates(state: dict, stage: str, paths: dict) -> bool:
+    """The same contract check the accept gate runs, without recording anything."""
+    report = Path(paths["report"])
+    try:
+        if stage == "spec":
+            validate_author_report(report, Path(paths["draft"]))
+        elif stage == "tickets":
+            approved = state["approved_spec"]
+            validate_ticket_author_report(
+                report, Path(paths["proposal"]), Path(paths["summary"]),
+                expected_spec=Path(approved["path"]), expected_spec_sha256=approved["sha256"],
+                expected_tracker_slug=state["tracker_slug"],
+            )
+        elif stage == "spec-review":
+            author = state["author_spec"]
+            validate_review_report(report, Path(author["draft"]), Path(paths["candidate"]),
+                                   expected_input_sha256=author["draft_sha256"])
+        else:
+            approved = state["approved_spec"]
+            author = state["author_tickets"]
+            validate_ticket_review_report(
+                report, Path(author["proposal"]), Path(paths["candidate"]),
+                expected_input_sha256=author["proposal_sha256"],
+                expected_spec=Path(approved["path"]), expected_spec_sha256=approved["sha256"],
+                expected_tracker_slug=state["tracker_slug"],
+            )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
 
 
 def surface_is_dead(output: str, surface: str) -> bool:
@@ -76,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-seconds", type=float, default=60)
     parser.add_argument("--heartbeat-seconds", type=float, default=300)
     parser.add_argument("--extension", type=int, choices=(0, 1), default=0)
+    parser.add_argument("--invalid-settle-seconds", type=float, default=INVALID_REPORT_SETTLE_SECONDS)
     return parser
 
 
@@ -145,6 +183,7 @@ def watch(args: argparse.Namespace) -> int:
     minutes = clock["minutes"]
     report_launch = launch if launch.get("prompt_path") else None
     settled: str | None = None
+    settled_since = time.monotonic()
     while True:
         elapsed = round(time.monotonic() - started, 1)
         data = {
@@ -171,7 +210,16 @@ def watch(args: argparse.Namespace) -> int:
         # Workers write the report with their own non-atomic tools, so existence alone can mean
         # a half-written file. Requiring identical non-empty bytes twice avoids gating on a prefix.
         digest = sha256_file(report) if fresh_report(report, report_launch) else None
-        if digest is not None and digest == settled:
+        now = time.monotonic()
+        if digest != settled:
+            settled_since = now
+        # Capture freezes the report in the manifest, so a worker still correcting it after a
+        # failed self-validation would turn into an integrity violation at the accept gate.
+        if digest is not None and digest == settled and (
+            now >= deadline
+            or now - settled_since >= args.invalid_settle_seconds
+            or report_validates(state, args.stage, attempt["paths"])
+        ):
             state = verify_or_gate(run_dir, stage=args.stage)
             attempt = current_attempt(state, args.stage, args.pass_num)
             entry = record_artifact(
@@ -202,7 +250,6 @@ def watch(args: argparse.Namespace) -> int:
             )
             print(f"outcome=report report={report}")
             return EXIT_REPORT
-        now = time.monotonic()
         # Even an expired re-arm must capture a fresh handoff already on disk. Allow
         # its one settling poll, but never renew the wait for a continually changing file.
         if not start_pending and now >= deadline and (digest is None or settled is not None):
