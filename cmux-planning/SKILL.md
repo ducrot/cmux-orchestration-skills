@@ -53,8 +53,15 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - The orchestrator never changes a tracker after publication.
 - Every option offered at a gate, including the recommended one, stays within the planning
   contract and states its consequences for validation and digests.
-- Relaunch and revise reasons quote the human's answer verbatim without orchestrator additions;
-  reviewer findings arrive only as the attached review report.
+- Relaunch and revise reasons quote only the chosen option's label and the human's free text
+  verbatim, never option descriptions or orchestrator additions; reviewer findings arrive only as the
+  attached review report.
+- Before asking about a `blocked` verdict, show the reviewer's findings briefly in the chat.
+- Spec and ticket approval questions carry no recommendation.
+- Label every option the orchestrator drafted itself, rather than taking it from a report or the
+  human, as drafted by the orchestrator.
+- An extension option states how the worker continues: only more time, or a new delivery of the
+  full stage prompt.
 - Only after successful completion, the orchestrator's new Git writes through `run_commit.py commit`
   are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and compare-and-swap
   `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must never change the Git index or

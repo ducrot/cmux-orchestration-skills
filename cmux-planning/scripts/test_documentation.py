@@ -757,15 +757,23 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "the orchestrator never changes a tracker after publication.",
             "every option offered at a gate, including the recommended one, stays within "
             "the planning contract and states its consequences for validation and digests.",
-            "relaunch and revise reasons quote the human's answer verbatim without orchestrator additions; "
-            "reviewer findings arrive only as the attached review report.",
+            "relaunch and revise reasons quote only the chosen option's label and the human's free text "
+            "verbatim, never option descriptions or orchestrator additions; reviewer findings arrive only "
+            "as the attached review report.",
+            "before asking about a `blocked` verdict, show the reviewer's findings briefly in the chat.",
+            "spec and ticket approval questions carry no recommendation.",
+            "label every option the orchestrator drafted itself, rather than taking it from a report or "
+            "the human, as drafted by the orchestrator.",
+            "an extension option states how the worker continues: only more time, or a new delivery of "
+            "the full stage prompt.",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
 
     def test_recovery_reference_describes_verbatim_reasons_and_review_attachments(self):
         text = " ".join((PLANNING.parent / "references/status-recovery.md").read_text().split())
-        for phrase in ("human's answer verbatim", "Both relaunch and revise attach",
+        for phrase in ("the chosen option's label and the human's free text verbatim",
+                       "Both relaunch and revise attach",
                        "review report by its finalized manifest identity", "--scope spec"):
             self.assertIn(phrase, text)
 
