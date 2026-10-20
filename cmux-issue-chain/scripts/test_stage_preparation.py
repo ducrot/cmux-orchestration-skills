@@ -536,6 +536,21 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(self.read_state()["commit_mode"], "commit")
         self.assertEqual(self.read_state()["chain"], [])
 
+    def test_init_records_kept_assignments_from_the_invocation(self):
+        kept = "ab" * 32
+        invocation = f"/cmux-issue-chain ISSUE-001 --commit-mode propose --keep-assignments {kept.upper()}"
+        self.assertEqual(self.init_for("kept", "--invocation", invocation).returncode, 0)
+        state = json.loads((self.runs_root / "kept" / "state.json").read_text())
+        self.assertEqual(state["kept_assignments"], kept)
+        self.assertEqual(self.init_for("none").returncode, 0)
+        self.assertIsNone(json.loads((self.runs_root / "none" / "state.json").read_text())["kept_assignments"])
+        before = file_contents(self.runs_root)
+        for bad in ("--keep-assignments abc", f"--keep-assignments {kept} --keep-assignments {'cd' * 32}"):
+            refused = self.init_for("bad", "--invocation", f"/cmux-issue-chain ISSUE-001 {bad}")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("differences_sha256", refused.stderr)
+        self.assertEqual(file_contents(self.runs_root), before)
+
     def test_triage_modes_and_legacy_default(self):
         self.assertEqual(self.init().returncode, 0)
         state = self.read_state()

@@ -34,10 +34,10 @@ The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch
 
 ## Default assignments at initialization
 
-At the same point as the commit-mode question, with the same exceptions, run
+Before the commit-mode question, with the same exceptions, run
 `python3 scripts/agents_config.py compare-defaults` with the run's `--config` when that file
-already exists as valid schema v3, including one just migrated. Continue when `matches_defaults`
-is true.
+already exists as valid schema v3, including one just migrated. Continue without asking when
+`matches_defaults` is true; otherwise ask in the same `AskUserQuestion` call as the commit mode.
 
 Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
 

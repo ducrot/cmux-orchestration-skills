@@ -656,6 +656,12 @@ class NextStep(RunDirTestCase):
         )
         self.assertNotIn("unverändert", text)
 
+    def test_prompt_carries_the_init_answers_to_the_next_issue(self):
+        tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
+        flags = f"--commit-mode commit --keep-assignments {'ab' * 32}"
+        text = self.recap(self.invoked_run(tracker, f"/cmux-issue-chain tracker ISSUE-003 {flags}"))
+        self.assertIn(f"~~~\n/cmux-issue-chain tracker ISSUE-004 {flags}\n~~~", text)
+
     def test_prompt_without_the_issue_is_repeated_and_flagged(self):
         tracker = self.tracker({"ISSUE-004": issue_file("ISSUE-004")})
         text = self.recap(self.invoked_run(tracker, "/cmux-issue-chain nimm das nächste ready Issue"))

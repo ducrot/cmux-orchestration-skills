@@ -1944,6 +1944,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIGEST",
         help="refuse acceptance unless the comparison still matches this digest",
     )
+    compare.add_argument(
+        "--kept",
+        metavar="DIGEST",
+        help="differences_sha256 the human already chose to keep; ask is false while it still matches",
+    )
     return parser
 
 
@@ -1966,6 +1971,21 @@ def approved_digest(args: argparse.Namespace, expected: str) -> str | None:
             f"or {omission_guidance}"
         )
     return approved
+
+
+def kept_digest(args: argparse.Namespace) -> str | None:
+    kept = args.kept
+    if kept is None:
+        return None
+    if args.accept:
+        raise ConfigError("--kept is a read-only comparison input; omit it with --accept")
+    kept = kept.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", kept):
+        raise ConfigError(
+            f"invalid --kept digest: {args.kept!r} is not 64 hexadecimal characters; "
+            "provide the differences_sha256 printed by compare-defaults"
+        )
+    return kept
 
 
 def run(args: argparse.Namespace) -> int:
@@ -2001,6 +2021,7 @@ def run(args: argparse.Namespace) -> int:
         return 0
     if args.command == "compare-defaults":
         approved = approved_digest(args, "comparison SHA-256 printed by compare-defaults")
+        kept = kept_digest(args)
         data, original = load_validated_with_payload(path, ConfigError)
         differences, added_profiles, _, payload = default_assignment_candidate(data, path)
         # Bound to the listed differences as well, so a difference added after the comparison
@@ -2010,11 +2031,19 @@ def run(args: argparse.Namespace) -> int:
             if differences
             else None
         )
+        # Bound to the assignment differences only, so a later profile edit keeps a kept answer.
+        differences_digest = (
+            candidate_digest(json.dumps(differences, sort_keys=True).encode("utf-8"))
+            if differences
+            else None
+        )
         if not args.accept:
             print(json.dumps(
                 {
                     "source": str(path),
                     "matches_defaults": not differences,
+                    "differences_sha256": differences_digest,
+                    "ask": bool(differences) and kept != differences_digest,
                     "differences": differences,
                     "added_profiles": added_profiles,
                     "comparison_sha256": digest,

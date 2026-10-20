@@ -213,6 +213,19 @@ def resolve_workspace_id(args: argparse.Namespace) -> str | None:
     return workspace_id
 
 
+def invocation_kept_assignments(invocation: str | None) -> str | None:
+    values = re.findall(r"(?:^|\s)--keep-assignments(?:\s+|=)(\S*)", invocation or "")
+    if not values:
+        return None
+    kept = {value.lower() for value in values}
+    if len(kept) != 1 or not re.fullmatch(r"[0-9a-f]{64}", next(iter(kept))):
+        raise SystemExit(
+            "--invocation must name --keep-assignments at most once as the 64-character "
+            "differences_sha256 printed by agents_config.py compare-defaults"
+        )
+    return kept.pop()
+
+
 def init_run(args: argparse.Namespace) -> int:
     commit_mode = args.commit_mode
     invocation_modes = re.findall(r"(?:^|\s)--commit-mode(?:\s+|=)(commit|propose)(?=\s|$)", args.invocation or "")
@@ -220,6 +233,7 @@ def init_run(args: argparse.Namespace) -> int:
         if len(set(invocation_modes)) != 1 or (commit_mode is not None and commit_mode != invocation_modes[0]):
             raise SystemExit("--commit-mode contradicts --invocation commit mode")
         commit_mode = invocation_modes[0]
+    kept_assignments = invocation_kept_assignments(args.invocation)
     tracker = Path(args.tracker)
     workspace_id = resolve_workspace_id(args)
     issues = load_issues(tracker)
@@ -303,6 +317,7 @@ def init_run(args: argparse.Namespace) -> int:
         "ready": issue_ready(issue, issues),
         "triage_mode": "human" if args.human_triage else "autonomous",
         "invocation": args.invocation,
+        "kept_assignments": kept_assignments,
         "chain": [] if is_hitl else [w for w in ISSUE_WORKERS if w != "triage" or not args.human_triage],
         "configuration_source": configuration_source,
         "prepared_stage": prepared_pointer,

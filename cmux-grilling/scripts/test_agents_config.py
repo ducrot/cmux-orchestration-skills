@@ -1050,6 +1050,45 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertIn("printed by compare-defaults", malformed.stderr)
         self.assertEqual(path.read_bytes(), changed)
 
+    def test_compare_defaults_skips_the_question_for_kept_differences_until_assignments_change(self):
+        path, data = self.init_default()
+        self.assertFalse(json.loads(self.compare(path).stdout)["ask"])
+        data["workflows"]["issue-chain"]["implement"] = "claude-opus-high"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        first = json.loads(self.compare(path).stdout)
+        self.assertTrue(first["ask"])
+        kept = first["differences_sha256"]
+        self.assertRegex(kept, r"^[0-9a-f]{64}$")
+
+        data["profiles"]["claude-opus-high"]["model"] = "custom-opus"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        same = json.loads(self.compare(path, "--kept", kept.upper()).stdout)
+        self.assertFalse(same["ask"])
+        self.assertEqual(same["differences_sha256"], kept)
+        self.assertNotEqual(same["comparison_sha256"], first["comparison_sha256"])
+
+        data["workflows"]["planning"]["spec"] = "claude-opus-high"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        changed = json.loads(self.compare(path, "--kept", kept).stdout)
+        self.assertTrue(changed["ask"])
+        self.assertNotEqual(changed["differences_sha256"], kept)
+
+    def test_compare_defaults_refuses_a_malformed_kept_digest_or_one_combined_with_accept(self):
+        path, data = self.init_default()
+        data["workflows"]["issue-chain"]["implement"] = "claude-opus-high"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        original = path.read_bytes()
+        kept = json.loads(self.compare(path).stdout)["differences_sha256"]
+
+        malformed = self.compare(path, "--kept", "abc")
+        with_accept = self.compare(path, "--accept", "--kept", kept)
+
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("differences_sha256", malformed.stderr)
+        self.assertNotEqual(with_accept.returncode, 0)
+        self.assertIn("omit it with --accept", with_accept.stderr)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_compare_defaults_requires_migration_of_a_legacy_file_first(self):
         _, legacy = self.schema_two_default()
         path = self.write_config(legacy, "v2-compare.json")

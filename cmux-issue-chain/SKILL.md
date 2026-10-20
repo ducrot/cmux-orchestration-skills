@@ -34,12 +34,18 @@ from `--invocation` when the direct flag is omitted and refuses contradictory va
 
 ## Default assignments at initialization
 
-At the same point as the commit-mode question, with the same exceptions, run
+Before the commit-mode question, with the same exceptions, run
 `python3 scripts/agents_config.py compare-defaults` with the run's `--config` when that file
-already exists as valid schema v3, including one just migrated. Continue when `matches_defaults`
-is true.
+already exists as valid schema v3, including one just migrated. Pass `--kept <digest>` when the
+invocation names `--keep-assignments <digest>`. Continue without asking when `ask` is false.
 
-Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
+Read when `compare-defaults` reports `ask: true`: [references/default-assignments.md](references/default-assignments.md).
+
+Ask the assignment question in the same `AskUserQuestion` call as the commit-mode question, as its
+last question; alone when the commit mode is already named. A kept answer travels with the
+next-run prompt like the commit mode, so a chain asks once at its first issue and again only when
+the listed differences change. Init records the digest as `kept_assignments` and refuses a
+malformed or contradictory one.
 
 ## Worker Profile Configuration
 
@@ -532,8 +538,8 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
   `--invocation` with the recommended issue swapped in (ID and issue file name); a run without one gets
   `/cmux-issue-chain <tracker> <issue-id>`. When the initial prompt never named the issue, it is repeated
   unchanged with a note. Remove additions that only applied to the finished issue, with the same one-line
-  reason; keep everything else. `recap-show` refuses a missing next-step line or prompt block while an
-  issue is startable, a prompt that drops the recommended issue, or one that differs from the generated
+  reason; keep everything else, always `--commit-mode` and `--keep-assignments`. `recap-show` refuses a
+  missing next-step line or prompt block while an issue is startable, a prompt that drops the recommended issue, or one that differs from the generated
   prompt without a reason, and records `prompt_edited` in `run.recap`. When the tracker changed after
   `recap-draft`, delete `recap.md` and draft it again.
 - Fill only `{{outcome}}`: one or two sentences on what the run actually delivered, or for a halted

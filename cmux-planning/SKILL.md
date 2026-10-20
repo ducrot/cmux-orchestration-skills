@@ -30,7 +30,7 @@ stored choices cannot change. Briefing ends with `Commit: automatic|proposal` (`
 
 ## Artifact language at initialization
 
-After commit mode, before default assignments, ask one `AskUserQuestion` single-select in the
+In the same `AskUserQuestion` call as the commit mode, as its second question, ask a single-select in the
 human's language: "Which language should spec and ticket content use?" Offer English first
 and recommended, then the human's language if not English; Other allows free text.
 Use an explicit `--artifact-language` without asking. Same fresh-run checks; never on resume, re-init, exit-3, or smoke tests.
@@ -42,9 +42,10 @@ only with the field, before Commit.
 
 ## Default assignments at initialization
 
-After both questions, with the same exceptions, run `python3 scripts/agents_config.py compare-defaults`
+Before both questions, with the same exceptions, run `python3 scripts/agents_config.py compare-defaults`
 with the run's `--config` if valid schema v3 exists (including after migration).
-Continue when `matches_defaults` is true.
+Continue without asking when `matches_defaults` is true; otherwise ask as the last question of the
+same `AskUserQuestion` call.
 
 Read when `compare-defaults` reports `matches_defaults: false`: [references/default-assignments.md](references/default-assignments.md).
 
@@ -143,8 +144,8 @@ Read when installing planning or setting it up for first use: [references/instal
 
 ## Initialize
 
-Before a fresh init: unfinished-run check (exit 3), commit mode, language, draft and confirm the
-conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
+Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one question call for commit
+mode, language and assignments, draft and confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
 for its six English headings, human-language content and verbatim quotes; show it fully as its own message,
 then confirm it with one `AskUserQuestion` single-select as described there.
 Require a plan file or brief; grilling is additional. Explicit brief decisions beat revalidated grilling

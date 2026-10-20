@@ -9,6 +9,7 @@ python3 scripts/agents_config.py show-resolved
 python3 scripts/agents_config.py migrate
 python3 scripts/agents_config.py migrate --accept
 python3 scripts/agents_config.py compare-defaults
+python3 scripts/agents_config.py compare-defaults --kept <differences_sha256>
 python3 scripts/agents_config.py compare-defaults --accept
 ```
 
