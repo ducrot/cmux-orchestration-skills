@@ -774,7 +774,8 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         text = " ".join((PLANNING.parent / "references/status-recovery.md").read_text().split())
         for phrase in ("the chosen option's label and the human's free text verbatim",
                        "Both relaunch and revise attach",
-                       "review report by its finalized manifest identity", "--scope spec"):
+                       "review report by its finalized manifest identity", "--scope spec",
+                       "a spec author gets every prior handoff", "only as path and sha256"):
             self.assertIn(phrase, text)
 
     def test_entrypoint_states_integrity_boundary_once(self):

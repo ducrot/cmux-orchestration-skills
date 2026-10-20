@@ -1336,7 +1336,11 @@ sha256 {resulting_digest or digest}
                             "path": str(path), "sha256": entry["sha256"],
                             "manifest_id": entry["id"]}]}
                     context = resumed_context(self.run_dir, state, stage, 2) + "\nFOLLOWING SECTION"
-                    self.assert_embedded_file(context, content, "text", "FOLLOWING SECTION")
+                    if stage == "spec":
+                        self.assertNotIn(content, context)
+                        self.assertIn(entry["sha256"], context)
+                    else:
+                        self.assert_embedded_file(context, content, "text", "FOLLOWING SECTION")
 
     def test_multiple_plan_files_survive_all_stages_and_recovery(self):
         first = self.repo / "plans" / "plan.md"
@@ -4543,7 +4547,10 @@ Option?
         state = json.loads(state_path.read_text())
         prompt = Path(state["current_attempt"]["paths"]["prompt"]).read_text()
         self.assertIn("## Interrupted-Pass Recovery Context", prompt)
-        self.assertIn(report.read_text().rstrip(), prompt)
+        if stage == "spec":
+            self.assertNotIn(report.read_text().rstrip(), prompt)
+        else:
+            self.assertIn(report.read_text().rstrip(), prompt)
         self.assertEqual(prompt.count(reason), 1)
         self.assertNotIn("Keep the specification revision request", prompt)
         self.assertNotIn("Keep the ticket revision request", prompt)
@@ -4557,7 +4564,7 @@ Option?
             self.assertIn(item["sha256"], author_recovery)
             kind = state["artifact_manifest"][item["manifest_id"]]["kind"]
             content = Path(item["path"]).read_text().rstrip()
-            if stage == "tickets" and kind == "tickets-summary":
+            if stage == "spec" or kind == "tickets-summary":
                 self.assertNotIn(content, author_recovery)
             else:
                 self.assertIn("```text\n" + content + "\n```", author_recovery)
@@ -4651,7 +4658,12 @@ Option?
             following_section = "Specification Contract" if target == "spec" else "Tracker Ground Rules"
             block = prompt.split("## Revision Review Context", 1)[1].split(f"\n## {following_section}\n", 1)[0]
             self.assertIn(identity, block)
-            self.assertIn(report.read_text().rstrip(), block)
+            if target == "spec":
+                self.assertNotIn(report.read_text().rstrip(), block)
+                self.assertIn(state["revision_context"]["prior_handoffs"][0]["sha256"], block)
+                self.assertIn("Read each prior handoff from its path", block)
+            else:
+                self.assertIn(report.read_text().rstrip(), block)
             self.assertEqual(prompt.count(reason), 1)
             self.assertEqual(len(state["revision_context"]["prior_handoffs"]), 1)
 
@@ -4740,7 +4752,10 @@ Option?
             entry = state["artifact_manifest"][item["manifest_id"]]
             self.assertTrue(entry["finalized"])
             self.assertEqual(entry["kind"], "worker-report")
-        self.assertIn(report.read_text().rstrip(), prompt)
+        if stage == "spec":
+            self.assertNotIn(report.read_text().rstrip(), prompt)
+        else:
+            self.assertIn(report.read_text().rstrip(), prompt)
 
     def test_dead_revised_spec_author_relaunch_keeps_unconsumed_feedback_and_review(self):
         self.exercise_unconsumed_revision_relaunch("spec")

@@ -297,13 +297,15 @@ def resumed_context(run_dir: Path, state: dict, stage: str, pass_num: int) -> st
         block = f"### {item.get('label', 'Prior handoff')}\n\n`{path}` (sha256 `{item['sha256']}`)"
         if revision:
             block += f" (manifest `{item['manifest_id']}`)"
-        if not reviewer and not (stage == "tickets" and entry["kind"] == "tickets-summary"):
+        if not reviewer and stage != "spec" and not (stage == "tickets" and entry["kind"] == "tickets-summary"):
             try:
                 content = path.read_text(encoding="utf-8")
             except UnicodeError as error:
                 raise SnapshotError(f"{context_name} handoff is not UTF-8: {path}") from error
             block += f"\n\n{fenced_content(content, 'text')}"
         blocks.append(block)
+    if stage == "spec" and recovery.get("prior_handoffs"):
+        blocks.append("Read each prior handoff from its path and verify its sha256 before revising.")
     return "\n\n".join(blocks)
 
 
