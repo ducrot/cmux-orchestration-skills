@@ -619,7 +619,8 @@ directories, file types, or worker specialties. Use suitability for one fresh wo
 a qualitative boundary; never write token counts or estimates into the proposal. Evaluate merge
 opportunities as explicitly as split points: merge only work sharing one outcome, verification story,
 and substantially the same context; split independent outcomes, decision boundaries, rollout
-requirements, or excessive context. Add only blocking edges whose prerequisite genuinely prevents
+requirements, or excessive context. More than six acceptance criteria is a soft size limit: split such
+a ticket, or justify in `merge_split_rationale` why its one outcome stays whole. Add only blocking edges whose prerequisite genuinely prevents
 the blocked ticket from starting, leaving every initially ready ticket visible in the frontier.
 
 A ticket of any slice type creating rules, conventions, or configuration for agents blocks every
@@ -666,7 +667,9 @@ production pulls, deployments, and approvals as their own HITL tickets, with gen
 to the work they enable or depend on; do not bury human steps in prose inside AFK tickets.
 Check every ticket for over-HITL (a human ticket an agent could complete) and under-HITL (an AFK
 ticket containing a human step). Keep work an agent can complete AFK; reserve HITL for work requiring
-human action or authority."""
+human action or authority. A HITL ticket contains only human steps; agent work it needs becomes its
+own AFK ticket that blocks it. An AFK ticket that mutates a database states that the mutation runs
+only in its implement pass, never in simplify, test, or review passes."""
 
 
 NATIVE_TRACKER_POLICY = f"""The machine proposal uses schema version 2 with exactly four top-level keys:
@@ -907,6 +910,8 @@ existing-test verification for preserved prefactor behavior, and any wide-refact
 exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.
 Check that every ticket creating rules, conventions, or configuration for agents blocks all affected
 AFK tickets.
+For a ticket above the soft size limit whose `merge_split_rationale` does not justify keeping it whole,
+return `blocked` with a concrete, reasoned split.
 {PATH_REVIEW_PRESERVATION}
 
 Return exactly one verdict:

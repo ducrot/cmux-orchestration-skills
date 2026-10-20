@@ -1133,6 +1133,32 @@ sha256 {resulting_digest or digest}
         for stage in ("spec", "spec-review"):
             self.assertNotIn("rules, conventions, or configuration for agents", prompts[stage], stage)
 
+    def test_ticket_size_and_execution_boundaries_render_only_for_ticket_workers(self):
+        self.reach_ticket_approval()
+        shared = (
+            "A HITL ticket contains only human steps; agent work it needs becomes its own AFK ticket that blocks it.",
+            "An AFK ticket that mutates a database states that the mutation runs only in its implement pass, "
+            "never in simplify, test, or review passes.",
+            "More than six acceptance criteria is a soft size limit: split such a ticket, or justify in "
+            "`merge_split_rationale` why its one outcome stays whole.",
+        )
+        reviewer_check = (
+            "For a ticket above the soft size limit whose `merge_split_rationale` does not justify keeping it "
+            "whole, return `blocked` with a concrete, reasoned split."
+        )
+        prompts = {
+            stage: " ".join((self.run_dir / "prompts" / f"{stage}-1.md").read_text().split())
+            for stage in ("spec", "spec-review", "tickets", "tickets-review")
+        }
+        for stage in ("tickets", "tickets-review"):
+            for rule in shared:
+                self.assertEqual(prompts[stage].count(rule), 1, (stage, rule))
+        self.assertIn(reviewer_check, prompts["tickets-review"])
+        self.assertNotIn(reviewer_check, prompts["tickets"])
+        for stage in ("spec", "spec-review"):
+            self.assertNotIn("soft size limit", prompts[stage], stage)
+            self.assertNotIn("mutates a database", prompts[stage], stage)
+
     def test_human_ticket_rules_are_rendered_only_for_ticket_workers(self):
         self.reach_ticket_approval()
         rules = (
