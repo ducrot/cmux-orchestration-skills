@@ -71,16 +71,21 @@ def mask_fences(markdown: str) -> str:
     return "\n".join(lines)
 
 
-def sections(markdown: str) -> dict[str, str]:
+def section_spans(markdown: str) -> dict[str, tuple[int, int, int]]:
+    """Heading start, body start, and end offset of each section."""
     matches = list(re.finditer(r"^##\s+(.+?)\s*$", mask_fences(markdown), re.MULTILINE))
-    parsed: dict[str, str] = {}
+    spans: dict[str, tuple[int, int, int]] = {}
     for index, match in enumerate(matches):
         name = match.group(1)
-        if name in parsed:
+        if name in spans:
             raise ContractError(f"duplicate section: {name}")
         end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
-        parsed[name] = markdown[match.end() : end].strip()
-    return parsed
+        spans[name] = (match.start(), match.end(), end)
+    return spans
+
+
+def sections(markdown: str) -> dict[str, str]:
+    return {name: markdown[body:end].strip() for name, (_, body, end) in section_spans(markdown).items()}
 
 
 def require_sections(parsed: dict[str, str], required: tuple[str, ...], label: str) -> None:

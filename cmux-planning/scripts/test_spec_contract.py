@@ -63,13 +63,13 @@ def checked_evidence(references: Sequence[str]) -> str:
     return "\n".join(f"- `{reference}`: checked consistency with repository evidence: no discrepancy found" for reference in references)
 
 
-def review_report(verdict: str, input_digest: str, result_digest: str, *, corrections: str = "- None", blockers: str = "- None", checked: str | None = None) -> str:
+def review_report(verdict: str, input_digest: str, result_digest: str, *, corrections: str = "- None", blockers: str = "- None", findings: str = "- None", checked: str | None = None) -> str:
     evidence = checked_evidence(SPEC_SECTIONS) if checked is None else checked
     return f"""## Verdict
 {verdict}
 
 ## Findings
-- None
+{findings}
 
 ## Checked
 {evidence}

@@ -94,6 +94,8 @@ from planning_diversity import (
 )
 from spec_contract import (
     ContractError,
+    mask_fences,
+    section_spans,
     sections,
     validate_author_report,
     validate_review_report,
@@ -1499,6 +1501,24 @@ def accept_tickets_author(
     return preparation_exit_code(pointer)
 
 
+def print_blocked_review(report: Path) -> None:
+    """Relay validated reviewer evidence without rewriting its Markdown or whitespace."""
+    markdown = report.read_text(encoding="utf-8")
+    spans = section_spans(markdown)
+    for name in ("Blockers", "Findings"):
+        start, _, end = spans[name]
+        section = markdown[start:end]
+        print(section, end="" if section.endswith("\n") else "\n")
+    _, body, end = spans["Blockers"]
+    recommendation = re.search(
+        r"^[-*+] Recommendation:([^\n]+)",
+        mask_fences(markdown[body:end].strip()),
+        re.MULTILINE,
+    )
+    if recommendation:
+        print(f"Recommendation:{recommendation.group(1).rstrip()}")
+
+
 def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str, Any]) -> int:
     pass_num = stage_pass(state, "spec-review")
     if not integrity_gate(run_dir, "spec-review", pass_num):
@@ -1538,6 +1558,7 @@ def accept_spec_review(args: argparse.Namespace, run_dir: Path, state: dict[str,
         gate = add_gate(state, "spec-review", "blocked", "review requires a human-owned decision")
         close_current_attempt(run_dir, state, "blocked", "spec review reported a blocker")
         append_event(run_dir, "gate", "review requires a human-owned decision", {**gate, **result})
+        print_blocked_review(report)
         print("gate=blocked")
         return 2
     result["candidate_manifest_id"] = (
@@ -1627,6 +1648,7 @@ def accept_tickets_review(args: argparse.Namespace, run_dir: Path, state: dict[s
             "ticket review requires a human-owned decision or approved-spec correction",
             {**gate, **result},
         )
+        print_blocked_review(report)
         print("gate=blocked")
         return 2
     result["candidate_manifest_id"] = (

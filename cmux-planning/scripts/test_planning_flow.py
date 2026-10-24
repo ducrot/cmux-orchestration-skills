@@ -714,6 +714,8 @@ class PlanningFlow(unittest.TestCase):
         self.assertIn("only once, as your final action", prompt)
         if stage in {"spec-review", "tickets-review"}:
             self.assertIn("`Checked` cannot be `- None`, including for `blocked`.", prompt)
+            self.assertIn("For a `blocked` verdict, you may include a `Recommendation:` bullet inside Blockers", prompt)
+            self.assertIn("This is optional", prompt)
         if stage in {"tickets", "tickets-review"}:
             self.assertIn(f'Tracker slug (fixed): `{state["tracker_slug"]}`', prompt)
             self.assertIn(f'--tracker-slug {state["tracker_slug"]}', prompt)
@@ -851,6 +853,7 @@ sha256 {state['approved_spec']['sha256']}
         resulting_digest: str | None = None,
         corrections: str = "- None",
         blockers: str = "- None",
+        findings: str = "- None",
         checked: str | None = None,
     ) -> None:
         state = json.loads((self.run_dir / "state.json").read_text())
@@ -865,7 +868,7 @@ sha256 {state['approved_spec']['sha256']}
 {verdict}
 
 ## Findings
-- None
+{findings}
 
 ## Checked
 {evidence}
@@ -890,6 +893,54 @@ sha256 {resulting_digest or digest}
 """,
             encoding="utf-8",
         )
+
+    def exercise_blocked_review_output(self, stage, recommendation):
+        if stage == "spec":
+            self.assertEqual(self.init_direct().returncode, 0)
+            self.render_and_baseline("spec")
+            draft = self.write_author_handoff()
+        else:
+            self.approve_spec_to_tickets()
+            self.render_and_baseline("tickets")
+            self.write_tickets_handoff()
+        authored = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(authored.returncode, 0, authored.stderr)
+        self.render_and_baseline(f"{stage}-review")
+        blockers = "- Owner must choose the retention period.  \n  Evidence: `product.txt` leaves it open."
+        if recommendation:
+            blockers += "\n- Recommendation: Keep records for 30 days.\n- Recommendation: Revisit after launch."
+        findings = "- The retention requirement is ambiguous.  \n  The reviewer checked the current policy.\n\n```markdown\n## Quoted heading\n- Recommendation: This quoted text is not a blocker recommendation.\n```"
+        if stage == "spec":
+            digest = validate_spec(draft)["sha256"]
+            state = json.loads((self.run_dir / "state.json").read_text())
+            Path(state["current_attempt"]["paths"]["report"]).write_text(
+                review_report("blocked", digest, digest, blockers=blockers, findings=findings)
+            )
+        else:
+            self.write_tickets_review("blocked", blockers=blockers, findings=findings)
+
+        gated = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+
+        self.assertEqual(gated.returncode, 2, gated.stderr)
+        expected = f"## Blockers\n{blockers}\n\n## Findings\n{findings}\n\n"
+        if recommendation:
+            expected += "Recommendation: Keep records for 30 days.\n"
+        self.assertEqual(gated.stdout, expected + "gate=blocked\n")
+        self.assertEqual(gated.stdout.splitlines()[-1], "gate=blocked")
+        if not recommendation:
+            self.assertNotRegex(gated.stdout, r"(?m)^Recommendation:")
+
+    def test_blocked_spec_review_prints_evidence_and_recommendation(self):
+        self.exercise_blocked_review_output("spec", True)
+
+    def test_blocked_spec_review_without_recommendation_prints_only_evidence(self):
+        self.exercise_blocked_review_output("spec", False)
+
+    def test_blocked_tickets_review_prints_evidence_and_recommendation(self):
+        self.exercise_blocked_review_output("tickets", True)
+
+    def test_blocked_tickets_review_without_recommendation_prints_only_evidence(self):
+        self.exercise_blocked_review_output("tickets", False)
 
     def confirm_ready(self, stage="spec", pass_num=1, surface="SURF-1"):
         common = ["--run-dir", str(self.run_dir), "--stage", stage, "--pass", str(pass_num), "--surface", surface]

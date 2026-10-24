@@ -52,6 +52,12 @@ this applies to Findings, Corrections, Blockers, and Plan Drift; for `pass_with_
 Plan Drift must remain exactly `- None`. Put explanatory context in Methods, not after a sentinel.
 For example, `- None. The proposal remains unchanged.` is invalid.
 
+For a `blocked` verdict, you may include a `Recommendation:` bullet inside Blockers
+as a top-level bullet on one line, without bold
+(for example, `- Recommendation: Choose the existing retention policy.`). This is optional;
+use it to mark your own recommendation for the human's decision. The gate prints the first
+marked blocker as a single Recommendation line after the Blockers and Findings sections.
+
 Write the report to the report draft first and run the self-validation command below on it.
 Inspect its exit code and output.
 Exit 0 validates `pass` or `pass_with_fixes`; exit 2 with `"gate": "blocked"` validates `blocked` and
