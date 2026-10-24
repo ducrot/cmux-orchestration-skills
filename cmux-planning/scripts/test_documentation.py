@@ -741,9 +741,15 @@ class ConversationBriefDocumentation(unittest.TestCase):
     def test_brief_is_confirmed_through_a_structured_question(self):
         initialize = normalized(PLANNING).split("## initialize", 1)[1].split("## ", 1)[0]
         self.assertIn("askuserquestion", initialize)
+        self.assertIn(
+            "only brief entries the human stated beat revalidated grilling decisions, which beat plan "
+            "files; entries taken from files keep the rank of their source. "
+            "other contradictions go to `open decisions`.", initialize)
         brief = normalized(PLANNING.parent / "references" / "conversation-brief.md")
         for phrase in ("complete brief as its own message", "askuserquestion", "single-select",
                        "human's language", "first and recommended", "did not state",
+                       "do not copy content from plan files into the brief",
+                       "an entry that comes from a file names its source in parentheses",
                        "show the revised brief in full and ask again",
                        "`--brief-confirmed` only after \"confirm\""):
             self.assertIn(phrase, brief)

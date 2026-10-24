@@ -151,8 +151,9 @@ Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one ques
 mode, language and assignments, draft and confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
 for its six English headings, human-language content and verbatim quotes; show it fully as its own message,
 then confirm it with one `AskUserQuestion` single-select as described there.
-Require a plan file or brief; grilling is additional. Explicit brief decisions beat revalidated grilling
-decisions, which beat plans; other contradictions go to `Open Decisions`.
+Require a plan file or brief; grilling is additional. Only brief entries the human stated beat revalidated grilling
+decisions, which beat plan files; entries taken from files keep the rank of their source.
+Other contradictions go to `Open Decisions`.
 
 Repeat `--task-file` for multiple plans:
 

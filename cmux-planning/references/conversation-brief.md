@@ -2,7 +2,8 @@
 
 Keep headings in English and content in the human's language. Preserve quotations verbatim.
 Record explicit decisions with their reasons and quote important human statements. Use `None`
-where a section has no entries.
+where a section has no entries. Do not copy content from plan files into the brief.
+An entry that comes from a file names its source in parentheses.
 
 Show the complete brief as its own message, not in a question preview. Directly after it, ask one
 `AskUserQuestion` single-select in the human's language: "Is this brief correct?" / "Ist dieser

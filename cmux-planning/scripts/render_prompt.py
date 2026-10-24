@@ -355,9 +355,9 @@ def input_context(state: dict, inputs: list[tuple[dict, Path]], *, inline: bool)
 
 
 INPUT_PRECEDENCE = (
-    "An explicit decision in the brief takes precedence over revalidated grilling decisions, "
-    "which take precedence over plan files. Contradictions between plan files or without an "
-    "explicit decision belong under `Open Decisions`."
+    "Only brief entries the human stated take precedence over revalidated grilling decisions, "
+    "which take precedence over plan files. Entries taken from files keep the rank of their "
+    "source. Other contradictions belong under `Open Decisions`."
 )
 
 

@@ -258,7 +258,14 @@ class PlanningFlow(unittest.TestCase):
 
     def test_conversation_brief_cli_to_prompts_and_manifest(self):
         brief = self.brief_file()
+        brief.write_text(brief.read_text().replace(
+            "## Decisions made\nNone", "## Decisions made\nUse the existing stack (repository notes)."))
         payload = brief.read_bytes()
+        precedence = (
+            "Only brief entries the human stated take precedence over revalidated grilling decisions, "
+            "which take precedence over plan files. Entries taken from files keep the rank of their "
+            "source. Other contradictions belong under `Open Decisions`."
+        )
         for with_plan in (False, True):
             with self.subTest(with_plan=with_plan):
                 run_id = f"brief-{with_plan}"
@@ -283,7 +290,8 @@ class PlanningFlow(unittest.TestCase):
                 self.assertEqual(rendered.returncode, 0, rendered.stderr)
                 prompt = Path(rendered.stdout.strip()).read_text()
                 self.assertIn("Menschen helfen", prompt)
-                self.assertIn("explicit decision in the brief", prompt)
+                self.assertIn(precedence, prompt)
+                self.assertIn("Use the existing stack (repository notes).", prompt)
                 # Reuse the normal author gate to exercise the independent reviewer too.
                 self.run_dir = run_dir
                 self.render_and_baseline("spec")
@@ -294,7 +302,8 @@ class PlanningFlow(unittest.TestCase):
                 self.assertEqual(rendered.returncode, 0, rendered.stderr)
                 review = Path(rendered.stdout.strip()).read_text()
                 self.assertIn("Menschen helfen", review)
-                self.assertIn("explicit decision in the brief", review)
+                self.assertIn(precedence, review)
+                self.assertIn("Use the existing stack (repository notes).", review)
 
     def test_init_requires_a_primary_source(self):
         for extra in ([], ["--brief-confirmed"], ["--grilling-json", "unused.json"]):
