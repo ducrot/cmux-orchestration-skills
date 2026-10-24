@@ -57,8 +57,11 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - Relaunch and revise reasons quote the chosen option verbatim as the human saw it, label and
   description, followed by the human's free text, with no orchestrator additions; reviewer findings
   arrive only as the attached review report.
-- Before asking about a `blocked` verdict, show the reviewer's findings briefly in the chat.
-- Spec and ticket approval questions carry no recommendation.
+- Before asking about a `blocked` verdict, show the gate command's output in the chat, then ask.
+  If your recommendation differs from the reviewer's, say so in one sentence; you are not obliged
+  to follow the reviewer.
+- Only final spec and ticket approval questions carry no recommendation; blocker questions may
+  carry a recommendation.
 - Label every option the orchestrator drafted itself, rather than taking it from a report or the
   human, as drafted by the orchestrator.
 - An extension option states how the worker continues: only more time, or a new delivery of the

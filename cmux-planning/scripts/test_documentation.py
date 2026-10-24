@@ -760,12 +760,18 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "relaunch and revise reasons quote the chosen option verbatim as the human saw it, label "
             "and description, followed by the human's free text, with no orchestrator additions; "
             "reviewer findings arrive only as the attached review report.",
-            "before asking about a `blocked` verdict, show the reviewer's findings briefly in the chat.",
-            "spec and ticket approval questions carry no recommendation.",
+            "before asking about a `blocked` verdict, show the gate command's output in the chat, then ask. "
+            "if your recommendation differs from the reviewer's, say so in one sentence; "
+            "you are not obliged to follow the reviewer.",
+            "only final spec and ticket approval questions carry no recommendation; "
+            "blocker questions may carry a recommendation.",
             "label every option the orchestrator drafted itself, rather than taking it from a report or "
             "the human, as drafted by the orchestrator.",
             "an extension option states how the worker continues: only more time, or a new delivery of "
             "the full stage prompt.",
+            "questions and walkthroughs use the user's language; inputs keep their original language.",
+            "headings, markers, json keys, reports, state, events, and prompts stay english; "
+            "preserve literal product copy.",
         ):
             with self.subTest(rule=rule):
                 self.assertIn(rule, text)
