@@ -48,10 +48,10 @@ python3 scripts/planning_state.py resume --run-dir <run-dir> \
   --decision relaunch --reason <human-authored-reason>
 ```
 
-For relaunch and revise, `--reason` quotes only the chosen option's label and the human's free text
-verbatim, never option descriptions or orchestrator additions. Reviewer findings arrive only as the
-attached review report. Both relaunch and revise attach the latest applicable review report by its
-finalized manifest identity. A tickets author gets it inline; a spec author gets every prior handoff,
+For relaunch and revise, `--reason` quotes the chosen option verbatim as the human saw it, label and
+description, followed by the human's free text, with no orchestrator additions. Reviewer findings
+arrive only as the attached review report. Both relaunch and revise attach the latest applicable
+review report by its finalized manifest identity. A tickets author gets it inline; a spec author gets every prior handoff,
 including draft, candidate, and reports, only as path and sha256 and reads them from there.
 `approval --decision revise` attaches the latest finalized spec review; `ticket-approval --decision revise`
 attaches the latest finalized tickets review, including when `--scope spec` returns to a spec author.

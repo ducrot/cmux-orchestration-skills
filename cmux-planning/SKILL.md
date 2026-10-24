@@ -54,9 +54,9 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - The orchestrator never changes a tracker after publication.
 - Every option offered at a gate, including the recommended one, stays within the planning
   contract and states its consequences for validation and digests.
-- Relaunch and revise reasons quote only the chosen option's label and the human's free text
-  verbatim, never option descriptions or orchestrator additions; reviewer findings arrive only as the
-  attached review report.
+- Relaunch and revise reasons quote the chosen option verbatim as the human saw it, label and
+  description, followed by the human's free text, with no orchestrator additions; reviewer findings
+  arrive only as the attached review report.
 - Before asking about a `blocked` verdict, show the reviewer's findings briefly in the chat.
 - Spec and ticket approval questions carry no recommendation.
 - Label every option the orchestrator drafted itself, rather than taking it from a report or the
