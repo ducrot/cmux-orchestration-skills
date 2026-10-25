@@ -37,6 +37,12 @@ final class Migrator
     /** @return array<int, string> */
     private function migrations(): array
     {
-        return [1 => 'CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT NOT NULL, email TEXT NOT NULL)'];
+        return [
+            1 => 'CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT NOT NULL, email TEXT NOT NULL)',
+            2 => 'CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE RESTRICT, name TEXT NOT NULL);
+                  CREATE INDEX projects_customer ON projects(customer_id);
+                  CREATE TABLE rates (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, cents INTEGER NOT NULL CHECK (cents >= 0), currency TEXT NOT NULL, start TEXT NOT NULL, end TEXT);
+                  CREATE INDEX rates_project ON rates(project_id)',
+        ];
     }
 }

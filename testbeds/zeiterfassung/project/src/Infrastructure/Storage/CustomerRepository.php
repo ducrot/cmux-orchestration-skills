@@ -4,12 +4,16 @@ declare(strict_types=1);
 namespace TimeTracker\Infrastructure\Storage;
 
 use PDO;
+use PDOException;
 use TimeTracker\Domain\Customer;
 use TimeTracker\Domain\CustomerDetails;
+use TimeTracker\Domain\ValidationException;
 
 final readonly class CustomerRepository
 {
     public function __construct(private PDO $pdo) {}
+
+    public function projects(): ProjectRepository { return new ProjectRepository($this->pdo); }
 
     public function create(CustomerDetails $details): Customer
     {
@@ -42,7 +46,14 @@ final readonly class CustomerRepository
     public function delete(int $id): void
     {
         $statement = $this->pdo->prepare('DELETE FROM customers WHERE id = ?');
-        $statement->execute([$id]);
+        try {
+            $statement->execute([$id]);
+        } catch (PDOException $error) {
+            if ($error->getCode() === '23000') {
+                throw new ValidationException(['Customer with projects cannot be deleted.']);
+            }
+            throw $error;
+        }
     }
 
     /** @param array<string, mixed> $row */

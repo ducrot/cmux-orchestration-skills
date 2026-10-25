@@ -30,6 +30,26 @@ php bin/console customer:delete 1
 
 `help`, `--help`, `list`, or no arguments list the available commands. Create and update take all three fields in the order name, address, email; update replaces the full record. Successful customer commands emit JSON to standard output, including an object for create/show/update, an array for list and `{"deleted":1}` for delete. IDs are positive integers. Invalid arguments, validation failures and unknown customers produce a message on standard error and exit code 1; success exits 0.
 
+## Projects and hourly rates
+
+Projects belong to an existing customer and have a required name. Names are trimmed; update replaces the name. A customer with projects cannot be deleted. Deleting a project removes its rates.
+
+```sh
+php bin/console project:create 1 "Website"
+php bin/console project:list 1
+php bin/console project:show 1 1
+php bin/console project:update 1 1 "Website maintenance"
+php bin/console rate:add 1 1 "95.50" EUR 2026-01-01 2026-06-30
+php bin/console rate:add 1 1 "100.00" EUR 2026-07-01
+php bin/console rate:list 1 1
+php bin/console rate:remove 1 1 1
+php bin/console project:delete 1 1
+```
+
+Project commands take the customer ID first, then the project ID where needed. Rate commands take customer and project IDs; removal also takes the rate ID. `rate:add` takes amount, currency, start, and an optional end. Dates use valid `YYYY-MM-DD` calendar dates. Both period boundaries are inclusive; an omitted end is open. Periods of the same project cannot overlap, even when their currencies differ. Gaps are allowed, and no rate applies in a gap. An application lookup is available as `Projects::applicableRate(customerId, projectId, date)`, returning a `Rate` or `null`.
+
+Amounts are non-negative decimal strings with up to two fractional digits and nine integer digits; currency is a three-letter uppercase code (for example `EUR`). Amounts are stored as integer cents and returned as decimal strings with two fractional digits. These commands use the same JSON output, exit codes and error conventions as customer commands. Project objects contain `id`, `customer_id`, `name`; rate objects contain `id`, `project_id`, `amount`, `currency`, `start`, `end` (`null` for an open end).
+
 ## JSON API
 
 Run from the project root:
@@ -55,6 +75,21 @@ curl -i -X POST http://127.0.0.1:8080/customers \
 | DELETE | `/customers/{id}` | 200, `{"deleted":1}` |
 
 POST and PUT accept a JSON object with `name`, `address` and `email` strings. Customer objects contain `id`, `name`, `address` and `email`. Validation failures return 422 and `{"errors":["..."]}`. Unknown customers and routes return 404, unsupported methods return 405, and malformed JSON returns 400, all with an `errors` array. Unexpected server errors return a generic JSON 500 response.
+
+Project and rate routes:
+
+| Method | Route | Response |
+| --- | --- | --- |
+| GET | `/customers/{customerId}/projects` | 200, projects ordered by ID |
+| POST | `/customers/{customerId}/projects` | 201, project; body `{"name":"Website"}` |
+| GET | `/customers/{customerId}/projects/{projectId}` | 200, project |
+| PUT | `/customers/{customerId}/projects/{projectId}` | 200, project; body `{"name":"New name"}` |
+| DELETE | `/customers/{customerId}/projects/{projectId}` | 200, `{"deleted":1}` |
+| GET | `/customers/{customerId}/projects/{projectId}/rates` | 200, rates ordered by start date then ID |
+| POST | `/customers/{customerId}/projects/{projectId}/rates` | 201, rate |
+| DELETE | `/customers/{customerId}/projects/{projectId}/rates/{rateId}` | 200, `{"deleted":1}` |
+
+Rate POST bodies use strings for `amount`, `currency` and `start`, for example `{"amount":"95.50","currency":"EUR","start":"2026-01-01","end":"2026-06-30"}`. Omit `end` or use `null` for an open period. All rules described above apply to API writes. Overlap and blocked customer deletion return 422. Unknown customers, projects, rates and mismatched parent IDs return 404. Malformed JSON returns 400 and unsupported methods return 405.
 
 ## Development
 
