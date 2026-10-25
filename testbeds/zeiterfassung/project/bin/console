@@ -1,0 +1,18 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use TimeTracker\Console\Application;
+use TimeTracker\Infrastructure\Bootstrap;
+use TimeTracker\Infrastructure\Configuration;
+
+try {
+    $configuration = Configuration::fromEnvironment();
+    $application = new Application(Bootstrap::customers($configuration));
+    exit($application->run(array_slice($argv, 1), static function (string $text): void { fwrite(STDOUT, $text); }, static function (string $text): void { fwrite(STDERR, $text); }));
+} catch (Throwable $error) {
+    fwrite(STDERR, 'Application error: ' . $error->getMessage() . "\n");
+    exit(1);
+}

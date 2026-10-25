@@ -1,0 +1,9 @@
+/vendor/
+/var/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+/.scratch/
+/.phpunit.cache/
+/.phpstan/
