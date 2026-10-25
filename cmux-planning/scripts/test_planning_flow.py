@@ -3061,15 +3061,21 @@ sha256 {resulting_digest or digest}
         marker.write_text("started")
         args = await_report.build_parser().parse_args([
             *common, "--cmux-cmd", str(self.cmux), "--deadline-minutes", "1"])
+        # Replace the watcher's time binding so its sleep guard cannot intercept
+        # subprocess's timed wait while publishing the deadline board.
         with patch("time.time", return_value=1000), patch("time.monotonic", return_value=100), \
-                patch("time.sleep", side_effect=InterruptedError), \
+                patch("await_report.time", wraps=time) as watcher_time, \
                 patch("await_report.health_says_dead", return_value=False):
+            watcher_time.sleep.side_effect = InterruptedError
             with self.assertRaises(InterruptedError):
                 await_report.watch(args)
+            watcher_time.sleep.assert_called_once_with(15)
         with patch.dict(os.environ, self.env()), \
                 patch("time.time", return_value=1061), patch("time.monotonic", return_value=161), \
-                patch("time.sleep", side_effect=AssertionError("deadline moved on re-arm")):
+                patch("await_report.time", wraps=time) as watcher_time:
+            watcher_time.sleep.side_effect = AssertionError("deadline moved on re-arm")
             self.assertEqual(await_report.watch(args), 8)
+            watcher_time.sleep.assert_not_called()
         self.assert_board("hitl", "spec-1: report deadline exceeded, extension decision needed", 0.0, "Spec · Author 1")
 
     def started_watch_args(self, *tail):
