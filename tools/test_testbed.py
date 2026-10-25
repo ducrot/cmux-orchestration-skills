@@ -15,6 +15,24 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ZeiterfassungRelease(unittest.TestCase):
+    def test_version_and_shipped_worker_fixture(self):
+        bed = ROOT / 'testbeds/zeiterfassung'
+        self.assertEqual((bed / 'VERSION').read_bytes(), b'1.0.0\n')
+        fixture = bed / 'agents.json'
+        with tempfile.TemporaryDirectory() as directory:
+            default = Path(directory) / 'agents.json'
+            subprocess.run([sys.executable, str(ROOT / 'cmux-planning/scripts/agents_config.py'),
+                            'init', '--config', str(default)], check=True, capture_output=True)
+            self.assertEqual(fixture.read_bytes(), default.read_bytes())
+        for skill in ('cmux-planning', 'cmux-grilling', 'cmux-issue-chain'):
+            with self.subTest(skill=skill):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / skill / 'scripts/agents_config.py'),
+                     'validate', '--config', str(fixture)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class CreateTestbed(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -83,6 +101,33 @@ class CreateTestbed(unittest.TestCase):
         script.write_text('#!' + sys.executable + '\n' + body)
         script.chmod(0o755)
         return dict(self.env, PATH=str(directory) + os.pathsep + self.env['PATH'])
+
+    def test_released_zeiterfassung_creates_all_four_real_scenarios(self):
+        source = ROOT / 'testbeds/zeiterfassung'
+        shutil.copytree(source, self.repo / 'testbeds/zeiterfassung',
+                        ignore=shutil.ignore_patterns('vendor', '.phpstan', '.phpunit.cache',
+                                                     '*.sqlite*', '.DS_Store'))
+        for scenario in sorted((source / 'scenarios').iterdir()):
+            with self.subTest(scenario=scenario.name):
+                target = self.base / scenario.name
+                result = self.create(target, scenario=scenario.name, bed='zeiterfassung')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('Version: 1.0.0\n', result.stdout)
+                self.assertEqual((target / 'docs/plan.md').read_bytes(),
+                                 (scenario / 'plan.md').read_bytes())
+                fixture = target / '.scratch/orchestrator/agents.json'
+                self.assertEqual(fixture.read_bytes(), (source / 'agents.json').read_bytes())
+                # The same resolver used by preparation accepts an existing
+                # fixture directly, without the first-use initialization branch.
+                result = subprocess.run(
+                    [sys.executable, str(self.repo / 'cmux-planning/scripts/agents_config.py'),
+                     'show-resolved', '--repo', str(target)],
+                    cwd=target, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(Path(json.loads(result.stdout)['source']), fixture.resolve())
+                self.assertFalse((target / 'evaluation').exists())
+                self.assertFalse((target / 'human-input.md').exists())
+                self.assertEqual(self.git(target, 'status', '--porcelain'), '')
 
     def test_e_invoice_scenario_is_complete_and_private_in_copy(self):
         bed = ROOT / 'testbeds/zeiterfassung'

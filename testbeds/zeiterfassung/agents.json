@@ -1,0 +1,121 @@
+{
+  "profiles": {
+    "claude-fable-high": {
+      "effort": "high",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "fable"
+    },
+    "claude-fable-medium": {
+      "effort": "medium",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "fable"
+    },
+    "claude-opus-high": {
+      "effort": "high",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "opus"
+    },
+    "claude-opus-medium": {
+      "effort": "medium",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "opus"
+    },
+    "claude-sonnet-high": {
+      "effort": "high",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "sonnet"
+    },
+    "claude-sonnet-medium": {
+      "effort": "medium",
+      "executable": "claude",
+      "harness": "claude-code",
+      "model": "sonnet"
+    },
+    "codex-astra-high": {
+      "effort": "high",
+      "executable": "codex",
+      "harness": "codex",
+      "model": "gpt-6-astra"
+    },
+    "codex-astra-medium": {
+      "effort": "medium",
+      "executable": "codex",
+      "harness": "codex",
+      "model": "gpt-6-astra"
+    },
+    "codex-sol-high": {
+      "effort": "high",
+      "executable": "codex",
+      "harness": "codex",
+      "model": "gpt-6.1-sol"
+    },
+    "codex-sol-medium": {
+      "effort": "medium",
+      "executable": "codex",
+      "harness": "codex",
+      "model": "gpt-6.1-sol"
+    },
+    "pi-gemini-pro-high": {
+      "effort": "high",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "google/gemini-3.1-pro-preview"
+    },
+    "pi-gemini-pro-medium": {
+      "effort": "medium",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "google/gemini-3.1-pro-preview"
+    },
+    "pi-glm-high": {
+      "effort": "high",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "openrouter/z-ai/glm-5.3"
+    },
+    "pi-glm-medium": {
+      "effort": "medium",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "openrouter/z-ai/glm-5.3"
+    },
+    "pi-grok-high": {
+      "effort": "high",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "xai/grok-4.7"
+    },
+    "pi-grok-medium": {
+      "effort": "medium",
+      "executable": "pi",
+      "harness": "pi",
+      "model": "xai/grok-4.7"
+    }
+  },
+  "schema_version": 3,
+  "workflows": {
+    "grilling": {
+      "codebase": "claude-opus-high",
+      "codebase2": "codex-sol-high",
+      "docs": "codex-sol-medium",
+      "web": "claude-sonnet-medium"
+    },
+    "issue-chain": {
+      "implement": "codex-sol-medium",
+      "review": "claude-opus-medium",
+      "simplify": "claude-opus-medium",
+      "test": "codex-sol-medium",
+      "triage": "claude-opus-medium"
+    },
+    "planning": {
+      "reviewer": "codex-astra-high",
+      "spec": "claude-fable-high",
+      "tickets": "claude-fable-high"
+    }
+  }
+}

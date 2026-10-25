@@ -194,6 +194,11 @@ The analysis matches sessions against `.scratch/orchestrator/testbeds/registry.j
 
 ## Testbed scenario copies
 
+The versioned [Zeiterfassung testbed](testbeds/zeiterfassung/project/README.md)
+ships four scenarios and the default worker fixture. See its
+[changelog and versioning policy](testbeds/zeiterfassung/CHANGELOG.md) and
+[evaluation lists](testbeds/zeiterfassung/evaluation) for baseline observations.
+
 Create a standalone scenario repository outside this checkout:
 
 ```sh
