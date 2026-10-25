@@ -112,6 +112,48 @@ class CreateTestbed(unittest.TestCase):
         self.assertFalse((target / 'scenarios').exists())
         self.assertNotIn(b'01-partial-invoices.md', (target / 'app.php').read_bytes())
 
+    def test_vat_scenario_copies_plan_and_prints_private_human_input(self):
+        bed = ROOT / 'testbeds/zeiterfassung'
+        scenario = bed / 'scenarios/02-vat-rate'
+        self.assertEqual(sorted(p.name for p in scenario.iterdir()),
+                         ['human-input.md', 'plan.md'])
+        plan = (scenario / 'plan.md').read_bytes()
+        human = (scenario / 'human-input.md').read_bytes()
+        text = plan.decode('utf-8')
+        self.assertIn('Invoice::VAT_RATE', text)
+        self.assertIn('19%', text)
+        self.assertIn('constant in code', text)
+        for private_word in ('benchmark', 'scenario', 'trap', 'evaluation', 'contradiction'):
+            self.assertNotIn(private_word, text.lower())
+        self.assertIn('configurable', human.decode('utf-8'))
+        self.assertIn('When:', human.decode('utf-8'))
+        evaluation = (bed / 'evaluation/02-vat-rate.md').read_text()
+        for field in ('Date', 'Testbed version', 'Scenario', 'Registry entry id',
+                      'Recorded skill state', 'Date-attributed skill commit',
+                      'Run identifier', 'Observations met', 'Observations missed'):
+            self.assertIn(f'- {field}:\n', evaluation)
+        self.assertNotIn('- [x]', evaluation.lower())
+
+        # Use the real scenario with the synthetic version/fixture until the
+        # testbed version cut; exercise the public CLI without changing the source.
+        destination = self.bed / 'scenarios/02-vat-rate'
+        destination.mkdir()
+        (destination / 'plan.md').write_bytes(plan)
+        (destination / 'human-input.md').write_bytes(human)
+        (self.bed / 'evaluation/02-vat-rate.md').write_text(evaluation)
+        result = self.create(scenario='02-vat-rate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.endswith(human.decode('utf-8')))
+        self.assertIn('orchestrator conversation', result.stdout)
+        target = self.base / 'target'
+        self.assertEqual((target / 'docs/plan.md').read_bytes(), plan)
+        self.assertEqual(set(self.git(target, 'ls-files').splitlines()),
+                         {'app.php', 'run', '.gitignore', 'ignored.txt', 'docs/plan.md',
+                          '.scratch/orchestrator/agents.json'})
+        self.assertFalse((target / 'human-input.md').exists())
+        self.assertFalse((target / 'evaluation').exists())
+        self.assertFalse((target / 'scenarios').exists())
+
     def test_registry_appends_identity_without_rewriting_existing_bytes(self):
         before = datetime.now(timezone.utc)
         entries = []
