@@ -11,7 +11,7 @@ python3 scripts/planning_state.py init --task-file ./task.md --repo . \
 ```
 
 Relative `--runs-root` and `--run-dir` paths are interpreted from the command's working directory,
-as in grilling and issue-chain. Stored artifact pointers are canonical run-relative paths; readers
+as in grilling and issue-chain; init refuses a runs root inside the skill directory. Stored artifact pointers are canonical run-relative paths; readers
 join them to the run directory exactly once. Absolute worker handoff paths remain supported.
 
 Re-init with `state.json` prints the run directory; no input replacement, preparation, or advance.

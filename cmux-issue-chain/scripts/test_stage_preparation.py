@@ -12,6 +12,7 @@ import run_state
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -224,6 +225,21 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.run_dir / "state.json").read_bytes(), before)
         self.assertFalse(self.board_calls())
+
+    def test_init_from_the_skill_directory_refuses_a_runs_root_inside_it(self):
+        skill = SCRIPT_DIR.parent
+        stray = skill / ".scratch"
+        self.assertFalse(stray.exists(), "remove the stray skill-local runs root before testing")
+        self.addCleanup(shutil.rmtree, stray, ignore_errors=True)
+        result = subprocess.run(
+            [sys.executable, str(RUN_STATE), "init", "--tracker", str(self.repo / ".scratch" / "tracker"),
+             "--issue", "ISSUE-001", "--run-id", "skill-cwd", "--config", str(self.config_path),
+             "--workspace-id", "WORKSPACE"],
+            cwd=skill, env=self.env(), capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("inside the skill directory", result.stderr)
+        self.assertFalse(stray.exists())
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

@@ -12,9 +12,8 @@ human reviews. The orchestrator is a coordinator plus judgment role: it formulat
 (griller), consolidates lane reports (synthesizer), and distills assumptions (finalize), but
 all research runs in visible CMUX worker panes.
 
-All `scripts/…` and `references/…` paths in this skill are relative to the skill's own
-base directory (the directory containing this SKILL.md); resolve them against that
-directory, not the working directory.
+`scripts/…` and `references/…` name files in this skill's directory. Run every command from the
+target repository root, never `cd` into the skill directory: call `python3 <skill-dir>/scripts/…`.
 
 
 ## Commit mode at initialization

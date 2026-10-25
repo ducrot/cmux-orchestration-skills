@@ -7,9 +7,8 @@ description: Coordinate gated visible CMUX worker chains for local Markdown issu
 
 Use this skill to run a local issue through a gated multi-agent workflow. The orchestrator is a coordinator only: it may update lifecycle state, run logs, snapshots, issue status/progress, gate decisions, and documented plan changes, but it must not edit product code.
 
-All `scripts/…` and `references/…` paths in this skill are relative to the skill's own
-base directory (the directory containing this SKILL.md); resolve them against that
-directory, not the working directory.
+`scripts/…` and `references/…` name files in this skill's directory. Run every command from the
+target repository root, never `cd` into the skill directory: call `python3 <skill-dir>/scripts/…`.
 
 
 ## Commit mode at initialization

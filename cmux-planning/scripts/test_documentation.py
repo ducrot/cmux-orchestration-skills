@@ -497,10 +497,10 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         helper_files = {
             "slugify": {guide: "orchestrator_lib.py" for guide in SIBLINGS},
             "run_identifier": {guide: "orchestrator_lib.py" for guide in SIBLINGS},
-            "ensure_runs_root_ignored": {
+            **{name: {
                 guide: "planning_state.py" if guide == PLANNING else "run_state.py"
                 for guide in SIBLINGS
-            },
+            } for name in ("ensure_runs_root_ignored", "refuse_runs_root_in_skill")},
         }
         for name, files in helper_files.items():
             sources = []

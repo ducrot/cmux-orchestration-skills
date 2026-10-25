@@ -210,6 +210,15 @@ def main() -> int:
         return 1
 
 
+def refuse_runs_root_in_skill(runs_root: Path) -> None:
+    skill = Path(__file__).resolve().parent.parent
+    if runs_root.resolve().is_relative_to(skill):
+        raise SystemExit(
+            f"runs root {runs_root.resolve()} lies inside the skill directory {skill}; "
+            "run init from the target repository root, not from the skill directory"
+        )
+
+
 def ensure_runs_root_ignored(runs_root: Path) -> None:
     """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
     runs_root.mkdir(parents=True, exist_ok=True)
@@ -307,6 +316,7 @@ def init_run(args: argparse.Namespace) -> int:
     # grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC): readable, sortable, never reused across runs.
     run_id = args.run_id or run_identifier("grill", slug, now)
     runs_root = Path(args.runs_root)
+    refuse_runs_root_in_skill(runs_root)
     run_dir = runs_root / run_id
     args._board_publication.bind(run_dir)
     overrides = parse_overrides(args, workflow=WORKFLOW)

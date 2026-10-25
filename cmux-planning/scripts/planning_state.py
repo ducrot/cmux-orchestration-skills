@@ -335,6 +335,15 @@ def task_inputs(args: argparse.Namespace) -> list[tuple[bytes, str, str, str]]:
     return sources
 
 
+def refuse_runs_root_in_skill(runs_root: Path) -> None:
+    skill = Path(__file__).resolve().parent.parent
+    if runs_root.resolve().is_relative_to(skill):
+        raise SystemExit(
+            f"runs root {runs_root.resolve()} lies inside the skill directory {skill}; "
+            "run init from the target repository root, not from the skill directory"
+        )
+
+
 def ensure_runs_root_ignored(runs_root: Path) -> None:
     """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
     runs_root.mkdir(parents=True, exist_ok=True)
@@ -794,6 +803,7 @@ def offer_unfinished_run(runs_root: Path, repository: Path) -> bool:
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     runs_root = Path(args.runs_root)
+    refuse_runs_root_in_skill(runs_root)
     if any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
            for path in (runs_root.resolve(), *runs_root.resolve().parents)):
         raise ConfigError(

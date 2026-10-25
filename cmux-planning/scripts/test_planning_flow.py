@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -473,6 +474,21 @@ class PlanningFlow(unittest.TestCase):
                 printed = result.stdout.strip().splitlines()[-1]
                 expected = run_dir if mode == "absolute" else run_dir.relative_to(self.repo)
                 self.assertEqual(printed, str(expected))
+
+    def test_initialization_from_the_skill_directory_refuses_a_runs_root_inside_it(self):
+        skill = SCRIPT_DIR.parent
+        stray = skill / ".scratch"
+        self.assertFalse(stray.exists(), "remove the stray skill-local runs root before testing")
+        self.addCleanup(shutil.rmtree, stray, ignore_errors=True)
+        result = subprocess.run(
+            [sys.executable, str(STATE), "init", "--task-file", self.plan_file("Task"),
+             "--repo", str(self.repo), "--run-id", "plan-skill-cwd", "--workspace-id", "WORKSPACE-1"],
+            cwd=skill, env=self.env(), capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("inside the skill directory", result.stderr)
+        self.assertFalse(stray.exists())
+        self.assertFalse(self.runs.exists())
 
     def test_initialization_retries_a_directory_without_state(self):
         (self.run_dir / "inputs/task-files").mkdir(parents=True)

@@ -11,6 +11,9 @@ each author and reviewer gets a fresh, visibly labeled CMUX pane.
 Optional upstream `cmux-grilling` stress-tests uncertain decisions; downstream `cmux-issue-chain`
 executes published trackers. Neither is invoked here; all three workflows work independently.
 
+`scripts/…` and `references/…` name files in this skill's directory. Run every command from the
+target repository root, never `cd` into the skill directory: call `python3 <skill-dir>/scripts/…`.
+
 ```text
 input -> awaiting-grilling-revalidation (optional) -> spec -> spec-review
       -> awaiting-spec-approval -> tickets -> tickets-review

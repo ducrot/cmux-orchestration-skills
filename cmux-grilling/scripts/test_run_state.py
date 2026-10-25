@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -94,6 +95,28 @@ class CommitModes(unittest.TestCase):
                 self.assertNotEqual(refused.returncode, 0)
                 self.assertIn(f"run {run_id} already exists with commit mode {effective}; --commit-mode {extra[-1]} cannot change it", refused.stderr)
                 self.assertEqual(file_contents(run_dir), before)
+
+
+class SkillDirectoryRunsRoot(unittest.TestCase):
+    setUp = wave_tests.PreparedLaunchWaveCli.setUp
+    tearDown = wave_tests.PreparedLaunchWaveCli.tearDown
+    env = wave_tests.PreparedLaunchWaveCli.env
+    initialize_config = wave_tests.PreparedLaunchWaveCli.initialize_config
+
+    def test_init_from_the_skill_directory_refuses_a_runs_root_inside_it(self):
+        skill = wave_tests.SCRIPT_DIR.parent
+        stray = skill / ".scratch"
+        self.assertFalse(stray.exists(), "remove the stray skill-local runs root before testing")
+        self.addCleanup(shutil.rmtree, stray, ignore_errors=True)
+        result = subprocess.run(
+            [sys.executable, str(wave_tests.RUN_STATE), "init", "--task", "Grill this plan",
+             "--run-id", "skill-cwd", "--config", str(self.config_path),
+             "--output-dir", str(self.repo / "grilling"), "--workspace-id", "WORKSPACE"],
+            cwd=skill, env=self.env(), capture_output=True, text=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("inside the skill directory", result.stderr)
+        self.assertFalse(stray.exists())
 
 
 class OutputPathDerivation(unittest.TestCase):
