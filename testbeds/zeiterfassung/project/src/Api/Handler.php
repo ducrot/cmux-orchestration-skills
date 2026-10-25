@@ -5,6 +5,8 @@ namespace TimeTracker\Api;
 
 use JsonException;
 use TimeTracker\Application\Customers;
+use TimeTracker\Export\InvoiceExport;
+use TimeTracker\Infrastructure\Configuration;
 use TimeTracker\Application\EntryNotFound;
 use TimeTracker\Application\InvoiceNotFound;
 use TimeTracker\Domain\TimeEntry;
@@ -14,7 +16,7 @@ use TimeTracker\Domain\ValidationException;
 
 final readonly class Handler
 {
-    public function __construct(private Customers $customers) {}
+    public function __construct(private Customers $customers, private ?Configuration $configuration = null) {}
 
     public function handle(Request $request): Response
     {
@@ -57,6 +59,15 @@ final readonly class Handler
 
     private function invoiceRequest(Request $request): Response
     {
+        if (preg_match('#^/invoices/([1-9][0-9]*)/export$#D', $request->path, $m) === 1) {
+            if ($request->method !== 'GET') { return new Response(405, ['errors' => ['Method not allowed.']]); }
+            $id = filter_var($m[1], FILTER_VALIDATE_INT);
+            if ($id === false) { throw new InvoiceNotFound(); }
+            $format = $request->query['format'] ?? 'markdown';
+            if (!is_string($format)) { throw new ValidationException(['Export format must be markdown or html.']); }
+            $export = new InvoiceExport($this->customers, ($this->configuration ?? Configuration::fromEnvironment())->issuer);
+            return new Response(200, $export->render($id, $format), InvoiceExport::CONTENT_TYPES[$format]);
+        }
         $invoices = $this->customers->invoices();
         if (preg_match('#^/invoices/([1-9][0-9]*)$#D', $request->path, $m) === 1) {
             $id = filter_var($m[1], FILTER_VALIDATE_INT);

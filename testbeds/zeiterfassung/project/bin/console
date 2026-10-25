@@ -10,7 +10,7 @@ use TimeTracker\Infrastructure\Configuration;
 
 try {
     $configuration = Configuration::fromEnvironment();
-    $application = new Application(Bootstrap::customers($configuration));
+    $application = new Application(Bootstrap::customers($configuration), $configuration);
     exit($application->run(array_slice($argv, 1), static function (string $text): void { fwrite(STDOUT, $text); }, static function (string $text): void { fwrite(STDERR, $text); }));
 } catch (Throwable $error) {
     fwrite(STDERR, 'Application error: ' . $error->getMessage() . "\n");

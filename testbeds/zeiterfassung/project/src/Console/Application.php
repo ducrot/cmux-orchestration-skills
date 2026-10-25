@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace TimeTracker\Console;
 
 use TimeTracker\Application\Customers;
+use TimeTracker\Export\InvoiceExport;
+use TimeTracker\Infrastructure\Configuration;
 use TimeTracker\Application\EntryNotFound;
 use TimeTracker\Application\InvoiceNotFound;
 use TimeTracker\Domain\TimeEntry;
@@ -23,7 +25,7 @@ final readonly class Application
         'customer:delete' => ['id' => true, 'fields' => false],
     ];
 
-    public function __construct(private Customers $customers) {}
+    public function __construct(private Customers $customers, private ?Configuration $configuration = null) {}
 
     /**
      * @param list<string> $arguments
@@ -35,7 +37,18 @@ final readonly class Application
         try {
             $command = $arguments[0] ?? 'help';
             if (in_array($command, ['help', '--help', 'list'], true)) {
-                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n  entry:import FILE\n  invoice:create CUSTOMER_ID [ISSUE_DATE [FROM [TO]]]\n  invoice:list CUSTOMER_ID\n  invoice:show ID\n");
+                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n  entry:import FILE\n  invoice:create CUSTOMER_ID [ISSUE_DATE [FROM [TO]]]\n  invoice:list CUSTOMER_ID\n  invoice:show ID\n  invoice:export ID FORMAT [FILE]\n");
+                return 0;
+            }
+            if ($command === 'invoice:export') {
+                if (!in_array(count($arguments), [3, 4], true)) { throw new ValidationException(['Usage: invoice:export ID FORMAT [FILE]']); }
+                $export = new InvoiceExport($this->customers, ($this->configuration ?? Configuration::fromEnvironment())->issuer);
+                $document = $export->render($this->id($arguments[1], 'Invoice ID'), $arguments[2]);
+                if (isset($arguments[3])) {
+                    if (@file_put_contents($arguments[3], $document) !== strlen($document)) {
+                        throw new ValidationException(['Cannot write export file: ' . $arguments[3]]);
+                    }
+                } else { $stdout($document); }
                 return 0;
             }
             if (str_starts_with($command, 'invoice:')) {

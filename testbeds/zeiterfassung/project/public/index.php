@@ -11,14 +11,14 @@ use TimeTracker\Infrastructure\Configuration;
 
 try {
     $configuration = Configuration::fromEnvironment();
-    $handler = new Handler(Bootstrap::customers($configuration));
+    $handler = new Handler(Bootstrap::customers($configuration), $configuration);
     $response = $handler->handle(new Request($_SERVER['REQUEST_METHOD'] ?? 'GET', explode('?', $_SERVER['REQUEST_URI'] ?? '/', 2)[0], file_get_contents('php://input') ?: '', $_GET));
-    $body = $response->json();
+    $body = $response->serialize();
 } catch (Throwable $error) {
     error_log($error->getMessage());
     $response = new Response(500, ['errors' => ['Internal server error.']]);
-    $body = $response->json();
+    $body = $response->serialize();
 }
 http_response_code($response->status);
-header('Content-Type: application/json; charset=utf-8');
+header('Content-Type: ' . $response->contentType . '; charset=utf-8');
 echo $body;

@@ -1,6 +1,6 @@
 # Time Tracker
 
-A PHP 8.3 application for a solo developer, with a console interface and a JSON API. Customer records contain a name, address and email. All three fields are required; email must be valid. Leading and trailing whitespace is removed.
+A PHP 8.3 application for a solo developer, with a console interface and an HTTP API for customers, projects, hourly rates, time entries, CSV import, invoices and Markdown or HTML invoice documents. Customer records contain a name, address and email. All three fields are required; email must be valid. Leading and trailing whitespace is removed.
 
 ## Installation
 
@@ -95,7 +95,7 @@ Rate POST bodies use strings for `amount`, `currency` and `start`, for example `
 
 The `TimeTracker\` PSR-4 root maps to `src/`: `Domain` holds models and validation rules, `Application` coordinates customer operations, `Infrastructure` holds configuration, PDO storage and migrations, and `Console` and `Api` adapt the service for each interface.
 
-`Console\Application::run()` accepts argument values and output callbacks and returns an exit code. `Api\Handler::handle()` accepts a `Request` value and returns a `Response` with status, body and JSON serialization. Both can share an application service without starting processes.
+`Console\Application::run()` accepts argument values and output callbacks and returns an exit code. `Api\Handler::handle()` accepts a `Request` value and returns a `Response` with status, body and content type. `Response::serialize()` returns the response body as JSON or document text. Both interfaces can share an application service without starting processes.
 
 Run the unit and integration suites and PHPStan level 6:
 
@@ -185,3 +185,23 @@ Numbers have the form `year-counter`, for example `2026-1`, `2026-2`, `2027-1`. 
 POST accepts a JSON object, for example `{"issue_date":"2026-10-31","from":"2026-10-01","to":"2026-11-01"}`; `{}` uses defaults. Missing or null dates use defaults or open boundaries. Invoice objects contain `id`, `customer_id`, `number`, `issue_date`, `positions`, `net`, `vat`, `gross`. Each position contains `entry_id`, `date`, `description`, `hours`, `rate_cents`, `currency`, `amount`.
 
 Creation fails when there are no unbilled entries in the period or an entry has no applicable rate; the latter error names the entry. Billed entries cannot be updated or deleted. CSV imports overlapping billed entries also fail. Each lock error names the invoice number. Entry listings include the billed state. CLI errors exit 1; API validation and lock errors return 422, unknown customers or invoices 404, unsupported methods 405 and malformed JSON 400.
+
+## Invoice documents
+
+```sh
+php bin/console invoice:export 1 markdown
+php bin/console invoice:export 1 html invoice.html
+curl -i 'http://127.0.0.1:8080/invoices/1/export?format=markdown'
+curl -i 'http://127.0.0.1:8080/invoices/1/export?format=html'
+```
+
+`invoice:export ID FORMAT [FILE]` exports an existing invoice. Format is `markdown` or `html`. Without a file path, the document is printed to standard output; with a path, the file is written (replacing an existing file) and standard output stays empty. Success exits 0. Unknown invoices, unknown formats, invalid arguments and unwritable paths produce a message on standard error and exit 1.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| GET | `/invoices/{id}/export?format=markdown` | 200, `text/markdown; charset=utf-8` document |
+| GET | `/invoices/{id}/export?format=html` | 200, `text/html; charset=utf-8` document |
+
+The API defaults to Markdown when `format` is omitted. Unknown invoices return 404, invalid formats return 422 and unsupported methods return 405, with the usual JSON errors. The API returns the same document as the console.
+
+Both documents contain the issuer name, address and email from the active configuration, the current customer name, address and email, invoice number and date, and positions with date, description, hours, hourly rate and amount. Monetary values show two decimal places and the currency code; net, VAT and gross use the invoice's stored totals and the first position's currency. Use one currency per invoice. Invoice positions retain their stored details, while issuer and customer contact details reflect their current values at export time. HTML escapes text, and Markdown escapes formatting characters and table separators; multiline addresses and descriptions retain their line breaks.

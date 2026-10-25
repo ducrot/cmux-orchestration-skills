@@ -5,8 +5,13 @@ namespace TimeTracker\Api;
 
 final readonly class Response
 {
-    /** @param array<mixed> $body */
-    public function __construct(public int $status, public array $body) {}
+    /** @param array<mixed>|string $body */
+    public function __construct(public int $status, public array|string $body, public string $contentType = 'application/json') {}
+
+    public function serialize(): string
+    {
+        return is_string($this->body) ? $this->body : $this->json();
+    }
 
     public function json(): string
     {
