@@ -84,6 +84,44 @@ class CreateTestbed(unittest.TestCase):
         script.chmod(0o755)
         return dict(self.env, PATH=str(directory) + os.pathsep + self.env['PATH'])
 
+    def test_e_invoice_scenario_is_complete_and_private_in_copy(self):
+        bed = ROOT / 'testbeds/zeiterfassung'
+        scenario = bed / 'scenarios/04-e-invoice'
+        self.assertEqual(sorted(p.name for p in scenario.iterdir()), ['plan.md'])
+        plan = (scenario / 'plan.md').read_bytes()
+        text = plan.decode('utf-8')
+        for topic in ('invoice model', 'number sequence', 'export', 'fields',
+                      'mandatory fields', 'ZUGFeRD', 'XRechnung', 'deadlines', 'Composer'):
+            self.assertIn(topic, text)
+        for private_word in ('benchmark', 'scenario', 'trap', 'evaluation', 'lane'):
+            self.assertNotIn(private_word, text.lower())
+        evaluation = (bed / 'evaluation/04-e-invoice.md').read_text()
+        for observation in ('code lane', 'docs lane', 'web lane', 'file references',
+                            'supported assumptions', 'open decisions', 'same copy',
+                            'network access', 'source drift', 'current sources'):
+            self.assertIn(observation, evaluation)
+        self.assertGreaterEqual(evaluation.count('- [ ]'), 6)
+        for field in ('Date', 'Testbed version', 'Scenario', 'Registry entry id',
+                      'Recorded skill state', 'Date-attributed skill commit',
+                      'Run identifier', 'Observations met', 'Observations missed',
+                      'Observations not exercised', 'Baseline sources', 'Evidence and notes'):
+            self.assertIn(f'- {field}:\n', evaluation)
+        self.assertNotIn('- [x]', evaluation.lower())
+
+        # Exercise the public CLI with the real input, using the synthetic
+        # version and configuration until the separate version-cut ticket.
+        destination = self.bed / 'scenarios/04-e-invoice'
+        destination.mkdir()
+        (destination / 'plan.md').write_bytes(plan)
+        (self.bed / 'evaluation/04-e-invoice.md').write_text(evaluation)
+        result = self.create(scenario='04-e-invoice')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.base / 'target'
+        self.assertEqual((target / 'docs/plan.md').read_bytes(), plan)
+        self.assertFalse((target / 'evaluation').exists())
+        self.assertFalse((target / 'scenarios').exists())
+        self.assertNotIn(evaluation, result.stdout)
+
     def test_partial_invoice_scenario_is_complete_and_private_in_copy(self):
         bed = ROOT / 'testbeds/zeiterfassung'
         scenario = bed / 'scenarios/01-partial-invoices'
