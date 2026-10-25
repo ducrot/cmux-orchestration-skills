@@ -84,6 +84,34 @@ class CreateTestbed(unittest.TestCase):
         script.chmod(0o755)
         return dict(self.env, PATH=str(directory) + os.pathsep + self.env['PATH'])
 
+    def test_partial_invoice_scenario_is_complete_and_private_in_copy(self):
+        bed = ROOT / 'testbeds/zeiterfassung'
+        scenario = bed / 'scenarios/01-partial-invoices'
+        self.assertEqual(sorted(p.name for p in scenario.iterdir()), ['plan.md'])
+        plan = (scenario / 'plan.md').read_bytes()
+        text = plan.decode('utf-8').lower()
+        for private_word in ('benchmark', 'scenario', 'trap', 'evaluation', 'prefactor', 'ticket'):
+            self.assertNotIn(private_word, text)
+        evaluation = (bed / 'evaluation/01-partial-invoices.md').read_text()
+        self.assertIn('slice_type: prefactor', evaluation)
+        for field in ('Date', 'Testbed version', 'Scenario', 'Registry entry id',
+                      'Recorded skill state', 'Date-attributed skill commit',
+                      'Run identifier', 'Observations met', 'Observations missed'):
+            self.assertIn(f'- {field}:\n', evaluation)
+        self.assertNotIn('- [x]', evaluation.lower())
+
+        # Exercise the public creation CLI with the real scenario bytes. Version
+        # and worker configuration come from the synthetic bed until its version cut.
+        (self.bed / 'scenarios/one/plan.md').write_bytes(plan)
+        (self.bed / 'evaluation/one.md').write_text(evaluation)
+        result = self.create()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.base / 'target'
+        self.assertEqual((target / 'docs/plan.md').read_bytes(), plan)
+        self.assertFalse((target / 'evaluation').exists())
+        self.assertFalse((target / 'scenarios').exists())
+        self.assertNotIn(b'01-partial-invoices.md', (target / 'app.php').read_bytes())
+
     def test_registry_appends_identity_without_rewriting_existing_bytes(self):
         before = datetime.now(timezone.utc)
         entries = []
