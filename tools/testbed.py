@@ -8,12 +8,15 @@ Only project files (excluding dependencies, scratch, Git, SQLite and OS metadata
 the unchanged worker fixture and the chosen docs/plan.md enter the copy. Content
 and executable modes are verified before two deterministic, isolated Git commits.
 Existing files are never overwritten; failed copies are retained for inspection.
---skip-install is for tests. Normal invocation stops after committing until the
-installation and registry slice is available.
+Dependencies are installed without scripts or plugins, then the copy's identity
+is appended to the repository's ignored registry. --skip-install is for tests.
 """
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -21,11 +24,15 @@ import stat
 import subprocess
 import sys
 import unicodedata
+import uuid
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SKILLS = ('cmux-planning', 'cmux-grilling', 'cmux-issue-chain')
 FIXTURE = Path('.scratch/orchestrator/agents.json')
 PLAN = Path('docs/plan.md')
+REGISTRY = REPOSITORY / '.scratch/orchestrator/testbeds/registry.jsonl'
+# These redirect or narrow what Composer installs without appearing in the registry.
+COMPOSER_OVERRIDES = ('COMPOSER', 'COMPOSER_VENDOR_DIR', 'COMPOSER_BIN_DIR', 'COMPOSER_NO_DEV')
 
 
 class Refusal(Exception):
@@ -185,6 +192,11 @@ def commit(target: Path, expected: dict[Path, tuple[str, str]], message: str) ->
     return git(target, 'rev-parse', 'HEAD')
 
 
+def require_clean(target: Path, step: str) -> None:
+    if git(target, 'status', '--porcelain', '--untracked-files=all'):
+        raise Refusal(f'{step} verification failed: working tree is not clean')
+
+
 def create(args: argparse.Namespace) -> int:
     bed = named_directory(REPOSITORY / 'testbeds', args.testbed, 'testbed')
     scenario = named_directory(bed / 'scenarios', args.scenario, 'scenario')
@@ -235,20 +247,42 @@ def create(args: argparse.Namespace) -> int:
     verify(target, {**project, PLAN: plan})
     staged |= stage(target, {PLAN: plan})
     head_commit = commit(target, staged, 'Testbed scenario')
-    if git(target, 'status', '--porcelain', '--untracked-files=all'):
-        raise Refusal('copy verification failed: working tree is not clean')
+    require_clean(target, 'copy')
+    # Installation output belongs to this copy but must not change its seed tree,
+    # even when the project's own ignore file does not mention dependencies.
+    write_new(target, Path('.git/info/exclude'), (b'/vendor/\n', False))
+    if not args.skip_install:
+        subprocess.run(
+            ['composer', 'install', '--no-interaction', '--no-scripts', '--no-plugins'],
+            cwd=target, check=True, env={key: value for key, value in inherited_environment().items()
+                                         if key not in COMPOSER_OVERRIDES},
+        )
+        require_clean(target, 'installation')
+
+    entry = {
+        'entry_id': str(uuid.uuid4()),
+        'target': str(target),
+        'created_at': datetime.now(timezone.utc).isoformat(),
+        'testbed': args.testbed,
+        'version': version,
+        'scenario': args.scenario,
+        'skill_state': skill_state,
+        'project_commit': project_commit,
+        'head_commit': head_commit,
+        'fixture_sha256': hashlib.sha256(fixture[0]).hexdigest(),
+    }
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    with REGISTRY.open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps(entry) + '\n')
     print(f'Target: {target}\nTestbed: {args.testbed}\nVersion: {version}\n'
           f'Scenario: {args.scenario}\nSkill state: {skill_state}\n'
-          f'Project commit: {project_commit}\nHead commit: {head_commit}')
+          f'Project commit: {project_commit}\nHead commit: {head_commit}\n'
+          f'Registry entry: {entry["entry_id"]}')
     if human is not None:
         print('\nState the following in the orchestrator conversation:')
         sys.stdout.flush()
         sys.stdout.buffer.write(human)
         sys.stdout.buffer.flush()
-    if not args.skip_install:
-        print('Stopped after commits: installation and registry recording arrive with the next slice. '
-              'Use --skip-install only for tests.', file=sys.stderr)
-        return 1
     return 0
 
 

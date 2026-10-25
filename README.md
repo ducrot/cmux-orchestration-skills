@@ -217,9 +217,18 @@ It prints the target, testbed version, scenario, project and head hashes, and th
 repository's short skill commit (`-dirty` when any skill directory has Git changes).
 Existing files are never overwritten; a failed partial copy is retained for inspection.
 
-Dependency installation and registry recording arrive in the next slice. Until
-then, normal invocation stops with a nonzero status after creating the commits;
-`--skip-install` returns success without installation and is intended only for tests.
+After committing, the command runs `composer install --no-interaction --no-scripts
+--no-plugins` inside the copy. Dependencies are ignored by Git. A failed install
+returns nonzero with Composer's output and leaves the incomplete copy for inspection.
+`--skip-install` skips installation and is intended only for tests.
+
+Every successful creation appends one JSON line to this repository's ignored
+`.scratch/orchestrator/testbeds/registry.jsonl`, then prints the registry entry id
+with the copy's identity. Each entry records `entry_id` (a fresh UUID), `target`
+(the resolved path), `created_at` (UTC with offset), `testbed`, `version`, `scenario`,
+`skill_state`, `project_commit`, `head_commit`, and `fixture_sha256` (the unchanged
+fixture's SHA-256 digest). The tool only appends; it never reads or rewrites registry
+history. Refusals and failed installations append nothing.
 
 ## Acknowledgments
 

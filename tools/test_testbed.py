@@ -1,4 +1,7 @@
 """Public CLI regressions using a synthetic repository and real fixture validator."""
+from datetime import datetime, timezone
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -7,6 +10,7 @@ import sys
 import tempfile
 import unicodedata
 import unittest
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,6 +71,132 @@ class CreateTestbed(unittest.TestCase):
         if skip:
             args.append('--skip-install')
         return subprocess.run(args, cwd=self.base, env=env or self.env, capture_output=True, text=True)
+
+    @property
+    def registry(self):
+        return self.repo / '.scratch/orchestrator/testbeds/registry.jsonl'
+
+    def installer(self, body):
+        directory = self.base / 'bin'
+        directory.mkdir()
+        script = directory / 'composer'
+        script.write_text('#!' + sys.executable + '\n' + body)
+        script.chmod(0o755)
+        return dict(self.env, PATH=str(directory) + os.pathsep + self.env['PATH'])
+
+    def test_registry_appends_identity_without_rewriting_existing_bytes(self):
+        before = datetime.now(timezone.utc)
+        entries = []
+        for number in range(2):
+            previous = self.registry.read_bytes() if self.registry.exists() else b''
+            target = self.base / f'copy-{number}'
+            result = self.create(target / '..' / target.name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            appended = self.registry.read_bytes()
+            self.assertTrue(appended.startswith(previous))
+            line = appended[len(previous):]
+            self.assertEqual(line.count(b'\n'), 1)
+            entry = json.loads(line)
+            self.assertEqual(set(entry), {'entry_id', 'target', 'created_at', 'testbed',
+                             'version', 'scenario', 'skill_state', 'project_commit',
+                             'head_commit', 'fixture_sha256'})
+            self.assertEqual(str(uuid.UUID(entry['entry_id'])), entry['entry_id'])
+            self.assertEqual(entry['target'], str(target.resolve()))
+            self.assertEqual((entry['testbed'], entry['version'], entry['scenario']),
+                             ('demo', '1.2.3', 'one'))
+            self.assertEqual(entry['skill_state'], self.git(self.repo, 'rev-parse', '--short', 'HEAD'))
+            for field, revision in (('project_commit', 'HEAD^'), ('head_commit', 'HEAD')):
+                self.assertEqual(entry[field], self.git(target, 'rev-parse', revision))
+            self.assertEqual(entry['fixture_sha256'],
+                             hashlib.sha256((self.bed / 'agents.json').read_bytes()).hexdigest())
+            timestamp = datetime.fromisoformat(entry['created_at'])
+            self.assertEqual(timestamp.utcoffset().total_seconds(), 0)
+            self.assertLessEqual(before, timestamp)
+            self.assertLessEqual(timestamp, datetime.now(timezone.utc))
+            self.assertTrue(result.stdout.endswith(f"Registry entry: {entry['entry_id']}\n"))
+            entries.append(entry)
+        self.assertNotEqual(entries[0]['entry_id'], entries[1]['entry_id'])
+        for field in ('project_commit', 'head_commit', 'fixture_sha256'):
+            self.assertEqual(entries[0][field], entries[1][field])
+
+    def test_registry_preserves_unreadable_history_and_skip_does_not_install(self):
+        self.registry.parent.mkdir(parents=True)
+        history = b'not valid JSON: \xff\n'
+        self.registry.write_bytes(history)
+        env = self.installer('raise SystemExit("must not run")\n')
+        result = self.create(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.registry.read_bytes().startswith(history))
+        self.assertEqual(len(self.registry.read_bytes().splitlines()), 2)
+
+    def test_install_runs_in_committed_copy_before_registry_append(self):
+        env = self.installer(
+            'import pathlib, subprocess, sys\n'
+            'assert sys.argv[1:] == ["install", "--no-interaction", "--no-scripts", "--no-plugins"]\n'
+            'assert pathlib.Path("docs/plan.md").is_file()\n'
+            'assert subprocess.check_output(["git", "rev-list", "--count", "HEAD"]).strip() == b"2"\n'
+            f'assert not pathlib.Path({str(self.registry)!r}).exists()\n'
+            'import os\nassert "COMPOSER_VENDOR_DIR" not in os.environ\n'
+            'pathlib.Path("vendor").mkdir()\n'
+            'pathlib.Path("vendor/autoload.php").write_text("installed")\n')
+        env['COMPOSER_VENDOR_DIR'] = str(self.base / 'elsewhere')
+        result = self.create(skip=False, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.base / 'target'
+        self.assertTrue((target / 'vendor/autoload.php').is_file())
+        self.assertEqual(self.git(target, 'status', '--porcelain', '--untracked-files=all'), '')
+        self.assertEqual(self.git(target, 'check-ignore', 'vendor/autoload.php'), 'vendor/autoload.php')
+        self.assertEqual(len(self.registry.read_text().splitlines()), 1)
+
+    def test_failed_install_keeps_committed_target_and_registry_unchanged(self):
+        self.registry.parent.mkdir(parents=True)
+        self.registry.write_bytes(b'existing history\n')
+        env = self.installer('import pathlib, sys\n'
+                             'pathlib.Path("partial-install").write_text("inspect me")\n'
+                             'print("installer stdout")\n'
+                             'print("installer stderr", file=sys.stderr)\n'
+                             'raise SystemExit(17)\n')
+        result = self.create(skip=False, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('installer stdout', result.stdout + result.stderr)
+        self.assertIn('installer stderr', result.stdout + result.stderr)
+        self.assertNotIn('Registry entry:', result.stdout)
+        self.assertEqual(self.registry.read_bytes(), b'existing history\n')
+        target = self.base / 'target'
+        self.assertEqual(self.git(target, 'rev-list', '--count', 'HEAD'), '2')
+        self.assertEqual((target / 'partial-install').read_text(), 'inspect me')
+        self.assertEqual((target / 'app.php').read_bytes(), (self.project / 'app.php').read_bytes())
+
+    def test_install_that_dirties_seed_is_not_recorded(self):
+        env = self.installer('from pathlib import Path\nPath("app.php").write_text("changed")\n')
+        result = self.create(skip=False, env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('working tree is not clean', result.stderr)
+        self.assertFalse(self.registry.parent.exists())
+        self.assertEqual((self.base / 'target/app.php').read_text(), 'changed')
+
+    @unittest.skipUnless(shutil.which('composer'), 'Composer is not installed')
+    def test_real_composer_install_with_committed_lock(self):
+        (self.project / 'composer.json').write_text(json.dumps({
+            'name': 'testbed/minimal', 'require': {},
+            'scripts': {'post-install-cmd': '@php -r "touch(\'script-ran\');"'},
+        }))
+        (self.project / 'composer.lock').write_text(json.dumps({
+            'content-hash': '87be2b96663f8f582e027d1b66288bfd',
+            'packages': [], 'packages-dev': [], 'aliases': [],
+            'minimum-stability': 'stable', 'stability-flags': {},
+            'prefer-stable': False, 'prefer-lowest': False,
+            'platform': {}, 'platform-dev': {}, 'plugin-api-version': '2.6.0',
+        }))
+        result = self.create(skip=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.base / 'target'
+        self.assertTrue((target / 'vendor/autoload.php').is_file())
+        self.assertFalse((target / 'script-ran').exists())
+        self.assertEqual(self.git(target, 'show', 'HEAD:composer.lock'),
+                         (self.project / 'composer.lock').read_text())
+        self.assertEqual(self.git(target, 'status', '--porcelain', '--untracked-files=all'), '')
+        self.assertEqual(len(self.registry.read_text().splitlines()), 1)
 
     def test_determinism_contents_and_output(self):
         hashes = []
@@ -156,6 +286,8 @@ class CreateTestbed(unittest.TestCase):
         self.assertFalse((self.base / 'target').exists())
 
     def test_refusals_write_nothing(self):
+        self.registry.parent.mkdir(parents=True)
+        self.registry.write_bytes(b'untouched registry history\n')
         nonempty = self.base / 'nonempty'
         nonempty.mkdir()
         (nonempty / 'keep').write_text('untouched')
@@ -187,12 +319,8 @@ class CreateTestbed(unittest.TestCase):
             result = self.create(self.base / state)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f'Skill state: {clean}-dirty\n', result.stdout)
-
-    def test_default_stops_after_commits_with_install_message(self):
-        result = self.create(skip=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('installation and registry recording', result.stderr)
-        self.assertEqual(self.git(self.base / 'target', 'rev-list', '--count', 'HEAD'), '2')
+            entry = json.loads(self.registry.read_text().splitlines()[-1])
+            self.assertEqual(entry['skill_state'], clean + '-dirty')
 
     def test_preflight_rejects_overwrites_and_symlinks(self):
         (self.project / 'docs').mkdir()
