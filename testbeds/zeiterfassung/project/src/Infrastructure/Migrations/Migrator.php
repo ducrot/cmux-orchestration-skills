@@ -47,6 +47,9 @@ final class Migrator
                   CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT, start INTEGER NOT NULL, end INTEGER NOT NULL CHECK (end > start), description TEXT NOT NULL, billed INTEGER NOT NULL DEFAULT 0);
                   CREATE INDEX entries_interval ON entries(start, end);
                   CREATE INDEX entries_project ON entries(project_id)',
+            4 => 'CREATE TABLE invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE RESTRICT, year INTEGER NOT NULL, counter INTEGER NOT NULL, number TEXT NOT NULL UNIQUE, issue_date TEXT NOT NULL, net REAL NOT NULL, vat REAL NOT NULL, gross REAL NOT NULL, UNIQUE(year, counter));
+                  CREATE TABLE invoice_positions (id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER NOT NULL REFERENCES invoices(id), entry_id INTEGER NOT NULL UNIQUE REFERENCES entries(id), date TEXT NOT NULL, description TEXT NOT NULL, hours REAL NOT NULL, rate_cents INTEGER NOT NULL, currency TEXT NOT NULL, amount REAL NOT NULL);
+                  ALTER TABLE entries ADD COLUMN invoice_id INTEGER REFERENCES invoices(id)',
         ];
     }
 }

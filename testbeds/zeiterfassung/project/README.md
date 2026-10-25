@@ -125,7 +125,7 @@ php bin/console entry:delete 1
 
 Create takes project ID, start, end and description. Update takes entry ID followed by those same four values, replacing the entry. Description must be a non-empty UTF-8 string and is trimmed. Timestamps use `YYYY-MM-DDTHH:MM:SSZ` or an explicit offset such as `2026-10-25T10:00:00+01:00`; output is normalized to UTC. End must be strictly after start. Overlaps are checked globally across all projects on creation and update; the error identifies the conflicting entry ID. Touching intervals are allowed. A project with entries cannot be deleted.
 
-Each entry returns `id`, `project_id`, `start`, `end`, `description`, `raw_duration_seconds`, `billable_duration_seconds` and `billed` (currently always `false`). Raw duration is elapsed seconds. Billable duration rounds each entry up independently to a multiple of the project's current step: with 15-minute rounding, 15 minutes stays 15 and 16 becomes 30. With no rounding it equals raw duration. Changing the project step recalculates the billable duration of existing entries when read; raw duration stays unchanged.
+Each entry returns `id`, `project_id`, `start`, `end`, `description`, `raw_duration_seconds`, `billable_duration_seconds` and `billed` (`true` after invoicing). Raw duration is elapsed seconds. Billable duration rounds each entry up independently to a multiple of the project's current step: with 15-minute rounding, 15 minutes stays 15 and 16 becomes 30. With no rounding it equals raw duration. Changing the project step recalculates the billable duration of existing entries when read; raw duration stays unchanged.
 
 | Method | Route | Response |
 | --- | --- | --- |
@@ -160,3 +160,28 @@ The API takes raw CSV as its request body. Both interfaces return JSON such as `
 All rows are validated before any insert, and all inserts share one transaction. The existing manual-entry rules apply: a project must exist, timestamps require a valid calendar date/time and explicit timezone, end must follow start, descriptions must be non-empty UTF-8, and intervals cannot overlap existing entries or each other, even across projects. Touching intervals are allowed. Imported entries use the project's current rounding rule just like manual entries.
 
 An invalid file imports nothing. CLI exits 1 and lists each error on its own standard-error line; API returns 422 with the same messages in `{"errors":["Row 2: ..."]}`. Row numbers identify physical starting lines (header is line 1), including after quoted multiline descriptions. Wrong headers and comma-separated files are rejected with the expected format before validating data rows. Unknown projects inside imports are validation errors (422). An unreadable CLI file exits 1. `POST` is the only supported method for `/entries/import` (other methods return 405).
+
+## Invoices
+
+```sh
+php bin/console invoice:create 1
+php bin/console invoice:create 1 2026-10-31 2026-10-01 2026-11-01
+php bin/console invoice:list 1
+php bin/console invoice:show 1
+```
+
+`invoice:create CUSTOMER_ID [ISSUE_DATE [FROM [TO]]]` invoices the customer's unbilled entries. Dates use `YYYY-MM-DD`; issue date defaults to today's UTC date. Optional period boundaries filter the entry's start in UTC: `from` is inclusive and `to` exclusive. An omitted boundary is open. When both are supplied, `to` must follow `from`.
+
+Each position snapshots the entry ID, UTC date, description, billable hours (including project rounding), applicable hourly rate in integer cents, currency and amount. Rate validity is evaluated on the entry's UTC start date. Position amounts are rounded to two decimal places; net is their sum, VAT is net multiplied by `Invoice::VAT_RATE` (19%) rounded to two decimals, and gross is net plus VAT. Invoice amounts are numeric values in JSON. Stored invoices retain their positions and totals when rates or project rounding later change.
+
+Numbers have the form `year-counter`, for example `2026-1`, `2026-2`, `2027-1`. The issue date determines the year. The counter is shared across customers and continues without gaps within each year; failed creation consumes no number. Number allocation, positions and marking entries as billed share one transaction. Invoices cannot be edited or deleted.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| POST | `/customers/{customerId}/invoices` | 201, created invoice |
+| GET | `/customers/{customerId}/invoices` | 200, invoices ordered by ID |
+| GET | `/invoices/{id}` | 200, invoice with positions and totals |
+
+POST accepts a JSON object, for example `{"issue_date":"2026-10-31","from":"2026-10-01","to":"2026-11-01"}`; `{}` uses defaults. Missing or null dates use defaults or open boundaries. Invoice objects contain `id`, `customer_id`, `number`, `issue_date`, `positions`, `net`, `vat`, `gross`. Each position contains `entry_id`, `date`, `description`, `hours`, `rate_cents`, `currency`, `amount`.
+
+Creation fails when there are no unbilled entries in the period or an entry has no applicable rate; the latter error names the entry. Billed entries cannot be updated or deleted. CSV imports overlapping billed entries also fail. Each lock error names the invoice number. Entry listings include the billed state. CLI errors exit 1; API validation and lock errors return 422, unknown customers or invoices 404, unsupported methods 405 and malformed JSON 400.

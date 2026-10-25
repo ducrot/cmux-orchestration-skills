@@ -3,7 +3,7 @@ declare(strict_types=1);
 namespace TimeTracker\Domain;
 final readonly class TimeEntry
 {
-    public function __construct(public int $id, public int $projectId, public int $start, public int $end, public string $description, public ?int $roundingMinutes, public bool $billed = false) {}
+    public function __construct(public int $id, public int $projectId, public int $start, public int $end, public string $description, public ?int $roundingMinutes, public bool $billed = false, public ?string $invoiceNumber = null) {}
 
     public static function interval(int $start, int $end): void
     {

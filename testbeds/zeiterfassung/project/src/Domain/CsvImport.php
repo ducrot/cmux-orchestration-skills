@@ -41,7 +41,7 @@ final class CsvImport
                 if ($start === null || $end === null) { continue; }
                 if ($end <= $start) { $errors[] = "Row $line: End must be after start."; continue; }
                 foreach ($existing as $entry) {
-                    if ($start < $entry->end && $end > $entry->start) { $errors[] = "Row $line: Overlaps time entry {$entry->id}."; }
+                    if ($start < $entry->end && $end > $entry->start) { $errors[] = "Row $line: Overlaps time entry {$entry->id}." . ($entry->billed ? " Locked by invoice {$entry->invoiceNumber}." : ""); }
                 }
                 foreach ($intervals as $other) {
                     if ($start < $other['end'] && $end > $other['start']) {

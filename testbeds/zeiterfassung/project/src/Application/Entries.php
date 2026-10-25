@@ -21,5 +21,5 @@ final readonly class Entries
         if ($from !== null && $to !== null && $to <= $from) { throw new ValidationException(['Filter end must be after filter start.']); }
         return $this->repository->all($projectId, $from, $to);
     }
-    public function delete(int $id): void { $this->show($id); $this->repository->delete($id); }
+    public function delete(int $id): void { $this->repository->delete($id); }
 }

@@ -5,6 +5,7 @@ namespace TimeTracker\Console;
 
 use TimeTracker\Application\Customers;
 use TimeTracker\Application\EntryNotFound;
+use TimeTracker\Application\InvoiceNotFound;
 use TimeTracker\Domain\TimeEntry;
 use TimeTracker\Application\ProjectNotFound;
 use TimeTracker\Application\CustomerNotFound;
@@ -34,7 +35,11 @@ final readonly class Application
         try {
             $command = $arguments[0] ?? 'help';
             if (in_array($command, ['help', '--help', 'list'], true)) {
-                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n  entry:import FILE\n");
+                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n  entry:import FILE\n  invoice:create CUSTOMER_ID [ISSUE_DATE [FROM [TO]]]\n  invoice:list CUSTOMER_ID\n  invoice:show ID\n");
+                return 0;
+            }
+            if (str_starts_with($command, 'invoice:')) {
+                $stdout(json_encode($this->invoiceCommand($arguments), JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION) . "\n");
                 return 0;
             }
             if ($command === 'entry:import') {
@@ -76,7 +81,7 @@ final readonly class Application
             };
             $stdout(json_encode($result, JSON_THROW_ON_ERROR) . "\n");
             return 0;
-        } catch (ValidationException|CustomerNotFound|ProjectNotFound|EntryNotFound $error) {
+        } catch (ValidationException|CustomerNotFound|ProjectNotFound|EntryNotFound|InvoiceNotFound $error) {
             $stderr($error->getMessage() . "\n");
             return 1;
         }
@@ -143,6 +148,23 @@ final readonly class Application
         $description = $args[$offset + 3];
         if (trim($description) === '' || preg_match('//u', $description) !== 1) { throw new ValidationException(['Description must be a non-empty UTF-8 string.']); }
         return $this->entryRepresentation($entries->save($project, $start, $end, trim($description), $id));
+    }
+
+    /** @param list<string> $args
+     * @return array<mixed> */
+    private function invoiceCommand(array $args): array
+    {
+        $command = $args[0];
+        $counts = ['invoice:create' => [2, 3, 4, 5], 'invoice:list' => [2], 'invoice:show' => [2]];
+        if (!in_array(count($args), $counts[$command] ?? [], true)) { throw new ValidationException(['Unknown command or invalid arguments. Run help for usage.']); }
+        $id = $this->id($args[1], $command === 'invoice:show' ? 'Invoice ID' : 'Customer ID');
+        $invoices = $this->customers->invoices();
+        return match ($command) {
+            'invoice:create' => $invoices->create($id, $args[2] ?? null, $args[3] ?? null, $args[4] ?? null)->toArray(),
+            'invoice:list' => array_map(fn ($invoice) => $invoice->toArray(), $invoices->all($id)),
+            'invoice:show' => $invoices->show($id)->toArray(),
+            default => throw new ValidationException(['Unknown invoice command.']),
+        };
     }
 
     private function entryTimestamp(string $value): int

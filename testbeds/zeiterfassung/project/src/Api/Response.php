@@ -10,6 +10,6 @@ final readonly class Response
 
     public function json(): string
     {
-        return json_encode($this->body, JSON_THROW_ON_ERROR);
+        return json_encode($this->body, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
     }
 }

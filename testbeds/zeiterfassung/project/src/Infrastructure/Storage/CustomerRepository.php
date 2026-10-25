@@ -13,6 +13,8 @@ final readonly class CustomerRepository
 {
     public function __construct(private PDO $pdo) {}
 
+    public function invoices(): InvoiceRepository { return new InvoiceRepository($this->pdo); }
+
     public function entries(): EntryRepository { return new EntryRepository($this->pdo); }
 
     public function projects(): ProjectRepository { return new ProjectRepository($this->pdo); }

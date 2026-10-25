@@ -20,7 +20,7 @@ final class InfrastructureTest extends TestCase
         $migrator->migrate($pdo);
         $pdo->exec("INSERT INTO customers (name, address, email) VALUES ('Ada', 'Street', 'ada@example.com')");
         $migrator->migrate($pdo);
-        self::assertSame([1, 2, 3], $pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN));
+        self::assertSame([1, 2, 3, 4], $pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN));
         self::assertSame('Ada', $pdo->query('SELECT name FROM customers')->fetchColumn());
     }
 

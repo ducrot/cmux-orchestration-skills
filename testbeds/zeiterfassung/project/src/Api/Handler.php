@@ -6,6 +6,7 @@ namespace TimeTracker\Api;
 use JsonException;
 use TimeTracker\Application\Customers;
 use TimeTracker\Application\EntryNotFound;
+use TimeTracker\Application\InvoiceNotFound;
 use TimeTracker\Domain\TimeEntry;
 use TimeTracker\Application\ProjectNotFound;
 use TimeTracker\Application\CustomerNotFound;
@@ -18,6 +19,7 @@ final readonly class Handler
     public function handle(Request $request): Response
     {
         try {
+            if (str_contains($request->path, '/invoices')) { return $this->invoiceRequest($request); }
             if ($request->path === '/entries' || str_starts_with($request->path, '/entries/')) {
                 return $this->entryRequest($request);
             }
@@ -46,11 +48,32 @@ final readonly class Handler
             };
         } catch (ValidationException $error) {
             return new Response(422, ['errors' => $error->errors]);
-        } catch (CustomerNotFound|ProjectNotFound|EntryNotFound $error) {
+        } catch (CustomerNotFound|ProjectNotFound|EntryNotFound|InvoiceNotFound $error) {
             return new Response(404, ['errors' => [$error->getMessage()]]);
         } catch (JsonException) {
             return new Response(400, ['errors' => ['Malformed JSON body.']]);
         }
+    }
+
+    private function invoiceRequest(Request $request): Response
+    {
+        $invoices = $this->customers->invoices();
+        if (preg_match('#^/invoices/([1-9][0-9]*)$#D', $request->path, $m) === 1) {
+            $id = filter_var($m[1], FILTER_VALIDATE_INT);
+            if ($id === false) { throw new InvoiceNotFound(); }
+            return $request->method === 'GET' ? new Response(200, $invoices->show($id)->toArray()) : new Response(405, ['errors' => ['Method not allowed.']]);
+        }
+        if (preg_match('#^/customers/([1-9][0-9]*)/invoices$#D', $request->path, $m) !== 1) { return new Response(404, ['errors' => ['Route not found.']]); }
+        $id = filter_var($m[1], FILTER_VALIDATE_INT);
+        if ($id === false) { return new Response(404, ['errors' => ['Customer not found.']]); }
+        if ($request->method === 'GET') { return new Response(200, array_map(fn ($invoice) => $invoice->toArray(), $invoices->all($id))); }
+        if ($request->method !== 'POST') { return new Response(405, ['errors' => ['Method not allowed.']]); }
+        $this->customers->show($id);
+        $input = $this->input($request);
+        foreach (['issue_date', 'from', 'to'] as $key) {
+            if (isset($input[$key]) && !is_string($input[$key])) { throw new ValidationException(['Invoice dates must be YYYY-MM-DD strings.']); }
+        }
+        return new Response(201, $invoices->create($id, $input['issue_date'] ?? null, $input['from'] ?? null, $input['to'] ?? null)->toArray());
     }
 
     private function entryRequest(Request $request): Response

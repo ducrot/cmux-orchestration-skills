@@ -10,7 +10,7 @@ use TimeTracker\Domain\TimeEntry;
 use TimeTracker\Domain\ValidationException;
 final readonly class EntryRepository
 {
-    private const SELECT = 'SELECT e.*, p.rounding_minutes FROM entries e JOIN projects p ON p.id = e.project_id';
+    private const SELECT = 'SELECT e.*, p.rounding_minutes, i.number AS invoice_number FROM entries e JOIN projects p ON p.id = e.project_id LEFT JOIN invoices i ON i.id = e.invoice_id';
     public function __construct(private PDO $pdo) {}
     public function find(int $id): ?TimeEntry
     {
@@ -30,7 +30,7 @@ final readonly class EntryRepository
     {
         $this->pdo->exec('BEGIN IMMEDIATE');
         try {
-            if ($id !== null && $this->find($id) === null) { throw new EntryNotFound(); }
+            if ($id !== null) { $this->assertUnlocked($id); }
             $s = $this->pdo->prepare('SELECT id FROM projects WHERE id = ?');
             $s->execute([$projectId]);
             if ($s->fetch() === false) { throw new ProjectNotFound(); }
@@ -80,12 +80,25 @@ final readonly class EntryRepository
     }
     public function delete(int $id): void
     {
-        $s = $this->pdo->prepare('DELETE FROM entries WHERE id = ?');
-        $s->execute([$id]);
+        $this->pdo->exec('BEGIN IMMEDIATE');
+        try {
+            $this->assertUnlocked($id);
+            $s = $this->pdo->prepare('DELETE FROM entries WHERE id = ?');
+            $s->execute([$id]);
+            $this->pdo->exec('COMMIT');
+        } catch (Throwable $error) {
+            try { $this->pdo->exec('ROLLBACK'); } catch (Throwable) { /* Keep the original error. */ }
+            throw $error;
+        }
+    }
+    private function assertUnlocked(int $id): void
+    {
+        $entry = $this->find($id) ?? throw new EntryNotFound();
+        if ($entry->billed) { throw new ValidationException(['Time entry ' . $id . ' is locked by invoice ' . $entry->invoiceNumber . '.']); }
     }
     /** @param array<string, mixed> $row */
     private function hydrate(array $row): TimeEntry
     {
-        return new TimeEntry((int) $row['id'], (int) $row['project_id'], (int) $row['start'], (int) $row['end'], (string) $row['description'], $row['rounding_minutes'] === null ? null : (int) $row['rounding_minutes'], (bool) $row['billed']);
+        return new TimeEntry((int) $row['id'], (int) $row['project_id'], (int) $row['start'], (int) $row['end'], (string) $row['description'], $row['rounding_minutes'] === null ? null : (int) $row['rounding_minutes'], (bool) $row['billed'], $row['invoice_number'] === null ? null : (string) $row['invoice_number']);
     }
 }
