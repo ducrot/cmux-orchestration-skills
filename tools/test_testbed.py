@@ -154,6 +154,46 @@ class CreateTestbed(unittest.TestCase):
         self.assertFalse((target / 'evaluation').exists())
         self.assertFalse((target / 'scenarios').exists())
 
+    def test_billed_entries_migration_scenario_is_complete_and_private_in_copy(self):
+        bed = ROOT / 'testbeds/zeiterfassung'
+        scenario = bed / 'scenarios/03-billed-entries-migration'
+        self.assertEqual(sorted(p.name for p in scenario.iterdir()), ['plan.md'])
+        plan = (scenario / 'plan.md').read_bytes()
+        text = plan.decode('utf-8').lower()
+        for required in ('already billed', 'invoice', 'production', 'sqlite',
+                         'schema', 'backup', 'run', 'verify', 'restore'):
+            self.assertIn(required, text)
+        for private_word in ('lock', 'blocker', 'benchmark', 'scenario', 'trap',
+                             'evaluation', 'hitl', 'reviewer'):
+            self.assertNotIn(private_word, text)
+        evaluation = (bed / 'evaluation/03-billed-entries-migration.md').read_text()
+        for required in ('specification reviewer', 'gate output',
+                         "reviewer's recommendation", 'HITL', 'AFK', 'Blocked by'):
+            self.assertIn(required, evaluation)
+        for field in ('Date', 'Testbed version', 'Scenario', 'Registry entry id',
+                      'Recorded skill state', 'Date-attributed skill commit',
+                      'Run identifier', 'Observations met', 'Observations missed',
+                      'Observations not exercised', 'Evidence and notes'):
+            self.assertIn(f'- {field}:\n', evaluation)
+        self.assertNotIn('- [x]', evaluation.lower())
+
+        # Exercise the real scenario through the public CLI with the synthetic
+        # version/configuration until the testbed version cut.
+        destination = self.bed / 'scenarios/03-billed-entries-migration'
+        destination.mkdir()
+        (destination / 'plan.md').write_bytes(plan)
+        (self.bed / 'evaluation/03-billed-entries-migration.md').write_text(evaluation)
+        result = self.create(scenario='03-billed-entries-migration')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        target = self.base / 'target'
+        self.assertEqual((target / 'docs/plan.md').read_bytes(), plan)
+        self.assertEqual(set(self.git(target, 'ls-files').splitlines()),
+                         {'app.php', 'run', '.gitignore', 'ignored.txt', 'docs/plan.md',
+                          '.scratch/orchestrator/agents.json'})
+        self.assertFalse((target / 'evaluation').exists())
+        self.assertFalse((target / 'scenarios').exists())
+        self.assertNotIn(evaluation, result.stdout)
+
     def test_registry_appends_identity_without_rewriting_existing_bytes(self):
         before = datetime.now(timezone.utc)
         entries = []
