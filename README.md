@@ -190,6 +190,37 @@ python3 tools/orchestrator_usage.py --workflow issue-chain|planning|grilling --h
 - `pane%`: share of tokens spent on the pane lifecycle (start, readiness, delivery, close).
 - `start_ctx`: context size of the first call, that is, the fixed cost of the loaded skill and system prompt.
 
+## Testbed scenario copies
+
+Create a standalone scenario repository outside this checkout:
+
+```sh
+python3 tools/testbed.py create zeiterfassung 01-partial-invoices /tmp/partial-invoices
+```
+
+Sources come from `testbeds/<testbed>/`: `project/`, `scenarios/<scenario>/plan.md`,
+`agents.json`, and `VERSION`. The command works from any directory when invoked
+with the script's absolute path. It validates the fixture with the planning skill's
+validator and refuses unknown names, nonempty targets, and targets inside this
+repository before writing. Project symlinks and an existing `docs/plan.md` are
+also refused to prevent unintended reads or overwrites.
+
+The copy excludes `vendor`, `.scratch`, `.git`, SQLite databases and their sidecars,
+and OS metadata. It receives only the project, the unchanged fixture at
+`.scratch/orchestrator/agents.json`, and the chosen plan at `docs/plan.md`.
+Evaluation lists and human input files stay outside the copy. Optional
+`human-input.md` text is printed verbatim for the orchestrator conversation.
+
+After verifying contents and executable modes, the tool creates two deterministic
+commits on `main`, with fixed identity and timestamps and isolated Git settings.
+It prints the target, testbed version, scenario, project and head hashes, and this
+repository's short skill commit (`-dirty` when any skill directory has Git changes).
+Existing files are never overwritten; a failed partial copy is retained for inspection.
+
+Dependency installation and registry recording arrive in the next slice. Until
+then, normal invocation stops with a nonzero status after creating the commits;
+`--skip-install` returns success without installation and is intended only for tests.
+
 ## Acknowledgments
 
 These skills build in part on [Matt Pocock’s skills](https://github.com/mattpocock/skills). In particular, `cmux-grilling` adapts the questioning approach from [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me) into an autonomous research workflow with visible workers and a human decision review.
