@@ -5,6 +5,7 @@ use PDO;
 use Throwable;
 use TimeTracker\Application\EntryNotFound;
 use TimeTracker\Application\ProjectNotFound;
+use TimeTracker\Domain\CsvImport;
 use TimeTracker\Domain\TimeEntry;
 use TimeTracker\Domain\ValidationException;
 final readonly class EntryRepository
@@ -54,6 +55,26 @@ final readonly class EntryRepository
             } catch (Throwable) {
                 // SQLite may already have rolled back; keep the original error.
             }
+            throw $error;
+        }
+    }
+    /** @return array{count: int, ids: list<int>} */
+    public function importCsv(string $csv): array
+    {
+        $this->pdo->exec('BEGIN IMMEDIATE');
+        try {
+            $projects = array_map('intval', $this->pdo->query('SELECT id FROM projects')->fetchAll(PDO::FETCH_COLUMN));
+            $rows = CsvImport::validate($csv, $projects, $this->all(null, null, null));
+            $statement = $this->pdo->prepare('INSERT INTO entries (project_id, start, end, description) VALUES (?, ?, ?, ?)');
+            $ids = [];
+            foreach ($rows as $row) {
+                $statement->execute([$row['project_id'], $row['start'], $row['end'], $row['description']]);
+                $ids[] = (int) $this->pdo->lastInsertId();
+            }
+            $this->pdo->exec('COMMIT');
+            return ['count' => count($ids), 'ids' => $ids];
+        } catch (Throwable $error) {
+            try { $this->pdo->exec('ROLLBACK'); } catch (Throwable) { /* Keep the original error. */ }
             throw $error;
         }
     }

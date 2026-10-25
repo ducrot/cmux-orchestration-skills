@@ -55,6 +55,11 @@ final readonly class Handler
 
     private function entryRequest(Request $request): Response
     {
+        if ($request->path === '/entries/import') {
+            return $request->method === 'POST'
+                ? new Response(201, $this->customers->entries()->importCsv($request->body))
+                : new Response(405, ['errors' => ['Method not allowed.']]);
+        }
         if (preg_match('#^/entries(?:/([1-9][0-9]*))?$#D', $request->path, $matches) !== 1) { return new Response(404, ['errors' => ['Route not found.']]); }
         $id = isset($matches[1]) ? filter_var($matches[1], FILTER_VALIDATE_INT) : null;
         if ($id === false) { throw new EntryNotFound(); }

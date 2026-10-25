@@ -34,7 +34,19 @@ final readonly class Application
         try {
             $command = $arguments[0] ?? 'help';
             if (in_array($command, ['help', '--help', 'list'], true)) {
-                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n");
+                $stdout("Commands:\n  customer:create NAME ADDRESS EMAIL\n  customer:list\n  customer:show ID\n  customer:update ID NAME ADDRESS EMAIL\n  customer:delete ID\n  project:create CUSTOMER_ID NAME [ROUNDING_MINUTES|none]\n  project:list CUSTOMER_ID\n  project:show CUSTOMER_ID PROJECT_ID\n  project:update CUSTOMER_ID PROJECT_ID NAME [ROUNDING_MINUTES|none]\n  project:delete CUSTOMER_ID PROJECT_ID\n  rate:add CUSTOMER_ID PROJECT_ID AMOUNT CURRENCY START [END]\n  rate:list CUSTOMER_ID PROJECT_ID\n  rate:remove CUSTOMER_ID PROJECT_ID RATE_ID\n  entry:create PROJECT_ID START END DESCRIPTION\n  entry:list [PROJECT_ID|all [FROM [TO]]]\n  entry:show ID\n  entry:update ID PROJECT_ID START END DESCRIPTION\n  entry:delete ID\n  entry:import FILE\n");
+                return 0;
+            }
+            if ($command === 'entry:import') {
+                if (count($arguments) !== 2) { throw new ValidationException(['Usage: entry:import FILE']); }
+                $csv = is_file($arguments[1]) ? @file_get_contents($arguments[1]) : false;
+                if ($csv === false) { throw new ValidationException(['Cannot read CSV file: ' . $arguments[1]]); }
+                try {
+                    $stdout(json_encode($this->customers->entries()->importCsv($csv), JSON_THROW_ON_ERROR) . "\n");
+                } catch (ValidationException $error) {
+                    $stderr(implode("\n", $error->errors) . "\n");
+                    return 1;
+                }
                 return 0;
             }
             if (str_starts_with($command, 'entry:')) {

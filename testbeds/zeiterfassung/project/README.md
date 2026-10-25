@@ -138,3 +138,25 @@ Each entry returns `id`, `project_id`, `start`, `end`, `description`, `raw_durat
 POST and PUT require a JSON object such as `{"project_id":1,"start":"2026-10-25T09:00:00Z","end":"2026-10-25T09:16:00Z","description":"Development"}`. Project ID is a positive JSON integer. Validation and overlap failures return 422; unknown entries or projects return 404; malformed JSON returns 400; unsupported methods return 405.
 
 `GET /entries` accepts optional query parameters `project_id`, `from` and `to`, for example `/entries?project_id=1&from=2026-10-25T00:00:00Z&to=2026-10-26T00:00:00Z`. The CLI equivalent is `entry:list [PROJECT_ID|all [FROM [TO]]]`. Both filter on the entry's start instant: `from` is inclusive, `to` exclusive. Either API boundary may be omitted; when both are supplied, `to` must be after `from`. URL-encode a literal `+` in timezone offsets as `%2B`.
+
+## CSV time-entry import
+
+Import a UTF-8, semicolon-separated CSV file with the exact header `project_id;start;end;description`:
+
+```csv
+project_id;start;end;description
+1;2026-10-25T09:00:00Z;2026-10-25T09:16:00Z;Development
+1;2026-10-25T09:16:00Z;2026-10-25T10:00:00Z;"Review; tests"
+```
+
+```sh
+php bin/console entry:import entries.csv
+curl -i -X POST http://127.0.0.1:8080/entries/import \
+  -H 'Content-Type: text/csv' --data-binary @entries.csv
+```
+
+The API takes raw CSV as its request body. Both interfaces return JSON such as `{"count":2,"ids":[1,2]}`; CLI success exits 0 and API success returns 201. A header-only file succeeds with count 0. CSV quoting allows semicolons and line breaks inside double-quoted fields; double a quote inside a quoted field (`""`). Both LF and CRLF line endings work.
+
+All rows are validated before any insert, and all inserts share one transaction. The existing manual-entry rules apply: a project must exist, timestamps require a valid calendar date/time and explicit timezone, end must follow start, descriptions must be non-empty UTF-8, and intervals cannot overlap existing entries or each other, even across projects. Touching intervals are allowed. Imported entries use the project's current rounding rule just like manual entries.
+
+An invalid file imports nothing. CLI exits 1 and lists each error on its own standard-error line; API returns 422 with the same messages in `{"errors":["Row 2: ..."]}`. Row numbers identify physical starting lines (header is line 1), including after quoted multiline descriptions. Wrong headers and comma-separated files are rejected with the expected format before validating data rows. Unknown projects inside imports are validation errors (422). An unreadable CLI file exits 1. `POST` is the only supported method for `/entries/import` (other methods return 405).

@@ -12,6 +12,8 @@ final readonly class Entries
         TimeEntry::interval($start, $end);
         return $this->repository->save($projectId, $start, $end, $description, $id);
     }
+    /** @return array{count: int, ids: list<int>} */
+    public function importCsv(string $csv): array { return $this->repository->importCsv($csv); }
     public function show(int $id): TimeEntry { return $this->repository->find($id) ?? throw new EntryNotFound(); }
     /** @return list<TimeEntry> */
     public function all(?int $projectId = null, ?int $from = null, ?int $to = null): array
