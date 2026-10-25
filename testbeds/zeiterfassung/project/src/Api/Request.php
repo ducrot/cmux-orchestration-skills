@@ -5,5 +5,6 @@ namespace TimeTracker\Api;
 
 final readonly class Request
 {
-    public function __construct(public string $method, public string $path, public string $body = '') {}
+    /** @param array<string, mixed> $query */
+    public function __construct(public string $method, public string $path, public string $body = '', public array $query = []) {}
 }

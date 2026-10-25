@@ -15,7 +15,7 @@ final readonly class Projects
     public function create(int $customerId, array $input): Project
     {
         $this->customers->show($customerId);
-        return $this->repository->create($customerId, Project::name($input));
+        return $this->repository->create($customerId, Project::name($input), Project::rounding($input['rounding_minutes'] ?? null));
     }
 
     /** @return list<Project> */
@@ -34,7 +34,8 @@ final readonly class Projects
     /** @param array<string, mixed> $input */
     public function update(int $customerId, int $id, array $input): Project
     {
-        return $this->repository->update($this->show($customerId, $id), Project::name($input));
+        $project = $this->show($customerId, $id);
+        return $this->repository->update($project, Project::name($input), array_key_exists('rounding_minutes', $input) ? Project::rounding($input['rounding_minutes']) : $project->roundingMinutes);
     }
 
     public function delete(int $customerId, int $id): void

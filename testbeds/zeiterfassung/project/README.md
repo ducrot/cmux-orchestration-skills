@@ -48,7 +48,7 @@ php bin/console project:delete 1 1
 
 Project commands take the customer ID first, then the project ID where needed. Rate commands take customer and project IDs; removal also takes the rate ID. `rate:add` takes amount, currency, start, and an optional end. Dates use valid `YYYY-MM-DD` calendar dates. Both period boundaries are inclusive; an omitted end is open. Periods of the same project cannot overlap, even when their currencies differ. Gaps are allowed, and no rate applies in a gap. An application lookup is available as `Projects::applicableRate(customerId, projectId, date)`, returning a `Rate` or `null`.
 
-Amounts are non-negative decimal strings with up to two fractional digits and nine integer digits; currency is a three-letter uppercase code (for example `EUR`). Amounts are stored as integer cents and returned as decimal strings with two fractional digits. These commands use the same JSON output, exit codes and error conventions as customer commands. Project objects contain `id`, `customer_id`, `name`; rate objects contain `id`, `project_id`, `amount`, `currency`, `start`, `end` (`null` for an open end).
+Amounts are non-negative decimal strings with up to two fractional digits and nine integer digits; currency is a three-letter uppercase code (for example `EUR`). Amounts are stored as integer cents and returned as decimal strings with two fractional digits. These commands use the same JSON output, exit codes and error conventions as customer commands. Project objects contain `id`, `customer_id`, `name`, `rounding_minutes`; rate objects contain `id`, `project_id`, `amount`, `currency`, `start`, `end` (`null` for an open end).
 
 ## JSON API
 
@@ -105,3 +105,36 @@ vendor/bin/phpstan analyse --no-progress
 ```
 
 Integration tests use in-memory SQLite for customer operations and migrations; a temporary file database additionally verifies configuration and persistence across connections. Commit `composer.lock` when updating dependencies to pin installations.
+
+## Time entries and rounding
+
+A project's `rounding_minutes` is `null` (no rounding, the default) or a positive integer step in minutes. Set it on project creation or update. API project bodies accept `rounding_minutes`, for example `{"name":"Website","rounding_minutes":15}`; `null` or `"none"` disables rounding. Omitting it on update preserves the existing setting. Project responses include this field.
+
+```sh
+php bin/console project:create 1 "Website" 15
+php bin/console project:update 1 1 "Website" 10
+php bin/console project:update 1 1 "Website" none
+php bin/console entry:create 1 2026-10-25T09:00:00Z 2026-10-25T09:16:00Z "Development"
+php bin/console entry:list
+php bin/console entry:list 1
+php bin/console entry:list all 2026-10-25T00:00:00Z 2026-10-26T00:00:00Z
+php bin/console entry:show 1
+php bin/console entry:update 1 1 2026-10-25T09:00:00Z 2026-10-25T09:30:00Z "Development and tests"
+php bin/console entry:delete 1
+```
+
+Create takes project ID, start, end and description. Update takes entry ID followed by those same four values, replacing the entry. Description must be a non-empty UTF-8 string and is trimmed. Timestamps use `YYYY-MM-DDTHH:MM:SSZ` or an explicit offset such as `2026-10-25T10:00:00+01:00`; output is normalized to UTC. End must be strictly after start. Overlaps are checked globally across all projects on creation and update; the error identifies the conflicting entry ID. Touching intervals are allowed. A project with entries cannot be deleted.
+
+Each entry returns `id`, `project_id`, `start`, `end`, `description`, `raw_duration_seconds`, `billable_duration_seconds` and `billed` (currently always `false`). Raw duration is elapsed seconds. Billable duration rounds each entry up independently to a multiple of the project's current step: with 15-minute rounding, 15 minutes stays 15 and 16 becomes 30. With no rounding it equals raw duration. Changing the project step recalculates the billable duration of existing entries when read; raw duration stays unchanged.
+
+| Method | Route | Response |
+| --- | --- | --- |
+| POST | `/entries` | 201, created entry |
+| GET | `/entries` | 200, entries ordered by start instant then ID |
+| GET | `/entries/{id}` | 200, entry |
+| PUT | `/entries/{id}` | 200, replaced entry |
+| DELETE | `/entries/{id}` | 200, `{"deleted":1}` |
+
+POST and PUT require a JSON object such as `{"project_id":1,"start":"2026-10-25T09:00:00Z","end":"2026-10-25T09:16:00Z","description":"Development"}`. Project ID is a positive JSON integer. Validation and overlap failures return 422; unknown entries or projects return 404; malformed JSON returns 400; unsupported methods return 405.
+
+`GET /entries` accepts optional query parameters `project_id`, `from` and `to`, for example `/entries?project_id=1&from=2026-10-25T00:00:00Z&to=2026-10-26T00:00:00Z`. The CLI equivalent is `entry:list [PROJECT_ID|all [FROM [TO]]]`. Both filter on the entry's start instant: `from` is inclusive, `to` exclusive. Either API boundary may be omitted; when both are supplied, `to` must be after `from`. URL-encode a literal `+` in timezone offsets as `%2B`.

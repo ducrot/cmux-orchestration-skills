@@ -12,7 +12,7 @@ use TimeTracker\Infrastructure\Configuration;
 try {
     $configuration = Configuration::fromEnvironment();
     $handler = new Handler(Bootstrap::customers($configuration));
-    $response = $handler->handle(new Request($_SERVER['REQUEST_METHOD'] ?? 'GET', explode('?', $_SERVER['REQUEST_URI'] ?? '/', 2)[0], file_get_contents('php://input') ?: ''));
+    $response = $handler->handle(new Request($_SERVER['REQUEST_METHOD'] ?? 'GET', explode('?', $_SERVER['REQUEST_URI'] ?? '/', 2)[0], file_get_contents('php://input') ?: '', $_GET));
     $body = $response->json();
 } catch (Throwable $error) {
     error_log($error->getMessage());

@@ -13,11 +13,11 @@ final readonly class ProjectRepository
 {
     public function __construct(private PDO $pdo) {}
 
-    public function create(int $customerId, string $name): Project
+    public function create(int $customerId, string $name, ?int $rounding): Project
     {
-        $statement = $this->pdo->prepare('INSERT INTO projects (customer_id, name) VALUES (?, ?)');
-        $statement->execute([$customerId, $name]);
-        return new Project((int) $this->pdo->lastInsertId(), $customerId, $name);
+        $statement = $this->pdo->prepare('INSERT INTO projects (customer_id, name, rounding_minutes) VALUES (?, ?, ?)');
+        $statement->execute([$customerId, $name, $rounding]);
+        return new Project((int) $this->pdo->lastInsertId(), $customerId, $name, $rounding);
     }
 
     /** @return list<Project> */
@@ -36,17 +36,22 @@ final readonly class ProjectRepository
         return $row === false ? null : $this->hydrate($row);
     }
 
-    public function update(Project $project, string $name): Project
+    public function update(Project $project, string $name, ?int $rounding): Project
     {
-        $statement = $this->pdo->prepare('UPDATE projects SET name = ? WHERE id = ?');
-        $statement->execute([$name, $project->id]);
-        return new Project($project->id, $project->customerId, $name);
+        $statement = $this->pdo->prepare('UPDATE projects SET name = ?, rounding_minutes = ? WHERE id = ?');
+        $statement->execute([$name, $rounding, $project->id]);
+        return new Project($project->id, $project->customerId, $name, $rounding);
     }
 
     public function delete(int $id): void
     {
         $statement = $this->pdo->prepare('DELETE FROM projects WHERE id = ?');
-        $statement->execute([$id]);
+        try {
+            $statement->execute([$id]);
+        } catch (\PDOException $error) {
+            if ($error->getCode() === '23000') { throw new ValidationException(['Project with time entries cannot be deleted.']); }
+            throw $error;
+        }
     }
 
     /** @return list<Rate> */
@@ -92,7 +97,7 @@ final readonly class ProjectRepository
     /** @param array<string, mixed> $row */
     private function hydrate(array $row): Project
     {
-        return new Project((int) $row['id'], (int) $row['customer_id'], (string) $row['name']);
+        return new Project((int) $row['id'], (int) $row['customer_id'], (string) $row['name'], $row['rounding_minutes'] === null ? null : (int) $row['rounding_minutes']);
     }
 
     /** @param array<string, mixed> $row */

@@ -11,6 +11,8 @@ final readonly class Customers
 {
     public function __construct(private CustomerRepository $repository) {}
 
+    public function entries(): Entries { return new Entries($this->repository->entries()); }
+
     public function projects(): Projects { return new Projects($this->repository->projects(), $this); }
 
     /** @param array<string, mixed> $input */

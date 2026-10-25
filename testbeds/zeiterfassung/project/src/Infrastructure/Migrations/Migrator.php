@@ -43,6 +43,10 @@ final class Migrator
                   CREATE INDEX projects_customer ON projects(customer_id);
                   CREATE TABLE rates (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, cents INTEGER NOT NULL CHECK (cents >= 0), currency TEXT NOT NULL, start TEXT NOT NULL, end TEXT);
                   CREATE INDEX rates_project ON rates(project_id)',
+            3 => 'ALTER TABLE projects ADD COLUMN rounding_minutes INTEGER CHECK (rounding_minutes > 0);
+                  CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT, start INTEGER NOT NULL, end INTEGER NOT NULL CHECK (end > start), description TEXT NOT NULL, billed INTEGER NOT NULL DEFAULT 0);
+                  CREATE INDEX entries_interval ON entries(start, end);
+                  CREATE INDEX entries_project ON entries(project_id)',
         ];
     }
 }

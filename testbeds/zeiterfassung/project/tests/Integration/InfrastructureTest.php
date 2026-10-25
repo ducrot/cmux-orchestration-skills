@@ -20,7 +20,7 @@ final class InfrastructureTest extends TestCase
         $migrator->migrate($pdo);
         $pdo->exec("INSERT INTO customers (name, address, email) VALUES ('Ada', 'Street', 'ada@example.com')");
         $migrator->migrate($pdo);
-        self::assertSame([1, 2], $pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN));
+        self::assertSame([1, 2, 3], $pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN));
         self::assertSame('Ada', $pdo->query('SELECT name FROM customers')->fetchColumn());
     }
 
@@ -38,6 +38,27 @@ final class InfrastructureTest extends TestCase
         (new Migrator())->migrate($pdo);
         self::assertSame('Ada', $customers->show(1)->name);
         self::assertSame('12.30', $customers->projects()->rates(1, $project->id)[0]->toArray()['amount']);
+    }
+
+    public function testEntryMigrationPreservesExistingProjectsAndRates(): void
+    {
+        $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $pdo->exec('PRAGMA foreign_keys = ON');
+        $pdo->exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY); INSERT INTO schema_migrations VALUES (1), (2);
+            CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT NOT NULL, email TEXT NOT NULL);
+            CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL REFERENCES customers(id), name TEXT NOT NULL);
+            CREATE TABLE rates (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES projects(id), cents INTEGER NOT NULL, currency TEXT NOT NULL, start TEXT NOT NULL, end TEXT)');
+        $pdo->exec("INSERT INTO customers VALUES (1, 'Ada', 'Street', 'ada@example.com');
+            INSERT INTO projects VALUES (1, 1, 'Existing project');
+            INSERT INTO rates VALUES (1, 1, 1230, 'EUR', '2026-01-01', NULL)");
+        (new Migrator())->migrate($pdo);
+        (new Migrator())->migrate($pdo);
+        $customers = new Customers(new CustomerRepository($pdo));
+        self::assertNull($customers->projects()->show(1, 1)->roundingMinutes);
+        self::assertSame('12.30', $customers->projects()->rates(1, 1)[0]->toArray()['amount']);
+        $entry = $customers->entries()->save(1, 100, 160, 'Existing project work');
+        self::assertSame(60, $entry->billableDuration());
+        self::assertFalse($entry->billed);
     }
 
     public function testConfigurationLoadsDatabaseAndIssuerAndBootstrapPersists(): void

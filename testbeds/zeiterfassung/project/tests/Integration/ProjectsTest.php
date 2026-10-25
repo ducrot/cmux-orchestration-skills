@@ -54,7 +54,7 @@ final class ProjectsTest extends TestCase
         self::assertSame(1, $this->cli(['project:create', '1', ' '])[0]);
         [$code, $out] = $this->cli(['project:create', '1', ' Work ']);
         self::assertSame(0, $code);
-        self::assertSame(['id' => 1, 'customer_id' => 1, 'name' => 'Work'], json_decode($out, true));
+        self::assertSame(['id' => 1, 'customer_id' => 1, 'name' => 'Work', 'rounding_minutes' => null], json_decode($out, true));
         self::assertSame($out, $this->cli(['project:show', '1', '1'])[1]);
         self::assertSame(1, $this->cli(['customer:delete', '1'])[0]);
         self::assertSame(1, $this->cli(['project:show', '2', '1'])[0]);
