@@ -26,18 +26,24 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import posixpath
 import re
 import shlex
 import statistics
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 CODEX_SESSIONS = Path.home() / ".codex" / "sessions"
 SKILL_REPO = Path.home() / "Sites" / "agentic-workflows" / "cmux-orchestration-skills"
 CACHE_DIR = Path.home() / ".cache" / "orchestrator-usage"
+REGISTRY_PATH = Path(__file__).resolve().parents[1] / ".scratch/orchestrator/testbeds/registry.jsonl"
+REGISTRY_KEYS = {"testbed": "testbed", "testbed_version": "version", "scenario": "scenario",
+                 "registry_entry_id": "entry_id", "recorded_skill_state": "skill_state"}
+IDENTITY_FIELDS = tuple(REGISTRY_KEYS)
+ATTRIBUTION_FIELDS = ("skill_commit", "skill_commit_date", "skill_md_bytes", *IDENTITY_FIELDS)
 CACHE_VERSION = 15
 
 
@@ -603,7 +609,7 @@ def owned_session_windows(sessions, workflow):
     for session in sessions:
         if session.get("worker_runs"):
             continue
-        root = project_root(session["cwd"])
+        root = session_root(session)
         states = {}
         if root:
             if root not in root_states:
@@ -641,7 +647,7 @@ def owned_session_windows(sessions, workflow):
                 call.run_id = run_id
             piece = build_session(session["harness"], session["session_id"], session["path"],
                                   session["cwd"], selected)
-            for key in ("skill_commit", "skill_commit_date", "skill_md_bytes"):
+            for key in ATTRIBUTION_FIELDS:
                 piece[key] = session.get(key, "")
             windows.append(piece)
     return windows
@@ -754,10 +760,46 @@ def project_root(cwd: str | None) -> Path | None:
     return None
 
 
-def run_project(cwd: str | None) -> str:
+def assign_testbed_identity(sessions: list[dict], registry: Path) -> None:
+    """Attribute parsed (including cached) sessions using lexical paths and UTC time."""
+    entries = []
+    if registry.is_file():
+        for number, line in enumerate(registry.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"skipping malformed registry line {number} in {registry}", file=sys.stderr)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            created, target = entry.get("created_at"), entry.get("target")
+            when = iso(created) if isinstance(created, str) else None
+            if when and isinstance(target, str) and target:
+                entries.append((when, number, PurePosixPath(posixpath.normpath(target)), entry))
+    entries.sort(key=lambda item: item[:2], reverse=True)
+    for session in sessions:
+        session.update(dict.fromkeys(IDENTITY_FIELDS, ""))
+        start = iso(session.get("start_ts"))
+        if not start or not session.get("cwd"):
+            continue
+        cwd = PurePosixPath(posixpath.normpath(session["cwd"]))
+        for when, _, target, entry in entries:
+            if when <= start and cwd.is_relative_to(target):
+                session.update({field: entry.get(key, "") for field, key in REGISTRY_KEYS.items()})
+                break
+
+
+def session_root(session: dict) -> Path | None:
+    """Resolve all session run-root lookups through one entry point."""
+    return project_root(session.get("cwd"))
+
+
+def run_project(session: dict) -> str:
     """The project key run rows carry: the slug of the run root, not of the cwd."""
-    root = project_root(cwd)
-    return project_name(str(root), str(root)) if root else project_name(cwd, "")
+    root = session_root(session)
+    return project_name(str(root), str(root)) if root else project_name(session.get("cwd"), "")
 
 
 ATTEMPT_SUFFIX = re.compile(r"-attempt-\d+$")
@@ -1191,14 +1233,14 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
     # Where each run actually lives, so sessions driving a run from another checkout
     # do not split it into a second, stage-less row.
     home: dict[str, tuple[Path, str]] = {}
-    for root in {project_root(s["cwd"]) for s in sessions}:
+    for root in {session_root(s) for s in sessions}:
         if not root:
             continue
         for run_dir in (root / ".scratch" / "orchestrator" / "runs").glob("*"):
             if run_dir.is_dir():
                 home.setdefault(run_dir.name, (root, project_name(str(root), str(root))))
     for session in sessions:
-        root = project_root(session["cwd"])
+        root = session_root(session)
         # Key on the project root so gap detection below lands in the same bucket
         # even when the session ran from a subdirectory.
         project = project_name(str(root), str(root)) if root else session["project"]
@@ -1215,9 +1257,7 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
                 "run_id": run_id, "project": run_project, "harnesses": set(),
                 "sessions": [], "calls": 0, "tokens_total": 0, "effective_input_equiv": 0.0,
                 "waits": 0, "start": None, "end": None, "root": run_root, "timeline": [],
-                "skill_commit": session.get("skill_commit", ""),
-                "skill_commit_date": session.get("skill_commit_date", ""),
-                "skill_md_bytes": session.get("skill_md_bytes", ""),
+                **{k: session.get(k, "") for k in ATTRIBUTION_FIELDS},
             })
             run["harnesses"].add(session["harness"])
             run["sessions"].append(session["session_id"][:8])
@@ -1234,7 +1274,7 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
                 run["root"] = root
 
     # Gap detection: every run directory of every touched project must appear.
-    roots = {project_root(s["cwd"]) for s in sessions}
+    roots = {session_root(s) for s in sessions}
     for root in roots:
         if not root:
             continue
@@ -1255,8 +1295,8 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
                 runs[key] = {"run_id": run_dir.name, "project": project, "harnesses": set(),
                              "sessions": [], "calls": 0, "tokens_total": 0,
                              "effective_input_equiv": 0.0, "waits": 0, "start": None,
-                             "end": None, "root": root, "timeline": [], "skill_commit": "",
-                             "skill_commit_date": "", "skill_md_bytes": ""}
+                             "end": None, "root": root, "timeline": [],
+                             **dict.fromkeys(ATTRIBUTION_FIELDS, "")}
 
     for (project, short) in sorted(runs, key=lambda k: -len(k[1])):
         longer = sorted((k for k in runs
@@ -1311,9 +1351,7 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
             if run["calls"] else "missing",
             "harnesses": "+".join(sorted(run["harnesses"])),
             "sessions": " ".join(run["sessions"]),
-            "skill_commit": run["skill_commit"],
-            "skill_commit_date": run["skill_commit_date"],
-            "skill_md_bytes": run["skill_md_bytes"],
+            **{k: run[k] for k in ATTRIBUTION_FIELDS},
             "start_ts": state["start"] or run["start"] or "",
             "end_ts": state["end"] or run["end"] or "",
             "wall_clock_minutes": round(minutes, 1) if minutes is not None else "",
@@ -1346,10 +1384,10 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
 def add_worker_usage(rows, workers, workflow):
     for row in rows:
         linked = [s for s in workers if row["run_id"] in s.get("worker_runs", [])
-                  and run_project(s["cwd"]) == row["project"]]
+                  and run_project(s) == row["project"]]
         first = None
         for session in linked:
-            root = project_root(session["cwd"])
+            root = session_root(session)
             if root:
                 first = iso(read_run_state(root / ".scratch/orchestrator/runs" / row["run_id"],
                                            workflow)["first_question"])
@@ -1404,10 +1442,9 @@ def print_start_summary(sessions, runs, workflow):
 def write_sessions_csv(sessions: list[dict], out_dir: Path) -> Path:
     categories = sorted({c for s in sessions for c in s["purpose_calls"]},
                         key=lambda c: (CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99, c))
-    base = ["harness", "project", "session_id", "start_ts", "end_ts", "run_ids", "skill_commit",
-            "skill_commit_date", "skill_md_bytes", "calls", "tokens_total", "input", "output",
-            "cache_create", "cache_read", "reasoning", "start_context_tokens",
-            "end_context_tokens", "avg_context_per_call", "context_growth_per_call",
+    base = ["harness", "project", "session_id", "start_ts", "end_ts", "run_ids",
+            *ATTRIBUTION_FIELDS, "calls", "tokens_total", "input", "output", "cache_create",
+            "cache_read", "reasoning", "start_context_tokens", "end_context_tokens", "avg_context_per_call", "context_growth_per_call",
             "effective_input_equiv", "wait_share", "pane_share", "path"]
     columns = base + [f"calls_{c}" for c in categories] + [f"tokens_{c}" for c in categories]
     target = out_dir / "orchestrator-usage-sessions.csv"
@@ -1432,7 +1469,7 @@ def write_sessions_csv(sessions: list[dict], out_dir: Path) -> Path:
 
 def write_runs_csv(rows: list[dict], out_dir: Path) -> Path:
     target = out_dir / "orchestrator-usage-runs.csv"
-    columns = [k for k in rows[0] if k != "stage_timings"] if rows else ["run_id"]
+    columns = [k for k in rows[0] if k != "stage_timings"] if rows else ["run_id", *ATTRIBUTION_FIELDS]
     with target.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
@@ -1440,7 +1477,8 @@ def write_runs_csv(rows: list[dict], out_dir: Path) -> Path:
     return target
 
 
-STAGE_COLUMNS = ["project", "run_id", "skill_commit", "stage", "role", "launch_ts", "capture_ts",
+STAGE_RUN_FIELDS = ("project", "run_id", "skill_commit", *IDENTITY_FIELDS)
+STAGE_COLUMNS = [*STAGE_RUN_FIELDS, "stage", "role", "launch_ts", "capture_ts",
                  "worker_minutes", "gap_minutes", "orchestrator_gap_minutes",
                  "human_wait_minutes", "suite_runs_worker", "suite_minutes_worker",
                  "suite_runs_orchestrator"]
@@ -1453,7 +1491,7 @@ def write_stages_csv(rows: list[dict], out_dir: Path) -> Path:
         writer.writeheader()
         for row in rows:
             for stage in row.get("stage_timings", []):
-                writer.writerow({**{k: row[k] for k in ("project", "run_id", "skill_commit")},
+                writer.writerow({**{k: row.get(k, "") for k in STAGE_RUN_FIELDS},
                                  **stage})
     return target
 
@@ -1495,6 +1533,17 @@ def print_wall_time(runs: list[dict], workflow: Workflow) -> None:
 
 def print_summary(sessions: list[dict], runs: list[dict],
                   workflow: Workflow = WORKFLOWS["issue-chain"]) -> None:
+    recorded = {}
+    for session in sessions:
+        state = session.get("recorded_skill_state")
+        if state:
+            recorded.setdefault(state, []).append(session)
+    if recorded:
+        print("\nRecorded skill states: state sessions date-attributed commits")
+        for state, group in sorted(recorded.items()):
+            commits = sorted({s.get("skill_commit") or "(unknown)" for s in group})
+            count = len({(s["harness"], s["session_id"]) for s in group})
+            print(f"{state} {count} {', '.join(commits)}")
     # Sessions that never touched a run directory are skill development or smoke
     # tests; they would distort the per-commit medians.
     scored = [s for s in sessions if s["run_ids"]]
@@ -1603,6 +1652,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--workflow", choices=list(WORKFLOWS), default="issue-chain",
                     help="orchestrator workflow to measure (default: issue-chain)")
+    ap.add_argument("--registry", type=Path, default=REGISTRY_PATH,
+                    help="testbed registry JSONL path")
+    for option, field in (("testbed", "testbed"), ("scenario", "scenario"),
+                          ("testbed-version", "testbed_version"),
+                          ("skill-state", "recorded_skill_state")):
+        ap.add_argument("--" + option, dest=field, metavar=option.upper().replace("-", "_"),
+                        help="exact registry identity filter")
     ap.add_argument("--since", help="only sessions starting on or after YYYY-MM-DD")
     ap.add_argument("--project", help="substring filter on the project slug / cwd")
     ap.add_argument("--exclude-project", action="append", default=[],
@@ -1626,6 +1682,7 @@ def main(argv=None) -> int:
                          use_cache, workflow)
     save_cache(cache, use_cache, cache_file)
 
+    assign_testbed_identity(sessions, args.registry)
     workers = [s for s in sessions if s.get("worker_runs")]
     assign_skill_version(sessions, SKILL_REPO, workflow.subdir)
     sessions = owned_session_windows(sessions, workflow)
@@ -1637,6 +1694,16 @@ def main(argv=None) -> int:
         sessions = [s for s in sessions
                     if args.project in s["project"] or args.project in s["cwd"]]
 
+    identity_filters = {field: getattr(args, field, None) for field in IDENTITY_FIELDS
+                        if getattr(args, field, None) is not None}
+    if identity_filters and not args.registry.is_file():
+        print(f"testbed registry not found: {args.registry}", file=sys.stderr)
+
+    def matches_identity(item: dict) -> bool:
+        return all(item.get(k, "") == v for k, v in identity_filters.items())
+
+    sessions = [s for s in sessions if matches_identity(s)]
+
     if not sessions:
         print("no orchestrator sessions matched", file=sys.stderr)
         return 1
@@ -1644,6 +1711,7 @@ def main(argv=None) -> int:
     runs = aggregate_runs(sessions, workflow)
     if args.since:
         runs = [r for r in runs if r["start_ts"][:10] >= args.since]
+    runs = [r for r in runs if matches_identity(r)]
     add_worker_usage(runs, workers, workflow)
 
     out_dir = Path(args.out).expanduser().resolve()
@@ -1656,7 +1724,7 @@ def main(argv=None) -> int:
         text in s["project"] or text in s["cwd"] for text in args.exclude_project)]
     excluded_ids = {id(s) for s in excluded}
     scored_sessions = [s for s in sessions if id(s) not in excluded_ids]
-    excluded_projects = {run_project(s["cwd"]) for s in excluded}
+    excluded_projects = {run_project(s) for s in excluded}
     scored_runs = [r for r in runs if r["project"] not in excluded_projects
                    and not any(text in r["project"] for text in args.exclude_project)]
     print_summary(scored_sessions, scored_runs, workflow)

@@ -181,6 +181,8 @@ Legacy run layouts remain inspectable read-only. Follow the relevant skill's rec
 python3 tools/orchestrator_usage.py --workflow issue-chain|planning|grilling --harness all --out <dir>
 ```
 
+The analysis matches sessions against `.scratch/orchestrator/testbeds/registry.jsonl` in this repository (override with `--registry <path>`), using the latest entry created at or before the session start whose target contains the working directory. Matching uses normalized path strings and runs after the transcript cache. Sessions, runs and stages include `testbed`, `testbed_version`, `scenario`, `registry_entry_id` and `recorded_skill_state`. Use `--testbed`, `--scenario`, `--testbed-version` and `--skill-state` for exact identity filters; skill states distinguish the `-dirty` suffix. The terminal summary compares recorded skill states with date-attributed skill commits. The existing skill commit columns retain their date-based meaning.
+
 `--workflow` defaults to `issue-chain`. The tool writes `orchestrator-usage-sessions.csv` and `orchestrator-usage-runs.csv` to `<dir>` and prints one table per harness:
 
 - `calls/stg`: orchestrator API calls per stage. A stage is a reported stage pass for issue-chain and planning, and a round for grilling. Grilling reports the session start (all calls before the first question) separately, below the table.

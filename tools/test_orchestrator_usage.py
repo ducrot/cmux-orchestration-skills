@@ -2,6 +2,7 @@
 """Regression tests for orchestrator_usage.py: workflow detection and call classification."""
 
 import contextlib
+import csv
 import io
 import json
 import os
@@ -228,6 +229,156 @@ class GrillingFixture(unittest.TestCase):
         return call
 
 
+class RegistryIdentity(GrillingFixture):
+    def setUp(self):
+        super().setUp()
+        self.registry = self.root / "registry.jsonl"
+
+    def entry(self, entry_id="one", target=None, created="2026-09-13T09:00:00Z", **extra):
+        return dict(entry_id=entry_id, target=str(target or self.root), created_at=created,
+                    testbed="timer", version="1", scenario="money", skill_state="abc-dirty",
+                    project_commit="p", head_commit="h", fixture_sha256="f", **extra)
+
+    def register(self, *entries):
+        self.registry.write_text("\n".join(map(json.dumps, entries)))
+
+    def session(self, minute=1, cwd=None, run="grill-demo"):
+        call = self.call(minute, 100)
+        call.run_id = run
+        session = ou.parsed_session("claude", run, "p", str(cwd or self.root), [call], [], [run])
+        session.update(skill_commit="date1234", skill_commit_date="2026-09-12", skill_md_bytes=42)
+        return session
+
+    def test_malformed_registry_lines_do_not_change_valid_identity(self):
+        valid = self.entry()
+        self.register(valid)
+        baseline = self.session()
+        ou.assign_testbed_identity([baseline], self.registry)
+        self.registry.write_text("\n".join([
+            "{malformed", "", "[]", "null",
+            json.dumps(dict(valid, created_at=42)),
+            json.dumps(dict(valid, created_at="bad")),
+            json.dumps(dict(valid, target=None)),
+            json.dumps(valid), "{also malformed",
+        ]))
+        session = self.session()
+        with contextlib.redirect_stderr(io.StringIO()) as warning:
+            ou.assign_testbed_identity([session], self.registry)
+        self.assertEqual(warning.getvalue().splitlines(), [
+            f"skipping malformed registry line 1 in {self.registry}",
+            f"skipping malformed registry line 9 in {self.registry}",
+        ])
+        self.assertEqual(session["registry_entry_id"], "one")
+        self.assertEqual([session[k] for k in ou.IDENTITY_FIELDS],
+                         [baseline[k] for k in ou.IDENTITY_FIELDS])
+
+    def test_same_timestamp_uses_last_registry_line(self):
+        first = self.entry("z-first", created="2026-09-13T10:01:00Z")
+        second = dict(self.entry("a-second", created="2026-09-13T12:01:00+02:00"),
+                      skill_state="abc")
+        for entries in ((first, second), (second, first)):
+            with self.subTest(last_entry=entries[-1]["entry_id"]):
+                self.register(*entries)
+                sessions = [self.session()]
+                ou.assign_testbed_identity(sessions, self.registry)
+                windows = ou.owned_session_windows(sessions, GRILLING)
+                rows = ou.aggregate_runs(windows, GRILLING)
+                for row in [*sessions, *windows, *rows]:
+                    self.assertEqual(row["registry_entry_id"], entries[-1]["entry_id"])
+                    self.assertEqual(row["recorded_skill_state"], entries[-1]["skill_state"])
+
+    def test_time_match_identity_survives_windows_and_aggregation(self):
+        self.register(self.entry(), self.entry("two", created="2026-09-13T10:02:00Z"))
+        sessions = [self.session(1), self.session(3, run="grill-second")]
+        ou.assign_testbed_identity(sessions, self.registry)
+        windows = ou.owned_session_windows(sessions, GRILLING)
+        self.assertEqual([s["registry_entry_id"] for s in windows], ["one", "two"])
+        rows = ou.aggregate_runs(windows, GRILLING)
+        self.assertEqual([r["registry_entry_id"] for r in rows], ["one", "two"])
+        for row in [*windows, *rows]:
+            self.assertEqual([row[k] for k in ou.IDENTITY_FIELDS[:3]], ["timer", "1", "money"])
+            self.assertEqual(row["recorded_skill_state"], "abc-dirty")
+            self.assertEqual([row[k] for k in ("skill_commit", "skill_commit_date", "skill_md_bytes")],
+                             ["date1234", "2026-09-12", 42])
+
+    def test_lexical_ancestor_latest_across_targets_and_empty_cases(self):
+        missing = self.root / "absent"
+        self.register(self.entry(target=missing),
+                      self.entry("nested", target=missing / "child", created="2026-09-13T09:30:00Z"))
+        sessions = [self.session(cwd=missing / "child/../child/deep"),
+                    self.session(cwd=self.root / "absent-other"), self.session(cwd=missing)]
+        sessions[2]["start_ts"] = "2026-09-12T10:00:00Z"
+        with patch.object(Path, "resolve", side_effect=AssertionError("filesystem resolution")):
+            ou.assign_testbed_identity(sessions, self.registry)
+        self.assertFalse(missing.exists())
+        self.assertEqual(sessions[0]["registry_entry_id"], "nested")
+        for session in sessions[1:]:
+            self.assertEqual([session[k] for k in ou.IDENTITY_FIELDS], [""] * 5)
+        ou.assign_testbed_identity(sessions, self.root / "missing-registry")
+        for session in sessions:
+            self.assertEqual([session[k] for k in ou.IDENTITY_FIELDS], [""] * 5)
+
+    def test_cli_real_transcripts_cache_filters_csv_and_summary(self):
+        transcripts = self.root / "transcripts/project"
+        transcripts.mkdir(parents=True)
+        entries = []
+        for index, (bed, version, scenario, state) in enumerate((
+                ("timer", "1", "money", "abc-dirty"), ("other", "2", "vat", "abc"))):
+            target = self.root / str(index)
+            run = f"grill-{index}"
+            directory = target / ".scratch/orchestrator/runs" / run
+            directory.mkdir(parents=True)
+            events = [{"type": "run.init", "time": "2026-09-13T10:00:00Z"},
+                      {"type": "tree.snapshot", "time": "2026-09-13T10:01:00Z", "message": "launched test-1"},
+                      {"type": "tree.snapshot", "time": "2026-09-13T10:02:00Z", "message": "report-captured test-1"}]
+            (directory / "events.jsonl").write_text("\n".join(map(json.dumps, events)))
+            entry = self.entry(str(index), target=target)
+            entry.update(testbed=bed, version=version, scenario=scenario, skill_state=state)
+            entries.append(entry)
+            path = transcripts / f"{index}.jsonl"
+            write_transcript(path, [f"python3 cmux-grilling/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/{run}"])
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for record in records:
+                record["cwd"] = str(target / "subdir")
+            path.write_text("\n".join(map(json.dumps, records)))
+        self.register(*entries)
+        out = self.root / "out"
+        def versions(sessions, *args):
+            for session in sessions:
+                session.update(skill_commit="date1234", skill_commit_date="2026-09-12", skill_md_bytes=42)
+        with patch.object(ou, "CLAUDE_PROJECTS", transcripts.parent), \
+             patch.object(ou, "CODEX_SESSIONS", self.root / "none"), \
+             patch.object(ou, "CACHE_DIR", self.root / "cache"), \
+             patch.object(ou, "assign_skill_version", side_effect=versions):
+            base = ["--workflow", "grilling", "--registry", str(self.registry), "--out", str(out)]
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(ou.main(base), 0)
+            self.assertIn("abc-dirty 1 date1234", output.getvalue())
+            self.assertIn("abc 1 date1234", output.getvalue())
+            # A registry edit must be visible even while all transcript parsers are disabled.
+            entries[0]["entry_id"] = "updated"
+            self.register(*entries)
+            with patch.object(ou, "parse_claude", side_effect=AssertionError("cache miss")):
+                for option, value, expected in (("testbed", "timer", "updated"),
+                        ("scenario", "money", "updated"), ("testbed-version", "1", "updated"),
+                        ("skill-state", "abc-dirty", "updated"), ("skill-state", "abc", "1")):
+                    with self.subTest(option=option, value=value), contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ou.main([*base, "--" + option, value]), 0)
+                        for table in ("sessions", "runs", "stages"):
+                            with (out / f"orchestrator-usage-{table}.csv").open() as fh:
+                                rows = list(csv.DictReader(fh))
+                            self.assertEqual(len(rows), 1)
+                            self.assertEqual(rows[0]["registry_entry_id"], expected)
+                            self.assertTrue(all(k in rows[0] for k in ou.IDENTITY_FIELDS))
+                            self.assertEqual(rows[0]["skill_commit"], "date1234")
+                            if table != "stages":
+                                keys = list(rows[0])
+                                self.assertEqual(keys[keys.index("skill_commit"):keys.index("skill_commit") + 3],
+                                                 ["skill_commit", "skill_commit_date", "skill_md_bytes"])
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(ou.main([*base, "--testbed", "time"]), 1)
+
+
 class GrillingRounds(GrillingFixture):
     def test_rounds_are_the_stage_unit(self):
         state = ou.read_run_state(self.run_dir, GRILLING)
@@ -434,7 +585,7 @@ class RunAttribution(GrillingFixture):
 
     def test_run_project_without_run_root_uses_cwd_project_name(self):
         with patch.object(ou, "project_root", return_value=None):
-            self.assertEqual(ou.run_project("/projects/example-app"), "-projects-example-app")
+            self.assertEqual(ou.run_project({"cwd": "/projects/example-app"}), "-projects-example-app")
 
     def test_start_summary_matches_both_session_id_and_run_id(self):
         self.events()
