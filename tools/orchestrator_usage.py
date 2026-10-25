@@ -43,6 +43,7 @@ REGISTRY_PATH = Path(__file__).resolve().parents[1] / ".scratch/orchestrator/tes
 REGISTRY_KEYS = {"testbed": "testbed", "testbed_version": "version", "scenario": "scenario",
                  "registry_entry_id": "entry_id", "recorded_skill_state": "skill_state"}
 IDENTITY_FIELDS = tuple(REGISTRY_KEYS)
+REGISTRY_CONTEXT = ("_registry_target", "_registry_current")
 ATTRIBUTION_FIELDS = ("skill_commit", "skill_commit_date", "skill_md_bytes", *IDENTITY_FIELDS)
 CACHE_VERSION = 15
 
@@ -609,13 +610,14 @@ def owned_session_windows(sessions, workflow):
     for session in sessions:
         if session.get("worker_runs"):
             continue
-        root = session_root(session)
+        root = live_session_root(session)
         states = {}
         if root:
             if root not in root_states:
+                runs_dir = root / ".scratch/orchestrator/runs"
                 root_states[root] = {d.name: read_run_state(d, workflow)
-                                     for d in (root / ".scratch/orchestrator/runs").iterdir()
-                                     if d.is_dir()}
+                                     for d in runs_dir.iterdir()
+                                     if d.is_dir()} if runs_dir.is_dir() else {}
             states = root_states[root]
         owned = set(session.get("owned_runs", []))
         owned.update(r for r, state in states.items()
@@ -647,8 +649,9 @@ def owned_session_windows(sessions, workflow):
                 call.run_id = run_id
             piece = build_session(session["harness"], session["session_id"], session["path"],
                                   session["cwd"], selected)
-            for key in ATTRIBUTION_FIELDS:
-                piece[key] = session.get(key, "")
+            for key in (*ATTRIBUTION_FIELDS, *REGISTRY_CONTEXT):
+                if key in session:
+                    piece[key] = session[key]
             windows.append(piece)
     return windows
 
@@ -780,20 +783,39 @@ def assign_testbed_identity(sessions: list[dict], registry: Path) -> None:
                 entries.append((when, number, PurePosixPath(posixpath.normpath(target)), entry))
     entries.sort(key=lambda item: item[:2], reverse=True)
     for session in sessions:
+        for key in REGISTRY_CONTEXT:
+            session.pop(key, None)
         session.update(dict.fromkeys(IDENTITY_FIELDS, ""))
         start = iso(session.get("start_ts"))
         if not start or not session.get("cwd"):
             continue
         cwd = PurePosixPath(posixpath.normpath(session["cwd"]))
-        for when, _, target, entry in entries:
+        for index, (when, _, target, entry) in enumerate(entries):
             if when <= start and cwd.is_relative_to(target):
                 session.update({field: entry.get(key, "") for field, key in REGISTRY_KEYS.items()})
+                # A later copy at the same path or an ancestor replaced this one on disk.
+                replaced = any(target.is_relative_to(newer) for _, _, newer, _ in entries[:index])
+                session.update(_registry_target=str(target), _registry_current=not replaced)
                 break
 
 
 def session_root(session: dict) -> Path | None:
     """Resolve all session run-root lookups through one entry point."""
+    if session.get("_registry_target"):
+        return Path(session["_registry_target"])
     return project_root(session.get("cwd"))
+
+
+def live_session_root(session: dict) -> Path | None:
+    """Only the current registry incarnation may consume filesystem evidence."""
+    if session.get("_registry_target") and not session.get("_registry_current"):
+        return None
+    return session_root(session)
+
+
+def run_scope(session: dict, project: str) -> str:
+    return ("registry:" + session["registry_entry_id"]
+            if session.get("_registry_target") else "project:" + project)
 
 
 def run_project(session: dict) -> str:
@@ -1230,10 +1252,10 @@ def median(values):
 def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-chain"]) -> list[dict]:
     chain = workflow.name == "issue-chain"
     runs: dict[tuple[str, str], dict] = {}
-    # Where each run actually lives, so sessions driving a run from another checkout
-    # do not split it into a second, stage-less row.
+    # Legacy sessions can drive a run from another checkout. Registry-matched
+    # sessions always use their own target instead of this shared lookup.
     home: dict[str, tuple[Path, str]] = {}
-    for root in {session_root(s) for s in sessions}:
+    for root in {live_session_root(s) for s in sessions}:
         if not root:
             continue
         for run_dir in (root / ".scratch" / "orchestrator" / "runs").glob("*"):
@@ -1244,15 +1266,17 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
         # Key on the project root so gap detection below lands in the same bucket
         # even when the session ran from a subdirectory.
         project = project_name(str(root), str(root)) if root else session["project"]
+        live_root = live_session_root(session)
         for run_id, bucket in session["per_run"].items():
             if run_id == "(unassigned)":
                 continue
-            if root and not (root / ".scratch" / "orchestrator" / "runs" / run_id).is_dir() \
+            if live_root and not (live_root / ".scratch" / "orchestrator" / "runs" / run_id).is_dir() \
                     and any(other != run_id and other.startswith(run_id)
                             for other in session["per_run"]):
                 continue  # truncated id whose full run is present
-            run_root, run_project = home.get(run_id, (root, project))
-            key = (run_project, run_id)
+            run_root, run_project = ((live_root, project) if session.get("_registry_target")
+                                     else home.get(run_id, (root, project)))
+            key = (run_scope(session, run_project), run_id)
             run = runs.setdefault(key, {
                 "run_id": run_id, "project": run_project, "harnesses": set(),
                 "sessions": [], "calls": 0, "tokens_total": 0, "effective_input_equiv": 0.0,
@@ -1270,15 +1294,20 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
                 if value:
                     run[field] = min(run[field] or value, value) if field == "start" \
                         else max(run[field] or value, value)
-            if root and not run["root"]:
-                run["root"] = root
+            if live_root and not run["root"]:
+                run["root"] = live_root
 
     # Gap detection: every run directory of every touched project must appear.
-    roots = {session_root(s) for s in sessions}
-    for root in roots:
+    scanned = set()
+    for session in sessions:
+        root = live_session_root(session)
         if not root:
             continue
         project = project_name(str(root), str(root))
+        scope = run_scope(session, project)
+        if (scope, root) in scanned:
+            continue
+        scanned.add((scope, root))
         for run_dir in sorted((root / ".scratch" / "orchestrator" / "runs").glob("*")):
             if not run_dir.is_dir():
                 continue
@@ -1290,21 +1319,23 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
             elif not workflow.owns_run(run_dir.name) or not (
                     (run_dir / "events.jsonl").is_file() or (run_dir / "state.json").is_file()):
                 continue  # another workflow's run, or a stray directory from a truncated id
-            key = (project, run_dir.name)
+            key = (scope, run_dir.name)
             if key not in runs:
                 runs[key] = {"run_id": run_dir.name, "project": project, "harnesses": set(),
                              "sessions": [], "calls": 0, "tokens_total": 0,
                              "effective_input_equiv": 0.0, "waits": 0, "start": None,
                              "end": None, "root": root, "timeline": [],
-                             **dict.fromkeys(ATTRIBUTION_FIELDS, "")}
+                             **({k: session.get(k, "") for k in ATTRIBUTION_FIELDS}
+                                if session.get("_registry_target")
+                                else dict.fromkeys(ATTRIBUTION_FIELDS, ""))}
 
-    for (project, short) in sorted(runs, key=lambda k: -len(k[1])):
+    for (scope, short) in sorted(runs, key=lambda k: -len(k[1])):
         longer = sorted((k for k in runs
-                         if k[0] == project and k[1] != short and k[1].startswith(short)),
+                         if k[0] == scope and k[1] != short and k[1].startswith(short)),
                         key=lambda k: -len(k[1]))
         if not longer:
             continue
-        target, source = runs[longer[0]], runs.pop((project, short))
+        target, source = runs[longer[0]], runs.pop((scope, short))
         for field in ("calls", "tokens_total", "effective_input_equiv", "waits", "timeline"):
             target[field] += source[field]
         target["harnesses"].update(source["harnesses"])
@@ -1384,10 +1415,11 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
 def add_worker_usage(rows, workers, workflow):
     for row in rows:
         linked = [s for s in workers if row["run_id"] in s.get("worker_runs", [])
-                  and run_project(s) == row["project"]]
+                  and run_project(s) == row["project"]
+                  and s.get("registry_entry_id", "") == row.get("registry_entry_id", "")]
         first = None
         for session in linked:
-            root = session_root(session)
+            root = live_session_root(session)
             if root:
                 first = iso(read_run_state(root / ".scratch/orchestrator/runs" / row["run_id"],
                                            workflow)["first_question"])
@@ -1631,7 +1663,7 @@ def print_summary(sessions: list[dict], runs: list[dict],
     print(f"per-stage columns rest on {len(staged) - len(mixed)} runs whose directory "
           f"still exists; {len(mixed)} mixed-harness runs are excluded from them")
     for run in missing:
-        print(f"  gap: {run['project']} {run['run_id']}")
+        print(f"  gap: {run['project']} {run['run_id']} {run['registry_entry_id']}".rstrip())
     print("n = sessions behind a median; a group with n=1 carries no trend information.")
     print("note: reasoning tokens are only reported for codex; "
           "Claude persists thinking blocks empty.")

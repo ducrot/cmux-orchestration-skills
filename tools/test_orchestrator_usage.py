@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -294,7 +295,7 @@ class RegistryIdentity(GrillingFixture):
         windows = ou.owned_session_windows(sessions, GRILLING)
         self.assertEqual([s["registry_entry_id"] for s in windows], ["one", "two"])
         rows = ou.aggregate_runs(windows, GRILLING)
-        self.assertEqual([r["registry_entry_id"] for r in rows], ["one", "two"])
+        self.assertEqual([r["registry_entry_id"] for r in rows], ["one", "two", "two"])
         for row in [*windows, *rows]:
             self.assertEqual([row[k] for k in ou.IDENTITY_FIELDS[:3]], ["timer", "1", "money"])
             self.assertEqual(row["recorded_skill_state"], "abc-dirty")
@@ -317,6 +318,108 @@ class RegistryIdentity(GrillingFixture):
         ou.assign_testbed_identity(sessions, self.root / "missing-registry")
         for session in sessions:
             self.assertEqual([session[k] for k in ou.IDENTITY_FIELDS], [""] * 5)
+
+    def cli_incarnation_rows(self, cwds, minutes):
+        transcripts = self.root / "incarnation-transcripts/project"
+        transcripts.mkdir(parents=True)
+        for index, (cwd, minute) in enumerate(zip(cwds, minutes)):
+            path = transcripts / f"{index}.jsonl"
+            write_transcript(path, ["python3 cmux-grilling/scripts/run_state.py init "
+                                    "--run-dir .scratch/orchestrator/runs/grill-demo"])
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            for record in records:
+                record["cwd"] = str(cwd)
+                record["timestamp"] = f"2026-09-13T10:0{minute}:00Z"
+            path.write_text("\n".join(map(json.dumps, records)))
+        out = self.root / "cli-incarnation-out"
+        with patch.object(ou, "CLAUDE_PROJECTS", transcripts.parent), \
+             patch.object(ou, "CODEX_SESSIONS", self.root / "none"), \
+             patch.object(ou, "CACHE_DIR", self.root / "incarnation-cache"), \
+             patch.object(ou, "assign_skill_version"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ou.main(["--workflow", "grilling", "--registry", str(self.registry),
+                                      "--out", str(out), "--no-cache"]), 0)
+        tables = {}
+        for table in ("runs", "stages"):
+            with (out / f"orchestrator-usage-{table}.csv").open() as fh:
+                tables[table] = list(csv.DictReader(fh))
+        return tables
+
+    def test_removed_target_uses_registry_root_without_ancestor_evidence(self):
+        target = self.root / "removed"
+        (target / ".scratch/orchestrator/runs/grill-demo").mkdir(parents=True)
+        shutil.rmtree(target)
+        self.register(self.entry(target=target))
+        sessions = [self.session(cwd=target), self.session(cwd=target / "subdir")]
+        ou.assign_testbed_identity(sessions, self.registry)
+        for session in sessions:
+            self.assertEqual(ou.session_root(session), target)
+        windows = ou.owned_session_windows(sessions, GRILLING)
+        rows = ou.aggregate_runs(windows, GRILLING)
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["registry_entry_id"], row["calls"], row["tokens_total"]),
+                         ("one", 2, 200))
+        self.assertEqual(row["coverage"], "no-run-state")
+        self.assertEqual(row["stage_timings"], [])
+        self.assertEqual(row["wall_worker_minutes"], "")
+        tables = self.cli_incarnation_rows([target, target / "subdir"], [1, 1])
+        self.assertEqual(len(tables["runs"]), 1)
+        self.assertEqual(tables["runs"][0]["registry_entry_id"], "one")
+        self.assertEqual(tables["runs"][0]["calls"], "2")
+        self.assertEqual(tables["runs"][0]["tokens_total"], "2030")
+        self.assertEqual(tables["runs"][0]["coverage"], "no-run-state")
+        self.assertEqual(tables["stages"], [])
+
+    def test_reused_target_keeps_incarnations_and_current_gaps_separate(self):
+        self.register(self.entry(), self.entry("two", created="2026-09-13T10:02:00Z"))
+        with (self.run_dir / "events.jsonl").open("a") as fh:
+            for clock, message in (("10:03:00", "launched test-1"),
+                                   ("10:04:00", "report-captured test-1")):
+                fh.write("\n" + json.dumps(dict(type="tree.snapshot",
+                    time=f"2026-09-13T{clock}Z", message=message)))
+        gap = self.run_dir.with_name("grill-gap")
+        gap.mkdir()
+        (gap / "state.json").write_text("{}")
+        sessions = [self.session(1), self.session(3)]
+        ou.assign_testbed_identity(sessions, self.registry)
+        windows = ou.owned_session_windows(sessions, GRILLING)
+        rows = ou.aggregate_runs(windows, GRILLING)
+        by_key = {(r["registry_entry_id"], r["run_id"]): r for r in rows}
+        self.assertEqual(set(by_key), {("one", "grill-demo"),
+                                      ("two", "grill-demo"), ("two", "grill-gap")})
+        old, current = by_key["one", "grill-demo"], by_key["two", "grill-demo"]
+        self.assertEqual((old["calls"], old["tokens_total"], old["coverage"]),
+                         (1, 100, "no-run-state"))
+        self.assertEqual(old["stage_timings"], [])
+        self.assertEqual(current["wall_worker_minutes"], 1.0)
+        # An old-only selection must never scan the replacement's gap directory.
+        self.assertEqual(len(ou.aggregate_runs(windows[:1], GRILLING)), 1)
+        worker = dict(sessions[0], worker_runs=["grill-demo"])
+        ou.add_worker_usage(rows, [worker], GRILLING)
+        self.assertEqual(old["worker_tokens"], 100)
+        self.assertEqual(current["worker_tokens"], 0)
+        out = self.root / "incarnation-out"
+        out.mkdir()
+        for writer, expected in ((ou.write_runs_csv, ["one", "two", "two"]),
+                                 (ou.write_stages_csv, ["two"])):
+            with writer(rows, out).open() as fh:
+                self.assertEqual([r["registry_entry_id"] for r in csv.DictReader(fh)], expected)
+
+        tables = self.cli_incarnation_rows([self.root, self.root / "subdir"], [1, 3])
+        self.assertEqual([(r["registry_entry_id"], r["run_id"]) for r in tables["runs"]],
+                         [("one", "grill-demo"), ("two", "grill-demo"), ("two", "grill-gap")])
+        self.assertEqual([r["coverage"] for r in tables["runs"]],
+                         ["no-run-state", "orchestrator-session", "missing"])
+        self.assertEqual([r["registry_entry_id"] for r in tables["stages"]], ["two"])
+
+    def test_copy_replaced_by_ancestor_target_is_not_current(self):
+        child = self.root / "child"
+        self.register(self.entry(target=child),
+                      self.entry("parent", created="2026-09-13T10:02:00Z"))
+        sessions = [self.session(1, cwd=child)]
+        ou.assign_testbed_identity(sessions, self.registry)
+        self.assertEqual(sessions[0]["registry_entry_id"], "one")
+        self.assertIsNone(ou.live_session_root(sessions[0]))
 
     def test_cli_real_transcripts_cache_filters_csv_and_summary(self):
         transcripts = self.root / "transcripts/project"
