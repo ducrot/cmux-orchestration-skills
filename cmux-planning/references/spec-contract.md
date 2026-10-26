@@ -35,6 +35,24 @@ The author report is separate from the draft. It names concrete repository sourc
 proposed test seams, blockers, plan drift, and the exact draft path. A clean author handoff moves
 only to independent review.
 
+The specification author checks the requested behavior against existing enforced rules: a code guard,
+validation, constraint, documented rule, or test. If one must be removed, weakened, or bypassed, name
+the rule and put how it changes under `Open Decisions` with options and a recommendation. Name the
+rule and its evidence by module, behavior, and test name; paths and line references go in the author
+report under `Repository Sources / Methods`. Only when human input explicitly names the rule and how it
+changes is that change exempt; a general request for the outcome does not grant this exemption.
+Human specification revision feedback counts as human input. Record an exempt change under
+`Implementation Decisions` and name the human input that decides it. Follow the input precedence:
+only brief entries the human stated outrank revalidated grilling decisions, which outrank plan files;
+entries taken from files retain their source's rank, and other contradictions belong under
+`Open Decisions`.
+
+The specification reviewer independently checks the repository for the same conflicts and exemption.
+If such a conflict is unresolved or was decided by the author alone, return `blocked` with a finding
+anchored in code or documentation. For this blocker, include the `Recommendation:` bullet inside
+Blockers and name the concrete choices for the human in it; do not decide the rule change with
+`pass_with_fixes`. The reviewer sees the human specification revision feedback to verify the exemption.
+
 The fresh independent reviewer returns exactly one verdict:
 
 - `pass`: references the unchanged draft digest and writes no candidate.

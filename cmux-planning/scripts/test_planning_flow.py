@@ -1070,7 +1070,8 @@ sha256 {resulting_digest or digest}
             self.assertIn(SPEC_TEMPLATE, prompt)
             self.assertIn("the `- None` sentinel stay exactly as", prompt)
             self.assertNotIn("The draft must be English", prompt)
-        steps = ["1. Explore the repo", "2. Sketch out the seams", "3. Write the spec"]
+        steps = ["1. Explore the repo", "2. Check the requested behavior",
+                 "3. Sketch out the seams", "4. Write the spec"]
         self.assertEqual([author.index(step) for step in steps],
                          sorted(author.index(step) for step in steps))
         for rule in ("domain glossary vocabulary", "respect any ADRs", "ideal number is one",
@@ -1082,6 +1083,27 @@ sha256 {resulting_digest or digest}
             self.assertIn(rule, reviewer)
         self.assertIn("`pass_with_fixes`", reviewer)
         self.assertIn("`blocked`", reviewer)
+        author, reviewer = (" ".join(prompt.split()) for prompt in (author, reviewer))
+        for prompt in (author, reviewer):
+            for rule in ("code guard, validation, constraint, documented rule, or test",
+                         "removed, weakened, or bypassed",
+                         "human input explicitly names the rule and how it changes",
+                         "a general request for the outcome does not",
+                         "Human specification revision feedback counts as human input",
+                         "Follow the input precedence stated"):
+                self.assertIn(rule, prompt)
+        for rule in ("2. Check the requested behavior against existing enforced rules",
+                     "under `Open Decisions` with options and a recommendation",
+                     "Name the rule and its evidence by module, behavior, and test name",
+                     "paths and line references go in the author report under `Repository Sources / Methods`",
+                     "Record an exempt change under `Implementation Decisions`"):
+            self.assertIn(rule, author)
+        for rule in ("Independently check the requested behavior in the repository against existing enforced rules",
+                     "unresolved or was decided by the author alone, return `blocked`",
+                     "finding anchored in code or documentation",
+                     "include the `Recommendation:` bullet inside Blockers and name the concrete choices",
+                     "### Human Specification Revision Feedback"):
+            self.assertIn(rule, reviewer)
 
     def test_spec_rules_render_through_cli_in_default_language(self):
         self.check_spec_prompt_rules("English")

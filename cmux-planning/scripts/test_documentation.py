@@ -110,6 +110,30 @@ class PathFreedomDocumentation(unittest.TestCase):
             self.assertIn(rule, contract)
 
 
+class EnforcedRuleConflictDocumentation(unittest.TestCase):
+    def test_spec_contract_states_author_and_independent_reviewer_duties(self):
+        contract = normalized(PLANNING.parent / "references/spec-contract.md")
+        for phrase in (
+            "the specification author checks the requested behavior against existing enforced rules",
+            "code guard, validation, constraint, documented rule, or test",
+            "removed, weakened, or bypassed",
+            "name the rule and its evidence by module, behavior, and test name",
+            "paths and line references go in the author report under `repository sources / methods`",
+            "under `open decisions` with options and a recommendation",
+            "human input explicitly names the rule and how it changes",
+            "a general request for the outcome does not",
+            "human specification revision feedback counts as human input",
+            "record an exempt change under `implementation decisions`",
+            "follow the input precedence",
+            "the specification reviewer independently checks the repository",
+            "unresolved or was decided by the author alone, return `blocked`",
+            "finding anchored in code or documentation",
+            "include the `recommendation:` bullet inside blockers and name the concrete choices",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+
+
 class TicketApprovalQuizDocumentation(unittest.TestCase):
     def setUp(self):
         self.approval = normalized(PLANNING).split("## ticket approval, staging, and publication", 1)[1].split("## commit", 1)[0]

@@ -379,11 +379,20 @@ When information is genuinely missing, record it under `Open Decisions` instead 
 1. Explore the repo to understand the current state of the codebase. Use the project's domain glossary vocabulary
    throughout the spec, and respect any ADRs in the area you're touching. Inspect source, local docs,
    history, and existing tests as needed.
-2. Sketch out the seams at which you're going to test the feature. Prefer existing seams to new ones.
+2. Check the requested behavior against existing enforced rules: a code guard, validation, constraint,
+   documented rule, or test. If one must be removed, weakened, or bypassed, name the rule and put how
+   it changes under `Open Decisions` with options and a recommendation. Name the rule and its evidence
+   by module, behavior, and test name; paths and line references go in the author report under
+   `Repository Sources / Methods`. Only when human input explicitly names the rule and how it changes
+   is that change exempt; a general request for the outcome does not grant this exemption. Human
+   specification revision feedback counts as human input. Record an exempt change under
+   `Implementation Decisions` and name the human input that decides it.
+   Follow the input precedence stated below.
+3. Sketch out the seams at which you're going to test the feature. Prefer existing seams to new ones.
    Use the highest useful seam possible. If new seams are needed, propose them at the highest point
    you can. The fewer seams across the codebase, the better; the ideal number is one. Record the
    proposed seams in your report for the human approval walkthrough; do not create a separate seam gate.
-3. Write the spec using the template below and the supplied inputs. Do not publish it yourself.
+4. Write the spec using the template below and the supplied inputs. Do not publish it yourself.
    No file paths or code snippets in the spec, except the handover locations, safety-carrying commands,
    and narrowly defined prototype snippet allowed by the template below.
    Name modules, tests, and seams by name and behavior. Paths and line references belong in the
@@ -486,6 +495,7 @@ def review_prompt(run_dir: Path, pass_num: int, snapshot: dict, state: dict) -> 
     )
     paths = snapshot["allowed_worker_writes"]
     inputs = verified_inputs(run_dir, state)
+    feedback = state.get("spec_revision_feedback") or "None recorded for this specification pass."
     return f"""# Planning Worker Prompt: independent specification review (pass {pass_num})
 
 {first_step(paths['started'])}
@@ -512,6 +522,10 @@ the complete draft, and the contract below.
 {normalized_context(run_dir, state)}
 
 {INPUT_PRECEDENCE}
+
+### Human Specification Revision Feedback
+
+{feedback}
 
 ### Author Report
 
@@ -544,6 +558,16 @@ Do not silently patch this gap with `pass_with_fixes` or overlook it; report it 
 
 No unresolved current-scope Open Decision may pass. A deferred decision passes only after the candidate
 explicitly moves it to Out of Scope or a follow-up area.
+
+Independently check the requested behavior in the repository against existing enforced rules: a code
+guard, validation, constraint, documented rule, or test. Identify any rule that must be removed,
+weakened, or bypassed. Only when human input explicitly names the rule and how it changes is that
+change exempt; a general request for the outcome does not grant this exemption. Human specification
+revision feedback counts as human input.
+Follow the input precedence stated above. If such a conflict is unresolved or was decided by the author
+alone, return `blocked` with a finding anchored in code or documentation. For this blocker, include the
+`Recommendation:` bullet inside Blockers and name the concrete choices for the human in it; do not
+decide the rule change with `pass_with_fixes`.
 
 Return exactly one verdict:
 
