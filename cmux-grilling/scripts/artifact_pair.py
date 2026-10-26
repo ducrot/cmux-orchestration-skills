@@ -14,8 +14,22 @@ REVIEW_LABELS = {
 }
 
 
+def review_marker(review: dict) -> dict:
+    return {"Ergebnis": REVIEW_LABELS[review["outcome"]],
+            "Korrektur": review["corrected_text"], "Grund": review["reason"]}
+
+
+def render_assumption(text: str, review: dict) -> str:
+    """Render a recorded review as the single Markdown line to transcribe."""
+    return f"{review['index']}. {text} [Prüfung: {json.dumps(review_marker(review), ensure_ascii=False)}]"
+
+
 def nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def single_line(value: object) -> bool:
+    return nonempty(value) and "\n" not in value and "\r" not in value
 
 
 def timestamp(value: object) -> bool:
@@ -85,7 +99,7 @@ def validate_extension(data: dict, artifact_path: Path) -> list[str]:
     if len(reviews) != len(assumptions):
         problems.append("assumption_review: length must match assumptions (one entry per assumption)")
     for index, text in enumerate(assumptions, 1):
-        if not nonempty(text) or "\n" in text or "\r" in text:
+        if not single_line(text):
             problems.append(f"assumptions entry {index}: must be a non-empty single-line string")
     for index, review in enumerate(reviews, 1):
         problems += validate_review(review, index)
@@ -119,9 +133,7 @@ def validate_extension(data: dict, artifact_path: Path) -> list[str]:
         problems.append("assumption_review Markdown: assumption line count disagrees")
     for index, (line, text, review) in enumerate(zip(assumption_lines, assumptions, reviews), 1):
         prefix = f"{index}. {text} [Prüfung: "
-        expected = {"Ergebnis": REVIEW_LABELS[review["outcome"]],
-                    "Korrektur": review["corrected_text"], "Grund": review["reason"]}
-        if not (line.startswith(prefix) and line.endswith("]") and json_equals(line[len(prefix):-1], expected)):
+        if not (line.startswith(prefix) and line.endswith("]") and json_equals(line[len(prefix):-1], review_marker(review))):
             problems.append(f"assumption_review entry {index}: Markdown text or review marker disagrees")
     if len(fact_lines) != len(facts):
         problems.append("open_facts Markdown: fact line count disagrees")

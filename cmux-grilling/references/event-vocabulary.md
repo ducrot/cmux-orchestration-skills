@@ -28,7 +28,7 @@ consistently within a run.
 | `grill.synthesis`                                      | One question synthesized; data `{round, id, confidence}`                                                                           |
 | `grill.done`                                           | Griller ends the loop (empty frontier or round budget spent); data `{round, reason}`                                                |
 | `grill.assumptions`                                    | Defined assumptions distilled; data `{count}`                                                                                      |
-| `grill.assumptions_triaged`                            | Per-assumption human review outcome                                                                                                |
+| `grill.assumptions_triaged`                            | One human review recorded by `run_state.py assumption-review`; data `{index, outcome, corrected_text, reason, reviewed_at, artifact}`, matching the JSON review; event time equals `reviewed_at` |
 | `grill.open_decisions`                                 | Open decisions distilled at finalize; data `{count}`                                                                               |
 | `grill.decision_recorded`                              | One walkthrough answer; written by `run_state.py decision`                                                                         |
 | `commit.proposed`                                      | Artifact commit proposal handed to the human after `complete`                                                                      |

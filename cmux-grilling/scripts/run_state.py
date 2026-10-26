@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from artifact_pair import extension_summary, validate_extension
+from artifact_pair import extension_summary, render_assumption, single_line, validate_extension, validate_review
 
 from run_briefing import BoardPublication, publish_board
 from run_commit import capture_baseline
@@ -77,7 +77,7 @@ DECISION_REQUIRED_FIELDS = (
 RUN_SUBDIRS = ("prompts", "reports", "drafts", "synthesis")
 
 
-PUBLISHING_COMMANDS = ("init", "event", "gate", "snapshot", "complete", "decision")
+PUBLISHING_COMMANDS = ("init", "event", "gate", "snapshot", "complete", "decision", "assumption-review")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -143,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     decision.add_argument("--status", choices=["decided", "deferred"], required=True)
     decision.add_argument("--decision", required=True, help="What the human chose, or why it was deferred")
 
+    review = subparsers.add_parser("assumption-review", help="Record one human assumption review and print its Markdown line")
+    review.add_argument("--run-dir", required=True)
+    review.add_argument("--artifact", required=True)
+    review.add_argument("--index", type=int, required=True, help="One-based assumption index")
+    review.add_argument("--outcome", choices=["confirmed", "corrected", "discarded"], required=True)
+    review.add_argument("--corrected-text", default="")
+    review.add_argument("--reason", default="")
+
     validate = subparsers.add_parser("validate-artifact", help="Check decisions and the review/open-fact Markdown+JSON pair")
     validate.add_argument("--artifact", required=True)
 
@@ -186,6 +194,8 @@ def run_command(args: argparse.Namespace) -> int:
         return complete_run(args)
     if args.command == "decision":
         return record_decision(args)
+    if args.command == "assumption-review":
+        return record_assumption_review(args)
     if args.command == "validate-artifact":
         return validate_artifact(args)
     if args.command == "pending-decisions":
@@ -637,6 +647,45 @@ def record_decision(args: argparse.Namespace) -> int:
         publication.force = True
     # Printed ready to paste: the Markdown half of the pair is transcribed, not recomposed.
     print(f"{args.id} {args.status}\nAusgang ({args.status}): {args.decision}")
+    return 0
+
+
+def record_assumption_review(args: argparse.Namespace) -> int:
+    """Persist a review before transcription; pair validation detects an interrupted edit."""
+    run_dir = Path(args.run_dir)
+    read_run_state(run_dir)
+    artifact_path = Path(args.artifact)
+    artifact = read_json(artifact_path)
+    assumptions = artifact.get("assumptions")
+    reviews = artifact.get("assumption_review")
+    if not isinstance(assumptions, list) or not 1 <= args.index <= len(assumptions):
+        raise SystemExit(f"Unknown assumption index {args.index} in {artifact_path}")
+    if not isinstance(reviews, list) or len(reviews) != len(assumptions):
+        raise SystemExit("assumption_review must have one entry per assumption")
+    for index, entry in enumerate(reviews, 1):
+        if problems := validate_review(entry, index):
+            raise SystemExit("; ".join(problems))
+    if args.corrected_text and args.outcome != "corrected":
+        raise SystemExit(f"--corrected-text is only valid with --outcome corrected, not {args.outcome}")
+    text = assumptions[args.index - 1]
+    if not single_line(text):
+        raise SystemExit(f"assumptions entry {args.index}: must be a non-empty single-line string")
+    now = utc_now()
+    review = {"index": args.index, "outcome": args.outcome,
+              "corrected_text": args.corrected_text, "reason": args.reason, "reviewed_at": now}
+    if problems := validate_review(review, args.index):
+        raise SystemExit("; ".join(problems))
+    line = render_assumption(text, review)
+    reviews[args.index - 1] = review
+    write_json(artifact_path, artifact)
+    append_jsonl(run_dir / "events.jsonl", {
+        "time": now, "type": "grill.assumptions_triaged",
+        "message": f"Assumption {args.index}: {args.outcome}",
+        "data": dict(review, artifact=str(artifact_path)),
+    })
+    if publication := getattr(args, "_board_publication", None):
+        publication.force = True
+    print(line)
     return 0
 
 

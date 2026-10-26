@@ -4,8 +4,37 @@ check for an unfinished walkthrough at session start (see Resuming an unfinished
 ```bash
 python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
 python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
+python3 scripts/run_state.py assumption-review --run-dir <run-dir> --artifact <artifact.json> --index 1 --outcome corrected --corrected-text "Neue Annahme" --reason "Neue Fakten"
 python3 scripts/run_state.py pending-decisions
 ```
+
+`assumption-review` records one one-based assumption index: `--outcome confirmed`, `corrected`
+(requires `--corrected-text` and `--reason`), or `discarded` (requires `--reason`). It writes
+`index`, `outcome`, `corrected_text`, `reason`, and `reviewed_at` into `assumption_review` and
+emits exactly one `grill.assumptions_triaged` event carrying the same fields plus `artifact`.
+Unknown indexes, missing correction/reason, and `--corrected-text` with another outcome are refused
+without changing JSON or events.
+The original assumption text stays intact. Transcribe the printed numbered line with its
+`[Prüfung: …]` marker into Markdown. Until then `validate-artifact` reports that assumption's
+disagreement; validate after transcription and before the commit proposal and recap, also on resume.
+Review is advisory and non-blocking; unreviewed entries remain valid.
+
+For interrupted transcription, recover lines from recorded outcomes without a second recording
+or changing review time. From the skill directory, render the saved records with the same renderer:
+
+```bash
+python3 - <artifact.json> <<'PY'
+import json, sys
+sys.path.insert(0, "scripts")
+from artifact_pair import render_assumption
+with open(sys.argv[1], encoding="utf-8") as source:
+    data = json.load(source)
+for text, review in zip(data["assumptions"], data["assumption_review"]):
+    print(render_assumption(text, review))
+PY
+```
+
+Replace the assumption lines and validate both halves before presenting them as synchronized.
 
 `validate-artifact` preserves decision checks and, for new pairs, validates `assumption_review`
 (one-based indexes in assumption order, known outcome, correction/reason requirements and review

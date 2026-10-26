@@ -7,6 +7,26 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_review_recording_transcription_and_resume_contract(self):
+        text = (SKILL_DIR / "SKILL.md").read_text()
+        review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]
+        for phrase in ("run_state.py assumption-review", "--index", "--outcome", "--corrected-text",
+                       "--reason", "Transcribe the printed lines", "Validate both halves",
+                       "after transcription and before the commit proposal and recap",
+                       "resumed walkthrough", "Repair interrupted transcription from recorded outcomes",
+                       "before presenting", "advisory and non-blocking", "unreviewed"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, review)
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        for phrase in ("assumption-review", "render_assumption", "without a second recording",
+                       "reviewed_at", "Unknown indexes", "before the commit proposal and recap"):
+            self.assertIn(phrase, reference)
+        event = (SKILL_DIR / "references/event-vocabulary.md").read_text()
+        self.assertIn("{index, outcome, corrected_text, reason, reviewed_at, artifact}", event)
+        resume = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
+        self.assertIn("repair interrupted assumption-marker", resume)
+        self.assertIn("before the commit proposal and recap", resume)
+
     def test_finalize_defines_pair_fields_and_initial_review_state(self):
         text = (SKILL_DIR / "SKILL.md").read_text()
         finalize = text.split("## Finalize and Artifact", 1)[1].split("## Assumptions Review", 1)[0]

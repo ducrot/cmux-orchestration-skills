@@ -549,9 +549,18 @@ unusable.
 
 After `complete`, present the defined assumptions — together with any self-resolved premise
 corrections from Drift Triage in `references/gate-recovery.md` — to the human for review: confirm, correct, or discard per
-assumption. Record the outcome per item as a
-`grill.assumptions_triaged` event, including a one-line reason for corrected or discarded
-items. The review never blocks: present it and stop; the decision may stay open until the
+assumption. Record each answer with `run_state.py assumption-review --run-dir <run-dir>
+--artifact <artifact.json> --index <one-based-index> --outcome confirmed|corrected|discarded`.
+For corrected, supply `--corrected-text`; for corrected or discarded, supply `--reason`.
+The command writes `assumption_review` with review time, emits one `grill.assumptions_triaged`
+event with the same outcome data, and prints the numbered assumption line with its marker.
+Transcribe the printed lines into `## Definierte Annahmen`, retaining the original assumption
+text. Validate both halves with `run_state.py validate-artifact --artifact <artifact.json>`
+after transcription and before the commit proposal and recap, including on a resumed walkthrough.
+Repair interrupted transcription from recorded outcomes in `assumption_review` before presenting
+the pair as synchronized; render the lines from those records as described in the script reference,
+without recording the same answer again. The review stays advisory and non-blocking: unreviewed
+items are valid. Present it and stop; the decision may stay open until the
 human responds. Do not draft tracker issues from assumptions — handing results to
 `cmux-issue-chain` is a human planning step, not part of this skill.
 
