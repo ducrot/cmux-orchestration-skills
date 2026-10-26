@@ -1,0 +1,110 @@
+{
+  "list-assumptions": [
+    "assumptions: must be a list"
+  ],
+  "list-assumption_review": [
+    "assumption_review: must be a list"
+  ],
+  "list-open_facts": [
+    "open_facts: must be a list"
+  ],
+  "length": [
+    "assumption_review: length must match assumptions (one entry per assumption)"
+  ],
+  "object": [
+    "assumption_review entry 1: must be an object"
+  ],
+  "text-''": [
+    "assumptions entry 1: must be a non-empty single-line string"
+  ],
+  "text-'two\\nlines'": [
+    "assumptions entry 1: must be a non-empty single-line string"
+  ],
+  "text-3": [
+    "assumptions entry 1: must be a non-empty single-line string"
+  ],
+  "review-index": [
+    "assumption_review entry 1: index must be 1 (one-based, in assumption order)"
+  ],
+  "review-outcome": [
+    "assumption_review entry 1: unknown outcome",
+    "assumption_review entry 1: reviewed_at must be an ISO timestamp with timezone"
+  ],
+  "review-strings": [
+    "assumption_review entry 1: corrected_text must be a string",
+    "assumption_review entry 1: reason must be a string",
+    "assumption_review entry 1: reviewed_at must be a string"
+  ],
+  "review-corrected": [
+    "assumption_review entry 1: corrected needs a reason",
+    "assumption_review entry 1: corrected needs corrected_text",
+    "assumption_review entry 1: reviewed_at must be an ISO timestamp with timezone"
+  ],
+  "review-discarded": [
+    "assumption_review entry 1: discarded needs a reason",
+    "assumption_review entry 1: reviewed_at must be an ISO timestamp with timezone"
+  ],
+  "review-unreviewed": [
+    "assumption_review entry 1: unreviewed fields must be empty"
+  ],
+  "review-timestamp": [
+    "assumption_review entry 1: reviewed_at must be an ISO timestamp with timezone"
+  ],
+  "fact-object": [
+    "open_facts entry 1: must be an object"
+  ],
+  "fact-required": [
+    "open_facts entry 1: id must be a non-empty string",
+    "open_facts entry 1: question must be a non-empty string",
+    "open_facts entry 1: why_needed must be a non-empty string",
+    "open_facts entry 1: answer must be a string",
+    "open_facts entry 1: answered_at must be a string",
+    "open_facts entry 1: status must be open|answered"
+  ],
+  "fact-strings": [
+    "open_facts entry 1 (F1): answer must be a string",
+    "open_facts entry 1 (F1): answered_at must be a string"
+  ],
+  "fact-answered": [
+    "open_facts entry 1 (F1): answered needs answer and ISO answered_at with timezone"
+  ],
+  "fact-open": [
+    "open_facts entry 1 (F1): open answer and answered_at must be empty"
+  ],
+  "fact-status": [
+    "open_facts entry 1 (F1): status must be open|answered"
+  ],
+  "fact-duplicate": [
+    "open_facts entry 2 (F1): duplicate id"
+  ],
+  "path-empty": [
+    "Markdown: markdownPath must be a non-empty path"
+  ],
+  "path-unreadable": [
+    "Markdown pair.md: unreadable"
+  ],
+  "markdown-assumption-section": [
+    "Markdown: expected exactly one ## Definierte Annahmen section"
+  ],
+  "markdown-fact-section": [
+    "Markdown: expected exactly one ## Offene Fakten section"
+  ],
+  "markdown-duplicate-section": [
+    "Markdown: expected exactly one ## Definierte Annahmen section"
+  ],
+  "markdown-assumption-count": [
+    "assumption_review Markdown: assumption line count disagrees"
+  ],
+  "markdown-assumption-marker": [
+    "assumption_review entry 1: Markdown text or review marker disagrees"
+  ],
+  "markdown-assumption-text": [
+    "assumption_review entry 1: Markdown text or review marker disagrees"
+  ],
+  "markdown-fact-count": [
+    "open_facts Markdown: fact line count disagrees"
+  ],
+  "markdown-fact-marker": [
+    "open_facts entry 1 (F1): Markdown disagrees"
+  ]
+}

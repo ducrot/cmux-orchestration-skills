@@ -7,13 +7,46 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
+
+
+@dataclass(frozen=True)
+class ReviewList:
+    """Names and Markdown syntax for one ordered list and its review entries."""
+
+    name: str
+    texts_name: str
+    item_name: str
+    heading: str
+    entry_marker: str = "{index}. "
+    marker: str = "Prüfung"
+
+    @property
+    def entry_pattern(self) -> str:
+        return re.escape(self.entry_marker).replace(re.escape("{index}"), r"\d+")
+
+
+ASSUMPTION_REVIEW = ReviewList(
+    name="assumption_review", texts_name="assumptions", item_name="assumption",
+    heading="Definierte Annahmen",
+)
 
 
 REVIEW_LABELS = {
     "unreviewed": "ungeprüft", "confirmed": "bestätigt",
     "corrected": "korrigiert", "discarded": "verworfen",
 }
+
+
+def review_line_prefix(text: str, index: int, review_list: ReviewList) -> str:
+    return f"{review_list.entry_marker.format(index=index)}{text} [{review_list.marker}: "
+
+
+def render_review(text: str, review: dict, review_list: ReviewList) -> str:
+    """Render a recorded review as the single Markdown line to transcribe."""
+    return (review_line_prefix(text, review["index"], review_list)
+            + json.dumps(review_marker(review), ensure_ascii=False) + "]")
 
 
 def review_marker(review: dict) -> dict:
@@ -46,13 +79,13 @@ def timestamp(value: object) -> bool:
         return False
 
 
-def validate_review(review: object, index: int) -> list[str]:
-    prefix = f"assumption_review entry {index}"
+def validate_review(review: object, index: int, review_list: ReviewList = ASSUMPTION_REVIEW) -> list[str]:
+    prefix = f"{review_list.name} entry {index}"
     if not isinstance(review, dict):
         return [f"{prefix}: must be an object"]
     problems = []
     if type(review.get("index")) is not int or review["index"] != index:
-        problems.append(f"{prefix}: index must be {index} (one-based, in assumption order)")
+        problems.append(f"{prefix}: index must be {index} (one-based, in {review_list.item_name} order)")
     outcome = review.get("outcome")
     if not isinstance(outcome, str) or outcome not in REVIEW_LABELS:
         problems.append(f"{prefix}: unknown outcome")
@@ -67,6 +100,41 @@ def validate_review(review: object, index: int) -> list[str]:
             problems.append(f"{prefix}: unreviewed fields must be empty")
     elif not timestamp(review.get("reviewed_at")):
         problems.append(f"{prefix}: reviewed_at must be an ISO timestamp with timezone")
+    return problems
+
+
+def validate_review_list(data: dict, review_list: ReviewList) -> list[str]:
+    """Validate the texts and one ordered review entry per text."""
+    problems = [f"{name}: must be a list" for name in (review_list.texts_name, review_list.name)
+                if not isinstance(data.get(name), list)]
+    if problems:
+        return problems
+    texts, reviews = data[review_list.texts_name], data[review_list.name]
+    if len(reviews) != len(texts):
+        problems.append(f"{review_list.name}: length must match {review_list.texts_name} "
+                        f"(one entry per {review_list.item_name})")
+    for index, text in enumerate(texts, 1):
+        if not single_line(text):
+            problems.append(f"{review_list.texts_name} entry {index}: must be a non-empty single-line string")
+    for index, review in enumerate(reviews, 1):
+        problems += validate_review(review, index, review_list)
+    return problems
+
+
+def review_lines(markdown: str, review_list: ReviewList) -> list[str]:
+    return section_lines(markdown, review_list.heading, review_list.entry_pattern)
+
+
+def validate_review_markdown(lines: list[str], texts: list[str], reviews: list[dict],
+                             review_list: ReviewList) -> list[str]:
+    """Compare Markdown to an already validated named review list."""
+    problems = []
+    if len(lines) != len(texts):
+        problems.append(f"{review_list.name} Markdown: {review_list.item_name} line count disagrees")
+    for index, (line, text, review) in enumerate(zip(lines, texts, reviews), 1):
+        prefix = review_line_prefix(text, index, review_list)
+        if not (line.startswith(prefix) and line.endswith("]") and json_equals(line[len(prefix):-1], review_marker(review))):
+            problems.append(f"{review_list.name} entry {index}: Markdown text or review marker disagrees")
     return problems
 
 
@@ -95,13 +163,7 @@ def validate_extension(data: dict, markdown: str) -> list[str]:
     if problems:
         return problems
     assumptions, reviews, facts = data["assumptions"], data["assumption_review"], data["open_facts"]
-    if len(reviews) != len(assumptions):
-        problems.append("assumption_review: length must match assumptions (one entry per assumption)")
-    for index, text in enumerate(assumptions, 1):
-        if not single_line(text):
-            problems.append(f"assumptions entry {index}: must be a non-empty single-line string")
-    for index, review in enumerate(reviews, 1):
-        problems += validate_review(review, index)
+    problems += validate_review_list(data, ASSUMPTION_REVIEW)
     seen = set()
     for index, fact in enumerate(facts, 1):
         prefix = f"open_facts entry {index}"
@@ -117,16 +179,11 @@ def validate_extension(data: dict, markdown: str) -> list[str]:
     if problems:
         return problems
     try:
-        assumption_lines = section_lines(markdown, "Definierte Annahmen", r"\d+\. ")
+        assumption_lines = review_lines(markdown, ASSUMPTION_REVIEW)
         fact_lines = section_lines(markdown, "Offene Fakten", r"- ")
     except ValueError as error:
         return [str(error)]
-    if len(assumption_lines) != len(assumptions):
-        problems.append("assumption_review Markdown: assumption line count disagrees")
-    for index, (line, text, review) in enumerate(zip(assumption_lines, assumptions, reviews), 1):
-        prefix = f"{index}. {text} [Prüfung: "
-        if not (line.startswith(prefix) and line.endswith("]") and json_equals(line[len(prefix):-1], review_marker(review))):
-            problems.append(f"assumption_review entry {index}: Markdown text or review marker disagrees")
+    problems += validate_review_markdown(assumption_lines, assumptions, reviews, ASSUMPTION_REVIEW)
     if len(fact_lines) != len(facts):
         problems.append("open_facts Markdown: fact line count disagrees")
     for index, (line, fact) in enumerate(zip(fact_lines, facts), 1):
