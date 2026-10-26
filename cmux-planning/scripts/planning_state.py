@@ -115,6 +115,7 @@ from tracker_contract import (
     ascii_fold,
     stage_native_tracker,
     ticket_modes,
+    ticket_phases,
     validate_native_tracker,
     validate_proposal,
     validate_ticket_author_report,
@@ -2292,6 +2293,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
                 expected_ticket_ids=proposal["ticket_ids"],
                 expected_ticket_modes=ticket_modes(proposal),
                 expected_ticket_slice_types={ticket["id"]: ticket["slice_type"] for ticket in proposal["tickets"]},
+                expected_ticket_phases=ticket_phases(proposal),
             )
         except Exception as error:
             append_event(

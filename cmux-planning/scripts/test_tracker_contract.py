@@ -101,6 +101,17 @@ def with_execution_modes(data: dict, modes) -> dict:
     return data
 
 
+def wide_proposal(spec: Path) -> dict:
+    return proposal(spec, [
+        ticket(
+            f"ISSUE-{index:03}", f"Deliver {phase} phase", f"The {phase} phase works",
+            blocked_by=[f"ISSUE-{index - 1:03}"] if index > 1 else [],
+            slice_type="wide-refactor", phase=phase,
+        )
+        for index, phase in enumerate(("expand", "migrate", "contract"), start=1)
+    ])
+
+
 def with_slice_types(data: dict, slice_types) -> dict:
     for item, slice_type in zip(data["tickets"], slice_types, strict=True):
         item["slice_type"] = slice_type
@@ -763,6 +774,70 @@ sha256 {resulting}
         with patch("tracker_contract.render_issue", side_effect=wrong_mode):
             with self.assertRaisesRegex(ContractError, "execution mode"):
                 stage_native_tracker(self.root / "wrong", result, approved_spec=self.spec)
+
+    def test_staging_rejects_wrong_or_missing_approved_wide_refactor_phase(self):
+        result = self.write_proposal(wide_proposal(self.spec))
+        for item in result["tickets"]:
+            phase_line = f"wide_refactor_phase: {item['wide_refactor']['phase']}\n"
+            for kind, replacement in (("wrong", "wide_refactor_phase: integration\n"), ("missing", "")):
+                with self.subTest(issue=item["id"], kind=kind):
+                    def changed_phase(rendered):
+                        text = render_issue(rendered)
+                        return text.replace(phase_line, replacement) if rendered["id"] == item["id"] else text
+                    with patch("tracker_contract.render_issue", side_effect=changed_phase):
+                        with self.assertRaisesRegex(
+                            ContractError, rf"{item['id']}-.*\.md.*wide_refactor_phase.*approved"
+                        ):
+                            stage_native_tracker(
+                                self.root / f"{item['id']}-{kind}", result, approved_spec=self.spec
+                            )
+
+    def test_staging_accepts_padded_approved_wide_refactor_phase(self):
+        data = wide_proposal(self.spec)
+        data["tickets"][0]["wide_refactor"]["phase"] = " expand "
+        result = self.write_proposal(data)
+        self.assertEqual(result["tickets"][0]["wide_refactor"]["phase"], "expand")
+        stage_native_tracker(self.root / "padded", result, approved_spec=self.spec)
+
+    def test_unrecorded_staging_checks_approved_wide_refactor_phase_through_cli(self):
+        from test_planning_flow import PlanningFlow, file_contents
+        flow = PlanningFlow()
+        flow.setUp()
+        try:
+            original_handoff = flow.write_tickets_handoff
+            def handoff():
+                state = json.loads((flow.run_dir / "state.json").read_text())
+                return original_handoff(data=wide_proposal(Path(state["approved_spec"]["path"])))
+            with patch.object(flow, "write_tickets_handoff", side_effect=handoff):
+                result = flow.reach_ticket_approval()
+            state = json.loads((flow.run_dir / "state.json").read_text())
+            self.assertIsNone(state["staged_tracker"])
+            staged = flow.run_dir / "publication-stage"
+            stage_native_tracker(staged, result, approved_spec=Path(state["approved_spec"]["path"]))
+            issue = next((staged / "issues").glob("ISSUE-001-*.md"))
+            original = issue.read_text()
+            target = flow.repo / "trackers" / result["tracker"]["slug"]
+            # Failing kinds leave the run untouched, so they share one flow; the correct kind approves and runs last.
+            for kind, replacement in (
+                ("wrong", "wide_refactor_phase: migrate\n"), ("missing", ""), ("correct", "wide_refactor_phase: expand\n")
+            ):
+                with self.subTest(kind=kind):
+                    issue.write_text(original.replace("wide_refactor_phase: expand\n", replacement))
+                    staged_bytes = file_contents(staged)
+                    approved = flow.ticket_approval("approve", "Check recovered phase", target=target)
+                    if kind == "correct":
+                        self.assertEqual(approved.returncode, 0, approved.stderr)
+                    else:
+                        self.assertNotEqual(approved.returncode, 0)
+                        self.assertIn(issue.name, approved.stderr)
+                        self.assertIn("wide_refactor_phase differs from approved", approved.stderr)
+                        state = json.loads((flow.run_dir / "state.json").read_text())
+                        self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
+                        self.assertIsNone(state["staged_tracker"])
+                    self.assertFalse(target.exists())
+                    self.assertEqual(staged_bytes, file_contents(staged))
+        finally:
+            flow.tearDown()
 
     def test_v1_and_v2_afk_produce_identical_output_bytes(self):
         expected = {

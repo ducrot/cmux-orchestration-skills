@@ -248,12 +248,13 @@ def validate_proposal(
                 raise ContractError(f"{issue_id} must use the expand-migrate-contract sequence")
             integration_reason = details["integration_reason"]
             if phase == "integration":
-                _text(integration_reason, f"{issue_id}.wide_refactor.integration_reason")
+                integration_reason = _text(integration_reason, f"{issue_id}.wide_refactor.integration_reason")
             elif integration_reason is not None:
                 raise ContractError(
                     f"{issue_id} may set integration_reason only for an integration exception"
                 )
             wide[phase].append(issue_id)
+            wide_refactor = {**details, "phase": phase, "integration_reason": integration_reason}
         blockers[issue_id] = ticket_blockers
         forbidden_sizing_text.extend([ticket_title, delivered, *criteria, rationale, *layers])
         tickets.append(
@@ -270,6 +271,7 @@ def validate_proposal(
                 "blocked_by": ticket_blockers,
                 "merge_split_rationale": rationale,
                 "technical_layers": layers,
+                "wide_refactor": wide_refactor,
             }
         )
 
@@ -528,6 +530,13 @@ def ticket_modes(proposal: dict[str, Any]) -> dict[str, str]:
     return {ticket["id"]: ticket["execution_mode"] for ticket in proposal["tickets"]}
 
 
+def ticket_phases(proposal: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        ticket["id"]: ticket["wide_refactor"]["phase"] if ticket["wide_refactor"] else None
+        for ticket in proposal["tickets"]
+    }
+
+
 def render_issue(ticket: dict[str, Any]) -> str:
     mode = ticket["execution_mode"]
     title = ticket["title"].replace('"', "'")
@@ -620,6 +629,7 @@ def stage_native_tracker(
         expected_ticket_ids=proposal["ticket_ids"],
         expected_ticket_modes=ticket_modes(proposal),
         expected_ticket_slice_types={ticket["id"]: ticket["slice_type"] for ticket in proposal["tickets"]},
+        expected_ticket_phases=ticket_phases(proposal),
     )
 
 
@@ -651,6 +661,7 @@ def validate_native_tracker(
     expected_ticket_ids: list[str] | None = None,
     expected_ticket_modes: dict[str, str] | None = None,
     expected_ticket_slice_types: dict[str, str] | None = None,
+    expected_ticket_phases: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     if not tracker.is_dir():
         raise ContractError(f"native tracker directory is missing: {tracker}")
@@ -731,6 +742,10 @@ def validate_native_tracker(
                 raise ContractError(f"{path.name} wide_refactor_phase must be expand, migrate, contract, or integration")
         if expected_ticket_slice_types is not None and expected_ticket_slice_types.get(issue_id) != slice_type:
             raise ContractError(f"{path.name} slice type differs from approved ticket slice type")
+        if expected_ticket_phases is not None and (
+            expected_ticket_phases.get(issue_id) != frontmatter.get("wide_refactor_phase")
+        ):
+            raise ContractError(f"{path.name} wide_refactor_phase differs from approved ticket phase")
         parsed = sections(body)
         for heading in ("What to build", "Acceptance Criteria", "Blocked by"):
             if not parsed.get(heading, "").strip():
