@@ -123,6 +123,14 @@ LABELS = {
         "questions": "Questions",
         "questions_value": "{asked} in {rounds} of {budget} rounds · stop: {reason}",
         "assumptions": "Assumptions",
+        "unreviewed_count": ", {count} unreviewed",
+        "open_facts": "Open facts",
+        "finish_review": "finish the outstanding review: {unreviewed}, {facts}",
+        "unreviewed_assumptions": "{count} unreviewed assumptions",
+        "unreviewed_assumption_one": "1 unreviewed assumption",
+        "open_facts_count": "{count} open facts",
+        "open_fact_one": "1 open fact",
+        "planning_revalidation": "Planning revalidates every assumption and treats open facts as missing information.",
         "decisions": "decisions",
         "decided": "decided",
         "deferred": "deferred",
@@ -217,6 +225,14 @@ LABELS = {
         "questions": "Fragen",
         "questions_value": "{asked} in {rounds} von {budget} Runden · Stop: {reason}",
         "assumptions": "Annahmen",
+        "unreviewed_count": ", {count} ungeprüft",
+        "open_facts": "Offene Fakten",
+        "finish_review": "ausstehende Prüfung abschließen: {unreviewed}, {facts}",
+        "unreviewed_assumptions": "{count} ungeprüfte Annahmen",
+        "unreviewed_assumption_one": "1 ungeprüfte Annahme",
+        "open_facts_count": "{count} offene Fakten",
+        "open_fact_one": "1 offener Fakt",
+        "planning_revalidation": "Planning revalidiert jede Annahme und behandelt offene Fakten als fehlende Informationen.",
         "decisions": "Entscheidungen",
         "decided": "entschieden",
         "deferred": "zurückgestellt",
@@ -631,6 +647,18 @@ def planning_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
     return lines
 
 
+def grilling_review_counts(artifact: Any) -> tuple[int, int] | None:
+    """Keep legacy recap text unchanged when neither review list is present."""
+    if not isinstance(artifact, dict) or not ({"assumption_review", "open_facts"} & artifact.keys()):
+        return None
+    def count(field: str, key: str, value: str) -> int:
+        items = artifact.get(field)
+        return sum(1 for entry in (items if isinstance(items, list) else [])
+                   if isinstance(entry, dict) and entry.get(key) == value)
+
+    return count("assumption_review", "outcome", "unreviewed"), count("open_facts", "status", "open")
+
+
 def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: dict[str, str]) -> list[str]:
     lines = [f"- {labels['outcome']}: {{{{outcome}}}}"]
     deliverables = state.get("deliverables") or {}
@@ -653,9 +681,13 @@ def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
             f"{sum(1 for entry in decisions if entry.get('status') == status)} {labels[status]}"
             for status in DECISION_STATUSES
         )
+        review = grilling_review_counts(artifact)
+        unreviewed = labels["unreviewed_count"].format(count=review[0]) if review is not None else ""
         lines.append(
-            f"- {labels['assumptions']}: {len(artifact.get('assumptions') or [])} · {labels['decisions']}: {counts}"
+            f"- {labels['assumptions']}: {len(artifact.get('assumptions') or [])}{unreviewed} · {labels['decisions']}: {counts}"
         )
+        if review is not None:
+            lines.append(f"- {labels['open_facts']}: {review[1]}")
     if deliverables:
         paths = ", ".join(f"`{display_path(deliverables[key])}`" for key in ("markdown", "json") if key in deliverables)
         lines.append(f"- {labels['artifacts']}: {paths}")
@@ -734,9 +766,21 @@ def next_step_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
     if still_open:
         template = labels["resolve_decision_one"] if still_open == 1 else labels["resolve_decisions"]
         return [f"- {labels['next']}: {template.format(count=still_open)}"]
-    return [f"- {labels['next']}: {labels['plan_from'].format(path=display_path(json_path))}"] + prompt_block(
-        state, None, labels
-    )
+    planning = labels["plan_from"].format(path=display_path(json_path))
+    review = grilling_review_counts(artifact)
+    if review is None or not any(review):
+        return [f"- {labels['next']}: {planning}"] + prompt_block(state, None, labels)
+    return [
+        f"- {labels['next']}: " + labels["finish_review"].format(
+            unreviewed=counted(labels, "unreviewed_assumption_one", "unreviewed_assumptions", review[0]),
+            facts=counted(labels, "open_fact_one", "open_facts_count", review[1]),
+        ),
+        f"- {planning}",
+    ] + prompt_block(state, None, labels) + [labels["planning_revalidation"]]
+
+
+def counted(labels: dict[str, str], one: str, many: str, count: int) -> str:
+    return labels[one] if count == 1 else labels[many].format(count=count)
 
 
 def prompt_block(state: dict[str, Any], issue: dict[str, Any] | None, labels: dict[str, str]) -> list[str]:

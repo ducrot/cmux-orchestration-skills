@@ -7,6 +7,19 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_final_message_preserves_review_status_and_human_handoff_choice(self):
+        text = " ".join((SKILL_DIR / "SKILL.md").read_text().split())
+        review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]
+        recap = text.split("## Run Recap", 1)[1].split("## Worker input readiness", 1)[0]
+        for section in (review, recap):
+            for phrase in ("unreviewed count in the final message", "technically finished with review outstanding",
+                           "not complete", "choice", "finishing the review and continuing in planning", "human"):
+                with self.subTest(phrase=phrase, review=section is review):
+                    self.assertIn(phrase, section)
+        for phrase in ("recommends finishing", "with counts", "/cmux-planning <artifact.json>",
+                       "Planning revalidates every assumption and treats open facts as missing information"):
+            self.assertIn(phrase, recap)
+
     def test_resume_reports_the_whole_unfinished_walkthrough(self):
         text = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
         for phrase in ("key=value", "newest artifact", "one-based indexes", "comma-separated",

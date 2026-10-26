@@ -560,8 +560,11 @@ after transcription and before the commit proposal and recap, including on a res
 Repair interrupted transcription from recorded outcomes in `assumption_review` before presenting
 the pair as synchronized; render the lines from those records as described in the script reference,
 without recording the same answer again. The review stays advisory and non-blocking: unreviewed
-items are valid. Present it and stop; the decision may stay open until the
-human responds. Do not draft tracker issues from assumptions — handing results to
+items are valid. State the unreviewed count in the final message, and the open-fact count when
+facts are open. With outstanding review,
+describe the run as technically finished with review outstanding, not complete. Leave the choice
+between finishing the review and continuing in planning to the human. Present it and stop; the
+decision may stay open until the human responds. Do not draft tracker issues from assumptions — handing results to
 `cmux-issue-chain` is a human planning step, not part of this skill.
 
 ## Decision Walkthrough
@@ -642,13 +645,18 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 
 - `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json`,
   `events.jsonl`, and the artifact JSON: status (done, or halted at stage and decision), duration,
-  questions asked in the rounds run against the round budget and the stop reason, assumption count, decisions by status, the
-  artifact paths, the commit subject, and for a completed session the next step: resolving the
-  decisions still `open` in the walkthrough, or else planning with the artifact JSON, followed by a
-  prompt block with `/cmux-planning <artifact.json>`; additions from the grilling prompt are not
-  carried over. It never overwrites an existing recap.
+  questions asked against the round budget and stop reason, total and unreviewed assumption counts,
+  open facts, decisions by status, artifact paths, and commit subject. The next step resolves open
+  decisions first; otherwise, if assumptions are unreviewed or facts open, it recommends finishing
+  that review with counts, then offers planning with the artifact JSON and a prompt block
+  `/cmux-planning <artifact.json>`. Planning revalidates every assumption and treats open facts as
+  missing information. With nothing outstanding it offers planning directly. Legacy artifacts keep
+  their previous recap. Grilling prompt additions are not carried over; existing recaps are not overwritten.
 - Fill only `{{outcome}}`: one or two sentences on the key findings, or for a halted session what
-  stopped it and what the human has to decide. Neutral wording.
+  stopped it and what the human has to decide. State the unreviewed count in the final message,
+  and the open-fact count when facts are open.
+  With outstanding review, describe the run as technically finished with review outstanding, not
+  complete. Leave the choice between finishing the review and continuing in planning to the human.
 - `recap-show` refuses while the placeholder remains, prints the recap, records `run.recap`, and
   turns the sidebar pill into `✓ Grilling · <slug>` (green) or `<decision> · Grilling · <slug>` (red).
   `--clear-status` removes the pill instead, only when the human asks for it. Relay the printed recap

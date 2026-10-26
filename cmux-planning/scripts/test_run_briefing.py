@@ -465,6 +465,82 @@ class RunRecap(RunDirTestCase):
         self.assertIn("- Tracker: `.scratch/trackers/run-briefing` · 2 Issues, sofort startbar: ISSUE-001", text)
         self.assertIn("- Revisionen: Spec 1 · Tickets 0", text)
 
+    def test_grilling_review_states_both_languages_through_cli(self):
+        for lang in ("en", "de"):
+            for case, unreviewed, facts, decisions in (
+                ("decisions", 2, 2, 1),
+                ("review", 2, 2, 0),
+                ("assumptions", 2, 0, 0),
+                ("facts", 0, 2, 0),
+                ("singular", 1, 1, 0),
+                ("clear", 0, 0, 0),
+                ("empty", 0, 0, 0),
+                ("legacy", 0, 0, 0),
+            ):
+                with self.subTest(lang=lang, case=case):
+                    artifact = self.root / f"{lang}-{case}.json"
+                    total = 0 if case == "empty" else 5
+                    data = {
+                        "assumptions": ["a"] * total,
+                        "open_decisions": ([{"status": "open"}] * decisions
+                                           + [{"status": "decided"}, {"status": "deferred"}]),
+                    }
+                    if case != "legacy":
+                        data["assumption_review"] = [
+                            {"index": index + 1, "outcome": outcome}
+                            for index, outcome in enumerate((["unreviewed"] * unreviewed + ["confirmed"] * total)[:total])
+                        ]
+                        data["open_facts"] = ([{"status": "open"}] * facts
+                                              + [{"status": "answered"}])
+                    artifact.write_text(json.dumps(data))
+                    state = {**GRILLING_STATE, "run_id": f"{lang}-{case}", "current_stage": "done",
+                             "deliverables": {"json": str(artifact)}}
+                    run_dir = self.run_dir(state)
+                    text = self.recap(run_dir, lang)
+                    assumption_label = "Assumptions" if lang == "en" else "Annahmen"
+                    decision_counts = (f"decisions: 1 decided, 1 deferred, {decisions} open" if lang == "en"
+                                       else f"Entscheidungen: 1 entschieden, 1 zurückgestellt, {decisions} offen")
+                    review_count = (f", {unreviewed} unreviewed" if lang == "en"
+                                    else f", {unreviewed} ungeprüft") if case != "legacy" else ""
+                    self.assertIn(f"- {assumption_label}: {total}{review_count} · {decision_counts}\n", text)
+                    fact_label = "Open facts" if lang == "en" else "Offene Fakten"
+                    if case == "legacy":
+                        self.assertNotIn(fact_label, text)
+                    else:
+                        self.assertIn(f"- {fact_label}: {facts}\n", text)
+                    next_label = "Next step" if lang == "en" else "Nächster Schritt"
+                    plan = (f"planning with the grilling result `{artifact}`" if lang == "en"
+                            else f"Planning mit dem Grilling-Ergebnis `{artifact}`")
+                    if case == "singular":
+                        review = ("finish the outstanding review: 1 unreviewed assumption, 1 open fact"
+                                  if lang == "en" else
+                                  "ausstehende Prüfung abschließen: 1 ungeprüfte Annahme, 1 offener Fakt")
+                    else:
+                        review = (f"finish the outstanding review: {unreviewed} unreviewed assumptions, {facts} open facts"
+                                  if lang == "en" else
+                                  f"ausstehende Prüfung abschließen: {unreviewed} ungeprüfte Annahmen, {facts} offene Fakten")
+                    note = ("Planning revalidates every assumption and treats open facts as missing information."
+                            if lang == "en" else
+                            "Planning revalidiert jede Annahme und behandelt offene Fakten als fehlende Informationen.")
+                    if decisions:
+                        expected = ("resolve 1 open decision in the walkthrough" if lang == "en"
+                                    else "1 offene Entscheidung im Walkthrough klären")
+                        self.assertIn(f"- {next_label}: {expected}\n", text)
+                        self.assertNotIn("/cmux-planning", text)
+                        self.assertNotIn(review, text)
+                    else:
+                        self.assertIn(f"~~~\n/cmux-planning {artifact}\n~~~", text)
+                        if unreviewed or facts:
+                            self.assertIn(f"- {next_label}: {review}\n- {plan}\n", text)
+                            self.assertIn(note, text)
+                        else:
+                            self.assertIn(f"- {next_label}: {plan}\n", text)
+                            self.assertNotIn(note, text)
+                    self.fill_recap(run_dir)
+                    shown = self.call("recap-show", "--run-dir", str(run_dir), "--lang", lang, "--no-status")
+                    self.assertEqual(shown.returncode, 0, shown.stderr)
+                    self.assertEqual(shown.stdout, text.replace("{{outcome}}", "filled outcome"))
+
     def test_grilling_recap_reads_the_artifact(self):
         artifact = self.root / "grilling" / "briefing.json"
         artifact.parent.mkdir()
