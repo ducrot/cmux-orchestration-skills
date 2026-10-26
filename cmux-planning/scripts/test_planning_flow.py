@@ -720,7 +720,8 @@ class PlanningFlow(unittest.TestCase):
         )
         return payload
 
-    def render_and_baseline(self, stage: str, pass_num: int = 1, run_dir: Path | None = None) -> None:
+    def render_and_baseline(self, stage: str, pass_num: int = 1, run_dir: Path | None = None,
+                            *, check_rerender: bool = False) -> None:
         selected = run_dir or self.run_dir
         rendered = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -747,6 +748,12 @@ class PlanningFlow(unittest.TestCase):
             self.assertIn("`tracker.slug` must equal", prompt)
         baseline = self.cli(TREE, "baseline", "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        if check_rerender:
+            prompt_path = Path(state["current_attempt"]["paths"]["prompt"])
+            first_bytes = prompt_path.read_bytes()
+            repeated = self.cli(RENDER, "--run-dir", str(selected), "--stage", stage, "--pass", str(pass_num))
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(prompt_path.read_bytes(), first_bytes)
 
     def write_author_handoff(self, pass_num: int = 1, run_dir: Path | None = None) -> Path:
         selected = run_dir or self.run_dir
@@ -1004,9 +1011,10 @@ sha256 {resulting_digest or digest}
             args += ["--target", str(target)]
         return self.cli(STATE, *args)
 
-    def reach_ticket_approval(self, *, launch_panes: bool = False, execution_modes=None) -> dict:
+    def reach_ticket_approval(self, *, launch_panes: bool = False, execution_modes=None,
+                              check_rerender: bool = False) -> dict:
         self.approve_spec_to_tickets()
-        self.render_and_baseline("tickets")
+        self.render_and_baseline("tickets", check_rerender=check_rerender)
         author_prompt = (self.run_dir / "prompts" / "tickets-1.md").read_text()
         self.assertIn("Each slice cuts a narrow but COMPLETE path", author_prompt)
         self.assertIn("Never decompose by frontend, backend, database", author_prompt)
@@ -1024,7 +1032,7 @@ sha256 {resulting_digest or digest}
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "tickets-review")
         self.assertEqual(state["prepared_stage"]["stage"], "tickets-review")
-        self.render_and_baseline("tickets-review")
+        self.render_and_baseline("tickets-review", check_rerender=check_rerender)
         reviewer_prompt = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
         self.assertIn("Harness: codex\n", reviewer_prompt)
         self.assertIn(state["author_tickets"]["proposal_sha256"], reviewer_prompt)
@@ -1130,7 +1138,23 @@ sha256 {resulting_digest or digest}
                     self.assertIn("Trim to the decision-rich parts", prompt)
 
     def check_ticket_prompt_rules(self, language):
-        self.reach_ticket_approval()
+        prefactor_rules = (
+            "A prefactor is a behavior-preserving restructuring of product code.",
+            "Its own characterization tests belong inside the prefactor, never in a separate test-only ticket.",
+            "A ticket adding only tests, fixtures, or unreachable code is not a prefactor and not a valid slice; it is the first step of the first slice that needs it.",
+            "The expand and migrate tickets of a wide refactor are exempt from these unused-code and storage rules.",
+            "A changed shared representation or seam that several later slices depend on must be its own prefactor when the change can be made behavior-preserving.",
+            "Storage and entry points are created by the slice that first uses them; do not create them speculatively.",
+            "Verify it with existing tests plus its own characterization tests.",
+        )
+        reviewer_checks = (
+            "a mislabeled prefactor",
+            "a test-only, fixture-only, or unreachable-code ticket",
+            "a bundled representation change that should be its own behavior-preserving prefactor",
+            "speculative storage or entry points",
+            "For any such violation, return `blocked` with a concrete, reasoned re-slice in the Blockers section",
+        )
+        self.reach_ticket_approval(check_rerender=True)
         author = (self.run_dir / "prompts" / "tickets-1.md").read_text()
         reviewer = (self.run_dir / "prompts" / "tickets-review-1.md").read_text()
         steps = ["1. Read the approved specification", "2. Explore the repository",
@@ -1153,7 +1177,9 @@ sha256 {resulting_digest or digest}
                 self.assertIn("otherwise make it the first step of its slice", prompt)
                 self.assertIn("`slice_type: prefactor` and `wide_refactor: null`", prompt)
                 self.assertIn("preserved behavior and what it simplifies", prompt)
-                self.assertIn("Verify it with existing tests", prompt)
+                normalized = " ".join(prompt.split())
+                for rule in prefactor_rules:
+                    self.assertIn(rule, normalized)
                 self.assertIn("only exception to describing delivered behavior from the user's perspective", prompt)
                 self.assertIn("apart from\nthe mechanical tickets of a wide refactor", prompt)
                 self.assertIn("except for the standalone prefactor and wide-refactor tickets", prompt)
@@ -1171,6 +1197,13 @@ sha256 {resulting_digest or digest}
         self.assertIn("prefactoring first", reviewer)
         self.assertIn("no horizontal slices", reviewer)
         self.assertIn("dependency-ordered IDs", reviewer)
+        normalized_reviewer = " ".join(reviewer.split())
+        for check in reviewer_checks:
+            self.assertIn(check, normalized_reviewer)
+        for stage in ("spec", "spec-review"):
+            spec_prompt = " ".join((self.run_dir / "prompts" / f"{stage}-1.md").read_text().split())
+            for text in prefactor_rules + reviewer_checks:
+                self.assertNotIn(text, spec_prompt)
         # Author and reviewer must receive the same complete policy, not abbreviated variants.
         def section(prompt, heading, end):
             return prompt.split(f"## {heading}\n", 1)[1].split(f"## {end}", 1)[0]

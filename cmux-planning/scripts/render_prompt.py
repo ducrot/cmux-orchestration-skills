@@ -636,10 +636,20 @@ AFK ticket that works under those rules.
 
 Look for prefactoring: "make the change easy, then make the easy change." Create a standalone ticket
 when it prepares several slices or is substantial; otherwise make it the first step of its slice.
+A prefactor is a behavior-preserving restructuring of product code. Its own characterization tests
+belong inside the prefactor, never in a separate test-only ticket.
+A ticket adding only tests, fixtures, or unreachable code is not a prefactor and not a valid slice;
+it is the first step of the first slice that needs it.
+A changed shared representation or seam that several later slices depend on must be its own prefactor
+when the change can be made behavior-preserving.
 A standalone prefactor uses `slice_type: prefactor` and `wide_refactor: null`, comes before and blocks
 the benefiting slices. Its `delivered_behavior` describes preserved behavior and what it simplifies
-for the following slices. Verify it with existing tests. This is the only exception to describing delivered behavior from the user's perspective, apart from
+for the following slices. Verify it with existing tests plus its own characterization tests.
+This is the only exception to describing delivered behavior from the user's perspective, apart from
 the mechanical tickets of a wide refactor.
+
+Storage and entry points are created by the slice that first uses them; do not create them speculatively.
+The expand and migrate tickets of a wide refactor are exempt from these unused-code and storage rules.
 
 **Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand–contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there."""
 
@@ -914,8 +924,13 @@ no file paths or code snippets (except the documented handover-location, safety-
 and prototype exceptions), prefactoring first, no horizontal slices, dependency-ordered IDs, and a deliberate
 `execution_mode` without over-HITL or under-HITL. Verify the chosen
 artifact language, glossary and ADR alignment, narrow but complete behavior, justified merges and splits,
-existing-test verification for preserved prefactor behavior, and any wide-refactor sequence or integration
+existing tests plus the prefactor's own characterization tests for preserved behavior, and any wide-refactor sequence or integration
 exception against these rules and repository evidence. Prefactors must precede and block benefiting slices.
+Explicitly check for a mislabeled prefactor; a test-only, fixture-only, or unreachable-code ticket;
+a bundled representation change that should be its own behavior-preserving prefactor; and speculative
+storage or entry points. For any such violation, return `blocked` with a concrete, reasoned re-slice
+in the Blockers section through the verdict/report contract below. Do not repair ticket boundaries
+with `pass_with_fixes`.
 Check that every ticket creating rules, conventions, or configuration for agents blocks all affected
 AFK tickets.
 For a ticket above the soft size limit whose `merge_split_rationale` does not justify keeping it whole,

@@ -98,10 +98,10 @@ Every ticket states user-observable delivered behavior, stable acceptance criter
 technical context, and explicit merge/split rationale. Each slice is narrow but complete through every
 layer it needs and suits one fresh context. Do not default to layer, directory, file-type, test, or
 worker-specialty boundaries, and do not write token counts or estimates. A standalone prefactor uses
-`slice_type: prefactor`, describes preserved behavior verified by existing tests, and blocks the slices
-it prepares. Every blocker has a smaller ticket ID. Wide mechanical work that cannot land green as
-normal slices uses explicit expand, bounded migrate, and contract phases; a final integration exception
-requires a concrete reason.
+`slice_type: prefactor`, describes preserved behavior verified by existing tests plus its own
+characterization tests, and blocks the slices it prepares. Every blocker has a smaller ticket ID. Wide
+mechanical work that cannot land green as normal slices uses explicit expand, bounded migrate, and
+contract phases; a final integration exception requires a concrete reason.
 
 The tickets reviewer has the same three verdicts and intent boundary as the spec reviewer. A substantive
 scope, behavior, architecture, ticket-boundary, dependency, or approved-spec correction is `blocked`.
