@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from agents_config import ObjectWithDuplicates, duplicate_keys
+from grilling_review import validate_extension
 from orchestrator_lib import checkout_identity, read_json, sha256_bytes, sha256_file, utc_now, write_json
 from spec_contract import ContractError, sections
 
@@ -219,6 +220,9 @@ def validate_pair(
     except UnicodeDecodeError as error:
         raise GrillingInputError(f"grilling Markdown is not UTF-8: {error}") from error
     sections = markdown_sections(markdown)
+    problems = validate_extension(data, markdown)
+    if problems:
+        raise GrillingInputError("ambiguous grilling review/fact pair: " + "; ".join(problems))
     for assumption in data["assumptions"]:
         if assumption not in sections["Definierte Annahmen"]:
             raise GrillingInputError("Markdown assumptions do not unambiguously match the JSON pair")
@@ -316,7 +320,7 @@ def normalize_revalidation(
     digests = [sha256_file(path) for path in input_paths]
     now = utc_now()
     event_seed = json.dumps(outcomes, sort_keys=True).encode("utf-8") + now.encode("utf-8")
-    return {
+    normalized = {
         "schema_version": 1,
         "revalidated_at": now,
         "revalidation_event_id": "grilling-revalidated-" + sha256_bytes(event_seed)[:16],
@@ -339,6 +343,11 @@ def normalize_revalidation(
         "decisions": normalized_decisions,
         "evidence": copy.deepcopy(data["qa"]),
     }
+    if "assumption_review" in data:
+        for assumption, review in zip(assumptions, data["assumption_review"], strict=True):
+            assumption["grilling_review"] = copy.deepcopy(review)
+        normalized["open_facts"] = copy.deepcopy(data["open_facts"])
+    return normalized
 
 
 def build_parser() -> argparse.ArgumentParser:

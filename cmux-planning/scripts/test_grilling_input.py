@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -32,6 +35,29 @@ def decision(status: str = "open") -> dict:
     if status != "open":
         value["decision"] = "A"
     return value
+
+
+def extend_pair(data, markdown):
+    """New-format fixture, independently rendered from the grilling contract."""
+    data["assumption_review"] = [
+        {"index": i, "outcome": "unreviewed", "corrected_text": "", "reason": "", "reviewed_at": ""}
+        for i in range(1, len(data["assumptions"]) + 1)
+    ]
+    data["open_facts"] = [{"id": "F1", "question": "Which deployment?", "why_needed": "Select target",
+                           "status": "open", "answer": "", "answered_at": ""}]
+    render_extension(data, markdown)
+
+
+def render_extension(data, markdown):
+    labels = {"unreviewed": "ungeprüft", "confirmed": "bestätigt", "corrected": "korrigiert", "discarded": "verworfen"}
+    lines = []
+    for text, review in zip(data["assumptions"], data["assumption_review"]):
+        marker = {"Ergebnis": labels[review["outcome"]], "Korrektur": review["corrected_text"], "Grund": review["reason"]}
+        lines.append(f"{review['index']}. {text} [Prüfung: {json.dumps(marker, ensure_ascii=False)}]")
+    text = re.sub(r"(## Definierte Annahmen\n).*?(?=## )", lambda m: m[1] + "\n".join(lines) + "\n\n",
+                  markdown.read_text(), flags=re.S)
+    text = text.split("## Offene Fakten")[0]
+    markdown.write_text(text + "\n## Offene Fakten\n" + "\n".join("- " + json.dumps(f) for f in data["open_facts"]) + "\n")
 
 
 class GrillingPair(unittest.TestCase):
@@ -96,6 +122,56 @@ Welche Variante?
         self.assertEqual(imported["json_bytes"], self.artifact.read_bytes())
         self.assertEqual(imported["markdown_bytes"], self.markdown.read_bytes())
         self.assertEqual(imported["premise_corrections"], ["Alter Pfad wurde umbenannt."])
+
+    def test_new_pair_requires_fresh_human_outcomes_and_preserves_context(self):
+        extend_pair(self.data, self.markdown)
+        self.rewrite()
+        imported = validate_pair(self.artifact, self.markdown, self.repo)
+        outcomes = {"accepted": True, "premise_corrections": [{"index": 1, "outcome": "confirmed"}],
+                    "assumptions": [], "decisions": [{"id": "D1", "status": "open"}]}
+        with self.assertRaisesRegex(GrillingInputError, "assumption outcomes"):
+            normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        outcomes["assumptions"] = [{"index": i, "outcome": "confirmed"} for i in (1, 2)]
+        normalized = normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        self.assertEqual(normalized["schema_version"], 1)
+        self.assertEqual(normalized["open_facts"], self.data["open_facts"])
+        for entry, review in zip(normalized["assumptions"], self.data["assumption_review"]):
+            self.assertEqual(entry["grilling_review"], review)
+            self.assertEqual(entry["outcome"], "confirmed")
+
+    def test_new_pair_rejects_ambiguous_reviews_facts_and_markers(self):
+        extend_pair(self.data, self.markdown)
+        original = copy.deepcopy(self.data)
+        mutations = [
+            lambda d: d["assumption_review"].pop(),
+            lambda d: d["assumption_review"][0].update(index=2),
+            lambda d: d["assumption_review"][0].update(index=True),
+            lambda d: d["assumption_review"][0].update(outcome="unknown"),
+            lambda d: d["assumption_review"][0].update(outcome="discarded", reviewed_at="2026-10-26T12:00:00Z"),
+            lambda d: d["assumption_review"][0].update(outcome="corrected", reason="Why", reviewed_at="2026-10-26T12:00:00Z"),
+            lambda d: d["open_facts"][0].update(question=""),
+            lambda d: d["open_facts"].append(copy.deepcopy(d["open_facts"][0])),
+            lambda d: d.pop("open_facts"),
+        ]
+        for mutate in mutations:
+            self.data = copy.deepcopy(original)
+            mutate(self.data)
+            self.rewrite()
+            with self.subTest(data=self.data), self.assertRaisesRegex(GrillingInputError, "ambiguous"):
+                validate_pair(self.artifact, self.markdown, self.repo)
+        self.data = original
+        self.data["assumption_review"][0].update(outcome="corrected", corrected_text="Replacement", reason="Evidence",
+                                                  reviewed_at="2026-10-26T12:00:00Z")
+        self.rewrite()
+        render_extension(self.data, self.markdown)
+        valid_markdown = self.markdown.read_text()
+        validate_pair(self.artifact, self.markdown, self.repo)
+        for old, new in (("korrigiert", "bestätigt"), ("Replacement", "Wrong"), ("Evidence", "Wrong"),
+                         ('"question": "Which deployment?"', '"question": "Other?"'),
+                         ("Annahme eins", "Wrong assumption"), ("### D1", "### D12")):
+            self.markdown.write_text(valid_markdown.replace(old, new))
+            with self.subTest(marker=old), self.assertRaises(GrillingInputError):
+                validate_pair(self.artifact, self.markdown, self.repo)
 
     def test_missing_malformed_mismatched_and_ambiguous_pairs_stop(self):
         with self.subTest("missing markdown"):
@@ -227,6 +303,24 @@ Welche Variante?
             )
         )
 
+    def test_vendored_review_helpers_match_the_sibling_source(self):
+        sibling = Path(__file__).resolve().parents[2] / "cmux-grilling" / "scripts" / "artifact_pair.py"
+        if not sibling.is_file():
+            self.skipTest("cmux-grilling is absent from this independent installation")
+
+        def functions(path):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            return {node.name: ast.dump(node) for node in tree.body if isinstance(node, ast.FunctionDef)}
+
+        vendored = functions(Path(__file__).parent / "grilling_review.py")
+        upstream = functions(sibling)
+        # validate_extension differs on purpose: the sibling reads the Markdown from disk.
+        shared = sorted(set(vendored) & set(upstream) - {"validate_extension"})
+        self.assertIn("validate_review", shared)
+        for name in shared:
+            with self.subTest(function=name):
+                self.assertEqual(vendored[name], upstream[name])
+
     def test_pair_fixture_matches_the_sibling_decision_contract_without_runtime_imports(self):
         sibling = Path(__file__).resolve().parents[2] / "cmux-grilling" / "scripts" / "run_state.py"
         if not sibling.is_file():
@@ -234,15 +328,20 @@ Welche Variante?
         planning_runtime = (Path(__file__).parent / "grilling_input.py").read_text(encoding="utf-8")
         self.assertNotRegex(planning_runtime, r"(?:from|import)\s+cmux[-_]grilling")
         self.assertNotIn("/cmux-grilling", planning_runtime)
-        proc = subprocess.run(
-            [sys.executable, str(sibling), "validate-artifact", "--artifact", str(self.artifact)],
-            cwd=self.repo,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("open_decisions=1 valid", proc.stdout)
+        for new_form in (False, True):
+            if new_form:
+                extend_pair(self.data, self.markdown)
+                self.rewrite()
+            validate_pair(self.artifact, self.markdown, self.repo)
+            proc = subprocess.run(
+                [sys.executable, str(sibling), "validate-artifact", "--artifact", str(self.artifact)],
+                cwd=self.repo, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("open_decisions=1", proc.stdout)
+            self.assertIn("valid", proc.stdout)
+            if new_form:
+                self.assertIn("assumption_review=2 open_facts=1", proc.stdout)
 
 
 if __name__ == "__main__":

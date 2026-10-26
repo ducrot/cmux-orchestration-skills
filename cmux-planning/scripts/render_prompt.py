@@ -373,6 +373,8 @@ Harness: {snapshot['selected_worker']['harness']}
 
 Synthesize the supplied context into a repository-grounded specification. Do not interview the user.
 When information is genuinely missing, record it under `Open Decisions` instead of guessing.
+Recorded grilling reviews are context; the planning human outcomes govern assumptions. Treat unanswered
+open facts in the normalized handoff as missing information to record under `Open Decisions`.
 
 ## Process
 

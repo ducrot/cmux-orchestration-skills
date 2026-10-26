@@ -58,6 +58,12 @@ class OnDemandDocumentation(unittest.TestCase):
         "cmux-planning": ("## initialize", "## run one stage", "## gate the author and reviewer"),
     }
 
+    def test_grilling_revalidation_keeps_recorded_reviews_as_context(self):
+        text = normalized(PLANNING.parent / "references" / "grilling-revalidation.md")
+        for phrase in ("recorded grilling review outcome and value", "all open facts", "never pre-apply",
+                       "fresh human outcome for every assumption"):
+            self.assertIn(phrase, text)
+
     def test_entrypoints_reduce_start_context_by_at_least_thirty_percent(self):
         for guide in SIBLINGS:
             with self.subTest(skill=guide.parent.name):

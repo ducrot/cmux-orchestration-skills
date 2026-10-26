@@ -23,6 +23,7 @@ import orchestrator_lib  # noqa: E402
 from planning_state import PUBLISHING_COMMANDS  # noqa: E402
 from run_briefing import project_board, read_events  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
+from test_grilling_input import extend_pair, render_extension  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
 from test_tracker_contract import (  # noqa: E402
     proposal as tracker_proposal, with_execution_modes, with_slice_types,
@@ -4087,8 +4088,23 @@ Option?
         return artifact, markdown
 
     def test_grilling_input_requires_revalidation_and_normalizes_every_outcome(self):
+        self.check_grilling_revalidation()
+
+    def test_new_grilling_reviews_and_facts_are_context_through_planning_cli(self):
+        self.check_grilling_revalidation(new_form=True)
+
+    def check_grilling_revalidation(self, new_form=False):
         self.relative_cli_paths = True
         artifact, markdown = self.grilling_pair()
+        if new_form:
+            data = json.loads(artifact.read_text())
+            extend_pair(data, markdown)
+            for review, outcome in zip(data["assumption_review"], ("discarded", "corrected", "confirmed")):
+                review.update(outcome=outcome, reason="Grilling rationale", reviewed_at="2026-10-26T12:00:00Z")
+                if outcome == "corrected":
+                    review["corrected_text"] = "Earlier correction"
+            render_extension(data, markdown)
+            artifact.write_text(json.dumps(data))
         run_dir = self.runs / "plan-grilling"
         initialized = self.cli(
             STATE, "init", "--task-file", self.plan_file("Planung"),
@@ -4115,6 +4131,17 @@ Option?
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertIn("not freshness", shown.stdout)
         self.assertIn("Alte Benennung", shown.stdout)
+
+        if new_form:
+            view = json.loads(shown.stdout)
+            self.assertEqual([r["value"] for r in view["grilling_assumption_review"]],
+                             [None, "Earlier correction", "Drei"])
+            self.assertEqual(view["open_facts"], data["open_facts"])
+            missing = self.root / "missing.json"
+            missing.write_text(json.dumps({"accepted": True, "assumptions": []}))
+            incomplete = self.cli(STATE, "revalidate", "--run-dir", str(run_dir), "--outcomes", str(missing))
+            self.assertNotEqual(incomplete.returncode, 0)
+            self.assertIn("assumption outcomes", incomplete.stderr)
 
         refused_path = self.root / "refused.json"
         refused_path.write_text('{"accepted": false}', encoding="utf-8")
@@ -4152,9 +4179,18 @@ Option?
         self.assertEqual(normalized["assumptions"][1]["value"], "Zwei korrigiert")
         self.assertIsNone(normalized["assumptions"][2]["value"])
         self.assertEqual(normalized["decisions"][0]["status"], "decided")
+        if new_form:
+            self.assertEqual(normalized["schema_version"], 1)
+            self.assertEqual(normalized["open_facts"], data["open_facts"])
+            self.assertEqual([a["grilling_review"] for a in normalized["assumptions"]], data["assumption_review"])
+            self.assertEqual(normalized["assumptions"][0]["outcome"], "confirmed")
         rendered = self.cli(RENDER, "--run-dir", str(run_dir), "--stage", "spec", "--pass", "1")
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (run_dir / "prompts" / "spec-1.md").read_text()
+        if new_form:
+            self.assertIn("Earlier correction", prompt)
+            self.assertIn("Which deployment?", prompt)
+            self.assertIn("open facts in the normalized handoff as missing information to record under `Open Decisions`", prompt)
         self.assertIn("grilling-input.json", prompt)
         self.assertNotIn("inputs/grilling-source.json", prompt)
         (run_dir / "grilling-input.json").write_text("{}\n", encoding="utf-8")

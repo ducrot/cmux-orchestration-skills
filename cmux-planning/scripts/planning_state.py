@@ -57,6 +57,7 @@ from grilling_input import (
     parse_json_bytes,
     validate_pair,
 )
+from grilling_review import review_value, validate_extension
 from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     RUN_ID_RE,
@@ -1068,8 +1069,12 @@ def imported_from_state(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
         raise GrillingInputError("copied grilling JSON no longer matches its recorded digest")
     if sha256_bytes(markdown_bytes) != imported["source_markdown_sha256"]:
         raise GrillingInputError("copied grilling Markdown no longer matches its recorded digest")
+    data = parse_json_bytes(json_bytes, json_path)
+    problems = validate_extension(data, markdown_bytes.decode("utf-8"))
+    if problems:
+        raise GrillingInputError("ambiguous grilling review/fact pair: " + "; ".join(problems))
     return {
-        "data": parse_json_bytes(json_bytes, json_path),
+        "data": data,
         "json_path": Path(imported["source_json"]),
         "markdown_path": Path(imported["source_markdown"]),
         "json_bytes": json_bytes,
@@ -1101,25 +1106,26 @@ def show_revalidation(run_dir: Path) -> int:
             expected_path=relative,
         )
         recorded_outcomes = read_json(progress_path)
-    print(
-        json.dumps(
-            {
-                "freshness_notice": (
-                    "Structural/path/digest validation proves integrity, not freshness; "
-                    "the human must confirm applicability to this task and checkout."
-                ),
-                "artifact_task": data["task"],
-                "artifact_repository": data["codebasePath"],
-                "current_checkout": checkout_identity(Path(state["repository"])),
-                "premise_corrections": imported["premise_corrections"],
-                "assumptions": data["assumptions"],
-                "decisions": data["open_decisions"],
-                "recorded_outcomes": recorded_outcomes,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    view = {
+        "freshness_notice": (
+            "Structural/path/digest validation proves integrity, not freshness; "
+            "the human must confirm applicability to this task and checkout."
+        ),
+        "artifact_task": data["task"],
+        "artifact_repository": data["codebasePath"],
+        "current_checkout": checkout_identity(Path(state["repository"])),
+        "premise_corrections": imported["premise_corrections"],
+        "assumptions": data["assumptions"],
+        "decisions": data["open_decisions"],
+        "recorded_outcomes": recorded_outcomes,
+    }
+    if "assumption_review" in data:
+        view["grilling_assumption_review"] = [
+            {**review, "value": review_value(text, review)}
+            for text, review in zip(data["assumptions"], data["assumption_review"], strict=True)
+        ]
+        view["open_facts"] = data["open_facts"]
+    print(json.dumps(view, indent=2, sort_keys=True))
     return 0
 
 
