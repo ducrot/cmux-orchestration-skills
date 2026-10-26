@@ -61,6 +61,7 @@ NO_TRACKER_OUTPUT_DIR = f"{TRACKER_ROOT}/{GRILLING_DIRNAME}"
 # deliberately cannot close; an assumption is settled. Statuses are exhaustive.
 DECISION_STATUSES = ["open", "decided", "deferred"]
 DECISION_WHY_OPEN = ["product", "spec-deviation", "tie"]
+CUSTOM_DECISION_MARK = "[custom] "
 DECISION_REQUIRED_FIELDS = (
     "id",
     "question",
@@ -141,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     decision.add_argument("--artifact", required=True, help="Path to the artifact JSON holding open_decisions")
     decision.add_argument("--id", required=True, help='Decision id, e.g. "D1"')
     decision.add_argument("--status", choices=["decided", "deferred"], required=True)
-    decision.add_argument("--decision", required=True, help="What the human chose, or why it was deferred")
+    decision.add_argument("--decision", required=True, help="Selection traceability only: decided requires an exact option label or '[custom] <choice>'; deferred is free text. This does not prove the chosen option resolves missing facts")
 
     review = subparsers.add_parser("assumption-review", help="Record one human assumption review and print its Markdown line")
     review.add_argument("--run-dir", required=True)
@@ -633,6 +634,15 @@ def record_decision(args: argparse.Namespace) -> int:
     problems = validate_decision(entry)
     if problems:
         raise SystemExit(f"Decision {args.id} violates the schema: {'; '.join(problems)}")
+    if args.status == "decided":
+        labels = [option["label"] for option in entry["options"]]
+        custom = args.decision.startswith(CUSTOM_DECISION_MARK) and args.decision[len(CUSTOM_DECISION_MARK):].strip()
+        if args.decision not in labels and not custom:
+            raise SystemExit(
+                f"Decision {args.id}: selection traceability requires an exact option label "
+                f"(known labels: {', '.join(repr(label) for label in labels)}) "
+                "or '[custom] <non-empty choice>'"
+            )
     write_json(artifact_path, artifact)
     append_jsonl(
         Path(args.run_dir) / "events.jsonl",

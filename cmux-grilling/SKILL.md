@@ -580,6 +580,13 @@ time, in id order.
   `AskUserQuestion` has no timeout.
 - Questions and options in **German**, like the artifacts; this skill's own text stays
   English.
+- An option whose only content is "collect the missing facts first" is a deferral even
+  when it is the recommended option and even when the human selects it by label: record `deferred`,
+  name the facts, add each missing fact to `open_facts` in JSON and `## Offene Fakten` in Markdown
+  (both halves), then run `run_state.py validate-artifact`. Never record it as `decided`.
+- For `decided`, pass the exact option label from the JSON `options` (without the displayed
+  `(Empfohlen)` suffix) or `[custom] <choice>` to `--decision`.
+  This is selection traceability only; the orchestrator must apply the deferral rule above.
 - Record every answer with `run_state.py decision`, which writes `status`, `decision` and
   `decided_at` into the artifact JSON and emits `grill.decision_recorded`. It prints the
   `Ausgang` line back; collect those lines and transcribe them into the `## Entscheidungen`

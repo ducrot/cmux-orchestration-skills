@@ -8,6 +8,14 @@ python3 scripts/run_state.py assumption-review --run-dir <run-dir> --artifact <a
 python3 scripts/run_state.py pending-decisions
 ```
 
+`decision --status decided --decision` requires an exact option label from the JSON
+(no `(Empfohlen)` suffix) or the explicit `[custom] <non-empty choice>` mark. Unknown text is refused with the known labels and mark;
+`deferred` keeps free text. The existing `decision` field (and event data) stores the selected
+label or marked custom choice verbatim; the schema and event names stay unchanged.
+This check is selection traceability only: it does not prove the chosen option resolves missing facts.
+The orchestrator applies the walkthrough deferral rule, including when a recommended label only
+collects missing facts, records those facts in both halves, and validates the pair afterwards.
+
 `assumption-review` records one one-based assumption index: `--outcome confirmed`, `corrected`
 (requires `--corrected-text` and `--reason`), or `discarded` (requires `--reason`). It writes
 `index`, `outcome`, `corrected_text`, `reason`, and `reviewed_at` into `assumption_review` and

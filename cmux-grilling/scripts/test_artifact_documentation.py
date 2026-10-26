@@ -7,6 +7,21 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_walkthrough_deferral_rule_and_counterexample(self):
+        skill = (SKILL_DIR / "SKILL.md").read_text()
+        walkthrough = skill.split("## Decision Walkthrough", 1)[1].split("## Commit Proposal", 1)[0]
+        resume = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
+        for text in (walkthrough, resume):
+            for phrase in ("collect the missing facts first", "recommended option",
+                           "human selects it by label", "record `deferred`", "name the facts",
+                           "each missing fact", "open_facts", "both halves", "validate-artifact"):
+                with self.subTest(phrase=phrase, resume=text is resume):
+                    self.assertIn(phrase, text)
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        for phrase in ("selection traceability", "does not prove", "resolves missing facts",
+                       "[custom]", "exact option label", "free text", "decision"):
+            self.assertIn(phrase, reference)
+
     def test_review_recording_transcription_and_resume_contract(self):
         text = (SKILL_DIR / "SKILL.md").read_text()
         review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]

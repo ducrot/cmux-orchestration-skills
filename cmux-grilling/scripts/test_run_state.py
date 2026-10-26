@@ -262,7 +262,7 @@ class CompletionMapping(unittest.TestCase):
                 pending = fixture.run_state("pending-decisions", "--output-dir", str(output))
                 self.assertEqual(pending.returncode, 0, pending.stderr)
                 self.assertIn("D1", pending.stdout)
-                reopened = fixture.run_state("decision", "--run-dir", str(run_dir), "--artifact", str(artifact), "--id", "D1", "--status", "decided", "--decision", "Accepted")
+                reopened = fixture.run_state("decision", "--run-dir", str(run_dir), "--artifact", str(artifact), "--id", "D1", "--status", "decided", "--decision", "Ab 12 Jahren")
                 self.assertEqual(reopened.returncode, 0, reopened.stderr)
 
     def test_legacy_lifecycle_refuses_before_any_write(self):
@@ -374,6 +374,62 @@ class RecordDecision(unittest.TestCase):
         self.record(status="deferred", decision="später entscheiden")
         entry = json.loads(self.artifact.read_text(encoding="utf-8"))["open_decisions"][0]
         self.assertEqual(entry["status"], "deferred")
+
+    def test_unmatched_or_empty_custom_choice_is_refused_without_writes(self):
+        for choice in ("Unlisted choice", "[custom]", "[custom]   ", "Ab 12 Jahren plus more"):
+            with self.subTest(choice=choice):
+                before = self.artifact.read_bytes()
+                with self.assertRaises(SystemExit) as caught:
+                    self.record(decision=choice)
+                self.assertIn("Ab 12 Jahren", str(caught.exception))
+                self.assertIn("12 bis offen", str(caught.exception))
+                self.assertIn("[custom]", str(caught.exception))
+                self.assertEqual(self.artifact.read_bytes(), before)
+                self.assertFalse((self.run_dir / "events.jsonl").exists())
+
+    def test_explicit_custom_choice_preserves_choice_in_artifact_and_event(self):
+        choice = "[custom] Ab 14 Jahren"
+        self.assertIn(choice, self.record(decision=choice))
+        entry = json.loads(self.artifact.read_text())["open_decisions"][0]
+        self.assertEqual(entry["decision"], choice)
+        event = json.loads((self.run_dir / "events.jsonl").read_text())
+        self.assertEqual(event["data"]["decision"], choice)
+
+    def test_collect_the_missing_facts_first_counterexample_is_traceable_not_semantically_checked(self):
+        label = "collect the missing facts first"
+        options = [{"label": label, "implication": "Fakten zuerst"}, {"label": "Ab 12 Jahren", "implication": "Kürzer"}]
+        self.artifact.write_text(json.dumps({"run_id": "grill-x", "open_decisions": [valid_decision(options=options)]}))
+        self.record(decision=label)
+        entry = json.loads(self.artifact.read_text())["open_decisions"][0]
+        self.assertEqual((entry["status"], entry["decision"]), ("decided", label))
+
+    def test_other_presented_label_is_recorded_verbatim(self):
+        self.record(decision="12 bis offen")
+        entry = json.loads(self.artifact.read_text())["open_decisions"][0]
+        self.assertEqual(entry["decision"], "12 bis offen")
+
+    def test_cli_selection_traceability_help_and_recording(self):
+        command = [sys.executable, str(wave_tests.RUN_STATE)]
+        help_result = subprocess.run([*command, "decision", "--help"], capture_output=True, text=True)
+        help_text = " ".join(help_result.stdout.split())
+        for phrase in ("Selection traceability", "exact option label", "[custom]", "free text",
+                       "does not prove the chosen option resolves missing facts"):
+            self.assertIn(phrase, help_text)
+        for choice, accepted in (("Unlisted choice", False), ("12 bis offen", True)):
+            with self.subTest(choice=choice):
+                before = self.artifact.read_bytes()
+                result = subprocess.run([*command, "decision", "--run-dir", str(self.run_dir),
+                                         "--artifact", str(self.artifact), "--id", "D1",
+                                         "--status", "decided", "--decision", choice],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                if accepted:
+                    entry = json.loads(self.artifact.read_text())["open_decisions"][0]
+                    self.assertEqual((entry["status"], entry["decision"]), ("decided", choice))
+                    self.assertIn(f"Ausgang (decided): {choice}", result.stdout)
+                else:
+                    self.assertEqual(self.artifact.read_bytes(), before)
+                    self.assertFalse((self.run_dir / "events.jsonl").exists())
 
     def test_unknown_id_stops(self):
         with self.assertRaises(SystemExit) as caught:
