@@ -61,7 +61,9 @@ class CreateTestbed(unittest.TestCase):
         (self.project / '.gitignore').write_text('.scratch/\nignored.txt\n')
         (self.project / 'ignored.txt').write_text('keep project files even if ignored\n')
         for name in ('vendor/lib.php', '.scratch/secret', '.git/config', 'data/test.sqlite',
-                     'data/test.sqlite-wal', 'data/test.db', '.DS_Store', '._app.php'):
+                     'data/test.sqlite-wal', 'data/test.db', '.DS_Store', '._app.php',
+                     '.phpunit.cache/test-results', '.phpunit.result.cache',
+                     '.phpstan/resultCache.php'):
             path = self.project / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('excluded')

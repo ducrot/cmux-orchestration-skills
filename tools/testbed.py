@@ -4,8 +4,8 @@
 Sources are resolved beside this module's repository, independent of the current
 working directory. Preflight refuses nonempty or internal targets, unknown names,
 invalid worker fixtures, symlinks and reserved output paths before writing anything.
-Only project files (excluding dependencies, scratch, Git, SQLite and OS metadata),
-the unchanged worker fixture and the chosen docs/plan.md enter the copy. Content
+Only project files (excluding dependencies, scratch, Git, SQLite, check caches and OS
+metadata), the unchanged worker fixture and the chosen docs/plan.md enter the copy. Content
 and executable modes are verified before two deterministic, isolated Git commits.
 Existing files are never overwritten; failed copies are retained for inspection.
 Dependencies are installed without scripts or plugins, then the copy's identity
@@ -100,8 +100,9 @@ def regular_file(path: Path) -> tuple[bytes, bool]:
 
 def excluded(name: str) -> bool:
     lowered = name.lower()
-    return (name in {'.git', 'vendor', '.scratch', '.DS_Store', '__MACOSX', 'Thumbs.db',
-                     'Desktop.ini', '.Spotlight-V100', '.Trashes'}
+    return (name in {'.git', 'vendor', '.scratch', '.phpunit.cache', '.phpunit.result.cache',
+                     '.phpstan', '.DS_Store', '__MACOSX', 'Thumbs.db', 'Desktop.ini',
+                     '.Spotlight-V100', '.Trashes'}
             or name.startswith('._')
             or re.search(r'\.(?:sqlite\d*|db)(?:-(?:wal|shm|journal))?$', lowered) is not None)
 
