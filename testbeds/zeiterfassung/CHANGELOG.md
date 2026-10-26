@@ -24,10 +24,15 @@ The human baseline runs fill these lines with the creation tool's printed
 `Head commit` (the scenario copy's initial HEAD, before running a skill), and
 record run identity, skill state and observations in the matching evaluation list.
 
-- `01-partial-invoices` head commit: pending baseline run
-- `02-vat-rate` head commit: pending baseline run
-- `03-billed-entries-migration` head commit: pending baseline run
-- `04-e-invoice` head commit: pending baseline run
+- `01-partial-invoices` head commit: `9c54fb7bf2cb8391b9c319606c2a329291738087`
+- `02-vat-rate` head commit: `d7f2cf9b48e76252c6acbf5ba073b863e73b6434`
+- `03-billed-entries-migration` head commit: `0b12ba2ca45648ea680f0f71a999d8673d71d4b1`
+- `04-e-invoice` head commit: `48be0a642630d3780858c53428235d1edeec1789`
+
+All four copies share project commit `613932fd5190e591cfaef6512fd7b6c1afc3042e`,
+created at skill state `d7862dd`. Earlier copies created at `eabd32e` carried
+PHPUnit and PHPStan caches in their commits and were abandoned before any
+baseline result.
 
 Real-project cross-check run: pending; record the date, project reference, skill
 state, run identifier and observed differences here when performed.

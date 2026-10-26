@@ -19,7 +19,7 @@ This maintainer-only list evaluates planning for `03-billed-entries-migration`. 
 
 ## Results
 
-No runs recorded yet. Copy the empty record below for each execution; leave this template blank until a real run supplies evidence. Mark observations as met, missed or not exercised and link to the conversation, specification review, gate output, human decision and tracker. A run stopped at the billed-entry conflict can satisfy the blocker observation without having exercised migration ticket generation.
+Copy the empty record below for each execution; leave this template blank until a real run supplies evidence. Mark observations as met, missed or not exercised and link to the conversation, specification review, gate output, human decision and tracker. A run stopped at the billed-entry conflict can satisfy the blocker observation without having exercised migration ticket generation.
 
 ### Run record template
 
@@ -36,3 +36,25 @@ No runs recorded yet. Copy the empty record below for each execution; leave this
 - Evidence and notes:
 
 Record the creation tool's registry entry id and recorded `skill_state` verbatim, including any dirty marker. Keep the skill commit attributed by run/session date separate: it is not proof of the installed skill state. Preserve results per testbed version and link evidence for both the initial blocking review and any subsequent approved planning continuation.
+
+### Run 2026-10-26 (d7862dd)
+
+- Date: 2026-10-26
+- Testbed version: 1.0.0
+- Scenario: 03-billed-entries-migration
+- Registry entry id: 75053f7f-e008-4720-aa5f-9180c933d8ac
+- Recorded skill state: d7862dd
+- Date-attributed skill commit: 9df2a395 (2026-10-25), from `tools/orchestrator_usage.py` for session 7c88a82b (02:10–02:51Z)
+- Run identifier: plan-correct-billed-work-and-2026-10-26-0210
+- Observations met: 2 (gate output shown before the question), 4 (explicit HITL production ticket), 5 (dependency edges), 6 (no production work in AFK tickets), 7 (migration preservation and procedure)
+- Observations missed: 1 (billed-entry/issued-invoice conflict never reported as a blocker), 3 (tracker published on a correction policy the human never decided)
+- Observations not exercised: None
+- Evidence and notes:
+  - Obs 1 missed. `reports/spec-review-1.md` is `blocked`, but only on B1 recovery point, B2 production operator and B3 history access. The conflict with the lock rules is not raised. The reviewer instead endorses it: `Problem Statement` "compared ... billed-entry lock enforcement: accurately describes the correction"; F5 calls existing locks "relevant prior behavior". The spec author already decided the policy itself (`reports/spec-1.md`: README "Invoices cannot be edited" noted, no blocker). The approved `docs/correct-billed-work-and/spec.md` treats it as task-given ("Scope and rules fixed by the task file") and rewrites the README rule: "Its statement that invoices cannot be edited is revised to say that invoice positions change only through corrections of billed entries." `reports/spec-review-2.md` F3 only moves the separate-interface lock preservation under Assumptions.
+  - Obs 2 met. Transcript 7c88a82b, 02:22:43Z: "The independent spec review came back **blocked** (`gate=blocked`). Full gate output:" with all blockers, the recommendation verbatim and F1–F5 (abridged with "[...]"), then the B1–B3 AskUserQuestion at 02:22:49Z. Each option is marked "Drafted by the orchestrator". No question about the correction policy because the gate had none.
+  - Obs 3 missed. B1–B3 answers (cold copy first, final HITL ticket by the owner, console + API listing) are carried into spec pass 2. `spec-review-2.md`: "Interrupted-Pass Recovery Context ... B1, B2 and B3 ... are all retained". But the billed-entry policy was settled silently. Approval (02:37:32Z), tickets and publication went ahead. ISSUE-003 corrects billed entries and rewrites issued invoices, and ISSUE-004 rewrites the README invoice rule, without the human ever deciding it.
+  - Obs 4 met. `issues/ISSUE-006-...md` `type: HITL`: the user runs the README procedure on the actual file. Its criteria cover cold set and backup checksums, versions 1–4 to 1–5, integrity/foreign-key/row-count/totals/document comparisons, and resuming only after all checks. "a successful rollback is recovery evidence and does not complete this ticket" (tickets-review fix).
+  - Obs 5 met. ISSUE-006 is blocked by ISSUE-004 (README procedure) and ISSUE-005 (rehearsal). ISSUE-005 is blocked by 004, and 004 by 003 (implemented names). 001 and 002 are a ready frontier with no production dependency. No step afterwards needs the upgraded production database.
+  - Obs 6 met. Checked all of `map.md` and every issue. ISSUE-002/003 say "Tests use in-memory and temporary file databases only; no configured database is opened". ISSUE-005 says "All mutation happens on scratch copies ... the configured default database path of any checkout is never used". ISSUE-004 only documents the procedure.
+  - Obs 7 met. ISSUE-002 AC1 preserves IDs, numbers, positions, amounts and billed flags over two migrate runs. The initial state is an empty history from an additive version 5 (`spec.md` Assumptions). A third run causes no duplication (ISSUE-003). `spec.md` Further Notes: "an interrupted migration leaves the file at the previous version". The 10-step procedure covers configuration via `TIME_TRACKER_CONFIG`/default without starting the app, writer stop, cold copy with sidecars, single-file backup with restore proof, rehearsal on a copy versus production, verification, and rollback to the cold set with the recorded previous version.
+  - Human role was a supervising agent picking recommended options. Quiz: Fits/Correct/No change. Tracker published uncommitted to `docs/correct-billed-work-and/` (proposal mode).
