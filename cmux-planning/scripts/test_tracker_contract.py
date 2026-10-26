@@ -261,6 +261,44 @@ sha256 {self.spec_digest}
                 with self.assertRaisesRegex(ContractError, "wide_refactor to null"):
                     self.write_proposal(data)
 
+    def test_prefactor_without_a_later_dependent_is_rejected_by_module_and_cli(self):
+        for schema in (1, 2):
+            for orphan in ("ISSUE-001", "ISSUE-002"):
+                with self.subTest(schema=schema, orphan=orphan):
+                    data = proposal(self.spec)
+                    data["tickets"][0]["slice_type"] = "prefactor"
+                    if orphan == "ISSUE-001":
+                        data["tickets"][1]["blocked_by"] = []
+                    else:
+                        data["tickets"][1]["slice_type"] = "prefactor"
+                    if schema == 2:
+                        with_execution_modes(data, ("AFK", "HITL"))
+                    message = rf"{orphan}.*prefactor.*blocked_by.*later ticket"
+                    with self.assertRaisesRegex(ContractError, message):
+                        self.write_proposal(data)
+                    checked = self.proposal_cli()
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertRegex(checked.stderr, message)
+
+    def test_prefactor_with_a_later_dependent_accepts_either_proposal_order(self):
+        for schema in (1, 2):
+            for reverse in (False, True):
+                with self.subTest(schema=schema, reverse=reverse):
+                    data = proposal(self.spec)
+                    data["tickets"][0]["slice_type"] = "prefactor"
+                    if schema == 2:
+                        with_execution_modes(data, ("AFK", "HITL"))
+                    if reverse:
+                        data["tickets"].reverse()
+                    result = self.write_proposal(data)
+                    self.assertEqual(result["ready_frontier"], ["ISSUE-001"])
+                    self.assertEqual(result["tickets"], [
+                        {**item, "execution_mode": item.get("execution_mode", "AFK")}
+                        for item in data["tickets"]
+                    ])
+                    checked = self.proposal_cli()
+                    self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_blockers_must_have_lower_numbers_regardless_of_proposal_order(self):
         data = proposal(self.spec)
         data["tickets"].reverse()
@@ -354,11 +392,7 @@ sha256 {self.spec_digest}
             ("optional", None, 0), ("equal", "planned-feature", 0), ("different", "different-slug", 1),
         ):
             with self.subTest(case=case):
-                result = self.contract_cli(
-                    "proposal", str(self.proposal_path), "--spec", str(self.spec),
-                    "--spec-sha256", self.spec_digest,
-                    *(("--tracker-slug", expected) if expected else ()),
-                )
+                result = self.proposal_cli(*(("--tracker-slug", expected) if expected else ()))
                 self.assertEqual(result.returncode, returncode, result.stderr)
                 if returncode:
                     self.assertIn("tracker.slug must equal frozen", result.stderr)
@@ -367,6 +401,12 @@ sha256 {self.spec_digest}
         return subprocess.run(
             [sys.executable, str(SCRIPT_DIR / "tracker_contract.py"), *args],
             capture_output=True, text=True, timeout=30,
+        )
+
+    def proposal_cli(self, *args: str) -> subprocess.CompletedProcess:
+        return self.contract_cli(
+            "proposal", str(self.proposal_path), "--spec", str(self.spec),
+            "--spec-sha256", self.spec_digest, *args,
         )
 
     def test_review_report_cli_checks_frozen_slug_and_rejects_renamed_candidate(self):

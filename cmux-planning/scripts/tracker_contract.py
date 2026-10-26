@@ -278,6 +278,12 @@ def validate_proposal(
             # ISSUE-NNN is fixed-width, so string order is numeric order.
             if prerequisite >= issue_id:
                 raise ContractError(f"{issue_id} blocker {prerequisite} must have a lower number")
+    used_blockers = {prerequisite for prerequisites in blockers.values() for prerequisite in prerequisites}
+    for ticket in tickets:
+        if ticket["slice_type"] == "prefactor" and ticket["id"] not in used_blockers:
+            raise ContractError(
+                f"{ticket['id']} is a prefactor and must appear in blocked_by of at least one later ticket"
+            )
     if any(TOKEN_SIZING_RE.search(text) for text in forbidden_sizing_text):
         raise ContractError("ticket sizing must stay qualitative; proposal text may not give token counts")
 
