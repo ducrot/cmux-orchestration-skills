@@ -101,6 +101,16 @@ def with_execution_modes(data: dict, modes) -> dict:
     return data
 
 
+def with_slice_types(data: dict, slice_types) -> dict:
+    for item, slice_type in zip(data["tickets"], slice_types, strict=True):
+        item["slice_type"] = slice_type
+    return data
+
+
+def summary_headings(summary: str) -> list[str]:
+    return [line for line in summary.splitlines() if line.startswith("### ")]
+
+
 def mixed_proposal(spec: Path) -> dict:
     data = with_execution_modes(proposal(spec), ("AFK", "HITL"))
     for item in data["tickets"]:
@@ -179,9 +189,11 @@ sha256 {self.spec_digest}
 
         self.assertEqual(validated["gate"], "advance")
         summary = self.summary_path.read_text(encoding="utf-8")
-        self.assertIn("1. ISSUE-001", summary)
-        self.assertIn("Delivered behavior:", summary)
-        self.assertIn("Merge/split rationale:", summary)
+        baseline = (SCRIPT_DIR / "fixtures" / "vertical-summary.md").read_bytes()
+        self.assertEqual(
+            summary.encode("utf-8"),
+            baseline.replace(b"<spec-sha256>", self.spec_digest.encode("ascii")),
+        )
 
     def test_horizontal_decomposition_unknown_edges_cycles_and_quantitative_sizing_are_rejected(self):
         cases = []
@@ -207,6 +219,16 @@ sha256 {self.spec_digest}
                 path.write_text(json.dumps(data), encoding="utf-8")
                 with self.assertRaisesRegex(ContractError, message):
                     validate_proposal(path)
+
+    def test_summary_marks_prefactor_and_preserves_hitl_and_vertical_titles(self):
+        data = with_slice_types(
+            with_execution_modes(proposal(self.spec), ("HITL", "AFK")), ("prefactor", "vertical"),
+        )
+        self.assertEqual(
+            summary_headings(render_summary(self.write_proposal(data))),
+            ["### 1. ISSUE-001 — Deliver the first behavior [HITL] [prefactor]",
+             "### 2. ISSUE-002 — Build on the first behavior"],
+        )
 
     def test_wide_refactor_requires_expand_bounded_migrate_and_contract_sequence(self):
         tickets = [
@@ -236,8 +258,16 @@ sha256 {self.spec_digest}
         ]
         valid = self.write_proposal(proposal(self.spec, tickets))
         self.assertEqual(set(valid["wide_refactor"]), {"expand", "migrate", "contract"})
+        summary = render_summary(valid)
+        self.assertEqual(
+            summary_headings(summary),
+            ["### 1. ISSUE-001 — Expand compatibility [wide-refactor: expand]",
+             "### 2. ISSUE-002 — Migrate one bounded area [wide-refactor: migrate]",
+             "### 3. ISSUE-003 — Contract compatibility [wide-refactor: contract]"],
+        )
         tracker = self.root / "wide-tracker"
         stage_native_tracker(tracker, valid, approved_spec=self.spec)
+        self.assertEqual((tracker / "map.md").read_text(), summary)
         for issue in (tracker / "issues").glob("*.md"):
             text = issue.read_text()
             item = next(item for item in valid["tickets"] if item["id"] in issue.name)

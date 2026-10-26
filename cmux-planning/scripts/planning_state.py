@@ -2065,6 +2065,7 @@ def ticket_approval_view(run_dir: Path) -> int:
             {
                 "id": ticket["id"],
                 "execution_mode": ticket["execution_mode"],
+                "slice_type": ticket["slice_type"],
                 "title": ticket["title"],
                 "delivered_behavior": ticket["delivered_behavior"],
                 "acceptance_criteria": ticket["acceptance_criteria"],

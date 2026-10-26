@@ -344,10 +344,15 @@ def render_summary(proposal: dict[str, Any]) -> str:
     ]
     for number, ticket in enumerate(proposal["tickets"], 1):
         mode_marker = " [HITL]" if ticket["execution_mode"] == "HITL" else ""
+        slice_marker = ""
+        if ticket["slice_type"] == "prefactor":
+            slice_marker = " [prefactor]"
+        elif ticket["slice_type"] == "wide-refactor":
+            slice_marker = f" [wide-refactor: {ticket['wide_refactor']['phase']}]"
         blockers = ", ".join(ticket["blocked_by"]) or "None"
         lines.extend(
             [
-                f"### {number}. {ticket['id']} — {ticket['title']}{mode_marker}",
+                f"### {number}. {ticket['id']} — {ticket['title']}{mode_marker}{slice_marker}",
                 "",
                 f"Delivered behavior: {ticket['delivered_behavior']}",
                 "",

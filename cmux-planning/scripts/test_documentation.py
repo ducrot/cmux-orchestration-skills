@@ -127,6 +127,7 @@ class TicketApprovalQuizDocumentation(unittest.TestCase):
 
     def test_walkthrough_shows_human_work_before_the_quiz(self):
         self.assertIn("show each ticket's execution mode (afk or hitl)", self.approval)
+        self.assertIn("with slice type next to it", self.approval)
         self.assertIn("granularity and edges include the human work", self.approval)
         self.assertLess(self.approval.index("show each ticket's execution mode"),
                         self.approval.index("one `askuserquestion` with three"))

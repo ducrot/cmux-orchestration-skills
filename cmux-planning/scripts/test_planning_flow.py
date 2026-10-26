@@ -24,7 +24,9 @@ from planning_state import PUBLISHING_COMMANDS  # noqa: E402
 from run_briefing import project_board, read_events  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
-from test_tracker_contract import proposal as tracker_proposal, with_execution_modes  # noqa: E402
+from test_tracker_contract import (  # noqa: E402
+    proposal as tracker_proposal, with_execution_modes, with_slice_types,
+)
 from tracker_contract import render_summary, validate_proposal  # noqa: E402
 from tree_integrity import capture_tree, compare_tree  # noqa: E402
 
@@ -1012,7 +1014,7 @@ sha256 {resulting_digest or digest}
         return self.cli(STATE, *args)
 
     def reach_ticket_approval(self, *, launch_panes: bool = False, execution_modes=None,
-                              check_rerender: bool = False) -> dict:
+                              check_rerender: bool = False, slice_types=None) -> dict:
         self.approve_spec_to_tickets()
         self.render_and_baseline("tickets", check_rerender=check_rerender)
         author_prompt = (self.run_dir / "prompts" / "tickets-1.md").read_text()
@@ -1023,9 +1025,13 @@ sha256 {resulting_digest or digest}
         if launch_panes:
             self.launch_prepared_stage("tickets")
         data = None
-        if execution_modes is not None:
+        if execution_modes is not None or slice_types is not None:
             state = json.loads((self.run_dir / "state.json").read_text())
-            data = with_execution_modes(tracker_proposal(Path(state["approved_spec"]["path"])), execution_modes)
+            data = tracker_proposal(Path(state["approved_spec"]["path"]))
+            if execution_modes is not None:
+                with_execution_modes(data, execution_modes)
+            if slice_types is not None:
+                with_slice_types(data, slice_types)
         proposal_result = self.write_tickets_handoff() if data is None else self.write_tickets_handoff(data=data)
         accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
@@ -1289,13 +1295,19 @@ sha256 {resulting_digest or digest}
             for rule in ("their own HITL tickets", "over-HITL", "under-HITL"):
                 self.assertNotIn(rule, prompt, stage)
 
-    def test_ticket_approval_view_lists_every_execution_mode(self):
-        self.reach_ticket_approval(execution_modes=("AFK", "HITL"))
+    def test_ticket_approval_view_lists_every_execution_mode_and_slice_type(self):
+        self.reach_ticket_approval(
+            execution_modes=("AFK", "HITL"), slice_types=("prefactor", "vertical"),
+        )
         view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
         self.assertEqual(view.returncode, 0, view.stderr)
         tickets = json.loads(view.stdout)["tickets"]
-        self.assertEqual([(ticket["id"], ticket["execution_mode"]) for ticket in tickets],
-                         [("ISSUE-001", "AFK"), ("ISSUE-002", "HITL")])
+        self.assertEqual(
+            [(ticket["id"], ticket["execution_mode"], ticket["slice_type"], ticket["wide_refactor"])
+             for ticket in tickets],
+            [("ISSUE-001", "AFK", "prefactor", None),
+             ("ISSUE-002", "HITL", "vertical", None)],
+        )
 
     def test_all_four_prompts_disclose_unreadable_untracked_directory_exclusion(self):
         self.reach_ticket_approval()
