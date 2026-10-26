@@ -157,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pending = subparsers.add_parser(
         "pending-decisions",
-        help="Print unresolved decisions of the newest artifact. Resolves its directory like init",
+        help="Print pending decisions, assumption reviews and facts of the newest artifact. Resolves its directory like init",
     )
     pending.add_argument("--tracker", help="Tracker directory. Autodetected when omitted")
     pending.add_argument("--output-dir", help="Override the directory to look in")
@@ -722,35 +722,39 @@ def validate_artifact(args: argparse.Namespace) -> int:
     return 0
 
 
-def artifact_decisions(path: Path) -> list | None:
-    """The artifact's decisions, or None if this JSON file is not an artifact at all."""
+def load_artifact(path: Path) -> dict | None:
+    """The artifact data, or None if this JSON file is not an artifact at all."""
     try:
         data = read_json(path)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or not isinstance(data.get("open_decisions"), list):
         return None
-    return data["open_decisions"]
+    return data
 
 
 def print_pending_decisions(args: argparse.Namespace) -> int:
-    """Report unresolved decisions of the newest artifact, for the resume offer at session start.
+    """Report the newest artifact's unfinished walkthrough items at session start.
 
-    `open` and `deferred` stay apart: a deferred point was closed on purpose, so only the
-    open ones make the offer urgent.
+    Deferred decisions stay separate because they must not be re-asked.
     """
     _, output_dir = resolve_output(args)
-    artifacts = {path: decisions for path in output_dir.glob("*.json") if (decisions := artifact_decisions(path)) is not None}
+    artifacts = {path: data for path in output_dir.glob("*.json") if (data := load_artifact(path)) is not None}
     if not artifacts:
-        print(f"dir={output_dir} artifact=none open=none deferred=none")
+        print(f"dir={output_dir} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none")
         return 0
     newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name))
 
-    def ids(status: str) -> str:
-        listed = [item["id"] for item in artifacts[newest] if isinstance(item, dict) and item.get("status") == status]
+    def ids(field: str, status: str, *, status_key: str = "status", id_key: str = "id") -> str:
+        items = artifacts[newest].get(field)
+        listed = [str(item[id_key]) for item in (items if isinstance(items, list) else [])
+                  if isinstance(item, dict) and item.get(status_key) == status and id_key in item]
         return ",".join(listed) if listed else "none"
 
-    print(f"dir={output_dir} artifact={newest} open={ids('open')} deferred={ids('deferred')}")
+    print(f"dir={output_dir} artifact={newest} "
+          f"open={ids('open_decisions', 'open')} deferred={ids('open_decisions', 'deferred')} "
+          f"unreviewed_assumptions={ids('assumption_review', 'unreviewed', status_key='outcome', id_key='index')} "
+          f"open_facts={ids('open_facts', 'open')}")
     return 0
 
 

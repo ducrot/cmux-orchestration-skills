@@ -7,6 +7,16 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_resume_reports_the_whole_unfinished_walkthrough(self):
+        text = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
+        for phrase in ("key=value", "newest artifact", "one-based indexes", "comma-separated",
+                       "unreviewed_assumptions", "open_facts", "assumption_review",
+                       "unreviewed_assumptions=none open_facts=none", "Legacy artifacts",
+                       "offer to finish the assumptions review", "clarify the open facts",
+                       "finish open decisions", "do not re-ask them", "advisory and non-blocking"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
     def test_walkthrough_deferral_rule_and_counterexample(self):
         skill = (SKILL_DIR / "SKILL.md").read_text()
         walkthrough = skill.split("## Decision Walkthrough", 1)[1].split("## Commit Proposal", 1)[0]

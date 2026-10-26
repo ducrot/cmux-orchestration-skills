@@ -457,28 +457,67 @@ class PendingDecisions(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def write(self, name: str, statuses: list[str], mtime: float) -> Path:
+    def write(self, name: str, statuses: list[str], mtime: float, **extra) -> Path:
         path = self.out / name
         decisions = [valid_decision(id=f"D{index + 1}", status=status, decision="x") for index, status in enumerate(statuses)]
-        path.write_text(json.dumps({"open_decisions": decisions}), encoding="utf-8")
+        path.write_text(json.dumps({"open_decisions": decisions, **extra}), encoding="utf-8")
         os.utime(path, (mtime, mtime))
         return path
 
     def run_command(self) -> str:
         return run_quietly(print_pending_decisions, output_args(output_dir=str(self.out)))
 
+    def test_new_form_reports_only_unreviewed_assumptions_and_open_facts_via_cli(self):
+        self.write("old.json", ["open"], 1000, assumption_review=[{"index": 99, "outcome": "unreviewed"}],
+                   open_facts=[{"id": "OLD", "status": "open"}])
+        newest = self.write(
+            "new.json", ["decided", "open", "deferred"], 2000,
+            assumption_review=[{"index": index, "outcome": outcome} for index, outcome in
+                               enumerate(["confirmed", "unreviewed", "corrected", "discarded", "unreviewed"], 1)],
+            open_facts=[{"id": "F1", "status": "answered"}, {"id": "F2", "status": "open"},
+                        {"id": "F3", "status": "open"}],
+        )
+        before = {path: path.read_bytes() for path in self.out.iterdir()}
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("run_state.py")),
+             "pending-decisions", "--output-dir", str(self.out)], capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         f"dir={self.out} artifact={newest} open=D2 deferred=D3 "
+                         "unreviewed_assumptions=2,5 open_facts=F2,F3")
+        self.assertEqual({path: path.read_bytes() for path in self.out.iterdir()}, before)
+
+    def test_pending_review_and_facts_without_open_decisions(self):
+        newest = self.write("new.json", ["decided"], 1000, assumption_review=[{"index": 1, "outcome": "unreviewed"}],
+                            open_facts=[{"id": "F1", "status": "open"}])
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=none deferred=none "
+                         "unreviewed_assumptions=1 open_facts=F1")
+
+    def test_malformed_review_and_facts_do_not_crash(self):
+        newest = self.write("new.json", ["open"], 1000, assumption_review=None,
+                            open_facts=[{"status": "open"}, {"id": "F2", "status": "open"}])
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D1 deferred=none "
+                         "unreviewed_assumptions=none open_facts=F2")
+
+    def test_completed_review_and_facts_report_none(self):
+        newest = self.write("new.json", ["deferred"], 1000, assumption_review=[{"index": 1, "outcome": "confirmed"}],
+                            open_facts=[{"id": "F1", "status": "answered"}])
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=none deferred=D1 "
+                         "unreviewed_assumptions=none open_facts=none")
+
     def test_empty_directory(self):
-        self.assertEqual(self.run_command(), f"dir={self.out} artifact=none open=none deferred=none")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none")
 
     def test_open_and_deferred_of_the_newest_artifact_stay_apart(self):
         self.write("old.json", ["open"], 1000)
         newest = self.write("new.json", ["decided", "open", "deferred"], 2000)
-        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D2 deferred=D3")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D2 deferred=D3 unreviewed_assumptions=none open_facts=none")
 
     def test_fully_decided_newest_artifact_reports_nothing(self):
         self.write("old.json", ["open"], 1000)
         newest = self.write("new.json", ["decided"], 2000)
-        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=none deferred=none")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=none deferred=none unreviewed_assumptions=none open_facts=none")
 
     def test_foreign_json_never_wins_the_newest_comparison(self):
         newest = self.write("artifact.json", ["open"], 1000)
@@ -486,14 +525,14 @@ class PendingDecisions(unittest.TestCase):
         (self.out / "broken.json").write_text("{oops", encoding="utf-8")
         os.utime(self.out / "notes.json", (3000, 3000))
         os.utime(self.out / "broken.json", (4000, 4000))
-        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D1 deferred=none")
+        self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D1 deferred=none unreviewed_assumptions=none open_facts=none")
 
     def test_directory_is_resolved_like_init(self):
         """No output dir passed: the resume check derives the same path init would."""
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 run_quietly(print_pending_decisions, output_args(tracker=tmp + "/.scratch/t12")),
-                f"dir={tmp}/.scratch/t12/grilling artifact=none open=none deferred=none",
+                f"dir={tmp}/.scratch/t12/grilling artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none",
             )
 
 

@@ -593,7 +593,7 @@ time, in id order.
   blocks of the Markdown in one pass after the last question, so both halves of the pair
   carry the same outcome.
 
-Read when checking for unfinished decisions at session start or resuming a walkthrough: [references/resume-walkthrough.md](references/resume-walkthrough.md).
+Read when checking for an unfinished walkthrough at session start or resuming a walkthrough: [references/resume-walkthrough.md](references/resume-walkthrough.md).
 
 ## Commit Proposal
 
