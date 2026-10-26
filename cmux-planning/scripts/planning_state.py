@@ -2284,6 +2284,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
                 expected_spec_sha256=approved_spec["sha256"],
                 expected_ticket_ids=proposal["ticket_ids"],
                 expected_ticket_modes=ticket_modes(proposal),
+                expected_ticket_slice_types={ticket["id"]: ticket["slice_type"] for ticket in proposal["tickets"]},
             )
         except Exception as error:
             append_event(

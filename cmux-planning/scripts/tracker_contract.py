@@ -46,6 +46,7 @@ AUTHOR_REPORT_SECTIONS = (
     "Plan Drift",
     "Proposal Paths",
 )
+SLICE_TYPES = {"vertical", "prefactor", "wide-refactor"}
 WIDE_PHASES = {"expand", "migrate", "contract", "integration"}
 REQUIRED_TRACKER_FILES = {"README.md", "spec.md", "map.md", "decisions.md"}
 
@@ -228,7 +229,7 @@ def validate_proposal(
         rationale = _text(ticket["merge_split_rationale"], f"{issue_id}.merge_split_rationale")
         layers = _string_list(ticket["technical_layers"], f"{issue_id}.technical_layers")
         slice_type = _text(ticket["slice_type"], f"{issue_id}.slice_type")
-        if slice_type not in {"vertical", "prefactor", "wide-refactor"}:
+        if slice_type not in SLICE_TYPES:
             raise ContractError(f"{issue_id}.slice_type must be vertical, prefactor, or wide-refactor")
         wide_refactor = ticket["wide_refactor"]
         if slice_type in {"vertical", "prefactor"}:
@@ -527,9 +528,11 @@ def render_issue(ticket: dict[str, Any]) -> str:
     title = ticket["title"].replace('"', "'")
     blockers = "\n".join(f"- {item}" for item in ticket["blocked_by"]) or "- None"
     criteria = "\n".join(f"- [ ] {item}" for item in ticket["acceptance_criteria"])
+    slice_metadata = f"slice_type: {ticket['slice_type']}\n"
     wide = ""
     if ticket["slice_type"] == "wide-refactor":
         details = ticket["wide_refactor"]
+        slice_metadata += f"wide_refactor_phase: {details['phase']}\n"
         wide = (
             "\n\n## Wide Refactor Sequence\n\n"
             f"- Sequence: `{details['sequence']}`\n"
@@ -540,7 +543,7 @@ def render_issue(ticket: dict[str, Any]) -> str:
     return f'''---
 id: {ticket["id"]}
 title: "{title}"
-type: {mode}
+{slice_metadata}type: {mode}
 status: todo
 labels:
   - {EXECUTION_LABELS[mode]}
@@ -611,6 +614,7 @@ def stage_native_tracker(
         expected_spec_sha256=proposal["source_spec_sha256"],
         expected_ticket_ids=proposal["ticket_ids"],
         expected_ticket_modes=ticket_modes(proposal),
+        expected_ticket_slice_types={ticket["id"]: ticket["slice_type"] for ticket in proposal["tickets"]},
     )
 
 
@@ -641,6 +645,7 @@ def validate_native_tracker(
     expected_spec_sha256: str | None = None,
     expected_ticket_ids: list[str] | None = None,
     expected_ticket_modes: dict[str, str] | None = None,
+    expected_ticket_slice_types: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not tracker.is_dir():
         raise ContractError(f"native tracker directory is missing: {tracker}")
@@ -689,8 +694,12 @@ def validate_native_tracker(
         markdown = issue_raw.decode("utf-8")
         frontmatter, body = _frontmatter(markdown)
         required = {"id", "title", "type", "status", "labels"}
-        if set(frontmatter) != required:
-            raise ContractError(f"{path.name} frontmatter keys must be exactly {', '.join(sorted(required))}")
+        optional = {"slice_type", "wide_refactor_phase"}
+        if not required <= set(frontmatter) or set(frontmatter) - required - optional:
+            raise ContractError(
+                f"{path.name} frontmatter keys must include {', '.join(sorted(required))}; "
+                f"only {', '.join(sorted(optional))} are optional"
+            )
         issue_id = _text(frontmatter["id"], f"{path.name} id")
         if issue_id != f"ISSUE-{match.group(1)}" or not ISSUE_ID_RE.fullmatch(issue_id):
             raise ContractError(f"{path.name} id does not match its filename")
@@ -704,6 +713,19 @@ def validate_native_tracker(
             raise ContractError(f"{path.name} must carry only the {label} label")
         if expected_ticket_modes is not None and expected_ticket_modes.get(issue_id, mode) != mode:
             raise ContractError(f"{path.name} type differs from approved ticket execution mode")
+        slice_type = frontmatter.get("slice_type")
+        if "slice_type" in frontmatter and (
+            not isinstance(slice_type, str) or slice_type not in SLICE_TYPES
+        ):
+            raise ContractError(f"{path.name} slice_type must be vertical, prefactor, or wide-refactor")
+        if "wide_refactor_phase" in frontmatter:
+            phase = frontmatter["wide_refactor_phase"]
+            if slice_type != "wide-refactor":
+                raise ContractError(f"{path.name} wide_refactor_phase requires slice_type wide-refactor")
+            if not isinstance(phase, str) or phase not in WIDE_PHASES:
+                raise ContractError(f"{path.name} wide_refactor_phase must be expand, migrate, contract, or integration")
+        if expected_ticket_slice_types is not None and expected_ticket_slice_types.get(issue_id) != slice_type:
+            raise ContractError(f"{path.name} slice type differs from approved ticket slice type")
         parsed = sections(body)
         for heading in ("What to build", "Acceptance Criteria", "Blocked by"):
             if not parsed.get(heading, "").strip():

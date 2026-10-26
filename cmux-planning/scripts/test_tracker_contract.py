@@ -239,8 +239,15 @@ sha256 {self.spec_digest}
         tracker = self.root / "wide-tracker"
         stage_native_tracker(tracker, valid, approved_spec=self.spec)
         for issue in (tracker / "issues").glob("*.md"):
-            self.assertIn("## Wide Refactor Sequence", issue.read_text())
-            self.assertNotIn("## Merge / Split Rationale", issue.read_text())
+            text = issue.read_text()
+            item = next(item for item in valid["tickets"] if item["id"] in issue.name)
+            self.assertIn("slice_type: wide-refactor\n", text)
+            self.assertIn(f"wide_refactor_phase: {item['wide_refactor']['phase']}\n", text)
+            self.assertIn(
+                "## Wide Refactor Sequence\n\n- Sequence: `expand-migrate-contract`\n"
+                f"- Phase: `{item['wide_refactor']['phase']}`", text,
+            )
+            self.assertNotIn("## Merge / Split Rationale", text)
 
         missing_contract = proposal(self.spec, tickets[:-1])
         self.proposal_path.write_text(json.dumps(missing_contract), encoding="utf-8")
@@ -352,7 +359,10 @@ sha256 {self.spec_digest}
         stage_native_tracker(tracker, result, approved_spec=self.spec)
         issue = tracker / "issues" / "ISSUE-001-groesse-aendern-auth-token.md"
         self.assertTrue(issue.is_file())
-        self.assertNotIn("## Merge / Split Rationale", issue.read_text())
+        text = issue.read_text()
+        self.assertIn("slice_type: prefactor\n", text)
+        self.assertNotIn("wide_refactor_phase:", text)
+        self.assertNotIn("## Merge / Split Rationale", text)
         rationale = data["tickets"][0]["merge_split_rationale"]
         self.assertEqual(rationale, result["tickets"][0]["merge_split_rationale"])
         self.assertIn(rationale, render_summary(result))
@@ -642,12 +652,21 @@ sha256 {resulting}
         for item in result["tickets"]:
             body = next((tracker / "issues").glob(item["id"] + "-*.md")).read_text()
             label = "ready-for-human" if item["execution_mode"] == "HITL" else "ready-for-agent"
+            self.assertIn(f"slice_type: {item['slice_type']}\n", body)
+            self.assertNotIn("wide_refactor_phase:", body)
             self.assertIn(f"type: {item['execution_mode']}\nstatus: todo\nlabels:\n  - {label}\n---", body)
         checked = self.contract_cli("native-tracker", str(tracker))
         self.assertEqual(checked.returncode, 0, checked.stderr)
         chain = subprocess.run([sys.executable, str(ISSUE_STATE), "list", "--tracker", str(tracker), "--json"], capture_output=True, text=True, timeout=30)
         self.assertEqual(chain.returncode, 0, chain.stderr)
         self.assertEqual([(i["id"], i["ready"]) for i in json.loads(chain.stdout)], [("ISSUE-001", True), ("ISSUE-002", False)])
+        before = {p.name: p.read_bytes() for p in (tracker / "issues").glob("*.md")}
+        adopted = subprocess.run(
+            [sys.executable, str(ISSUE_STATE.with_name("adopt_tracker.py")), "--tracker", str(tracker)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(adopted.returncode, 0, adopted.stderr)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in (tracker / "issues").glob("*.md")})
         issue = next((tracker / "issues").glob("ISSUE-002-*.md"))
         original = issue.read_text()
         for changed in (original.replace("ready-for-human", "ready-for-agent"), original.replace("type: HITL", "type: AFK"), original.replace("type: HITL", "type: OTHER")):
@@ -655,6 +674,57 @@ sha256 {resulting}
             with self.assertRaises(ContractError):
                 validate_native_tracker(tracker)
         issue.write_text(original)
+
+    def test_native_slice_metadata_accepts_legacy_and_valid_values_through_cli(self):
+        tracker = self.root / "metadata"
+        native = stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
+        issue = next((tracker / "issues").glob("ISSUE-001-*.md"))
+        original = issue.read_text()
+        legacy = original.replace("slice_type: vertical\n", "")
+        metadata = ["", "slice_type: vertical\n", "slice_type: prefactor\n",
+                    "slice_type: wide-refactor\n"]
+        metadata += [f"slice_type: wide-refactor\nwide_refactor_phase: {phase}\n"
+                     for phase in ("expand", "migrate", "contract", "integration")]
+        for fields in metadata:
+            with self.subTest(fields=fields):
+                issue.write_text(legacy.replace("type: AFK\n", fields + "type: AFK\n"))
+                checked = self.contract_cli("native-tracker", str(tracker))
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertEqual(json.loads(checked.stdout)["ready_frontier"], native["ready_frontier"])
+
+    def test_native_slice_metadata_rejects_invalid_values_with_filename_through_cli(self):
+        tracker = self.root / "metadata"
+        stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
+        issue = next((tracker / "issues").glob("ISSUE-001-*.md"))
+        legacy = issue.read_text().replace("slice_type: vertical\n", "")
+        cases = [
+            ("slice_type: frontend\n", "slice_type"),
+            ("slice_type:\n", "slice_type"),
+            ("wide_refactor_phase: expand\n", "wide_refactor_phase"),
+            ("slice_type: vertical\nwide_refactor_phase: expand\n", "wide_refactor_phase"),
+            ("slice_type: prefactor\nwide_refactor_phase: expand\n", "wide_refactor_phase"),
+            ("slice_type: wide-refactor\nwide_refactor_phase: deploy\n", "wide_refactor_phase"),
+            ("slice_type: wide-refactor\nwide_refactor_phase:\n", "wide_refactor_phase"),
+        ]
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                issue.write_text(legacy.replace("type: AFK\n", fields + "type: AFK\n"))
+                checked = self.contract_cli("native-tracker", str(tracker))
+                self.assertEqual(checked.returncode, 1, checked.stdout)
+                self.assertIn(issue.name, checked.stderr)
+                self.assertIn(message, checked.stderr)
+
+    def test_staging_rejects_wrong_or_missing_approved_slice_type(self):
+        result = self.write_proposal()
+        renderers = {
+            "wrong": lambda item: render_issue({**item, "slice_type": "prefactor"}),
+            "missing": lambda item: render_issue(item).replace("slice_type: vertical\n", ""),
+        }
+        for kind, wrong_slice in renderers.items():
+            with self.subTest(kind=kind):
+                with patch("tracker_contract.render_issue", side_effect=wrong_slice):
+                    with self.assertRaisesRegex(ContractError, "slice type.*approved"):
+                        stage_native_tracker(self.root / kind, result, approved_spec=self.spec)
 
     def test_staging_rejects_valid_native_issue_with_wrong_approved_mode(self):
         result = self.write_proposal(mixed_proposal(self.spec))
@@ -664,11 +734,10 @@ sha256 {resulting}
             with self.assertRaisesRegex(ContractError, "execution mode"):
                 stage_native_tracker(self.root / "wrong", result, approved_spec=self.spec)
 
-    def test_v1_and_v2_afk_preserve_legacy_output_bytes(self):
-        # SHA-256 values captured from the v1 contract before execution-mode support.
+    def test_v1_and_v2_afk_produce_identical_output_bytes(self):
         expected = {
-            "issues/ISSUE-001-deliver-the-first-behavior.md": "2b8bea0a83940b2f67767f959836a9bbb86a17ac008bd6725d70ed6604793805",
-            "issues/ISSUE-002-build-on-the-first-behavior.md": "84bc8ccf83bf565248560bc7ab144dcf504dba57d86d1dd0ecc13d68b2b70055",
+            "issues/ISSUE-001-deliver-the-first-behavior.md": "ed218d536cf5cff0311b9c3cc4deb6196b60051d5fd900f86ffdced242da8549",
+            "issues/ISSUE-002-build-on-the-first-behavior.md": "c783d7ab1fa2266f6354bd88aefb6d89404b4de59c5f14237e6661bcb9bc85c0",
             "README.md": "38c03ed4f45ef2b4e454c1305cd3678166ed561670b7f96b3dec857fc64eb764",
             "decisions.md": "507553905fec583977cbea80d9a4c6189e2a802548d0669b44150327156e1e11",
             "map.md": "024bade90da167b05576bba1ea9f71f47984d75ed63a817541f601ebbad080fc",
@@ -683,6 +752,35 @@ sha256 {resulting}
             result = self.write_proposal(data)
             native = stage_native_tracker(self.root / str(version), result, approved_spec=self.spec)
             self.assertEqual(native["artifacts"], expected)
+
+    def test_unrecorded_staging_rejects_wrong_or_missing_approved_slice_type(self):
+        from test_planning_flow import PlanningFlow
+        for kind in ("wrong", "missing"):
+            with self.subTest(kind=kind):
+                flow = PlanningFlow()
+                flow.setUp()
+                try:
+                    result = flow.reach_ticket_approval()
+                    state = json.loads((flow.run_dir / "state.json").read_text())
+                    self.assertIsNone(state["staged_tracker"])
+                    staged = flow.run_dir / "publication-stage"
+                    stage_native_tracker(staged, result, approved_spec=Path(state["approved_spec"]["path"]))
+                    issue = next((staged / "issues").glob("ISSUE-001-*.md"))
+                    original = issue.read_text()
+                    self.assertIn("slice_type: vertical\n", original)
+                    replacement = "slice_type: prefactor\n" if kind == "wrong" else ""
+                    issue.write_text(original.replace("slice_type: vertical\n", replacement))
+                    target = flow.repo / "trackers" / result["tracker"]["slug"]
+                    approved = flow.ticket_approval("approve", "Check recovered slice type", target=target)
+                    self.assertNotEqual(approved.returncode, 0)
+                    self.assertIn(issue.name, approved.stderr)
+                    self.assertIn("slice type differs from approved", approved.stderr)
+                    self.assertFalse(target.exists())
+                    self.assertTrue(staged.exists())
+                    state = json.loads((flow.run_dir / "state.json").read_text())
+                    self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
+                finally:
+                    flow.tearDown()
 
     def test_v1_and_mixed_v2_approval_publish_unchanged_through_cli(self):
         # Reuse the real CLI lifecycle fixture without inheriting its unrelated tests.

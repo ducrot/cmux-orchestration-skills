@@ -110,7 +110,8 @@ blockers as the initial ready frontier.
 
 After explicit human approval, the orchestrator renders a native tracker containing `README.md`,
 `spec.md`, `map.md`, `decisions.md`, and one frontmatter issue per approved ticket under
-`issues/`: AFK issues with ready-for-agent and HITL issues with ready-for-human. Only fully specified
+`issues/`, carrying its `slice_type` and, for wide refactors, its `wide_refactor_phase`: AFK issues
+with ready-for-agent and HITL issues with ready-for-human. Only fully specified
 approved work is ready for execution. The standalone planning validator
 must accept the complete staged tracker before one collision-checked atomic publication move; no sibling
 skill or adoption conversion is a runtime dependency.
