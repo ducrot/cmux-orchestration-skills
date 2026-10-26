@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from artifact_pair import extension_summary, validate_extension
+
 from run_briefing import BoardPublication, publish_board
 from run_commit import capture_baseline
 from agents_config import (
@@ -141,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     decision.add_argument("--status", choices=["decided", "deferred"], required=True)
     decision.add_argument("--decision", required=True, help="What the human chose, or why it was deferred")
 
-    validate = subparsers.add_parser("validate-artifact", help="Check an artifact's open_decisions against the schema")
+    validate = subparsers.add_parser("validate-artifact", help="Check decisions and the review/open-fact Markdown+JSON pair")
     validate.add_argument("--artifact", required=True)
 
     pending = subparsers.add_parser(
@@ -645,7 +647,8 @@ def validate_artifact(args: argparse.Namespace) -> int:
     walkthrough, when the rounds are gone and nobody can repair it.
     """
     artifact_path = Path(args.artifact)
-    decisions = read_json(artifact_path).get("open_decisions")
+    artifact = read_json(artifact_path)
+    decisions = artifact.get("open_decisions")
     if not isinstance(decisions, list):
         raise SystemExit(f"{artifact_path} has no open_decisions list")
     problems = [
@@ -653,9 +656,10 @@ def validate_artifact(args: argparse.Namespace) -> int:
         for index, entry in enumerate(decisions)
         for problem in validate_decision(entry)
     ]
+    problems.extend(validate_extension(artifact, artifact_path))
     if problems:
         raise SystemExit("\n".join(problems))
-    print(f"open_decisions={len(decisions)} valid")
+    print(f"open_decisions={len(decisions)}{extension_summary(artifact)} valid")
     return 0
 
 

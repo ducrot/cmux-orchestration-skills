@@ -1,4 +1,4 @@
-Validate the artifact's decisions at finalize, record one outcome during the walkthrough, and
+Validate both halves of the artifact pair at finalize, record one outcome during the walkthrough, and
 check for an unfinished walkthrough at session start (see Resuming an unfinished walkthrough):
 
 ```bash
@@ -6,6 +6,18 @@ python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
 python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
 python3 scripts/run_state.py pending-decisions
 ```
+
+`validate-artifact` preserves decision checks and, for new pairs, validates `assumption_review`
+(one-based indexes in assumption order, known outcome, correction/reason requirements and review
+time) and `open_facts` (unique id, question, why_needed, open/answered status, answer/time).
+It reads `markdownPath` from the current repository root (or the JSON's sibling `.md` when omitted)
+and compares numbered lines under `## Definierte Annahmen` verbatim, including the German JSON
+`[Prüfung: {"Ergebnis":"ungeprüft","Korrektur":"","Grund":""}]` suffix. It also compares the
+`- {…}` JSON entries under `## Offene Fakten` in order. See Finalize for the full field contract.
+Missing sections, files, entries and mismatches fail with entry diagnostics; matching pairs,
+including all-unreviewed or empty lists, pass and print review/fact counts. Both extension lists
+are required together. Legacy artifacts without either list keep decision-only validation and
+output (`open_decisions=N valid`), without reading Markdown or reporting review/fact counts.
 
 Render self-contained round prompts once per lane per round, with one
 `--question` (or `--question-file`) per frontier question, numbered `Q1..Qn` in order:

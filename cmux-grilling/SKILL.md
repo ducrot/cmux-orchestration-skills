@@ -450,7 +450,7 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
      `## Q&A` (per round a `### Runde <N>` heading, per question: question, Antwort, Confidence,
      Quellen, Reasoning, plus the four lane findings in a collapsible block; deferred questions
-     are listed with their reason), `## Definierte Annahmen`, `## Entscheidungen`
+     are listed with their reason), `## Definierte Annahmen`, `## Offene Fakten`, `## Entscheidungen`
      (one top-level block per open decision, rendering the `open_decisions` fields in German —
      Frage, Kontext, Belege, Optionen mit Implikation, Empfehlung — plus its Ausgang once
      decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
@@ -470,6 +470,8 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      "stopReason": "griller-done",
      "qa": ["... every synthesized question, flattened in round order, each with its round and id ..."],
      "assumptions": ["..."],
+     "assumption_review": [{"index": 1, "outcome": "unreviewed", "corrected_text": "", "reason": "", "reviewed_at": ""}],
+     "open_facts": [{"id": "F1", "question": "…", "why_needed": "…", "status": "open", "answer": "", "answered_at": ""}],
      "open_decisions": ["... see Open Decisions ..."],
      "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
      "jsonPath": "<output-dir>/<slug>-<timestamp>.json"
@@ -483,9 +485,32 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    session, so downstream consumers can build on it. Artifacts with `maxQuestions` instead of
    `maxRounds` come from before multi-question rounds; `cmux-planning` does not import them —
    rerun the grilling.
+   `assumption_review` has exactly one entry per assumption, in order, with one-based
+   `index`, `outcome` (`unreviewed|confirmed|corrected|discarded`), `corrected_text`, `reason`,
+   and `reviewed_at`. Finalize writes **every entry as unreviewed**, with the other three
+   strings empty. Later reviews require an ISO timestamp with timezone; corrected entries
+   need corrected text and a reason, discarded entries need a reason.
+
+   In `## Definierte Annahmen`, keep each assumption text **verbatim**, in order, as a
+   numbered single line. Append this exact suffix (the object is JSON):
+   ` [Prüfung: {"Ergebnis":"ungeprüft","Korrektur":"","Grund":""}]`.
+   German outcomes map to `ungeprüft|bestätigt|korrigiert|verworfen`; `Korrektur` and `Grund`
+   mirror `corrected_text` and `reason` exactly. JSON escaping preserves quotes in text.
+
+   `open_facts` lists facts research could not establish and only the human can supply:
+   unique non-empty `id`, `question` (the question only the human can answer), `why_needed`
+   (why the plan needs it), `status` (`open|answered`), `answer`, and `answered_at`.
+   Finalize writes open facts with empty answer/time; answered facts need a non-empty answer
+   and ISO timestamp with timezone. In `## Offene Fakten`, write one `- {…}` JSON object
+   per line, exactly matching each open-fact entry in order; include the empty section if none.
+   This list is separate from decisions. In `options`, never write an option whose only
+   content defers to missing facts: the genuine alternatives are the options; deferral is
+   covered by the later-decide option plus open facts.
 4. Validate what was just written: `run_state.py validate-artifact --artifact <json>`. It
-   checks every `open_decisions` entry against the schema here, so a thin entry is repaired
-   while the rounds are still in context.
+   checks decisions, review entries and open facts, reads the paired Markdown, and validates
+   **both halves** including assumption text, review markers and open facts. Repair any mismatch
+   while the rounds are still in context. Legacy pairs without both new fields retain their
+   decision-only validation and report no review or facts.
 5. Record the finalize gate (`--stage finalize --decision advance`) and close the run:
    `run_state.py complete --run-dir <run-dir> --markdown <artifact.md> --json <artifact.json> --data '{"stop_reason": ...}'`.
 6. Close the four lane panes after their last reports and the gates are documented; record
@@ -498,9 +523,12 @@ is lost if the human never returns.
 ### Open Decisions
 
 An **assumption** is settled. An **open decision** is a fork the research deliberately cannot
-close: product taste (`product`), a deviation from a written specification
+close, a **choice between options**: product taste (`product`), a deviation from a written specification
 (`spec-deviation`), or a genuine tie in the evidence (`tie`). Decided points never migrate
 into the assumptions — they stay their own list with a cross-reference.
+A fact only the human can supply is an **open fact**, never a decision. A decision depending
+on such facts is deferred with the facts named or stays open; never mark it decided with a
+clarify-first outcome.
 
 Each entry in `open_decisions`:
 

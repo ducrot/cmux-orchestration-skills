@@ -467,5 +467,171 @@ class ValidateArtifact(unittest.TestCase):
             run_quietly(validate_artifact, argparse.Namespace(artifact=str(self.artifact)))
 
 
+class ReviewArtifactPair(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.artifact = Path(self.tmp.name) / "plan.json"
+        self.markdown = self.artifact.with_suffix(".md")
+        self.data = {
+            "open_decisions": [], "assumptions": ["Neutral premise."],
+            "assumption_review": [{"index": 1, "outcome": "unreviewed",
+                                   "corrected_text": "", "reason": "", "reviewed_at": ""}],
+            "open_facts": [{"id": "F1", "question": "Which value applies?",
+                            "why_needed": "The plan needs the value.", "status": "open",
+                            "answer": "", "answered_at": ""}],
+            "markdownPath": str(self.markdown),
+        }
+
+    def write_pair(self):
+        labels = {"unreviewed": "ungeprüft", "confirmed": "bestätigt",
+                  "corrected": "korrigiert", "discarded": "verworfen"}
+        lines = ["## Definierte Annahmen"]
+        for text, review in zip(self.data["assumptions"], self.data["assumption_review"]):
+            marker = {"Ergebnis": labels.get(review.get("outcome"), "unbekannt"),
+                      "Korrektur": review.get("corrected_text", ""),
+                      "Grund": review.get("reason", "")}
+            lines.append(f"{review.get('index')}. {text} [Prüfung: {json.dumps(marker, ensure_ascii=False)}]")
+        lines.append("## Offene Fakten")
+        lines.extend("- " + json.dumps(fact, ensure_ascii=False) for fact in self.data["open_facts"])
+        self.markdown.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.write_json()
+
+    def write_json(self):
+        self.artifact.write_text(json.dumps(self.data), encoding="utf-8")
+
+    def check_pair(self):
+        return run_quietly(validate_artifact, argparse.Namespace(artifact=str(self.artifact)))
+
+    def test_all_review_outcomes_and_answered_fact(self):
+        self.data["open_facts"][0].update(status="answered", answer="A value.",
+                                          answered_at="2026-10-26T09:00:00Z")
+        for outcome in ("unreviewed", "confirmed", "corrected", "discarded"):
+            with self.subTest(outcome=outcome):
+                self.data["assumption_review"][0].update(
+                    outcome=outcome, corrected_text="Revised premise." if outcome == "corrected" else "",
+                    reason="Human supplied context." if outcome in ("corrected", "discarded") else "",
+                    reviewed_at="2026-10-26T09:00:00Z" if outcome != "unreviewed" else "")
+                self.write_pair()
+                self.assertEqual(self.check_pair(), "open_decisions=0 assumption_review=1 open_facts=1 valid")
+
+    def test_invalid_review_entries_name_entry(self):
+        mutations = [lambda r: r.clear(), lambda r: r.update(index=2),
+                     lambda r: r.update(index=True), lambda r: r.update(outcome="other"),
+                     lambda r: r.update(outcome="corrected", corrected_text=""),
+                     lambda r: r.update(outcome="discarded", reason=" "),
+                     lambda r: r.update(outcome="confirmed", reviewed_at="yesterday")]
+        original = self.data["assumption_review"][0]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                self.data["assumption_review"][0] = dict(original)
+                mutate(self.data["assumption_review"][0])
+                self.write_json()
+                with self.assertRaisesRegex(SystemExit, "assumption_review.*1"):
+                    self.check_pair()
+
+    def test_review_length_and_missing_companion_list(self):
+        original = dict(self.data)
+        for field, value in (("assumption_review", []), ("open_facts", None)):
+            with self.subTest(field=field):
+                self.data = dict(original, **{field: value})
+                self.write_json()
+                with self.assertRaisesRegex(SystemExit, field):
+                    self.check_pair()
+
+    def test_multiple_entries_empty_lists_and_verbatim_quotes(self):
+        self.data["assumptions"].append('A "quoted" premise [with brackets].')
+        self.data["assumption_review"].append(dict(self.data["assumption_review"][0], index=2))
+        self.write_pair()
+        self.assertIn("assumption_review=2", self.check_pair())
+        self.data["assumption_review"].reverse()
+        self.write_json()
+        with self.assertRaisesRegex(SystemExit, "entry 1: index must be 1"):
+            self.check_pair()
+        self.data.update(assumptions=[], assumption_review=[], open_facts=[])
+        self.write_pair()
+        self.assertIn("assumption_review=0 open_facts=0", self.check_pair())
+
+    def test_malformed_markdown_entries_and_duplicate_sections(self):
+        for change in (lambda text: text.replace('"Ergebnis"', 'Ergebnis'),
+                       lambda text: text.replace('- {', '- broken {'),
+                       lambda text: text + '\n## Definierte Annahmen\n',
+                       lambda text: text.replace('1. Neutral premise.', '2. Neutral premise.'),
+                       lambda text: text + '- {}\n'):
+            with self.subTest(change=change):
+                self.write_pair()
+                self.markdown.write_text(change(self.markdown.read_text()))
+                with self.assertRaises(SystemExit):
+                    self.check_pair()
+
+    def test_prose_and_trailing_whitespace_in_sections_are_ignored(self):
+        self.data["open_facts"] = []
+        self.write_pair()
+        text = self.markdown.read_text().replace("## Offene Fakten", "## Offene Fakten\nKeine.")
+        self.markdown.write_text(text.replace("]\n", "]  \n", 1))
+        self.assertIn("open_facts=0", self.check_pair())
+
+    def test_extension_keeps_decision_validation(self):
+        self.data["open_decisions"] = [valid_decision(context="")]
+        self.write_pair()
+        with self.assertRaisesRegex(SystemExit, "D1: missing or empty field: context"):
+            self.check_pair()
+
+    def test_new_pair_falls_back_to_sibling_markdown(self):
+        del self.data["markdownPath"]
+        self.write_pair()
+        self.assertIn("assumption_review=1", self.check_pair())
+
+    def test_invalid_facts_name_entry(self):
+        original = self.data["open_facts"][0]
+        for changes in ({"id": ""}, {"question": " "}, {"why_needed": 3},
+                        {"status": "other"}, {"status": "answered"},
+                        {"status": "answered", "answer": "Value", "answered_at": "today"}):
+            with self.subTest(changes=changes):
+                self.data["open_facts"][0] = dict(original, **changes)
+                self.write_json()
+                with self.assertRaisesRegex(SystemExit, "open_facts.*(F1|1)"):
+                    self.check_pair()
+        self.data["open_facts"][0] = original
+        self.data["open_facts"] *= 2
+        self.write_json()
+        with self.assertRaisesRegex(SystemExit, "F1.*duplicate"):
+            self.check_pair()
+
+    def test_markdown_disagreements_fail(self):
+        self.data["assumption_review"][0].update(
+            outcome="corrected", corrected_text="Revised premise.", reason="Human context.",
+            reviewed_at="2026-10-26T09:00:00Z")
+        for old, new, diagnostic in (
+            ("korrigiert", "ungeprüft", "assumption_review.*1"),
+            ("Revised premise.", "Other premise.", "assumption_review.*1"),
+            ("Human context.", "Other reason.", "assumption_review.*1"),
+            ("Neutral premise.", "Changed premise.", "assumption_review.*1"),
+            ('"status": "open"', '"status": "answered"', "open_facts.*F1"),
+            ("## Offene Fakten", "## Other", "Offene Fakten"),
+        ):
+            with self.subTest(old=old):
+                self.write_pair()
+                self.markdown.write_text(self.markdown.read_text().replace(old, new))
+                with self.assertRaisesRegex(SystemExit, diagnostic):
+                    self.check_pair()
+
+    def test_cli_reads_both_halves_and_legacy_output_stays_unchanged(self):
+        self.write_pair()
+        cli = [sys.executable, str(Path(__file__).with_name("run_state.py")),
+               "validate-artifact", "--artifact", str(self.artifact)]
+        result = subprocess.run(cli, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("assumption_review=1 open_facts=1", result.stdout)
+        self.markdown.unlink()
+        result = subprocess.run(cli, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Markdown", result.stderr)
+        self.artifact.write_text(json.dumps({"open_decisions": []}))
+        result = subprocess.run(cli, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "open_decisions=0 valid")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
