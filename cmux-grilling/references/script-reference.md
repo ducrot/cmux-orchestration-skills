@@ -5,6 +5,7 @@ check for an unfinished walkthrough at session start (see Resuming an unfinished
 python3 scripts/run_state.py validate-artifact --artifact <artifact.json>
 python3 scripts/run_state.py decision --run-dir <run-dir> --artifact <artifact.json> --id D1 --status decided --decision "Ab 12 Jahren"
 python3 scripts/run_state.py assumption-review --run-dir <run-dir> --artifact <artifact.json> --index 1 --outcome corrected --corrected-text "Neue Annahme" --reason "Neue Fakten"
+python3 scripts/run_state.py transcribe-artifact --artifact <artifact.json>
 python3 scripts/run_state.py pending-decisions
 ```
 
@@ -14,7 +15,8 @@ python3 scripts/run_state.py pending-decisions
 label or marked custom choice verbatim; the schema and event names stay unchanged.
 This check is selection traceability only: it does not prove the chosen option resolves missing facts.
 The orchestrator applies the walkthrough deferral rule, including when a recommended label only
-collects missing facts, records those facts in both halves, and validates the pair afterwards.
+collects missing facts, records those facts in JSON, synchronizes both halves with
+`transcribe-artifact`, and validates the pair afterwards.
 
 `assumption-review` records one one-based assumption index: `--outcome confirmed`, `corrected`
 (requires `--corrected-text` and `--reason`), or `discarded` (requires `--reason`). It writes
@@ -22,8 +24,8 @@ collects missing facts, records those facts in both halves, and validates the pa
 emits exactly one `grill.assumptions_triaged` event carrying the same fields plus `artifact`.
 Unknown indexes, missing correction/reason, and `--corrected-text` with another outcome are refused
 without changing JSON or events.
-The original assumption text stays intact. Transcribe the printed numbered line with its
-`[Prüfung: …]` marker into Markdown. Until then `validate-artifact` reports that assumption's
+The original assumption text stays intact. Run `transcribe-artifact --artifact <artifact.json>`
+to write the numbered line and `[Prüfung: …]` marker into Markdown. Until then `validate-artifact` reports that assumption's
 disagreement; validate after transcription and before the commit proposal and recap, also on resume.
 Review is advisory and non-blocking; unreviewed entries remain valid.
 
@@ -33,28 +35,28 @@ correction text verbatim, emits exactly one `grill.premise_corrections_triaged` 
 `{index, outcome, corrected_text, reason, reviewed_at, artifact}` (event time equals
 `reviewed_at`), and prints a `- ` entry with the same review marker for
 `## Prämissen-Korrekturen`. Unknown indexes, missing corrected text or required reason, and
-corrected text with another outcome leave JSON and events unchanged. Transcribe the printed
-line and validate the pair; until then the validator names that premise entry's disagreement.
+corrected text with another outcome leave JSON and events unchanged. Run `transcribe-artifact`
+and validate the pair; until then the validator names that premise entry's disagreement.
 Unreviewed premise corrections are valid and review never blocks.
 
-For interrupted transcription, recover lines from recorded outcomes without a second recording
-or changing review time. From the skill directory, render the saved records with the same renderer:
+For interrupted transcription, run `run_state.py transcribe-artifact --artifact <artifact.json>`
+without a second recording or changing review time. It uses the same `render_assumption` /
+`render_review` representation (`PREMISE_CORRECTION_REVIEW` for premise corrections); review
+and decision commands still print their lines.
 
-```bash
-python3 - <artifact.json> <<'PY'
-import json, sys
-sys.path.insert(0, "scripts")
-from artifact_pair import render_assumption, render_review, PREMISE_CORRECTION_REVIEW
-with open(sys.argv[1], encoding="utf-8") as source:
-    data = json.load(source)
-for text, review in zip(data["assumptions"], data["assumption_review"]):
-    print(render_assumption(text, review))
-for text, review in zip(data.get("premise_corrections", []), data.get("premise_correction_review", [])):
-    print(render_review(text, review, PREMISE_CORRECTION_REVIEW))
-PY
-```
-
-Replace the assumption and premise-correction lines in their respective sections and validate both halves before presenting them as synchronized.
+`transcribe-artifact` computes the Markdown in memory and validates it as `validate-artifact`
+does before replacing the file. It resolves `markdownPath` from the current repository root
+(expanding `~`), or uses the JSON's sibling `.md` when omitted. It writes assumption and premise
+review entries, open-fact JSON entries and decided/deferred `Ausgang` lines. Decision blocks
+must have one unique level-three heading (`### D1` or `### D1 — title`) per exact decision id
+under `## Entscheidungen`. An existing outcome line is replaced regardless of list marker or
+emphasis; otherwise one is appended. Open decisions receive no outcome line. Legacy pairs
+without review fields get only decision outcomes; absent premise fields invent no entries.
+A second run is byte-identical. All text outside those entries and outcome lines is preserved,
+including line endings. Missing/duplicated sections, ambiguous blocks, extra entries or a
+candidate that would not validate are refused with a diagnostic and no write. Empty optional
+premise lists may omit their section. JSON, events and review timestamps remain untouched.
+Validate both halves after transcription and before the commit proposal and recap.
 
 `validate-artifact` preserves decision checks and, for new pairs, validates `assumption_review`
 (one-based indexes in assumption order, known outcome, correction/reason requirements and review

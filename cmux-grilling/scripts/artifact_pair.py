@@ -166,22 +166,31 @@ def validate_fact(fact: dict, prefix: str) -> list[str]:
     return problems
 
 
-def validate_extension(data: dict, artifact_path: Path) -> list[str]:
-    """Legacy pairs omit premise review; either new field requires the complete new list."""
-    if not any(name in data for name in ("assumption_review", "open_facts", "premise_corrections", "premise_correction_review")):
+def extended(data: dict) -> bool:
+    return any(name in data for name in ("assumption_review", "open_facts", "premise_corrections", "premise_correction_review"))
+
+
+def extension_review_lists(data: dict) -> list[ReviewList]:
+    return [review_list for review_list in REVIEW_LISTS
+            if review_list.required or review_list.name in data or review_list.texts_name in data]
+
+
+def markdown_path(data: dict, artifact_path: Path) -> object:
+    return data.get("markdownPath", str(artifact_path.with_suffix(".md")))
+
+
+def validate_extension_data(data: dict) -> list[str]:
+    """The JSON half of validate_extension."""
+    if not extended(data):
         return []
     problems = [f"{name}: must be a list" for name in ("assumptions", "assumption_review", "open_facts")
                 if not isinstance(data.get(name), list)]
     if problems:
         return problems
-    facts = data["open_facts"]
-    review_lists = [review_list for review_list in REVIEW_LISTS
-                    if review_list.required
-                    or review_list.name in data or review_list.texts_name in data]
-    for review_list in review_lists:
+    for review_list in extension_review_lists(data):
         problems += validate_review_list(data, review_list)
     seen = set()
-    for index, fact in enumerate(facts, 1):
+    for index, fact in enumerate(data["open_facts"], 1):
         prefix = f"open_facts entry {index}"
         if not isinstance(fact, dict):
             problems.append(f"{prefix}: must be an object")
@@ -192,15 +201,25 @@ def validate_extension(data: dict, artifact_path: Path) -> list[str]:
                 problems.append(f"{prefix}: duplicate id")
             seen.add(fact["id"])
         problems += validate_fact(fact, prefix)
-    if problems:
+    return problems
+
+
+def validate_extension(data: dict, artifact_path: Path, markdown: str | None = None) -> list[str]:
+    """Legacy pairs omit premise review; either new field requires the complete new list."""
+    if not extended(data):
+        return []
+    if problems := validate_extension_data(data):
         return problems
-    markdown_path = data.get("markdownPath", str(artifact_path.with_suffix(".md")))
-    if not nonempty(markdown_path):
+    facts = data["open_facts"]
+    review_lists = extension_review_lists(data)
+    path = markdown_path(data, artifact_path)
+    if not nonempty(path):
         return ["Markdown: markdownPath must be a non-empty path"]
-    try:
-        markdown = Path(markdown_path).expanduser().read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        return [f"Markdown {markdown_path}: {error}"]
+    if markdown is None:
+        try:
+            markdown = Path(path).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            return [f"Markdown {path}: {error}"]
     try:
         # An optional empty list may omit its section; duplicates still fail.
         sections = [(review_list, review_lines(markdown, review_list,

@@ -13,8 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from artifact_pair import (ASSUMPTION_REVIEW, PREMISE_CORRECTION_REVIEW, extension_summary,
-                           render_review, single_line, validate_extension, validate_review)
+from artifact_pair import (ASSUMPTION_REVIEW, PREMISE_CORRECTION_REVIEW, extension_summary, markdown_path,
+                           render_review, single_line, validate_extension, validate_extension_data,
+                           validate_review)
+from transcribe_artifact import decision_outcome, transcribe
 
 from run_briefing import BoardPublication, publish_board
 from run_commit import capture_baseline
@@ -164,6 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate-artifact", help="Check decisions and the review/open-fact Markdown+JSON pair")
     validate.add_argument("--artifact", required=True)
 
+    transcribe = subparsers.add_parser("transcribe-artifact", help="Validate and transcribe recorded JSON outcomes into Markdown")
+    transcribe.add_argument("--artifact", required=True)
+
     pending = subparsers.add_parser(
         "pending-decisions",
         help="Print pending decisions, assumption reviews and facts of the newest artifact. Resolves its directory like init",
@@ -208,6 +213,8 @@ def run_command(args: argparse.Namespace) -> int:
         return record_review(args, *REVIEW_COMMANDS[args.command])
     if args.command == "validate-artifact":
         return validate_artifact(args)
+    if args.command == "transcribe-artifact":
+        return transcribe_artifact(args)
     if args.command == "pending-decisions":
         return print_pending_decisions(args)
     raise AssertionError(args.command)
@@ -665,7 +672,34 @@ def record_decision(args: argparse.Namespace) -> int:
     if publication := getattr(args, "_board_publication", None):
         publication.force = True
     # Printed ready to paste: the Markdown half of the pair is transcribed, not recomposed.
-    print(f"{args.id} {args.status}\nAusgang ({args.status}): {args.decision}")
+    print(f"{args.id} {args.status}\n{decision_outcome(entry)}")
+    return 0
+
+
+def transcribe_artifact(args: argparse.Namespace) -> int:
+    artifact_path = Path(args.artifact)
+    artifact = read_json(artifact_path)
+    try:
+        if not isinstance(artifact, dict) or not isinstance(artifact.get("open_decisions"), list):
+            raise ValueError("artifact must contain an open_decisions list")
+        # Validate JSON before rendering; Markdown disagreements are expected at this point.
+        if problems := decision_problems(artifact["open_decisions"]) + validate_extension_data(artifact):
+            raise ValueError("; ".join(problems))
+        target = markdown_path(artifact, artifact_path)
+        if not single_line(target):
+            raise ValueError("markdownPath must be a non-empty path")
+        path = Path(target).expanduser()
+        original = path.read_bytes()
+        candidate = transcribe(artifact, original.decode("utf-8"))
+        if problems := validate_extension(artifact, artifact_path, candidate):
+            raise ValueError("; ".join(problems))
+        payload = candidate.encode("utf-8")
+        if payload != original:
+            durable_publish(path, payload, mode=stat.S_IMODE(path.stat().st_mode),
+                            suffix=".tmp", publish=os.replace)
+    except (ValueError, UnicodeError) as error:
+        raise SystemExit(f"transcription refused: {error}") from error
+    print(f"markdown={path} transcribed valid")
     return 0
 
 
@@ -719,16 +753,20 @@ def validate_artifact(args: argparse.Namespace) -> int:
     decisions = artifact.get("open_decisions")
     if not isinstance(decisions, list):
         raise SystemExit(f"{artifact_path} has no open_decisions list")
-    problems = [
-        f"{entry.get('id') if isinstance(entry, dict) else f'entry {index}'}: {problem}"
-        for index, entry in enumerate(decisions)
-        for problem in validate_decision(entry)
-    ]
+    problems = decision_problems(decisions)
     problems.extend(validate_extension(artifact, artifact_path))
     if problems:
         raise SystemExit("\n".join(problems))
     print(f"open_decisions={len(decisions)}{extension_summary(artifact)} valid")
     return 0
+
+
+def decision_problems(decisions: list) -> list[str]:
+    return [
+        f"{entry.get('id') if isinstance(entry, dict) else f'entry {index}'}: {problem}"
+        for index, entry in enumerate(decisions)
+        for problem in validate_decision(entry)
+    ]
 
 
 def load_artifact(path: Path) -> dict | None:

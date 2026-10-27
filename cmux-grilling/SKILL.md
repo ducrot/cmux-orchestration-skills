@@ -362,7 +362,7 @@ before `init` — resolves by the same table. First match wins:
 ## Finalize and Artifact
 
 The order of the closing steps is fixed: finalize, ending with `complete` (below) → assumptions
-review → decision walkthrough → transcribe outcomes into the Markdown → commit proposal → commit
+review → decision walkthrough → `run_state.py transcribe-artifact --artifact <artifact.json>` → commit proposal → commit
 (commit mode) → run recap. After a late review, refresh the proposal in propose mode; after a created
 commit, propose a follow-up for the changed pair. The sections below expand these steps.
 
@@ -492,13 +492,11 @@ event with the same outcome data, and prints the numbered assumption line with i
 For premise corrections use `run_state.py premise-correction-review` with the same flags;
 it writes `premise_correction_review`, emits `grill.premise_corrections_triaged`, and prints
 the bullet line for `## Prämissen-Korrekturen`.
-Transcribe the printed lines into the matching review section, retaining the original
-text. Validate both halves with `run_state.py validate-artifact --artifact <artifact.json>`
+Run `run_state.py transcribe-artifact --artifact <artifact.json>` to synchronize the pair.
+Validate both halves with `run_state.py validate-artifact --artifact <artifact.json>`
 after transcription and before the commit proposal and recap, including on a resumed walkthrough.
-Repair interrupted transcription from recorded outcomes in `assumption_review` and
-`premise_correction_review` before presenting
-the pair as synchronized; render the lines from those records as described in the script reference,
-without recording the same answer again. The review stays advisory and non-blocking: unreviewed
+Repair interrupted transcription from recorded outcomes with the same command before presenting
+the pair as synchronized, without recording the same answer again. The review stays advisory and non-blocking: unreviewed
 items are valid. State the unreviewed assumption count and unreviewed premise-correction count in the final message,
 and the open-fact count when facts are open. With outstanding review,
 describe the run as technically finished with review outstanding, not complete. Leave the choice
@@ -524,16 +522,15 @@ time, in id order.
   English.
 - An option whose only content is "collect the missing facts first" is a deferral even
   when it is the recommended option and even when the human selects it by label: record `deferred`,
-  name the facts, add each missing fact to `open_facts` in JSON and `## Offene Fakten` in Markdown
-  (both halves), then run `run_state.py validate-artifact`. Never record it as `decided`.
+  name the facts, add each missing fact to `open_facts` in JSON, then synchronize
+  both halves (`## Offene Fakten`) with `run_state.py transcribe-artifact` and run `run_state.py validate-artifact`. Never record it as `decided`.
 - For `decided`, pass the exact option label from the JSON `options` (without the displayed
   `(Empfohlen)` suffix) or `[custom] <choice>` to `--decision`.
   This is selection traceability only; the orchestrator must apply the deferral rule above.
 - Record every answer with `run_state.py decision`, which writes `status`, `decision` and
   `decided_at` into the artifact JSON and emits `grill.decision_recorded`. It prints the
-  `Ausgang` line back; collect those lines and transcribe them into the `## Entscheidungen`
-  blocks of the Markdown in one pass after the last question, so both halves of the pair
-  carry the same outcome.
+  `Ausgang` line back. After the last question run `run_state.py transcribe-artifact --artifact <artifact.json>`
+  to update the `## Entscheidungen` blocks in both halves. Use one `### <id>` heading per decision.
 
 Read when checking for an unfinished walkthrough at session start or resuming a walkthrough: [references/resume-walkthrough.md](references/resume-walkthrough.md).
 

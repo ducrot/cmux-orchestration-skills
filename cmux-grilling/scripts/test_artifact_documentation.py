@@ -103,7 +103,7 @@ class ArtifactDocumentation(unittest.TestCase):
         text = (SKILL_DIR / "SKILL.md").read_text()
         review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]
         for phrase in ("run_state.py assumption-review", "--index", "--outcome", "--corrected-text",
-                       "--reason", "Transcribe the printed lines", "Validate both halves",
+                       "--reason", "run_state.py transcribe-artifact --artifact <artifact.json>", "Validate both halves",
                        "after transcription and before the commit proposal and recap",
                        "resumed walkthrough", "Repair interrupted transcription from recorded outcomes",
                        "before presenting", "advisory and non-blocking", "unreviewed"):
@@ -118,6 +118,21 @@ class ArtifactDocumentation(unittest.TestCase):
         resume = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
         self.assertIn("repair interrupted assumption-marker", resume)
         self.assertIn("before the commit proposal and recap", resume)
+
+    def test_transcription_command_replaces_hand_transcription_guidance(self):
+        skill = (SKILL_DIR / "SKILL.md").read_text()
+        for start, end in (("The order of the closing steps is fixed:", "When the loop"),
+                           ("## Assumptions Review", "## Decision Walkthrough"),
+                           ("## Decision Walkthrough", "## Commit Proposal")):
+            self.assertIn("run_state.py transcribe-artifact", skill.split(start, 1)[1].split(end, 1)[0])
+        for name in ("script-reference.md", "resume-walkthrough.md"):
+            text = (SKILL_DIR / "references" / name).read_text()
+            self.assertIn("run_state.py transcribe-artifact --artifact <artifact.json>", text)
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        for phrase in ("in memory", "before replacing", "byte-identical", "no write",
+                       "sibling `.md`", "Legacy pairs", "still print their lines"):
+            self.assertIn(phrase, reference)
+        self.assertNotIn("Transcribe the printed", skill + reference)
 
     def test_finalize_defines_pair_fields_and_initial_review_state(self):
         text = (SKILL_DIR / "SKILL.md").read_text()
