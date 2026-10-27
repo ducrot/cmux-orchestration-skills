@@ -53,6 +53,14 @@ anchored in code or documentation. For this blocker, include the `Recommendation
 Blockers and name the concrete choices for the human in it; do not decide the rule change with
 `pass_with_fixes`. The reviewer sees the human specification revision feedback to verify the exemption.
 
+The specification reviewer blocks on an edge case only when existing persisted data, a documented
+use, or a plausible input reaches it, or when existing persisted data would be lost or corrupted
+silently. A defect that appears only for inputs far beyond realistic use is reported once under
+Findings with a `pass_with_fixes` correction that records the supported range under Assumptions;
+recording that range counts as an established-intent correction, and the defect does not by itself
+require new validation, refusal paths, or a human decision. The specification author states the
+supported range when it matters instead of designing behavior for every value the validators accept.
+
 The fresh independent reviewer returns exactly one verdict:
 
 - `pass`: references the unchanged draft digest and writes no candidate.

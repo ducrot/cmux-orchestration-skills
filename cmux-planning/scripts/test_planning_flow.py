@@ -1086,6 +1086,19 @@ sha256 {resulting_digest or digest}
         self.assertIn("`blocked`", reviewer)
         author, reviewer = (" ".join(prompt.split()) for prompt in (author, reviewer))
         for prompt in (author, reviewer):
+            for rule in (
+                "The specification reviewer blocks on an edge case only when",
+                "existing persisted data, a documented use, or a plausible input reaches it",
+                "existing persisted data would be lost or corrupted silently",
+                "A defect that appears only for inputs far beyond realistic use is reported once",
+                "under Findings with a `pass_with_fixes` correction that records the supported range under Assumptions",
+                "recording that range counts as an established-intent correction",
+                "does not by itself require new validation, refusal paths, or a human decision",
+                "The specification author states the supported range when it matters",
+                "instead of designing behavior for every value the validators accept",
+            ):
+                with self.subTest(rule=rule, language=language):
+                    self.assertIn(rule, prompt)
             for rule in ("code guard, validation, constraint, documented rule, or test",
                          "removed, weakened, or bypassed",
                          "human input explicitly names the rule and how it changes",

@@ -116,6 +116,24 @@ class PathFreedomDocumentation(unittest.TestCase):
             self.assertIn(rule, contract)
 
 
+class ProportionalEdgeCaseDocumentation(unittest.TestCase):
+    def test_spec_contract_bounds_edge_case_review_to_realistic_use(self):
+        contract = normalized(PLANNING.parent / "references/spec-contract.md")
+        for phrase in (
+            "the specification reviewer blocks on an edge case only when",
+            "existing persisted data, a documented use, or a plausible input reaches it",
+            "existing persisted data would be lost or corrupted silently",
+            "a defect that appears only for inputs far beyond realistic use is reported once",
+            "under findings with a `pass_with_fixes` correction that records the supported range under assumptions",
+            "recording that range counts as an established-intent correction",
+            "does not by itself require new validation, refusal paths, or a human decision",
+            "the specification author states the supported range when it matters",
+            "instead of designing behavior for every value the validators accept",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, contract)
+
+
 class EnforcedRuleConflictDocumentation(unittest.TestCase):
     def test_spec_contract_states_author_and_independent_reviewer_duties(self):
         contract = normalized(PLANNING.parent / "references/spec-contract.md")

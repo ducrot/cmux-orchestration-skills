@@ -79,6 +79,16 @@ list item. Under Testing Decisions include entries containing
 have no open decisions."""
 
 
+SPEC_EDGE_CASE_REVIEW = """The specification reviewer blocks on an edge case only when
+existing persisted data, a documented use, or a plausible input reaches it, or when existing
+persisted data would be lost or corrupted silently. A defect that appears only for inputs far beyond
+realistic use is reported once under Findings with a `pass_with_fixes` correction that records the
+supported range under Assumptions; recording that range counts as an established-intent correction,
+and the defect does not by itself require new validation, refusal paths, or a human decision.
+The specification author states the supported range when it matters instead of designing behavior
+for every value the validators accept."""
+
+
 PATH_FREEDOM_EXCEPTION = (
     "Handover locations may be named by path: artifacts one ticket produces and another reads, "
     "and the tracker's documentation folder. Prescribed commands whose flags carry the safety "
@@ -420,6 +430,8 @@ open facts in the normalized handoff as missing information to record under `Ope
 
 {SPEC_CONTRACT}
 
+{SPEC_EDGE_CASE_REVIEW}
+
 {spec_template_section(state)}
 
 {STATE_AND_RECOVERY_CHECK}
@@ -538,6 +550,8 @@ the complete draft, and the contract below.
 ## Specification Contract
 
 {SPEC_CONTRACT}
+
+{SPEC_EDGE_CASE_REVIEW}
 
 {spec_template_section(state)}
 
