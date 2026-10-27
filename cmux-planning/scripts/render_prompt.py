@@ -79,6 +79,22 @@ list item. Under Testing Decisions include entries containing
 have no open decisions."""
 
 
+SPEC_REPRESENTATION_RULES = """Code guards, validations, and constraints, including those that
+reject user actions, remain enforced rules, as do documented rules and observable contracts
+(documented or public output formats and user-visible behavior). A test that only pins an internal
+representation (a storage type, an internal format, or a private helper's shape) is not an enforced
+rule. Changing it while preserving observable behavior is the author's implementation choice; the
+reviewer may correct it with `pass_with_fixes`. The author names the test and why it is internal in
+the author report under `Repository Sources / Methods`.
+
+When requested behavior depends on changing a shared representation or seam that several later
+behaviors use, describe that change as a behavior-preserving step where it can be one (same observable
+results for supported data). Keep new rules, limits, refusals, and storage with the behaviors that
+need them. A reviewer who finds such a change bundled with new behavior reports it as a finding and
+may separate it with `pass_with_fixes` when the split preserves established intent; block only when
+the separation needs a new behavior decision."""
+
+
 SPEC_EDGE_CASE_REVIEW = """The specification reviewer blocks on an edge case only when
 existing persisted data, a documented use, or a plausible input reaches it, or when existing
 persisted data would be lost or corrupted silently. A defect that appears only for inputs far beyond
@@ -392,7 +408,8 @@ open facts in the normalized handoff as missing information to record under `Ope
    throughout the spec, and respect any ADRs in the area you're touching. Inspect source, local docs,
    history, and existing tests as needed.
 2. Check the requested behavior against existing enforced rules: a code guard, validation, constraint,
-   documented rule, or test. If one must be removed, weakened, or bypassed, name the rule and put how
+   documented rule, or test (except tests that only pin an internal representation, described below).
+   If one must be removed, weakened, or bypassed, name the rule and put how
    it changes under `Open Decisions` with options and a recommendation. Name the rule and its evidence
    by module, behavior, and test name; paths and line references go in the author report under
    `Repository Sources / Methods`. Only when human input explicitly names the rule and how it changes
@@ -431,6 +448,8 @@ open facts in the normalized handoff as missing information to record under `Ope
 {SPEC_CONTRACT}
 
 {SPEC_EDGE_CASE_REVIEW}
+
+{SPEC_REPRESENTATION_RULES}
 
 {spec_template_section(state)}
 
@@ -553,6 +572,8 @@ the complete draft, and the contract below.
 
 {SPEC_EDGE_CASE_REVIEW}
 
+{SPEC_REPRESENTATION_RULES}
+
 {spec_template_section(state)}
 
 {STATE_AND_RECOVERY_CHECK}
@@ -576,7 +597,8 @@ No unresolved current-scope Open Decision may pass. A deferred decision passes o
 explicitly moves it to Out of Scope or a follow-up area.
 
 Independently check the requested behavior in the repository against existing enforced rules: a code
-guard, validation, constraint, documented rule, or test. Identify any rule that must be removed,
+guard, validation, constraint, documented rule, or test (except tests that only pin an internal
+representation, described above). Identify any rule that must be removed,
 weakened, or bypassed. Only when human input explicitly names the rule and how it changes is that
 change exempt; a general request for the outcome does not grant this exemption. Human specification
 revision feedback counts as human input.

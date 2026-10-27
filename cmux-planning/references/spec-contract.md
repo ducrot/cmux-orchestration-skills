@@ -36,7 +36,8 @@ proposed test seams, blockers, plan drift, and the exact draft path. A clean aut
 only to independent review.
 
 The specification author checks the requested behavior against existing enforced rules: a code guard,
-validation, constraint, documented rule, or test. If one must be removed, weakened, or bypassed, name
+validation, constraint, documented rule, or test (except tests that only pin an internal
+representation, described below). If one must be removed, weakened, or bypassed, name
 the rule and put how it changes under `Open Decisions` with options and a recommendation. Name the
 rule and its evidence by module, behavior, and test name; paths and line references go in the author
 report under `Repository Sources / Methods`. Only when human input explicitly names the rule and how it
@@ -52,6 +53,21 @@ If such a conflict is unresolved or was decided by the author alone, return `blo
 anchored in code or documentation. For this blocker, include the `Recommendation:` bullet inside
 Blockers and name the concrete choices for the human in it; do not decide the rule change with
 `pass_with_fixes`. The reviewer sees the human specification revision feedback to verify the exemption.
+
+Code guards, validations, and constraints, including those that reject user actions, remain enforced
+rules, as do documented rules and observable contracts (documented or public output formats and
+user-visible behavior). A test that only pins an internal representation (a storage type, an
+internal format, or a private helper's shape) is not an enforced rule. Changing it while preserving
+observable behavior is the author's implementation choice; the reviewer may correct it with
+`pass_with_fixes`. The author names the test and why it is internal in the author report under
+`Repository Sources / Methods`.
+
+When requested behavior depends on changing a shared representation or seam that several later
+behaviors use, describe that change as a behavior-preserving step where it can be one (same observable
+results for supported data). Keep new rules, limits, refusals, and storage with the behaviors that
+need them. A reviewer who finds such a change bundled with new behavior reports it as a finding and
+may separate it with `pass_with_fixes` when the split preserves established intent; block only when
+the separation needs a new behavior decision.
 
 The specification reviewer blocks on an edge case only when existing persisted data, a documented
 use, or a plausible input reaches it, or when existing persisted data would be lost or corrupted
