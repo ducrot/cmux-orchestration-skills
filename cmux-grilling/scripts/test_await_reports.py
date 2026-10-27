@@ -233,9 +233,11 @@ class Cli(unittest.TestCase):
                 else:
                     self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
                 self.assertFalse((Path(tmp) / 'events.jsonl').exists())
-        text = (Path(__file__).parents[1] / 'SKILL.md').read_text()
-        self.assertIn('--extend --reason', text)
-        self.assertNotIn('record its reason as a `worker.waiting` or', text)
+        skill = Path(__file__).parents[1]
+        self.assertIn('--extend --reason', (skill / 'references/lane-wait.md').read_text())
+        for name in ('SKILL.md', 'references/lane-wait.md'):
+            with self.subTest(doc=name):
+                self.assertNotIn('record its reason as a `worker.waiting` or', (skill / name).read_text())
 
     def test_all_reports_present_exits_zero_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:

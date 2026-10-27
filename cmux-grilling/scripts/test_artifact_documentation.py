@@ -7,6 +7,24 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_entrypoint_reserves_room_for_remaining_grilling_work(self):
+        self.assertLessEqual((SKILL_DIR / "SKILL.md").stat().st_size, 75894 * .7 - 4000)
+
+    def test_wait_policy_routes_to_complete_watcher_procedure(self):
+        text = (SKILL_DIR / "SKILL.md").read_text()
+        wait = text.split("## Lane Wait Policy", 1)[1].split("## Artifact Location", 1)[0]
+        self.assertIn("Read when arming or re-arming a round watcher, waiting for lane reports, or interpreting watcher exits:", wait)
+        self.assertIn("[references/lane-wait.md](references/lane-wait.md).", wait)
+        reference = (SKILL_DIR / "references/lane-wait.md").read_text()
+        for phrase in ("one watcher per round, not per lane", "Never run two watchers",
+                       "persisted on first arm", "re-arming, including after a host timeout",
+                       "one `worker.started` per `launch_id`", "Health is checked only",
+                       "| 0 ", "| 7 ", "| 8 ", "| 9 ",
+                       "sole emitter of `worker.waiting`", "Exactly one deadline extension",
+                       "Never close a lane pane while its report is pending"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, reference)
+
     def test_late_review_proposal_refresh_and_followup_contract(self):
         text = (SKILL_DIR / 'SKILL.md').read_text()
         closing = text.split('The order of the closing steps is fixed:', 1)[1].split('When the loop', 1)[0]

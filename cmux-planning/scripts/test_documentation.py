@@ -57,6 +57,7 @@ class OnDemandDocumentation(unittest.TestCase):
         "cmux-grilling": ("## gate rule", "## round loop"),
         "cmux-planning": ("## initialize", "## run one stage", "## gate the author and reviewer"),
     }
+    ON_DEMAND_PHRASES = {"cmux-grilling": ("run_in_background: true", "persisted on first arm")}
 
     def test_grilling_revalidation_keeps_recorded_reviews_as_context(self):
         text = normalized(PLANNING.parent / "references" / "grilling-revalidation.md")
@@ -87,9 +88,10 @@ class OnDemandDocumentation(unittest.TestCase):
         for guide in SIBLINGS:
             text = guide.read_text(encoding="utf-8").lower()
             with self.subTest(skill=guide.parent.name):
+                on_demand = self.ON_DEMAND_PHRASES.get(guide.parent.name, ())
                 for phrase in (" init ", "## run briefing", "## run recap", "run_commit.py propose",
                                "run_commit.py commit", "run_in_background: true", "persisted on first arm"):
-                    self.assertIn(phrase, text)
+                    self.assertIn(phrase, documentation(guide).lower() if phrase in on_demand else text)
                 for heading in self.NORMAL_HEADINGS[guide.parent.name]:
                     self.assertIn(heading, text)
 
