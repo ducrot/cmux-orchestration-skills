@@ -97,6 +97,7 @@ LABELS = {
         "commit_mode_commit": "automatic",
         "commit_mode_propose": "proposal",
         "commit_proposal": "Commit proposal",
+        "commit_followup": "Follow-up commit proposal",
         "commit_skipped": "Commit skipped",
         "commit_failed": "Commit failed",
         "commit_failed_proposal": "proposal",
@@ -199,6 +200,7 @@ LABELS = {
         "commit_mode_commit": "automatisch",
         "commit_mode_propose": "Vorschlag",
         "commit_proposal": "Commit-Vorschlag",
+        "commit_followup": "Folge-Commit-Vorschlag",
         "commit_skipped": "Commit übersprungen",
         "commit_failed": "Commit fehlgeschlagen",
         "commit_failed_proposal": "Vorschlag",
@@ -712,7 +714,13 @@ def commit_recap(events, labels):
             line += "; " + labels["hook_modified"].format(count=len(data["hook_modified"]))
         if data.get("hook_side_effects"):
             line += "; " + labels["hook_side_effects"].format(paths=", ".join(data["hook_side_effects"]))
-        return [line]
+        lines = [line]
+        # Only a follow-up recorded after this created outcome belongs in its recap.
+        later = events[events.index(outcome) + 1:]
+        followup = last_data(later, "commit.followup_proposed")
+        if followup and followup.get("follows_commit") == data["sha"]:
+            lines.append(f"- {labels['commit_followup']}: {followup['subject']} ({data['sha'][:7]})")
+        return lines
     reason = data["reason"]
     if reason == "unverifiable" and data.get("detail") == "recovery-no-commit":
         reason = "recovery-no-commit"

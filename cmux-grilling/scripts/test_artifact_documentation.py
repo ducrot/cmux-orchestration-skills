@@ -7,6 +7,20 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_late_review_proposal_refresh_and_followup_contract(self):
+        text = (SKILL_DIR / 'SKILL.md').read_text()
+        closing = text.split('The order of the closing steps is fixed:', 1)[1].split('When the loop', 1)[0]
+        proposal = text.split('## Commit Proposal', 1)[1].split('## Run Recap', 1)[0]
+        for phrase in ('late review', 'propose mode', 'created', 'follow-up', 'changed pair'):
+            self.assertIn(phrase, closing)
+        for phrase in ('per-file content digests', 'current\nunresolved ids', 'unchanged inputs replay',
+                       'before any attempt', 'commit.followup_proposed', 'follows_commit',
+                       'human to commit', 'still replays the created outcome', 'never re-propose a changed draft'):
+            self.assertIn(phrase, proposal)
+        vocabulary = (SKILL_DIR / 'references/event-vocabulary.md').read_text()
+        for phrase in ('file_digests', 'proposal_id', 'commit.followup_proposed', 'follows_commit', 'SHA-256'):
+            self.assertIn(phrase, vocabulary)
+
     def test_final_message_preserves_review_status_and_human_handoff_choice(self):
         text = " ".join((SKILL_DIR / "SKILL.md").read_text().split())
         review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]

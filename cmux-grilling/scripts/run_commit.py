@@ -16,7 +16,7 @@ import subprocess
 from orchestrator_lib import append_jsonl, read_json, utc_now
 
 DONE_STAGES = {"issue-chain": "done", "planning": "complete", "grilling": "done"}
-WORKFLOW_KEYS = {"issue-chain": ("product_files", "tracker_files"), "grilling": ("unresolved",), "planning": ()}
+WORKFLOW_KEYS = {"issue-chain": ("product_files", "tracker_files"), "grilling": ("unresolved", "file_digests"), "planning": ()}
 OUTCOMES = {"commit.attempted", "commit.failed", "commit.skipped", "commit.created"}
 
 
@@ -134,6 +134,15 @@ def validate_leaf(root, path):
     raise ValueError(f"--file: not a literal leaf file: {path!r}")
 
 
+def file_digest(root, path):
+    leaf = root / path
+    if not (leaf.exists() or leaf.is_symlink()):
+        return None
+    validate_leaf(root, path)
+    content = os.fsencode(os.readlink(leaf)) if leaf.is_symlink() else leaf.read_bytes()
+    return hashlib.sha256(content).hexdigest()
+
+
 def propose(args, run_dir):
     state = read_json(run_dir / "state.json")
     workflow = state["workflow"]
@@ -153,12 +162,19 @@ def propose(args, run_dir):
     for key in ("product_files", "tracker_files", "unresolved"):
         if draft[key] and key not in WORKFLOW_KEYS[workflow]:
             raise ValueError(f"{key} is not accepted for workflow {workflow}")
+    if workflow == "grilling":
+        root = run_root(state)
+        draft["file_digests"] = {path: file_digest(root, path) for path in draft["files"]}
     proposal_id = hashlib.sha256(json.dumps(draft, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     events = read_events(run_dir)
-    latest = last_data(events, "commit.proposed")
+    latest = next((e["data"] for e in reversed(events)
+                   if e.get("type") in {"commit.proposed", "commit.followup_proposed"}), None)
     if latest and latest.get("proposal_id") == proposal_id:
         return latest
-    if any(e.get("type") in OUTCOMES for e in events):
+    outcome = next((e for e in reversed(events) if e.get("type") in OUTCOMES), None)
+    followup = (workflow == "grilling" and outcome is not None and outcome["type"] == "commit.created"
+                and draft["file_digests"] != (latest or {}).get("file_digests"))
+    if outcome is not None and not followup:
         raise ValueError(f"run {state['run_id']} already has a commit outcome or attempt; the proposal cannot change")
     root = run_root(state)
     message = args.subject + "\n\n" + args.body
@@ -185,7 +201,10 @@ def propose(args, run_dir):
     data = {key: draft[key] for key in ("subject", "body", "files", "ride_along", *WORKFLOW_KEYS[workflow])}
     data.update(proposal_id=proposal_id, mode=effective_mode(state), ignored=ignored_paths(root, files),
                 preexisting=sorted(set(files) & set(state.get("commit_baseline", {}).get("paths", []))))
-    append_jsonl(run_dir / "events.jsonl", {"time": utc_now(), "type": "commit.proposed", "message": args.subject, "data": data})
+    if followup:
+        data["follows_commit"] = outcome["data"]["sha"]
+    kind = "commit.followup_proposed" if followup else "commit.proposed"
+    append_jsonl(run_dir / "events.jsonl", {"time": utc_now(), "type": kind, "message": args.subject, "data": data})
     return data
 
 

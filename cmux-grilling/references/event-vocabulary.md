@@ -31,6 +31,7 @@ consistently within a run.
 | `grill.assumptions_triaged`                            | One human review recorded by `run_state.py assumption-review`; data `{index, outcome, corrected_text, reason, reviewed_at, artifact}`, matching the JSON review; event time equals `reviewed_at` |
 | `grill.open_decisions`                                 | Open decisions distilled at finalize; data `{count}`                                                                               |
 | `grill.decision_recorded`                              | One walkthrough answer; written by `run_state.py decision`                                                                         |
-| `commit.proposed`                                      | Artifact commit proposal handed to the human after `complete`                                                                      |
+| `commit.proposed`                                      | Artifact proposal after `complete`; `file_digests` maps each literal path to its SHA-256 content digest (symlink target bytes, `null` for deletion), included in `proposal_id`; unchanged inputs replay, changed content refreshes before any attempt |
+| `commit.followup_proposed`                             | Changed grilling pair after `commit.created`; same proposal data plus `follows_commit` naming the created SHA; human commits the follow-up, while `commit` replays the created outcome |
 | `orchestrator.halted`, `orchestrator.unverified_input` | Orchestrator-side anomalies                                                                                                        |
 

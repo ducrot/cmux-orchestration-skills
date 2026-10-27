@@ -436,7 +436,8 @@ before `init` — resolves by the same table. First match wins:
 
 The order of the closing steps is fixed: finalize, ending with `complete` (below) → assumptions
 review → decision walkthrough → transcribe outcomes into the Markdown → commit proposal → commit
-(commit mode) → run recap. The sections after this one expand the steps past finalize.
+(commit mode) → run recap. After a late review, refresh the proposal in propose mode; after a created
+commit, propose a follow-up for the changed pair. The sections below expand these steps.
 
 When the loop ends cleanly (`max-rounds` or `griller-done`):
 
@@ -610,8 +611,11 @@ subject explaining what changed and why, an optional body, and no trailers. Name
 python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Record decisions and assumptions" --file <markdown-leaf> --file <json-leaf> --unresolved <decision-id>
 ```
 
-The helper records the replay-safe `commit.proposed` event and classifies ignored and pre-run dirty
-files.
+The helper records `commit.proposed` with per-file content digests in its identity and classifies
+ignored and pre-run dirty files. After a late review, re-run `propose` with the final pair and current
+unresolved ids: unchanged inputs replay; changed content refreshes the proposal before any attempt.
+After `commit.created`, changed content records `commit.followup_proposed` with `follows_commit` naming
+that commit. Show this follow-up for the human to commit; `commit` still replays the created outcome.
 
 In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
 Use a background or long-timeout invocation with enough time for the repository's commit hooks;
@@ -745,7 +749,7 @@ While a round is in flight, the four reports belong to the lanes: do not edit an
 
 ## Event Vocabulary
 
-`commit.proposed` is written only by `run_commit.py propose`.
+`commit.proposed` and `commit.followup_proposed` are written only by `run_commit.py propose`.
 `commit.attempted`, `commit.created`, `commit.skipped`, and `commit.failed` are written only by
 `run_commit.py commit`: attempt before Git, proven success, nothing to commit, or proposal fallback.
 
@@ -753,7 +757,7 @@ Read when writing any event with `run_state.py event` (including drift records) 
 
 ## Scripts
 
-`run_commit.py propose` is the only writer of `commit.proposed`; generic `event` refuses `commit.*`.
+`run_commit.py propose` alone writes `commit.proposed` and `commit.followup_proposed`; generic `event` refuses `commit.*`.
 
 The scripts are deterministic helpers. Run them from the repo root.
 

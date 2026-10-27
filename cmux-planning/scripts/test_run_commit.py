@@ -259,6 +259,139 @@ class ProposalCli(CliCase):
 
 
 class CommitCli(CliCase):
+    def grilling(self, mode='commit'):
+        self.state.update(workflow='grilling', commit_mode=mode,
+                          deliverables={'markdown': str(self.repo/'f*'), 'json': str(self.repo/'fx')})
+        self.save()
+
+    def test_grilling_content_refresh_and_unresolved_identity(self):
+        self.grilling('propose')
+        first = self.ok(files=['f*', 'fx'])
+        before = self.events()
+        self.assertEqual(self.ok(files=['fx', 'f*']), first)
+        self.assertEqual(self.events(), before)
+        for path in ('f*', 'fx'):
+            self.dirty(path, content='reviewed')
+            revised = self.ok(files=['f*', 'fx'])
+            self.assertNotEqual(revised['proposal_id'], first['proposal_id'])
+            self.assertEqual(revised['file_digests'], {
+                p: hashlib.sha256((self.repo/p).read_bytes()).hexdigest() for p in ('f*', 'fx')})
+            self.assertEqual(self.last()['type'], 'commit.proposed')
+            first = revised
+        revised = self.cli('--unresolved', 'Q2', files=['f*', 'fx'])
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.assertEqual(json.loads(revised.stdout)['unresolved'], ['Q2'])
+        self.assertNotEqual(json.loads(revised.stdout)['proposal_id'], first['proposal_id'])
+        before = self.events()
+        self.assertEqual(self.cli('--unresolved', 'Q2', files=['fx', 'f*']).stdout, revised.stdout)
+        self.assertEqual(self.events(), before)
+        self.assertEqual(len(before.splitlines()), 4)
+        self.state['commit_mode'] = 'commit'
+        self.save()
+        self.assertEqual(self.commit()['files'], ['f*', 'fx'])
+        for path in ('f*', 'fx'):
+            self.assertEqual(self.git('show', 'HEAD:' + path), b'reviewed')
+
+    def test_grilling_followup_cli_preserves_created_commit(self):
+        self.grilling()
+        self.dirty()
+        initial = self.ok(files=['f*', 'fx'])
+        created = self.commit()
+        head = self.git('rev-parse', 'HEAD')
+        before = self.events()
+        self.assertEqual(self.ok(files=['f*', 'fx']), initial)
+        self.assertEqual(self.events(), before)
+        refused = self.cli(files=['f*', 'fx'], subject='Only a new subject')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(self.events(), before)
+        self.dirty('fx', content='{}')
+        result = self.cli('--unresolved', 'Q2', files=['f*', 'fx'], subject='Record late review')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        followup = json.loads(result.stdout)
+        self.assertEqual(self.last()['type'], 'commit.followup_proposed')
+        self.assertEqual(followup['follows_commit'], created['sha'])
+        self.assertEqual(followup['unresolved'], ['Q2'])
+        self.assertNotEqual(followup['proposal_id'], initial['proposal_id'])
+        before = self.events()
+        self.assertEqual(self.cli('--unresolved', 'Q2', files=['fx', 'f*'], subject='Record late review').stdout, result.stdout)
+        self.assertEqual(self.commit(), created)
+        self.assertEqual(self.events(), before)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+        self.assertEqual(self.git('rev-list', '--count', 'HEAD').strip(), b'2')
+        self.assertEqual(self.index(), b'')
+        self.assertEqual(self.git('show', 'HEAD:fx'), b'original')
+        self.assertEqual((self.repo/'fx').read_text(), '{}')
+        for lang, label in (('en', 'Follow-up commit proposal'), ('de', 'Folge-Commit-Vorschlag')):
+            recap = subprocess.run([sys.executable, str(SCRIPT.with_name('run_briefing.py')),
+                                    'recap-draft', '--run-dir', str(self.run), '--lang', lang],
+                                   cwd=self.root, env=self.env, capture_output=True, text=True)
+            self.assertEqual(recap.returncode, 0, recap.stderr)
+            recap_path = self.run/'recap.md'
+            text = recap_path.read_text()
+            self.assertIn(f"- Commit: {created['sha'][:7]}", text)
+            self.assertIn(f'- {label}: Record late review', text)
+            self.assertLess(text.index('- Commit:'), text.index(f'- {label}:'))
+            recap_path.unlink()
+        self.dirty('fx', content='another review')
+        second = self.ok(files=['f*', 'fx'])
+        self.assertEqual(second['follows_commit'], created['sha'])
+        self.assertNotEqual(second['proposal_id'], followup['proposal_id'])
+        self.assertEqual(self.commit(), created)
+        self.dirty('fx', content='original')
+        reverted = self.ok(files=['f*', 'fx'])
+        self.assertEqual(reverted['proposal_id'], initial['proposal_id'])
+        self.assertEqual(self.last()['type'], 'commit.followup_proposed')
+        self.assertEqual(self.ok(files=['f*', 'fx']), reverted)
+        self.assertEqual(self.commit(), created)
+
+    def test_grilling_digest_represents_symlink_and_deletion(self):
+        self.grilling('propose')
+        (self.repo/'f*').unlink()
+        (self.repo/'f*').symlink_to('fx')
+        (self.repo/'fx').unlink()
+        proposal = self.ok(files=['f*', 'fx'])
+        self.assertEqual(proposal['file_digests'], {
+            'f*': hashlib.sha256(b'fx').hexdigest(), 'fx': None})
+        before = self.events()
+        self.assertEqual(self.ok(files=['f*', 'fx']), proposal)
+        self.assertEqual(self.events(), before)
+        self.state['commit_mode'] = 'commit'
+        self.save()
+        created = self.commit()
+        before = self.events()
+        self.assertEqual(self.ok(files=['f*', 'fx']), proposal)
+        self.assertEqual(self.commit(), created)
+        self.assertEqual(self.events(), before)
+
+    def test_grilling_changed_content_refused_after_attempt_failure_or_skip(self):
+        self.grilling()
+        first = self.ok(files=['f*', 'fx'])
+        original = self.events()
+        for outcome in ('attempted', 'failed', 'skipped'):
+            with self.subTest(outcome=outcome):
+                (self.repo/'fx').write_text('original')
+                (self.run/'events.jsonl').write_bytes(original + json.dumps({
+                    'type': 'commit.' + outcome, 'data': {}}).encode() + b'\n')
+                before = self.events()
+                self.assertEqual(self.ok(files=['f*', 'fx']), first)
+                self.dirty('fx', content='late review')
+                refused = self.cli(files=['f*', 'fx'])
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn('already has a commit outcome or attempt; the proposal cannot change', refused.stderr)
+                self.assertEqual(self.events(), before)
+
+    def test_other_workflows_keep_content_independent_replay(self):
+        for workflow in ('issue-chain', 'planning'):
+            with self.subTest(workflow=workflow):
+                self.state.update(workflow=workflow, current_stage='complete' if workflow == 'planning' else 'done',
+                                  repository=str(self.repo), published_tracker={'path': str(self.repo/'d')})
+                self.save()
+                first = self.ok(files=['d/file'])
+                before = self.events()
+                self.dirty('d/file', content=workflow)
+                self.assertEqual(self.ok(files=['d/file']), first)
+                self.assertEqual(self.events(), before)
+
     def commit(self, success=True):
         result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
                                 cwd=self.root, env=self.env, capture_output=True, text=True)

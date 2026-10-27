@@ -813,6 +813,19 @@ class NextStep(RunDirTestCase):
 
 
 class CommitRecap(unittest.TestCase):
+    def test_followup_after_created_line_both_languages(self):
+        created = {'type': 'commit.created', 'data': {'sha': '123456789', 'subject': 'Initial'}}
+        followup = {'type': 'commit.followup_proposed', 'data': {
+            'subject': 'Final pair', 'follows_commit': '123456789'}}
+        for lang, label in (('en', 'Follow-up commit proposal'), ('de', 'Folge-Commit-Vorschlag')):
+            labels = run_briefing.LABELS[lang]
+            self.assertEqual(run_briefing.commit_recap([created, followup], labels), [
+                '- Commit: 1234567 Initial', f'- {label}: Final pair (1234567)'])
+            self.assertEqual(run_briefing.commit_recap([followup, created], labels), [
+                '- Commit: 1234567 Initial'])
+            self.assertEqual(run_briefing.commit_recap([created], labels), [
+                '- Commit: 1234567 Initial'])
+
     def test_outcomes_and_hook_suffixes_both_languages(self):
         for lang, skipped, failed, proposal, modified, effects in (
             ('en', 'Commit skipped', 'Commit failed', 'proposal', 'modified by hook: 2 files', 'hook side effects: fx'),
