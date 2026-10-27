@@ -63,8 +63,9 @@ class ArtifactDocumentation(unittest.TestCase):
         review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]
         recap = text.split("## Run Recap", 1)[1].split("## Worker input readiness", 1)[0]
         for section in (review, recap):
-            for phrase in ("unreviewed count in the final message", "technically finished with review outstanding",
-                           "not complete", "choice", "finishing the review and continuing in planning", "human"):
+            for phrase in ("technically finished with review outstanding",
+                           "not complete", "unreviewed assumption count", "unreviewed premise-correction count in the final message",
+                           "advisory and non-blocking", "choice", "finishing the review and continuing in planning", "human"):
                 with self.subTest(phrase=phrase, review=section is review):
                     self.assertIn(phrase, section)
         for phrase in ("recommends finishing", "with counts", "/cmux-planning <artifact.json>",
@@ -75,6 +76,8 @@ class ArtifactDocumentation(unittest.TestCase):
         text = (SKILL_DIR / "references/resume-walkthrough.md").read_text()
         for phrase in ("key=value", "newest artifact", "one-based indexes", "comma-separated",
                        "unreviewed_assumptions", "open_facts", "assumption_review",
+                       "unreviewed_premise_corrections", "premise_correction_review",
+                       "finish the premise-correction review", "all five lists",
                        "unreviewed_assumptions=none open_facts=none", "Legacy artifacts",
                        "offer to finish the assumptions review", "clarify the open facts",
                        "finish open decisions", "do not re-ask them", "advisory and non-blocking"):

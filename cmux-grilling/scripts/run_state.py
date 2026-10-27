@@ -750,7 +750,7 @@ def print_pending_decisions(args: argparse.Namespace) -> int:
     _, output_dir = resolve_output(args)
     artifacts = {path: data for path in output_dir.glob("*.json") if (data := load_artifact(path)) is not None}
     if not artifacts:
-        print(f"dir={output_dir} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none")
+        print(f"dir={output_dir} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
         return 0
     newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name))
 
@@ -763,7 +763,8 @@ def print_pending_decisions(args: argparse.Namespace) -> int:
     print(f"dir={output_dir} artifact={newest} "
           f"open={ids('open_decisions', 'open')} deferred={ids('open_decisions', 'deferred')} "
           f"unreviewed_assumptions={ids('assumption_review', 'unreviewed', status_key='outcome', id_key='index')} "
-          f"open_facts={ids('open_facts', 'open')}")
+          f"open_facts={ids('open_facts', 'open')} "
+          f"unreviewed_premise_corrections={ids('premise_correction_review', 'unreviewed', status_key='outcome', id_key='index')}")
     return 0
 
 

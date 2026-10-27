@@ -126,7 +126,10 @@ LABELS = {
         "assumptions": "Assumptions",
         "unreviewed_count": ", {count} unreviewed",
         "open_facts": "Open facts",
-        "finish_review": "finish the outstanding review: {unreviewed}, {facts}",
+        "finish_review": "finish the outstanding review: {items}",
+        "premise_review": " · Premise corrections: {count} unreviewed",
+        "unreviewed_premise_corrections": "{count} unreviewed premise corrections",
+        "unreviewed_premise_correction_one": "1 unreviewed premise correction",
         "unreviewed_assumptions": "{count} unreviewed assumptions",
         "unreviewed_assumption_one": "1 unreviewed assumption",
         "open_facts_count": "{count} open facts",
@@ -229,7 +232,10 @@ LABELS = {
         "assumptions": "Annahmen",
         "unreviewed_count": ", {count} ungeprüft",
         "open_facts": "Offene Fakten",
-        "finish_review": "ausstehende Prüfung abschließen: {unreviewed}, {facts}",
+        "finish_review": "ausstehende Prüfung abschließen: {items}",
+        "premise_review": " · Prämissen-Korrekturen: {count} ungeprüft",
+        "unreviewed_premise_corrections": "{count} ungeprüfte Prämissen-Korrekturen",
+        "unreviewed_premise_correction_one": "1 ungeprüfte Prämissen-Korrektur",
         "unreviewed_assumptions": "{count} ungeprüfte Annahmen",
         "unreviewed_assumption_one": "1 ungeprüfte Annahme",
         "open_facts_count": "{count} offene Fakten",
@@ -649,16 +655,18 @@ def planning_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
     return lines
 
 
-def grilling_review_counts(artifact: Any) -> tuple[int, int] | None:
-    """Keep legacy recap text unchanged when neither review list is present."""
-    if not isinstance(artifact, dict) or not ({"assumption_review", "open_facts"} & artifact.keys()):
+def grilling_review_counts(artifact: Any) -> tuple[int, int, int | None] | None:
+    """An absent premise review stays distinct from a present, fully reviewed list."""
+    if not isinstance(artifact, dict) or not ({"assumption_review", "open_facts", "premise_correction_review"} & artifact.keys()):
         return None
     def count(field: str, key: str, value: str) -> int:
         items = artifact.get(field)
         return sum(1 for entry in (items if isinstance(items, list) else [])
                    if isinstance(entry, dict) and entry.get(key) == value)
 
-    return count("assumption_review", "outcome", "unreviewed"), count("open_facts", "status", "open")
+    premises = (count("premise_correction_review", "outcome", "unreviewed")
+                if "premise_correction_review" in artifact else None)
+    return count("assumption_review", "outcome", "unreviewed"), count("open_facts", "status", "open"), premises
 
 
 def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: dict[str, str]) -> list[str]:
@@ -685,8 +693,9 @@ def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: 
         )
         review = grilling_review_counts(artifact)
         unreviewed = labels["unreviewed_count"].format(count=review[0]) if review is not None else ""
+        premises = labels["premise_review"].format(count=review[2]) if review and review[2] is not None else ""
         lines.append(
-            f"- {labels['assumptions']}: {len(artifact.get('assumptions') or [])}{unreviewed} · {labels['decisions']}: {counts}"
+            f"- {labels['assumptions']}: {len(artifact.get('assumptions') or [])}{unreviewed}{premises} · {labels['decisions']}: {counts}"
         )
         if review is not None:
             lines.append(f"- {labels['open_facts']}: {review[1]}")
@@ -778,11 +787,12 @@ def next_step_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
     review = grilling_review_counts(artifact)
     if review is None or not any(review):
         return [f"- {labels['next']}: {planning}"] + prompt_block(state, None, labels)
+    items = [counted(labels, "unreviewed_assumption_one", "unreviewed_assumptions", review[0])]
+    if review[2] is not None:
+        items.append(counted(labels, "unreviewed_premise_correction_one", "unreviewed_premise_corrections", review[2]))
+    items.append(counted(labels, "open_fact_one", "open_facts_count", review[1]))
     return [
-        f"- {labels['next']}: " + labels["finish_review"].format(
-            unreviewed=counted(labels, "unreviewed_assumption_one", "unreviewed_assumptions", review[0]),
-            facts=counted(labels, "open_fact_one", "open_facts_count", review[1]),
-        ),
+        f"- {labels['next']}: " + labels["finish_review"].format(items=", ".join(items)),
         f"- {planning}",
     ] + prompt_block(state, None, labels) + [labels["planning_revalidation"]]
 

@@ -8,13 +8,17 @@ python3 scripts/run_state.py pending-decisions
 
 It prints one stable key=value line for the newest artifact: `dir`, `artifact`, `open` and
 `deferred` decision ids, `unreviewed_assumptions` (one-based indexes whose `assumption_review`
-outcome is `unreviewed`), and `open_facts` (ids whose status is `open`). Lists are comma-separated;
+outcome is `unreviewed`), `open_facts` (ids whose status is `open`), then the trailing field
+`unreviewed_premise_corrections` (one-based indexes whose `premise_correction_review` outcome
+is `unreviewed`). Lists are comma-separated;
 empty lists print `none`. Legacy artifacts without `assumption_review` and `open_facts` keep
 their decision ids and print `unreviewed_assumptions=none open_facts=none`. With no artifact,
-`artifact` and all four lists print `none`.
+`artifact` and all five lists print `none`. Pairs predating the premise-correction fields print
+`unreviewed_premise_corrections=none`.
 
-Any `open` id, unreviewed assumption index or open fact id means the walkthrough is unfinished:
-offer to finish the assumptions review, clarify the open facts and finish open decisions before
+Any `open` id, unreviewed assumption or premise-correction index, or open fact id means the walkthrough is unfinished:
+offer to finish the assumptions review, finish the premise-correction review, clarify the open facts
+and finish open decisions before
 starting a new session. `deferred` ids are reported for completeness — do not re-ask them.
 This is the only handling of "the human walked away": at the next contact, not on a clock.
 
@@ -25,9 +29,11 @@ each missing fact to `open_facts` in JSON and `## Offene Fakten` in Markdown, ma
 Run `run_state.py validate-artifact --artifact <artifact.json>` afterwards. An exact label passing
 the command's selection traceability check does not establish that missing facts were resolved.
 
-Before presenting a resumed pair as synchronized, repair interrupted assumption-marker
-transcription from the recorded `assumption_review` outcomes (script reference recovery renderer).
+Before presenting a resumed pair as synchronized, repair interrupted assumption-marker and premise-correction-marker
+transcription from the recorded `assumption_review` and `premise_correction_review` outcomes
+(script reference recovery renderer).
 Do not record those answers again. Validate both halves with `run_state.py validate-artifact`
 after transcription and before the commit proposal and recap. The assumptions review remains
-advisory and non-blocking; unreviewed assumptions do not prevent continuation.
+advisory and non-blocking; unreviewed assumptions or premise corrections do not prevent continuation.
+Leave the choice between finishing the review and continuing in planning to the human.
 

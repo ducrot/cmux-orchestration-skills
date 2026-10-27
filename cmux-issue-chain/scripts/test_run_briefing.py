@@ -467,15 +467,20 @@ class RunRecap(RunDirTestCase):
 
     def test_grilling_review_states_both_languages_through_cli(self):
         for lang in ("en", "de"):
-            for case, unreviewed, facts, decisions in (
-                ("decisions", 2, 2, 1),
-                ("review", 2, 2, 0),
-                ("assumptions", 2, 0, 0),
-                ("facts", 0, 2, 0),
-                ("singular", 1, 1, 0),
-                ("clear", 0, 0, 0),
-                ("empty", 0, 0, 0),
-                ("legacy", 0, 0, 0),
+            for case, unreviewed, facts, decisions, premises in (
+                ("decisions", 2, 2, 1, None),
+                ("review", 2, 2, 0, None),
+                ("assumptions", 2, 0, 0, None),
+                ("facts", 0, 2, 0, None),
+                ("singular", 1, 1, 0, None),
+                ("clear", 0, 0, 0, None),
+                ("empty", 0, 0, 0, None),
+                ("legacy", 0, 0, 0, None),
+                ("premises", 0, 0, 0, 2),
+                ("all-singular", 1, 1, 0, 1),
+                ("all-plural", 2, 2, 0, 2),
+                ("premises-clear", 0, 0, 0, 0),
+                ("premises-decisions", 0, 0, 1, 2),
             ):
                 with self.subTest(lang=lang, case=case):
                     artifact = self.root / f"{lang}-{case}.json"
@@ -492,6 +497,14 @@ class RunRecap(RunDirTestCase):
                         ]
                         data["open_facts"] = ([{"status": "open"}] * facts
                                               + [{"status": "answered"}])
+                    if premises is not None:
+                        data["premise_corrections"] = ["correction"] * 5
+                        data["premise_correction_review"] = [
+                            {"index": index, "outcome": outcome}
+                            for index, outcome in enumerate(
+                                ["unreviewed"] * premises + ["confirmed", "corrected", "discarded"]
+                                + ["confirmed"] * (2 - premises), 1)
+                        ]
                     artifact.write_text(json.dumps(data))
                     state = {**GRILLING_STATE, "run_id": f"{lang}-{case}", "current_stage": "done",
                              "deliverables": {"json": str(artifact)}}
@@ -502,7 +515,11 @@ class RunRecap(RunDirTestCase):
                                        else f"Entscheidungen: 1 entschieden, 1 zurückgestellt, {decisions} offen")
                     review_count = (f", {unreviewed} unreviewed" if lang == "en"
                                     else f", {unreviewed} ungeprüft") if case != "legacy" else ""
-                    self.assertIn(f"- {assumption_label}: {total}{review_count} · {decision_counts}\n", text)
+                    premise_count = ""
+                    if premises is not None:
+                        premise_count = (f" · Premise corrections: {premises} unreviewed" if lang == "en"
+                                         else f" · Prämissen-Korrekturen: {premises} ungeprüft")
+                    self.assertIn(f"- {assumption_label}: {total}{review_count}{premise_count} · {decision_counts}\n", text)
                     fact_label = "Open facts" if lang == "en" else "Offene Fakten"
                     if case == "legacy":
                         self.assertNotIn(fact_label, text)
@@ -511,7 +528,7 @@ class RunRecap(RunDirTestCase):
                     next_label = "Next step" if lang == "en" else "Nächster Schritt"
                     plan = (f"planning with the grilling result `{artifact}`" if lang == "en"
                             else f"Planning mit dem Grilling-Ergebnis `{artifact}`")
-                    if case == "singular":
+                    if unreviewed == 1 and facts == 1:
                         review = ("finish the outstanding review: 1 unreviewed assumption, 1 open fact"
                                   if lang == "en" else
                                   "ausstehende Prüfung abschließen: 1 ungeprüfte Annahme, 1 offener Fakt")
@@ -519,6 +536,13 @@ class RunRecap(RunDirTestCase):
                         review = (f"finish the outstanding review: {unreviewed} unreviewed assumptions, {facts} open facts"
                                   if lang == "en" else
                                   f"ausstehende Prüfung abschließen: {unreviewed} ungeprüfte Annahmen, {facts} offene Fakten")
+                    if premises is not None:
+                        premise_words = (("1 unreviewed premise correction" if premises == 1
+                                          else f"{premises} unreviewed premise corrections") if lang == "en"
+                                         else ("1 ungeprüfte Prämissen-Korrektur" if premises == 1
+                                               else f"{premises} ungeprüfte Prämissen-Korrekturen"))
+                        prefix, fact_words = review.rsplit(", ", 1)
+                        review = f"{prefix}, {premise_words}, {fact_words}"
                     note = ("Planning revalidates every assumption and treats open facts as missing information."
                             if lang == "en" else
                             "Planning revalidiert jede Annahme und behandelt offene Fakten als fehlende Informationen.")
@@ -530,7 +554,7 @@ class RunRecap(RunDirTestCase):
                         self.assertNotIn(review, text)
                     else:
                         self.assertIn(f"~~~\n/cmux-planning {artifact}\n~~~", text)
-                        if unreviewed or facts:
+                        if unreviewed or facts or premises:
                             self.assertIn(f"- {next_label}: {review}\n- {plan}\n", text)
                             self.assertIn(note, text)
                         else:
