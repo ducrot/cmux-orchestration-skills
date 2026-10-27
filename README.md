@@ -108,6 +108,13 @@ The research ends when the round budget is spent or no relevant open question re
 ### cmux-planning: approve a specification and tracker
 
 Start with a task, optionally accompanied by a grilling artifact pair that you explicitly revalidate.
+Without grilling input, choose a fresh run, then approve a feature folder name in the same dialog as
+commit mode. The proposal uses today's local date and a short slug: `.scratch/YYYY-MM-DD-<slug>`.
+An explicit `--feature` skips the name question, as do resume, re-init, the unfinished-run path and
+smoke tests. Init freezes the folder and pure tracker slug. Ticket approval derives its publication
+target from that folder without a target-path question; an existing target, including an empty one,
+is refused at approval and publication. Same-feature re-init preserves interrupted and completed
+publication; a different feature is refused.
 
 1. A fresh author inspects the repository and writes a specification.
 2. A fresh independent reviewer checks it and records what was checked and the outcome. Safe corrections are validated and shown to you.

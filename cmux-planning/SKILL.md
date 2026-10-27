@@ -31,6 +31,14 @@ Never on resume, re-init, the exit-3 unfinished-run path, or smoke tests. Inspec
 first; ask only after the human chooses a fresh run. Default and legacy mode: `propose`;
 stored choices cannot change. Briefing ends with `Commit: automatic|proposal` (`automatisch|Vorschlag`).
 
+## Feature name at initialization
+
+Without grilling input, require `--feature`. Ask for its name in the same dialog as the commit-mode
+question, after the human chooses a fresh run. Skip with explicit `--feature`, on resume,
+re-init, the exit-3 unfinished-run path, and smoke tests.
+
+Name rules: [references/initialization-details.md](references/initialization-details.md).
+
 ## Artifact language at initialization
 
 In the same `AskUserQuestion` call as the commit mode, as its second question, ask a single-select in the
@@ -45,7 +53,7 @@ only with the field, before Commit.
 
 ## Default assignments at initialization
 
-Before both questions, with the same exceptions, run `python3 scripts/agents_config.py compare-defaults`
+Before the initialization questions, with the same exceptions, run `python3 scripts/agents_config.py compare-defaults`
 with the run's `--config` if valid schema v3 exists (including after migration).
 Continue without asking when `matches_defaults` is true; otherwise ask as the last question of the
 same `AskUserQuestion` call.
@@ -151,7 +159,7 @@ Read when installing planning or setting it up for first use: [references/instal
 ## Initialize
 
 Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one question call for commit
-mode, language and assignments, draft and confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
+mode, feature name, language and assignments, draft and confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
 for its six English headings, human-language content and verbatim quotes; show it fully as its own message,
 then confirm it with one `AskUserQuestion` single-select as described there.
 Require a plan file or brief; grilling is additional. Only brief entries the human stated beat revalidated grilling
@@ -161,7 +169,7 @@ Other contradictions go to `Open Decisions`.
 Repeat `--task-file` for multiple plans:
 
 ```bash
-python3 scripts/planning_state.py init --task-file <path> --repo <repo> \
+python3 scripts/planning_state.py init --feature <YYYY-MM-DD-slug> --task-file <path> --repo <repo> \
   --workspace-id <workspace> [--artifact-language <name>] [--config <agents.json>] [--accept-config]
 ```
 
@@ -438,17 +446,18 @@ python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
   --decision revise --scope spec --reason <approved-spec-defect>
 ```
 
-Only when all three answers are positive (fits, correct, no change), ask for the target path and approve.
+Only when all three answers are positive (fits, correct, no change), approve using the frozen feature folder.
+Do not ask for a target path; use `feature_dir`.
 Spec approval keeps its existing flow without a fixed quiz.
 
 Approval freezes the exact reviewed proposal digest, stages `README.md`, `spec.md`, `map.md`,
 `decisions.md`, and every native issue file under the run directory, and validates the complete staged
 tracker with this skill's standalone native contract. The target must remain absent and its basename must
-equal the approved lowercase kebab-case tracker slug:
+equal the dated feature name `YYYY-MM-DD-<slug>`; `tracker.slug` remains the pure slug:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
-  --decision approve --reason <human-reason> --target <repo-relative-or-absolute-target>
+  --decision approve --reason <human-reason>
 ```
 
 After approval and successful staging, publish in one same-filesystem directory move:
@@ -520,17 +529,16 @@ gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `revi
 optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen
 value at its gates. This does not authorize ticket revision after approval.
 
-Publication records `deliverables.tracker` alongside `published_tracker`. The frozen `tracker_slug`
-uses the brief's Goal when present, otherwise the first plan's first heading (or first line, at most 30 characters); `init --slug <value>` overrides it with lowercase
-words separated by hyphens. Default ids are `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time;
-run-state and event timestamps remain UTC, and explicit `--run-id` values are preserved.
-Runs with an older layout version remain readable with `status`; continuation refuses them with
-“unsupported legacy layout”. Restart them after inspection.
+Publication records `deliverables.tracker` alongside `published_tracker`. For direct input,
+`feature_dir` freezes the dated folder and `tracker_slug` its pure slug.
+Ids: `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time; events remain UTC.
+Explicit `--run-id` values are preserved. Older layouts permit `status` only; continuation refuses
+“unsupported legacy layout”. Restart after inspection.
 
-Runs live under `.scratch/orchestrator/runs/<run-id>/` by default. `inputs/` (legacy `task.md`),
+Runs live in `.scratch/orchestrator/runs/<run-id>/`. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
 `state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
-`spec.md`, `map.md`, `decisions.md`, and `issues/` at the explicit target. That target is immediately
+`spec.md`, `map.md`, `decisions.md`, and `issues/` at the frozen dated feature folder. That target is immediately
 consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
 separate workflow.
 

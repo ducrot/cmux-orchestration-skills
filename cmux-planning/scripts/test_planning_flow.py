@@ -148,6 +148,8 @@ class PlanningFlow(unittest.TestCase):
         }
 
     def cli(self, script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        if script == STATE and args[0] == "init" and "--feature" not in args and not getattr(self, "omit_feature", False):
+            args += ("--feature", "2026-10-27-planned-feature")
         if getattr(self, "relative_cli_paths", False):
             argv = list(args)
             for index, value in enumerate(argv[:-1]):
@@ -205,6 +207,181 @@ class PlanningFlow(unittest.TestCase):
             for heading in headings if heading != missing), encoding="utf-8")
         return path
 
+    def test_feature_required_and_invalid_values_write_nothing(self):
+        self.omit_feature = True
+        task = self.plan_file("# A title unrelated to the feature")
+        before = file_contents(self.repo)
+        for value in (None, "", "2026-02-30-name", "2026-10-27-Upper", "2026-10-27-a--b",
+                      "2026-10-27-" + "x" * 31, "../2026-10-27-escape",
+                      "nested/2026-10-27-name", str(self.root / "2026-10-27-outside")):
+            with self.subTest(feature=value):
+                result = self.cli(STATE, "init", "--task-file", task, "--run-id", "invalid",
+                                  "--no-workspace", *([] if value is None else ["--feature", value]))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--feature", result.stderr)
+                self.assertEqual(file_contents(self.repo), before)
+                self.assertFalse(self.runs.exists())
+        removed = self.cli(STATE, "init", "--task-file", task, "--slug", "old-option")
+        self.assertNotEqual(removed.returncode, 0)
+        self.assertIn("unrecognized arguments: --slug", removed.stderr)
+
+    def test_feature_paths_existing_contents_and_reinit(self):
+        task = self.plan_file("# Different task title")
+        feature = self.repo / ".scratch" / "2024-02-29-approved-name"
+        for content in ("empty", "file", "grilling-file", "extra", "grilling"):
+            with self.subTest(content=content):
+                feature.mkdir()
+                if content == "file":
+                    (feature / "unexpected").write_text("keep")
+                if content == "grilling-file":
+                    (feature / "grilling").write_text("keep")
+                if content in {"extra", "grilling"}:
+                    (feature / "grilling").mkdir()
+                    (feature / "grilling" / "result.md").write_text("keep")
+                if content == "extra":
+                    (feature / "unexpected").write_text("keep")
+                before = file_contents(feature)
+                result = self.cli(STATE, "init", "--task-file", task, "--run-id", "plan-test",
+                                  "--feature", str(feature), "--no-workspace")
+                self.assertEqual(file_contents(feature), before)
+                if content == "grilling":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(self.run_dir.exists())
+                    shutil.rmtree(feature)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["feature_dir"], str(feature.resolve()))
+        self.assertEqual(state["tracker_slug"], "approved-name")
+        run_before = file_contents(self.run_dir)
+        for value in (feature.name, ".scratch/" + feature.name, str(feature)):
+            repeated = self.cli(STATE, "init", "--task-file", task, "--run-id", "plan-test",
+                                "--feature", value, "--no-workspace")
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        changed = self.cli(STATE, "init", "--task-file", task, "--run-id", "plan-test",
+                           "--feature", "2024-02-29-other", "--no-workspace")
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("cannot change the feature", changed.stderr)
+        self.assertEqual(file_contents(self.run_dir), run_before)
+        self.assertEqual(file_contents(feature), before)
+
+    def test_reinit_without_frozen_feature_refuses_cleanly_without_writes(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        del state["feature_dir"]
+        state_path.write_text(json.dumps(state))
+        before = file_contents(self.repo)
+
+        refused = self.init_direct()
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("predates the frozen feature folder", refused.stderr)
+        self.assertNotIn("Traceback", refused.stderr)
+        self.assertEqual(file_contents(self.repo), before)
+
+    def test_ticket_approval_without_frozen_feature_refuses_without_publication(self):
+        self.reach_ticket_approval()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        target = Path(state.pop("feature_dir"))
+        state_path.write_text(json.dumps(state))
+        before = file_contents(self.repo)
+
+        refused = self.ticket_approval("approve", "approved")
+
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("predates the frozen feature folder", refused.stderr)
+        self.assertNotIn("Traceback", refused.stderr)
+        after = file_contents(self.repo)
+        relative_state = state_path.relative_to(self.repo)
+        before_state = json.loads(before.pop(relative_state))
+        after_state = json.loads(after.pop(relative_state))
+        # The pre-approval integrity audit refreshes only its check timestamp.
+        before_state["artifact_audit"].pop("checked_at")
+        after_state["artifact_audit"].pop("checked_at")
+        self.assertEqual(after_state, before_state)
+        self.assertEqual(after, before)
+        self.assertFalse((self.run_dir / "publication-stage").exists())
+        self.assertFalse(target.exists())
+
+    def test_grilling_reinit_without_feature_preserves_folder_on_different_local_date(self):
+        self.omit_feature = True
+        artifact, markdown = self.grilling_pair()
+        args = ("init", "--task-file", self.plan_file("# Plan"),
+                "--grilling-json", str(artifact), "--grilling-markdown", str(markdown),
+                "--run-id", "plan-test", "--no-workspace")
+        first_zone, later_zone = "Etc/GMT+12", "Pacific/Kiritimati"
+        initialized = self.cli(STATE, *args, env={**self.env(), "TZ": first_zone})
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        created = datetime.fromisoformat(state["created_at"])
+        first_date = created.astimezone(ZoneInfo(first_zone)).strftime("%Y-%m-%d")
+        later_date = created.astimezone(ZoneInfo(later_zone)).strftime("%Y-%m-%d")
+        self.assertNotEqual(first_date, later_date)
+        self.assertEqual(Path(state["feature_dir"]).name, first_date + "-plan")
+        before = file_contents(self.repo)
+
+        # The two zones are 26 hours apart, so this exercises a changed local date
+        # without waiting for midnight or changing the host clock.
+        for feature in (None, state["feature_dir"], later_date + "-plan"):
+            with self.subTest(feature=feature):
+                repeated = self.cli(
+                    STATE, *args, *(() if feature is None else ("--feature", feature)),
+                    env={**self.env(), "TZ": later_zone},
+                )
+                if feature == later_date + "-plan":
+                    self.assertNotEqual(repeated.returncode, 0)
+                    self.assertIn("cannot change the feature folder", repeated.stderr)
+                else:
+                    self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                    self.assertEqual(self.repo / repeated.stdout.strip(), self.run_dir)
+                self.assertEqual(file_contents(self.repo), before)
+
+    def test_fixed_feature_publication_collision_and_reinit_recovery(self):
+        self.reach_ticket_approval()
+        removed = self.cli(STATE, "ticket-approval", "--run-dir", str(self.run_dir),
+                           "--decision", "approve", "--reason", "approved", "--target", "elsewhere")
+        self.assertNotEqual(removed.returncode, 0)
+        self.assertIn("unrecognized arguments: --target", removed.stderr)
+        approved = self.ticket_approval("approve", "approved")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        target = Path(state["feature_dir"])
+        self.assertEqual(state["approved_tickets"]["target"], str(target))
+        self.assertEqual(target.name, "2026-10-27-planned-feature")
+        staged = Path(state["staged_tracker"]["path"])
+        stage_before = file_contents(staged)
+        target.mkdir()
+        refused = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(list(target.iterdir()), [])
+        self.assertEqual(file_contents(staged), stage_before)
+        target.rmdir()
+        os.rename(staged, target)  # real interruption after the atomic move
+        published_before = file_contents(target)
+        changed_task = self.plan_file("changed title")
+        for complete in (False, True):
+            repeated = self.cli(STATE, "init", "--task-file", changed_task,
+                                "--run-id", "plan-test", "--no-workspace")
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(file_contents(target), published_before)
+            self.assertFalse(staged.exists())
+            changed = self.cli(STATE, "init", "--task-file", changed_task,
+                               "--run-id", "plan-test", "--feature", "2026-10-27-other", "--no-workspace")
+            self.assertNotEqual(changed.returncode, 0)
+            if not complete:
+                recovered = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+                self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        recap = self.cli(STATE.with_name("run_briefing.py"), "recap-draft", "--run-dir",
+                         str(self.run_dir), "--lang", "en")
+        self.assertEqual(recap.returncode, 0, recap.stderr)
+        text = (self.run_dir / "recap.md").read_text()
+        self.assertIn("2026-10-27-planned-feature", text)
+        self.assertIn("/cmux-issue-chain", text)
+        self.assertIn("/2026-10-27-planned-feature ISSUE-001", text)
+
     def test_init_without_inputs_offers_unfinished_run_before_source_validation(self):
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -220,7 +397,7 @@ class PlanningFlow(unittest.TestCase):
         self.assertIn("at least one --task-file or --conversation-brief", fresh.stderr)
         self.assertEqual(file_contents(self.runs), before)
 
-    def test_conversation_brief_goal_folds_umlauts_for_tracker_slug(self):
+    def test_feature_slug_takes_precedence_over_conversation_goal(self):
         brief = self.brief_file()
         brief.write_text(brief.read_text(encoding="utf-8").replace(
             "Menschen helfen", "Größere Übersicht für Nutzer"), encoding="utf-8")
@@ -228,7 +405,7 @@ class PlanningFlow(unittest.TestCase):
                           "--run-id", "plan-test", "--no-workspace")
         self.assertEqual(result.returncode, 0, result.stderr)
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
-        self.assertEqual(state["tracker_slug"], "groessere-uebersicht-fuer")
+        self.assertEqual(state["tracker_slug"], "planned-feature")
 
     def test_neighbor_hint_requires_a_plan_file_alongside_conversation_brief(self):
         brief = self.brief_file()
@@ -281,7 +458,7 @@ class PlanningFlow(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 run_dir = self.runs / run_id
                 state = json.loads((run_dir / "state.json").read_text())
-                self.assertEqual(state["tracker_slug"], "menschen-helfen")
+                self.assertEqual(state["tracker_slug"], "planned-feature")
                 item = state["inputs"][-1]
                 self.assertEqual(item["kind"], "conversation-brief")
                 self.assertEqual(item["original_path"], str(brief.resolve()))
@@ -329,7 +506,7 @@ class PlanningFlow(unittest.TestCase):
     def test_board_failure_does_not_stop_publication(self):
         with patch.dict(os.environ, {"FAKE_BOARD_FAIL": "1"}):
             proposal = self.reach_ticket_approval()
-            approved = self.ticket_approval("approve", "Approved", target=self.repo / "trackers" / proposal["tracker"]["slug"])
+            approved = self.ticket_approval("approve", "Approved")
             self.assertEqual(approved.returncode, 0, approved.stderr)
             published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
             self.assertEqual(published.returncode, 0, published.stderr)
@@ -369,8 +546,8 @@ class PlanningFlow(unittest.TestCase):
             "init",
             "--task-file",
             self.plan_file("Bitte sichere Planung erstellen."),
-            "--slug",
-            "planned-feature",
+            "--feature",
+            "2026-10-27-planned-feature",
             "--repo",
             str(self.repo),
             "--run-id",
@@ -383,7 +560,7 @@ class PlanningFlow(unittest.TestCase):
             *(["--artifact-language", self.artifact_language] if hasattr(self, "artifact_language") else []),
         )
 
-    def test_shared_identity_slug_override_and_sibling_discovery(self):
+    def test_shared_identity_feature_name_and_sibling_discovery(self):
         sibling = self.runs / "grill-sibling"
         sibling.mkdir(parents=True)
         (sibling / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 2, "slug": "sibling"}))
@@ -391,33 +568,28 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip().splitlines()[-1]
         self.assertEqual(run_dir.parent, self.runs)
-        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-plan-task-static-teaser-website-for$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-plan-planned-feature$")
         state = json.loads((run_dir / "state.json").read_text())
-        self.assertEqual(state["tracker_slug"], "task-static-teaser-website-for")
+        self.assertEqual(state["tracker_slug"], "planned-feature")
         self.assertEqual(state["workflow"], "planning")
         self.assertEqual(state["layout_version"], 2)
         created = datetime.fromisoformat(state["created_at"])
         self.assertEqual(created.utcoffset(), timedelta(0))
-        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-plan-task-static-teaser-website-for")
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-plan-planned-feature")
         for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
             self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
         self.assertEqual(state["schema_version"], 3)
         self.assertEqual(state["deliverables"], {})
         offered = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--workspace-id", "WORKSPACE-1")
         self.assertEqual(json.loads(offered.stdout)["unfinished_run"]["run_id"], run_dir.name)
-        override = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--slug", "frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
+        override = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--feature", "2026-10-27-frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(override.returncode, 0, override.stderr)
         overridden = self.repo / override.stdout.strip().splitlines()[-1]
         self.assertTrue(overridden.name.endswith("-plan-frozen-name"))
         self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
-        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Changed task"), "--run-id", overridden.name, "--slug", "different-name", "--workspace-id", "WORKSPACE-1")
-        self.assertEqual(reinit.returncode, 0, reinit.stderr)
+        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Changed task"), "--run-id", overridden.name, "--feature", "2026-10-27-different-name", "--workspace-id", "WORKSPACE-1")
+        self.assertNotEqual(reinit.returncode, 0)
         self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
-        for slug in ("", "Upper", "a--b", "../x", "x" * 31):
-            invalid = self.cli(STATE, "init", "--task-file", self.plan_file("Task"), "--run-id", "invalid", "--slug", slug, "--new-run", "--workspace-id", "WORKSPACE-1")
-            self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn("--slug", invalid.stderr)
-            self.assertFalse((self.runs / "invalid").exists())
 
     def test_old_formats_are_read_only_and_root_name_is_unrestricted(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -667,11 +839,11 @@ class PlanningFlow(unittest.TestCase):
 
     def test_relative_run_paths_reach_publication_without_false_integrity_gates(self):
         self.relative_cli_paths = True
-        proposal = self.reach_ticket_approval(launch_panes=True)
+        self.reach_ticket_approval(launch_panes=True)
         view = self.cli(STATE, "ticket-approval-view", "--run-dir", str(self.run_dir))
         self.assertEqual(view.returncode, 0, view.stderr)
-        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
-        approved = self.ticket_approval("approve", "Approved for path regression", target=target)
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
+        approved = self.ticket_approval("approve", "Approved for path regression")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
         self.assertEqual(published.returncode, 0, published.stderr)
@@ -1011,14 +1183,12 @@ sha256 {resulting_digest or digest}
         marker.write_text("started")
 
     def ticket_approval(
-        self, decision: str, reason: str, *, target: Path | None = None, scope: str | None = None
+        self, decision: str, reason: str, *, scope: str | None = None
     ) -> subprocess.CompletedProcess[str]:
         args = ["ticket-approval", "--run-dir", str(self.run_dir), "--decision", decision]
         if scope:
             args += ["--scope", scope]
         args += ["--reason", reason]
-        if target is not None:
-            args += ["--target", str(target)]
         return self.cli(STATE, *args)
 
     def reach_ticket_approval(self, *, launch_panes: bool = False, execution_modes=None,
@@ -1387,7 +1557,7 @@ sha256 {resulting_digest or digest}
                 self.assertIn(marker, prompt.split("## Write Boundary")[1])
                 self.assertIn("Rewrite an existing marker", prompt)
 
-    def test_tracker_slug_skips_headings_inside_fenced_code(self):
+    def test_feature_slug_takes_precedence_over_fenced_task_headings(self):
         for index, fence in enumerate(("```", "~~~")):
             with self.subTest(fence=fence):
                 plan = self.repo / f"plan-{index}.md"
@@ -1401,7 +1571,7 @@ sha256 {resulting_digest or digest}
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 state = json.loads((self.runs / f"fenced-{index}" / "state.json").read_text())
-                self.assertEqual(state["tracker_slug"], "actual-plan-heading")
+                self.assertEqual(state["tracker_slug"], "planned-feature")
 
     def test_malformed_inputs_remain_inspectable_by_status_and_recovery(self):
         self.assertEqual(self.init_direct().returncode, 0)
@@ -1448,7 +1618,7 @@ sha256 {resulting_digest or digest}
         self.init_direct = lambda: self.cli(
             STATE, "init", "--task-file", self.plan_file(nested),
             "--conversation-brief", str(brief), "--brief-confirmed",
-            "--slug", "planned-feature", "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+            "--feature", "2026-10-27-planned-feature", "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
         write_spec = self.write_author_handoff
         write_tickets = self.write_tickets_handoff
 
@@ -1532,7 +1702,7 @@ sha256 {resulting_digest or digest}
         self.approve_spec_to_tickets()
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertNotIn("task", state)
-        self.assertEqual(state["tracker_slug"], "first-heading")
+        self.assertEqual(state["tracker_slug"], "planned-feature")
         self.assertEqual([item["path"] for item in state["inputs"]],
                          ["inputs/task-files/01-plan.md", "inputs/task-files/02-plan.md"])
         for item, original in zip(state["inputs"], (first, second)):
@@ -2513,7 +2683,7 @@ sha256 {resulting_digest or digest}
     def test_complete_ticket_flow_publishes_native_tracker_once(self):
         self.commit_mode = "commit"
         parent = subprocess.check_output(["git", "-C", str(self.repo), "rev-parse", "HEAD"]).decode().strip()
-        proposal_result = self.reach_ticket_approval(launch_panes=True)
+        self.reach_ticket_approval(launch_panes=True)
         state = json.loads((self.run_dir / "state.json").read_text())
         self.assertEqual(state["current_stage"], "awaiting-ticket-approval")
         self.assertIsNone(state["prepared_stage"], "a clean review goes to the human, not another model")
@@ -2531,8 +2701,8 @@ sha256 {resulting_digest or digest}
         self.assertEqual(walkthrough["ready_frontier"], ["ISSUE-001"])
         self.assertEqual(walkthrough["blocking_edges"], [{"blocked": "ISSUE-002", "prerequisite": "ISSUE-001"}])
 
-        target = self.repo / "trackers" / proposal_result["tracker"]["slug"]
-        approved = self.ticket_approval("approve", "Granularity and dependencies approved", target=target)
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
+        approved = self.ticket_approval("approve", "Granularity and dependencies approved")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         self.assertFalse(target.exists(), "approval stages but does not partially publish")
         state = json.loads((self.run_dir / "state.json").read_text())
@@ -2625,7 +2795,7 @@ sha256 {resulting_digest or digest}
             status["latest_review"]["candidate_sha256"],
             reviewed_before_revision["candidate_sha256"],
         )
-        premature = self.ticket_approval("approve", "too soon", target=self.repo / ".scratch" / "planned-feature")
+        premature = self.ticket_approval("approve", "too soon")
         self.assertNotEqual(premature.returncode, 0)
 
         self.render_and_baseline("tickets", 2)
@@ -2636,8 +2806,8 @@ sha256 {resulting_digest or digest}
         self.write_tickets_review()
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
-        target = self.repo / ".scratch" / state["tracker_slug"]
-        approved = self.ticket_approval("approve", "Accept revised tickets", target=target)
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
+        approved = self.ticket_approval("approve", "Accept revised tickets")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
         self.assertEqual(published.returncode, 0, published.stderr)
@@ -2661,23 +2831,23 @@ sha256 {resulting_digest or digest}
         state_path = self.run_dir / "state.json"
         state = json.loads(state_path.read_text())
         frozen = state["tracker_slug"]
-        target = self.repo / ".scratch" / frozen
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
         # Model a digest-valid candidate that disagrees with the run's fixed identity.
         state["tracker_slug"] = "different-fixed-slug"
         state_path.write_text(json.dumps(state))
-        rejected = self.ticket_approval("approve", "Approve tickets", target=target)
+        rejected = self.ticket_approval("approve", "Approve tickets")
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("tracker.slug must equal frozen", rejected.stderr)
         self.assertFalse(target.exists())
         state["tracker_slug"] = frozen
         state_path.write_text(json.dumps(state))
-        approved = self.ticket_approval("approve", "Approve tickets", target=target)
+        approved = self.ticket_approval("approve", "Approve tickets")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         state = json.loads(state_path.read_text())
         state["tracker_slug"] = "different-fixed-slug"
         state_path.write_text(json.dumps(state))
         for result in (
-            self.ticket_approval("approve", "Repeat approval", target=target),
+            self.ticket_approval("approve", "Repeat approval"),
             self.cli(STATE, "publish", "--run-dir", str(self.run_dir)),
         ):
             self.assertNotEqual(result.returncode, 0)
@@ -2713,17 +2883,15 @@ sha256 {resulting_digest or digest}
 
     def test_publication_refuses_collision_escape_and_changed_staging_without_touching_target(self):
         proposal_result = self.reach_ticket_approval()
-        slug = proposal_result["tracker"]["slug"]
-        collision = self.repo / slug
+        collision = self.repo / ".scratch" / "2026-10-27-planned-feature"
         collision.mkdir()
-        refused = self.ticket_approval("approve", "approve", target=collision)
+        refused = self.ticket_approval("approve", "approve")
         self.assertNotEqual(refused.returncode, 0)
         self.assertEqual(list(collision.iterdir()), [])
-        escaped = self.ticket_approval("approve", "approve", target=self.repo / ".." / slug)
-        self.assertNotEqual(escaped.returncode, 0)
+        collision.rmdir()
 
-        target = self.repo / ".scratch" / slug
-        approved = self.ticket_approval("approve", "approve", target=target)
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
+        approved = self.ticket_approval("approve", "approve")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         state_path = self.run_dir / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -3682,7 +3850,7 @@ sha256 {resulting_digest or digest}
         (self.runs / ".gitignore").write_text("**\n!*/\n!*.md\n")
         self.run_dir = self.runs / "plan-test"
         initialized = self.cli(
-            STATE, "init", "--task-file", self.plan_file("Plan a feature"), "--slug", "planned-feature",
+            STATE, "init", "--task-file", self.plan_file("Plan a feature"), "--feature", "2026-10-27-planned-feature",
             "--repo", str(self.repo), "--run-id", "plan-test", "--runs-root", str(self.runs),
             "--workspace-id", "WORKSPACE-1", "--config", str(self.config),
         )
@@ -4838,7 +5006,7 @@ Option?
         if stage == "spec":
             approved = self.cli(STATE, "approval", "--run-dir", str(self.run_dir), "--decision", "approve", "--reason", "Reviewed recovery")
         else:
-            approved = self.ticket_approval("approve", "Reviewed recovery", target=self.repo / ".scratch" / state["tracker_slug"])
+            approved = self.ticket_approval("approve", "Reviewed recovery")
         self.assertEqual(approved.returncode, 0, approved.stderr)
         state = json.loads(state_path.read_text())
         self.assertNotIn("resume_context", state)
@@ -5426,13 +5594,13 @@ Option?
         self.assertFalse(status["approval"]["spec"]["valid"])
 
     def test_publication_recovers_an_already_moved_tracker_and_refuses_duplicates(self):
-        proposal = self.reach_ticket_approval()
-        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        self.reach_ticket_approval()
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
         approved = self.ticket_approval(
-            "approve", "Human approved the reviewed tracker", target=target
+            "approve", "Human approved the reviewed tracker"
         )
         self.assertEqual(approved.returncode, 0, approved.stderr)
-        repeated = self.ticket_approval("approve", "Repeat the same approval", target=target)
+        repeated = self.ticket_approval("approve", "Repeat the same approval")
         self.assertEqual(repeated.returncode, 0, repeated.stderr)
         self.assertTrue(json.loads(repeated.stdout)["idempotent"])
 
@@ -5467,10 +5635,9 @@ Option?
         self.assertIn("already published", duplicate.stderr)
 
     def test_status_distinguishes_unrecorded_complete_staging_from_validated_state(self):
-        proposal = self.reach_ticket_approval()
-        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        self.reach_ticket_approval()
         approved = self.ticket_approval(
-            "approve", "Human approved before the process interruption", target=target
+            "approve", "Human approved before the process interruption"
         )
         self.assertEqual(approved.returncode, 0, approved.stderr)
         state_path = self.run_dir / "state.json"
@@ -5486,7 +5653,7 @@ Option?
         self.assertEqual(status["publication"]["phase"], "fully-staged")
         self.assertEqual(status["classification"], "awaiting-ticket-approval")
         recovered = self.ticket_approval(
-            "approve", "Human repeated approval after inspecting recovered staging", target=target
+            "approve", "Human repeated approval after inspecting recovered staging"
         )
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -5604,9 +5771,9 @@ Option?
         reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
         self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
 
-        target = self.repo / ".scratch" / proposal["tracker"]["slug"]
+        target = self.repo / ".scratch" / "2026-10-27-planned-feature"
         approved = self.ticket_approval(
-            "approve", "Human approved ticket granularity and dependencies", target=target
+            "approve", "Human approved ticket granularity and dependencies"
         )
         self.assertEqual(approved.returncode, 0, approved.stderr)
         published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
@@ -5651,6 +5818,8 @@ Option?
             "init",
             "--task-file",
             self.plan_file("A later planning task"),
+            "--feature",
+            "2026-10-27-later-feature",
             "--repo",
             str(self.repo),
             "--run-id",

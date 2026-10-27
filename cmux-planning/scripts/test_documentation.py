@@ -213,10 +213,27 @@ class TicketApprovalQuizDocumentation(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.approval)
 
+    def test_feature_name_dialog_and_derived_publication_are_documented(self):
+        guide = normalized(PLANNING)
+        for phrase in ("same dialog as the commit-mode question", "after the human chooses a fresh run",
+                       "explicit `--feature`", "on resume, re-init", "unfinished-run path",
+                       "smoke tests", "do not ask for a target path"):
+            self.assertIn(phrase, guide)
+        self.assertNotIn("ask for the target path", guide)
+        self.assertNotIn("--target <", guide)
+        self.assertNotIn("init --slug", guide)
+        for name in ("initialization-details.md", "ticket-publication-recovery.md"):
+            text = normalized(PLANNING.parent / "references" / name)
+            self.assertIn("feature", text)
+            self.assertIn("yyyy-mm-dd-<slug>", text)
+        readme = normalized(PLANNING.parent.parent / "README.md")
+        self.assertIn("same dialog as commit mode", readme)
+        self.assertIn("without a target-path question", readme)
+
     def test_quiz_answers_route_to_approval_ticket_revision_or_spec_revision(self):
         for phrase in (
-            "only when all three answers are positive (fits, correct, no change), ask for the target path",
-            "--decision approve --reason <human-reason> --target <repo-relative-or-absolute-target>",
+            "only when all three answers are positive (fits, correct, no change), approve using the frozen feature folder",
+            "--decision approve --reason <human-reason>",
             "if any answer differs, ask a concrete follow-up",
             "--decision revise --reason <concrete-change>",
             "fresh ticket pass, a new review, and a new quiz",

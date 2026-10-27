@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
+from datetime import date, datetime
 import json
 import os
 import re
@@ -112,6 +113,7 @@ from stage_snapshot import (
 )
 from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_digest, verify
 from tracker_contract import (
+    SLUG_BODY,
     ascii_fold,
     stage_native_tracker,
     ticket_modes,
@@ -169,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--grilling-markdown")
     init.add_argument("--repo", default=".")
     init.add_argument("--run-id")
-    init.add_argument("--slug", help="Frozen tracker slug: lowercase words separated by hyphens, at most 30 characters")
+    init.add_argument("--feature", help="Approved YYYY-MM-DD-<slug> folder directly in repository .scratch/")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument("--config")
     init.add_argument(
@@ -236,7 +238,6 @@ def build_parser() -> argparse.ArgumentParser:
     ticket_approval.add_argument("--run-dir", required=True)
     ticket_approval.add_argument("--decision", choices=("approve", "revise"), required=True)
     ticket_approval.add_argument("--reason", required=True)
-    ticket_approval.add_argument("--target")
     ticket_approval.add_argument(
         "--scope",
         choices=("tickets", "spec"),
@@ -802,6 +803,34 @@ def offer_unfinished_run(runs_root: Path, repository: Path) -> bool:
     return False
 
 
+def checked_feature(repository: Path, value: str) -> tuple[Path, str]:
+    raw = Path(value)
+    if ".." in raw.parts:
+        raise ConfigError("--feature must not contain path traversal")
+    candidate = (repository / ".scratch" / raw if len(raw.parts) == 1
+                 else raw if raw.is_absolute() else repository / raw)
+    feature = candidate.resolve()
+    scratch = repository / ".scratch"
+    if (scratch.resolve() != scratch or feature.parent != scratch
+            or candidate.is_symlink()):
+        raise ConfigError("--feature must be a direct folder in repository .scratch/")
+    match = re.fullmatch(rf"(\d{{4}}-\d{{2}}-\d{{2}})-({SLUG_BODY})", feature.name)
+    if not match or len(match[2]) > 30:
+        raise ConfigError("--feature must be YYYY-MM-DD-<slug>, with a lowercase kebab-case slug of at most 30 characters")
+    try:
+        date.fromisoformat(match[1])
+    except ValueError as error:
+        raise ConfigError("--feature must contain a valid calendar date") from error
+    return feature, match[2]
+
+
+def fresh_feature_available(feature: Path) -> None:
+    if feature.exists() and (
+            not feature.is_dir() or {p.name for p in feature.iterdir()} != {"grilling"}
+            or not (feature / "grilling").is_dir() or (feature / "grilling").is_symlink()):
+        raise ConfigError("existing --feature folder must contain exactly the grilling/ directory")
+
+
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     runs_root = Path(args.runs_root)
@@ -821,9 +850,13 @@ def init_run(args: argparse.Namespace) -> int:
         elif not fenced and re.match(r"^#{1,6}\s+", line):
             title = line.lstrip("#").strip()
             break
-    slug = args.slug if args.slug is not None else slugify(ascii_fold(title))
-    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
-        raise ConfigError("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
+    if args.feature is None and not args.grilling_json:
+        raise ConfigError("init without grilling input requires --feature")
+    # Grilling source-folder inheritance is handled separately; retain its title default for now.
+    feature_value = args.feature if args.feature is not None else (
+        datetime.fromisoformat(now).astimezone().strftime("%Y-%m-%d") + "-" + slugify(ascii_fold(title))
+    )
+    feature, slug = checked_feature(repository, feature_value)
     run_id = (
         checked_run_id(args.run_id)
         if args.run_id
@@ -838,6 +871,10 @@ def init_run(args: argparse.Namespace) -> int:
         require_current_format(existing, source=run_dir / "state.json")
         if Path(existing["repository"]).resolve() != repository:
             raise ConfigError(f"planning run belongs to another repository: {run_dir}")
+        if not isinstance(existing.get("feature_dir"), str):
+            raise ConfigError(f"planning run {run_dir} predates the frozen feature folder; inspect read-only and restart the run")
+        if args.feature is not None and Path(existing["feature_dir"]).resolve() != feature:
+            raise ConfigError("re-initialization cannot change the feature folder")
         stored_mode = existing.get("commit_mode", "propose")
         if args.commit_mode is not None and args.commit_mode != stored_mode:
             raise SystemExit(
@@ -872,6 +909,7 @@ def init_run(args: argparse.Namespace) -> int:
             repository,
             cwd=repository,
         )
+    fresh_feature_available(feature)
     workspace = resolve_workspace(args)
 
     # Last of the checks: creating the shared configuration is durable and must not happen for an
@@ -942,6 +980,7 @@ def init_run(args: argparse.Namespace) -> int:
         "layout_version": 2,
         "deliverables": {},
         "tracker_slug": slug,
+        "feature_dir": str(feature),
         "created_at": now,
         "repository": str(repository),
         "checkout_at_init": checkout_identity(repository),
@@ -2100,24 +2139,12 @@ def ticket_approval_view(run_dir: Path) -> int:
     return 0
 
 
-def checked_publication_target(
-    repository: Path, value: str, slug: str, *, allow_existing: bool = False
-) -> Path:
-    raw = Path(value)
-    if ".." in raw.parts:
-        raise ContractError("publication target contains path traversal")
-    target = (raw if raw.is_absolute() else repository / raw).resolve()
-    repository = repository.resolve()
-    try:
-        relative = target.relative_to(repository)
-    except ValueError as error:
-        raise ContractError("publication target escapes the target repository") from error
-    if not relative.parts:
-        raise ContractError("publication target must be one tracker directory below the repository")
-    if target.name != slug:
-        raise ContractError(
-            f"publication target basename must match approved tracker slug {slug!r}"
-        )
+def frozen_feature_target(state: dict, *, allow_existing: bool = False) -> Path:
+    if not isinstance(state.get("feature_dir"), str):
+        raise ContractError("planning run predates the frozen feature folder; restart the run")
+    target, slug = checked_feature(Path(state["repository"]), state["feature_dir"])
+    if slug != state["tracker_slug"]:
+        raise ContractError("feature folder slug must match frozen tracker slug")
     if target.exists() and not allow_existing:
         raise ContractError(f"publication target already exists: {target}")
     return target
@@ -2221,10 +2248,6 @@ def ticket_approval(args: argparse.Namespace) -> int:
             "recorded ticket approval is stale because its digest-bound proposal changed",
             expected_tracker_slug=state["tracker_slug"],
         )
-        if args.target:
-            repeated_target = (Path(args.target) if Path(args.target).is_absolute() else Path(state["repository"]) / args.target).resolve()
-            if repeated_target != Path(approved_tickets["target"]).resolve():
-                raise ContractError("idempotent ticket approval cannot change the publication target")
         if state.get("current_stage") == "ready-to-publish":
             staged_state = state.get("staged_tracker")
             if not isinstance(staged_state, dict):
@@ -2255,8 +2278,6 @@ def ticket_approval(args: argparse.Namespace) -> int:
         raise ContractError("ticket approval is available only after a valid independent review")
     if args.scope != "tickets":
         raise ContractError("--scope spec is valid only with --decision revise")
-    if not args.target:
-        raise ContractError("ticket approval requires the explicit --target tracker path")
     reviewed = state.get("reviewed_tickets")
     approved_spec = state.get("approved_spec")
     if not isinstance(reviewed, dict) or not isinstance(approved_spec, dict):
@@ -2276,9 +2297,7 @@ def ticket_approval(args: argparse.Namespace) -> int:
         "reviewed ticket candidate changed after review",
         expected_tracker_slug=state["tracker_slug"],
     )
-    target = checked_publication_target(
-        Path(state["repository"]), args.target, proposal["tracker"]["slug"]
-    )
+    target = frozen_feature_target(state)
     target.parent.mkdir(parents=True, exist_ok=True)
     staged = run_dir.resolve() / "publication-stage"
     if staged.exists() and staged.resolve() != staged:
@@ -2398,12 +2417,9 @@ def publish_tracker(run_dir: Path) -> int:
         "approved ticket proposal identity changed before publication",
         expected_tracker_slug=state["tracker_slug"],
     )
-    target = checked_publication_target(
-        Path(state["repository"]),
-        approved_tickets["target"],
-        proposal["tracker"]["slug"],
-        allow_existing=True,
-    )
+    target = frozen_feature_target(state, allow_existing=True)
+    if Path(approved_tickets["target"]) != target:
+        raise ContractError("publication target must match the frozen feature folder and slug")
     staged = checked_staging_path(run_dir, staged_state.get("path"))
     if target.exists():
         if staged.exists():
