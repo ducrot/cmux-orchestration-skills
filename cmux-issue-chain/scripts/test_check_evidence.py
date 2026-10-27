@@ -25,7 +25,7 @@ class EvidenceCli(unittest.TestCase):
         self.command = "printf 'green\\n'"
         self.commands = [self.command, "printf 'second\\n'"]
         self.rules()
-        self.state = {"workflow": "issue-chain", "layout_version": 1,
+        self.state = {"workflow": "issue-chain", "layout_version": 2,
                       "deliverables": {"tracker": str(self.tracker)}}
         (self.run_dir / "state.json").write_text(json.dumps(self.state))
         self.report = self.root / "report.md"

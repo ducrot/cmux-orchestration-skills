@@ -274,14 +274,15 @@ def slugify(text: str, max_length: int = 30) -> str:
 
 
 def run_identifier(workflow: str, key: str, now: str) -> str:
-    """Build a readable UTC minute identity using the shared run-id grammar."""
-    return RUN_ID_RE.sub("-", f"{workflow}-{key}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+    """Build a chronological identity in the executing machine's local timezone."""
+    local = datetime.fromisoformat(now).astimezone()
+    return RUN_ID_RE.sub("-", f"{local:%Y-%m-%d-%H%M}-{workflow}-{key}").strip("-")
 
 
 def read_run_state(run_dir: Path) -> dict[str, Any]:
     """Load a current run before any continuation or lifecycle write."""
     state = read_json(run_dir / "state.json")
-    if not isinstance(state, dict) or state.get("workflow") != "issue-chain" or state.get("layout_version") != 1:
+    if not isinstance(state, dict) or state.get("workflow") != "issue-chain" or state.get("layout_version") != 2:
         raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
     state.setdefault("triage_mode", "human")
     return state

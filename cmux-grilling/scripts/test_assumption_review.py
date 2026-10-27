@@ -20,7 +20,7 @@ class RecordAssumptionReview(unittest.TestCase):
         self.run_dir = self.artifact.parent / "run"
         self.run_dir.mkdir(exist_ok=True)
         (self.run_dir / "state.json").write_text(json.dumps(
-            {"workflow": "grilling", "layout_version": 1, "max_rounds": 4}))
+            {"workflow": "grilling", "layout_version": 2, "max_rounds": 4}))
         self.events = self.run_dir / "events.jsonl"
         self.events.write_text("")
 

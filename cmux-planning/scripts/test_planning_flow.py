@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -384,16 +386,21 @@ class PlanningFlow(unittest.TestCase):
     def test_shared_identity_slug_override_and_sibling_discovery(self):
         sibling = self.runs / "grill-sibling"
         sibling.mkdir(parents=True)
-        (sibling / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1, "slug": "sibling"}))
-        result = self.cli(STATE, "init", "--task-file", self.plan_file("Task: Static teaser website for cmux Orchestration skills"), "--workspace-id", "WORKSPACE-1")
+        (sibling / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 2, "slug": "sibling"}))
+        result = self.cli(STATE, "init", "--task-file", self.plan_file("Task: Static teaser website for cmux Orchestration skills"), "--workspace-id", "WORKSPACE-1", env={**self.env(), "TZ": "Pacific/Kiritimati"})
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip().splitlines()[-1]
         self.assertEqual(run_dir.parent, self.runs)
-        self.assertRegex(run_dir.name, r"^plan-task-static-teaser-website-for-\d{4}-\d{2}-\d{2}-\d{4}$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-plan-task-static-teaser-website-for$")
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["tracker_slug"], "task-static-teaser-website-for")
         self.assertEqual(state["workflow"], "planning")
-        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["layout_version"], 2)
+        created = datetime.fromisoformat(state["created_at"])
+        self.assertEqual(created.utcoffset(), timedelta(0))
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-plan-task-static-teaser-website-for")
+        for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
+            self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
         self.assertEqual(state["schema_version"], 3)
         self.assertEqual(state["deliverables"], {})
         offered = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--workspace-id", "WORKSPACE-1")
@@ -401,7 +408,7 @@ class PlanningFlow(unittest.TestCase):
         override = self.cli(STATE, "init", "--task-file", self.plan_file("Another task"), "--slug", "frozen-name", "--new-run", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(override.returncode, 0, override.stderr)
         overridden = self.repo / override.stdout.strip().splitlines()[-1]
-        self.assertTrue(overridden.name.startswith("plan-frozen-name-"))
+        self.assertTrue(overridden.name.endswith("-plan-frozen-name"))
         self.assertEqual(json.loads((overridden / "state.json").read_text())["tracker_slug"], "frozen-name")
         reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Changed task"), "--run-id", overridden.name, "--slug", "different-name", "--workspace-id", "WORKSPACE-1")
         self.assertEqual(reinit.returncode, 0, reinit.stderr)
@@ -412,18 +419,22 @@ class PlanningFlow(unittest.TestCase):
             self.assertIn("--slug", invalid.stderr)
             self.assertFalse((self.runs / "invalid").exists())
 
-    def test_schema_two_and_legacy_root_are_read_only(self):
+    def test_old_formats_are_read_only_and_root_name_is_unrestricted(self):
         self.assertEqual(self.init_direct().returncode, 0)
         state_path = self.run_dir / "state.json"
         original = json.loads(state_path.read_text())
-        for change in ({"schema_version": 2}, {"workflow": "grilling"}, {"layout_version": 0}):
+        for change in ({"schema_version": 2}, {"workflow": "grilling"}, {"layout_version": 1}):
             state_path.write_text(json.dumps({**original, **change}))
             before = file_contents(self.run_dir)
+            if change == {"layout_version": 1}:
+                offered = self.cli(STATE, "init")
+                self.assertEqual(offered.returncode, 3, offered.stderr)
+                self.assertEqual(json.loads(offered.stdout)["unfinished_run"]["run_id"], self.run_dir.name)
+                self.assertEqual(before, file_contents(self.run_dir))
             for command in ("publish", "resume"):
                 refused = self.cli(STATE, command, "--run-dir", str(self.run_dir))
                 self.assertNotEqual(refused.returncode, 0)
                 self.assertIn("legacy layout", refused.stderr)
-                self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
                 self.assertIn("reviewed migration", refused.stderr)
             refused_close = self.cli(PANE, "--cmux-cmd", str(self.cmux), "close", "--run-dir", str(self.run_dir), "--stage", "spec", "--pass", "1", "--surface", "SURFACE-1")
             self.assertNotEqual(refused_close.returncode, 0)
@@ -436,19 +447,15 @@ class PlanningFlow(unittest.TestCase):
             self.cmux_log.unlink(missing_ok=True)
             self.assertEqual(before, file_contents(self.run_dir))
         state_path.write_text(json.dumps(original))
-        legacy_dir = self.repo / ".scratch/orchestrator/planning-runs" / self.run_dir.name
-        legacy_dir.parent.mkdir(parents=True)
-        self.run_dir.rename(legacy_dir)
-        refused = self.cli(STATE, "prepare", "--run-dir", str(legacy_dir), "--stage", "spec", "--pass", "1")
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn(".scratch/orchestrator/planning-runs/", refused.stderr)
-        before = file_contents(legacy_dir)
-        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Task"), "--run-id", legacy_dir.name, "--runs-root", str(legacy_dir.parent), "--workspace-id", "WORKSPACE-1")
-        self.assertNotEqual(reinit.returncode, 0)
-        self.assertIn("legacy layout", reinit.stderr)
-        self.assertIn("human decision to restart", reinit.stderr)
-        self.assertIn("reviewed migration", reinit.stderr)
-        self.assertEqual(before, file_contents(legacy_dir))
+        planning_runs = self.repo / ".scratch/orchestrator/planning-runs"
+        planning_runs.mkdir(parents=True)
+        reinit = self.cli(STATE, "init", "--task-file", self.plan_file("Task"), "--run-id", "fresh", "--runs-root", str(planning_runs), "--workspace-id", "WORKSPACE-1")
+        self.assertEqual(reinit.returncode, 0, reinit.stderr)
+        fresh = planning_runs / "fresh"
+        state = json.loads((fresh / "state.json").read_text())
+        self.assertEqual(state["layout_version"], 2)
+        prepared = self.cli(STATE, "prepare", "--run-dir", str(fresh), "--stage", "spec", "--pass", "1")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
 
     def test_initialization_supports_default_relative_and_absolute_roots(self):
         for mode, root_args in (

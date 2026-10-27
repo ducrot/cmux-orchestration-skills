@@ -703,7 +703,10 @@ Read when writing any event with `run_state.py event` (including drift records) 
 
 The scripts are deterministic helpers. Run them from the repo root.
 
-Create a run (idempotent; prints the run directory). After the configuration checkpoint above,
+Create a run (idempotent; prints its directory). Defaults use
+`YYYY-MM-DD-HHMM-grill-<slug>` in local time; timestamps stay UTC. Explicit `--run-id` wins.
+Runs use `layout_version: 2`; `status` reads old layouts, while continuation refuses them
+with “unsupported legacy layout”. After the configuration checkpoint above,
 `init` loads the existing worker configuration, validates and preflights all four lanes together,
 writes one immutable launch wave, and pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out

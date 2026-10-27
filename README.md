@@ -169,9 +169,9 @@ Workers run in visible cmux panes. The launch command carries a start prompt ins
 
 Structured reports gate advancement, and Git snapshots support checks for unauthorized changes, including staged changes and commits. Coverage has limits, including ignored files and some untracked content; see the [integrity boundaries](cmux-planning/SKILL.md#ground-rules) for the exact scope. A clean report alone does not establish that a stage is safe to advance.
 
-All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Grilling results live beside the selected tracker or in `.scratch/grilling/`; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
+All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Default run names use `YYYY-MM-DD-HHMM-<skill>-<key>` in local time, with `grill`, `plan`, and `chain` as the skill keys. Run-state and event timestamps remain UTC. Explicit `--run-id` values are preserved. New runs store `layout_version: 2`. Grilling results live beside the selected tracker or in `.scratch/grilling/`; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
 
-Legacy run layouts remain inspectable read-only. Follow the relevant skill's recovery guidance before continuing an older run.
+Older run layouts remain readable with `status` and refuse continuation with “unsupported legacy layout”. Follow the relevant skill's recovery guidance before continuing an older run.
 
 ## Tokenverbrauch messen
 

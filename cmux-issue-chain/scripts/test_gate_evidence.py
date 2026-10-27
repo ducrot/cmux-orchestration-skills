@@ -23,7 +23,7 @@ class GateEvidenceCli(unittest.TestCase):
         self.reset()
 
     def reset(self, stage="implement"):
-        self.state = {"workflow": "issue-chain", "layout_version": 1,
+        self.state = {"workflow": "issue-chain", "layout_version": 2,
                       "current_stage": stage, "prepared_stage": {"pass": 99}}
         (self.run_dir / "state.json").write_text(json.dumps(self.state))
         (self.run_dir / "events.jsonl").write_text("")

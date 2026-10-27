@@ -375,9 +375,7 @@ def _verify_role_location(state: dict[str, Any], run_dir: Path, entry: dict[str,
 def require_current_format(state: dict[str, Any], *, source: Path) -> None:
     if (
         state.get("workflow") != "planning"
-        or state.get("layout_version") != 1
-        or any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
-               for path in source.resolve().parents)
+        or state.get("layout_version") != 2
         or state.get("schema_version") != RUN_STATE_SCHEMA_VERSION
         or state.get("artifact_manifest_version") != MANIFEST_VERSION
         or not isinstance(state.get("artifact_manifest"), dict)
@@ -387,7 +385,6 @@ def require_current_format(state: dict[str, Any], *, source: Path) -> None:
             f"planning run {source.parent} uses an unsupported legacy layout or predates artifact-manifest format {MANIFEST_VERSION}; "
             "do not trust or resume it silently. Inspect it read-only, then obtain a human decision "
             "to restart the run or use a separately reviewed migration procedure. "
-            "The legacy root .scratch/orchestrator/planning-runs/ cannot be continued; "
             "new runs belong under .scratch/orchestrator/runs/"
         )
 

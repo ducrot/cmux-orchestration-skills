@@ -514,7 +514,7 @@ Read when drafting the run recap or selecting its next issue: [references/recap-
 
 ## Artifact locations and failure policy
 
-Each run records `workflow: planning`, `layout_version: 1`, and an initially empty `deliverables` object.
+Each run records `workflow: planning`, `layout_version: 2`, and an initially empty `deliverables` object.
 `tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication
 gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept
 optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen
@@ -522,9 +522,10 @@ value at its gates. This does not authorize ticket revision after approval.
 
 Publication records `deliverables.tracker` alongside `published_tracker`. The frozen `tracker_slug`
 uses the brief's Goal when present, otherwise the first plan's first heading (or first line, at most 30 characters); `init --slug <value>` overrides it with lowercase
-words separated by hyphens. Default ids are `plan-<tracker_slug>-<YYYY-MM-DD>-<HHMM>` (UTC).
-Legacy runs under `.scratch/orchestrator/planning-runs/` cannot continue; inspect read-only and obtain
-a human decision to restart or use a separately reviewed migration procedure.
+words separated by hyphens. Default ids are `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time;
+run-state and event timestamps remain UTC, and explicit `--run-id` values are preserved.
+Runs with an older layout version remain readable with `status`; continuation refuses them with
+“unsupported legacy layout”. Restart them after inspection.
 
 Runs live under `.scratch/orchestrator/runs/<run-id>/` by default. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,

@@ -286,5 +286,6 @@ def slugify(text: str, max_length: int = 30) -> str:
 
 
 def run_identifier(workflow: str, key: str, now: str) -> str:
-    """Build a readable UTC minute identity using the shared run-id grammar."""
-    return RUN_ID_RE.sub("-", f"{workflow}-{key}-{now[:10]}-{now[11:13]}{now[14:16]}").strip("-")
+    """Build a chronological identity in the executing machine's local timezone."""
+    local = datetime.fromisoformat(now).astimezone()
+    return RUN_ID_RE.sub("-", f"{local:%Y-%m-%d-%H%M}-{workflow}-{key}").strip("-")

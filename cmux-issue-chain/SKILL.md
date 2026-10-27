@@ -868,9 +868,11 @@ and `render_prompt.py` refuse malformed trackers too.
 
 Read when a to-tickets tracker needs frontmatter adoption: [references/tracker-adoption.md](references/tracker-adoption.md).
 
-Create and append run-state. The default run id is `<ISSUE-ID>-<YYYY-MM-DD>-<HHMM>` (UTC) — issue first
-so runs group per issue, timestamped so re-runs never reuse a stale run directory (a leftover report from
-an earlier attempt would satisfy the watcher instantly). `init` pins the run's cmux workspace
+Create and append run-state. The default run id is `YYYY-MM-DD-HHMM-chain-<issue>` in local time, with the issue key lowercased
+(for example `issue-001`); run-state and event timestamps remain UTC, and explicit `--run-id` values are
+preserved. New runs use `layout_version: 2`; `status` reads older layouts, while continuation refuses them
+with “unsupported legacy layout”. Runs sort chronologically by name; an existing directory is reused only
+through the existing-run checks. `init` pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out for
 offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs root, so run state
 never reaches git in any target repo. For an AFK issue, initialization requires the configuration

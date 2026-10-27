@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
     init.add_argument("--slug", help="Artifact slug: lowercase words separated by hyphens, at most 30 characters")
-    init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
+    init.add_argument("--run-id", help="Stable run id. Defaults to YYYY-MM-DD-HHMM-grill-<slug> (local time)")
     init.add_argument("--runs-root", default=f"{TRACKER_ROOT}/orchestrator/runs")
     init.add_argument("--max-rounds", type=int, default=4, help="Round budget; each round asks the whole frontier")
     init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
@@ -342,7 +342,7 @@ def init_run(args: argparse.Namespace) -> int:
     if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
         raise SystemExit("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
     now = utc_now()
-    # grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC): readable, sortable, never reused across runs.
+    # YYYY-MM-DD-HHMM-grill-<slug> (local time): readable and chronologically sortable.
     run_id = args.run_id or run_identifier("grill", slug, now)
     runs_root = Path(args.runs_root)
     refuse_runs_root_in_skill(runs_root)
@@ -403,7 +403,7 @@ def init_run(args: argparse.Namespace) -> int:
         "commit_baseline": commit_baseline,
         "working_directory": str(Path.cwd()),
         "commit_mode": args.commit_mode or "propose",
-        "layout_version": 1,
+        "layout_version": 2,
         "deliverables": {},
         "created_at": now,
         "workspace_id": workspace_id,

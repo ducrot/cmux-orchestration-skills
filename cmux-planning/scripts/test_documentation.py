@@ -646,16 +646,21 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertEqual(parsers, [parsers[0]] * 2)
         self.assertEqual(sources, [sources[0]] * 3)
 
-    def test_shared_root_and_legacy_documentation(self):
+    def test_shared_root_and_local_run_name_documentation(self):
         if not README.is_file():
             self.skipTest("repository README is absent")
-        for guide in (README, PLANNING):
+        self.assertIn("YYYY-MM-DD-HHMM-<skill>-<key>", documentation(README))
+        for skill, key in (("grilling", "grill"), ("planning", "plan"), ("issue-chain", "chain")):
+            guide = REPOSITORY / f"cmux-{skill}" / "SKILL.md"
             text = documentation(guide)
-            self.assertIn(".scratch/orchestrator/runs/<run-id>/", text)
-            self.assertIn("deliverables", text)
-            for line in text.splitlines():
-                if "planning-runs" in line:
-                    self.assertIn("legacy", line.lower())
+            self.assertIn(f"YYYY-MM-DD-HHMM-{key}-", text)
+            self.assertIn("local time", text)
+            for path in (guide, *(guide.parent / "references").glob("*.md")):
+                current = path.read_text()
+                self.assertNotIn("planning-runs/", current, path)
+                self.assertNotRegex(current, r"(?:plan|grill|chain)-[^`\n]*<YYYY-MM-DD>-<HHMM>", path)
+                self.assertNotIn("layout_version: 1", current, path)
+            self.assertNotIn("<ISSUE-ID>-<YYYY-MM-DD>-<HHMM>", text)
 
     def test_every_shipped_guide_requires_a_coordinated_schema_v3_upgrade(self):
         if not README.is_file():

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 import json
 import os
 import shlex
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -299,15 +301,20 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 self.assertIn("gate=advance", validated.stdout)
 
     def test_default_identity_and_slug_override(self):
-        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace")
+        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip()
-        self.assertRegex(run_dir.name, r"^grill-task-static-teaser-website-for-\d{4}-\d{2}-\d{2}-\d{4}$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-grill-task-static-teaser-website-for$")
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["slug"], "task-static-teaser-website-for")
         self.assertLessEqual(len(state["slug"]), 30)
         self.assertEqual(state["workflow"], "grilling")
-        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["layout_version"], 2)
+        created = datetime.fromisoformat(state["created_at"])
+        self.assertEqual(created.utcoffset(), timedelta(0))
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-grill-task-static-teaser-website-for")
+        for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
+            self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
         self.assertEqual(state["deliverables"], {})
         override = self.init_for("custom", "--slug", "chosen-slug")
         self.assertEqual(override.returncode, 0, override.stderr)
@@ -340,6 +347,26 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertIn("--max-rounds must be >= 1", invalid.stderr)
 
     def test_legacy_run_is_inspectable_but_cannot_continue_or_launch(self):
+        self.assertEqual(self.init_for("legacy").returncode, 0)
+        self.cmux_log.unlink()  # Ignore the successful init decoration.
+        run_dir = self.run_dir("legacy")
+        state = self.read_state("legacy")
+        state["layout_version"] = 1
+        (run_dir / "state.json").write_text(json.dumps(state))
+        before = file_contents(run_dir)
+        calls = [self.init_for("legacy"),
+                 self.run_state("event", "--run-dir", str(run_dir), "--type", "test", "--message", "test"),
+                 self.pane("launch", "--run-dir", str(run_dir), "--lane", "web", "--anchor", "ANCHOR")]
+        for result in calls:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported legacy layout", result.stderr)
+        inspected = self.run_state("status", "--run-dir", str(run_dir))
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertIn("unsupported legacy layout", inspected.stdout)
+        self.assertEqual(before, file_contents(run_dir))
+        self.assertFalse(self.cmux_log.exists())
+
+    def test_run_without_workflow_and_layout_is_inspectable_but_cannot_continue_or_launch(self):
         self.assertEqual(self.init_for("legacy").returncode, 0)
         self.cmux_log.unlink()  # Ignore the successful init decoration.
         run_dir = self.run_dir("legacy")

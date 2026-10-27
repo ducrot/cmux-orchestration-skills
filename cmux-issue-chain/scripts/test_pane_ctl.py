@@ -32,7 +32,7 @@ class PaneCtlCase(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.run_dir.parent)], check=True)
         (self.run_dir / "state.json").write_text(
             json.dumps({
-                "workflow": "issue-chain", "layout_version": 1,
+                "workflow": "issue-chain", "layout_version": 2,
                 "run_id": "RUN-1",
                 "workspace_id": "WS-UUID",
                 "issue": {"id": "ISSUE-001"},
@@ -154,7 +154,7 @@ class Workspace(PaneCtlCase):
 
     def test_null_workspace_fails_loudly(self):
         (self.run_dir / "state.json").write_text(
-            json.dumps({"workflow": "issue-chain", "layout_version": 1, "workspace_id": None}), encoding="utf-8"
+            json.dumps({"workflow": "issue-chain", "layout_version": 2, "workspace_id": None}), encoding="utf-8"
         )
         proc = self.run_ctl("workspace", "--run-dir", str(self.run_dir))
         self.assertNotEqual(proc.returncode, 0)

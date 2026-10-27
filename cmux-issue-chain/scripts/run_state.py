@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
     init.add_argument("--tracker", required=True, help="Tracker directory, e.g. .scratch/<tracker>")
     init.add_argument("--issue", required=True)
-    init.add_argument("--run-id", help="Stable run id. Defaults to chain-issue-NNN-<YYYY-MM-DD>-<HHMM> (UTC)")
+    init.add_argument("--run-id", help="Stable run id. Defaults to YYYY-MM-DD-HHMM-chain-issue-NNN (local time)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument(
         "--config",
@@ -165,7 +165,8 @@ def run_command(args: argparse.Namespace) -> int:
     if args.command not in {"init", "prepare", "gate", "complete", "publish-triage"}:
         return dispatch_command(args)
     if args.command == "init":
-        args.run_id = args.run_id or run_identifier("chain", slugify(args.issue), utc_now())
+        args.init_now = utc_now()
+        args.run_id = args.run_id or run_identifier("chain", slugify(args.issue), args.init_now)
         run_dir = Path(args.runs_root) / args.run_id
     else:
         run_dir = Path(args.run_dir)
@@ -249,7 +250,7 @@ def init_run(args: argparse.Namespace) -> int:
     if args.issue not in issues:
         raise SystemExit(f"Unknown issue: {args.issue}")
     issue = issues[args.issue]
-    now = utc_now()
+    now = getattr(args, "init_now", None) or utc_now()
     # Workflow and issue key group execution runs in the shared flat root.
     run_id = args.run_id or run_identifier("chain", slugify(issue.id), now)
     runs_root = Path(args.runs_root)
@@ -317,7 +318,7 @@ def init_run(args: argparse.Namespace) -> int:
         "commit_baseline": commit_baseline,
         "working_directory": str(Path.cwd()),
         "commit_mode": commit_mode or "propose",
-        "layout_version": 1,
+        "layout_version": 2,
         "deliverables": {"tracker": str(tracker), "issue": issue.path},
         "created_at": now,
         "workspace_id": workspace_id,

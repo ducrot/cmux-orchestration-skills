@@ -847,7 +847,7 @@ class WallTime(unittest.TestCase):
         (tracker / "README.md").write_text(
             f"## Ground rules\n\n- Canonical check commands:\n  - `{command}`\n")
         (self.run_dir / "state.json").write_text(json.dumps({
-            "workflow": "issue-chain", "layout_version": 1,
+            "workflow": "issue-chain", "layout_version": 2,
             "deliverables": {"tracker": str(tracker)},
         }))
         for script, args in (

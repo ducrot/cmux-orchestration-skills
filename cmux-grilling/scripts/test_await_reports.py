@@ -31,7 +31,7 @@ from parse_research_report import EXIT_CODES as GATE_EXIT_CODES  # noqa: E402
 
 def write_state(run_dir: str, **fields) -> None:
     (Path(run_dir) / "state.json").write_text(
-        json.dumps({"workflow": "grilling", "layout_version": 1, "max_rounds": 4, **fields}), encoding="utf-8"
+        json.dumps({"workflow": "grilling", "layout_version": 2, "max_rounds": 4, **fields}), encoding="utf-8"
     )
 
 

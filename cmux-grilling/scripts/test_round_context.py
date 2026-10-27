@@ -80,7 +80,7 @@ class Context(unittest.TestCase):
         validate_question({**base, 'depends_on': []}, read_events(self.run))
 
     def test_event_cli_refuses_missing_dependencies(self):
-        (self.run / 'state.json').write_text(json.dumps({'workflow': 'grilling', 'layout_version': 1, 'max_rounds': 4}))
+        (self.run / 'state.json').write_text(json.dumps({'workflow': 'grilling', 'layout_version': 2, 'max_rounds': 4}))
         command = [sys.executable, str(Path(__file__).parent / 'run_state.py'), 'event', '--run-dir', str(self.run), '--type', 'grill.question', '--message', 'question', '--data']
         for data, expected in (({'round': 3, 'id': 'Q1', 'question': 'Valid?'}, 1), ({'round': 3, 'id': 'Q1', 'question': 'Valid?', 'depends_on': ['R1Q1']}, 0)):
             proc = subprocess.run(command + [json.dumps(data)], capture_output=True, text=True)

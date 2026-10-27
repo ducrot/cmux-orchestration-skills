@@ -806,13 +806,6 @@ def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     runs_root = Path(args.runs_root)
     refuse_runs_root_in_skill(runs_root)
-    if any(path.parts[-3:] == (".scratch", "orchestrator", "planning-runs")
-           for path in (runs_root.resolve(), *runs_root.resolve().parents)):
-        raise ConfigError(
-            "unsupported legacy layout .scratch/orchestrator/planning-runs/; inspect read-only, "
-            "then obtain a human decision to restart the run or use a separately reviewed "
-            "migration procedure. New runs belong under .scratch/orchestrator/runs/"
-        )
     if not args.new_run and not args.run_id and offer_unfinished_run(runs_root, repository):
         return 3
     sources = task_inputs(args)
@@ -946,7 +939,7 @@ def init_run(args: argparse.Namespace) -> int:
         "commit_baseline": capture_baseline(repository),
         "commit_mode": args.commit_mode or "propose",
         "artifact_language": args.artifact_language or DEFAULT_ARTIFACT_LANGUAGE,
-        "layout_version": 1,
+        "layout_version": 2,
         "deliverables": {},
         "tracker_slug": slug,
         "created_at": now,

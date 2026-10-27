@@ -58,8 +58,9 @@ file. `render_prompt.py round --draft-path <path>` overrides the draft location;
 resolve strictly inside the run-local `drafts/` directory (never run state, prompts,
 synthesis, or any lane's report) and differ from the report handoff path.
 
-Run layout: `state.json` records `workflow: grilling`, `layout_version: 1`, `max_rounds`, and `slug` (at most 30
-characters; override with `init --slug <value>` using lowercase words separated by hyphens).
+Run layout: `state.json` records `workflow: grilling`, `layout_version: 2`, `max_rounds`, and `slug` (at most 30
+characters; override with `init --slug <value>` using lowercase words separated by hyphens). Default names are `YYYY-MM-DD-HHMM-grill-<slug>` in local
+time; state and event timestamps remain UTC, and explicit `--run-id` values are preserved.
 `complete` requires `--markdown` and `--json` paths resolving under the recorded `output_dir` and
 records them in `deliverables`. Artifact JSON and `pending-decisions` discovery remain unchanged.
 Before continuing an existing run, inspect it with `run_state.py status --run-dir <run-dir>`.

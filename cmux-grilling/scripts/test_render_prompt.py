@@ -140,7 +140,7 @@ class RenderCli(unittest.TestCase):
         self.run_dir.mkdir()
         (self.run_dir / "task.md").write_text("Research task\n", encoding="utf-8")
         (self.run_dir / "state.json").write_text(
-            json.dumps({"workflow": "grilling", "layout_version": 1, "run_id": "r", "max_rounds": 2, "task_file": "task.md"}),
+            json.dumps({"workflow": "grilling", "layout_version": 2, "run_id": "r", "max_rounds": 2, "task_file": "task.md"}),
             encoding="utf-8",
         )
 

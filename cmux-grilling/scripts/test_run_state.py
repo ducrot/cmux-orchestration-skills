@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -131,11 +132,16 @@ class OutputPathDerivation(unittest.TestCase):
         self.assertEqual(slugify("abc defghi", 5), "abc")
         self.assertEqual(slugify("ABC---123"), "abc-123")
 
-    def test_run_identifier_cleans_keys_and_formats_utc_minute(self):
+    def test_run_identifier_cleans_keys_and_formats_local_minute(self):
         from orchestrator_lib import run_identifier, slugify
-        now = "2026-09-15T09:47:19+00:00"
-        self.assertEqual(run_identifier("chain", slugify("ISSUE-001"), now), "chain-issue-001-2026-09-15-0947")
-        self.assertEqual(run_identifier("plan", "A key?!", now), "plan-A-key--2026-09-15-0947")
+        now = "2026-09-15T02:47:19+00:00"
+        try:
+            with patch.dict(os.environ, {"TZ": "America/Los_Angeles"}):
+                time.tzset()
+                self.assertEqual(run_identifier("chain", slugify("ISSUE-001"), now), "2026-09-14-1947-chain-issue-001")
+                self.assertEqual(run_identifier("plan", "A key?!", now), "2026-09-14-1947-plan-A-key")
+        finally:
+            time.tzset()
 
     def test_ignore_bootstrap_publishes_complete_bytes_and_preserves_existing_file(self):
         from run_state import ensure_runs_root_ignored
@@ -343,7 +349,7 @@ class RecordDecision(unittest.TestCase):
         )
         self.run_dir = self.root / "run"
         self.run_dir.mkdir()
-        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 1, "max_rounds": 4}))
+        (self.run_dir / "state.json").write_text(json.dumps({"workflow": "grilling", "layout_version": 2, "max_rounds": 4}))
 
     def tearDown(self):
         self.tmp.cleanup()

@@ -36,7 +36,7 @@ from test_support import FAKE_CMUX  # noqa: E402
 
 def write_state(run_dir: str, **fields) -> None:
     (Path(run_dir) / "state.json").write_text(
-        json.dumps({"workflow": "issue-chain", "layout_version": 1, **fields}), encoding="utf-8"
+        json.dumps({"workflow": "issue-chain", "layout_version": 2, **fields}), encoding="utf-8"
     )
 
 
