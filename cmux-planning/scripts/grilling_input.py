@@ -348,6 +348,9 @@ def normalize_revalidation(
         for assumption, review in zip(assumptions, data["assumption_review"], strict=True):
             assumption["grilling_review"] = copy.deepcopy(review)
         normalized["open_facts"] = copy.deepcopy(data["open_facts"])
+    if "premise_correction_review" in data:
+        for correction, review in zip(corrections, data["premise_correction_review"], strict=True):
+            correction["grilling_review"] = copy.deepcopy(review)
     return normalized
 
 

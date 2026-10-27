@@ -7,10 +7,11 @@ python3 scripts/planning_state.py show-revalidation --run-dir <run-dir>
 ```
 
 Explain that freshness is a human judgment. Show the artifact task and repository, current HEAD and
-status identity, Markdown premise corrections, every assumption, and every open, decided, or deferred
+status identity, premise corrections, every assumption, and every open, decided, or deferred
 decision. For new-form pairs, show each recorded grilling review outcome and value (including any
-corrected text and reason), and all open facts. Show these as context and never pre-apply them: require
-a fresh human outcome for every assumption, including previously reviewed and unreviewed assumptions.
+corrected text and reason), recorded premise-correction reviews with outcome, value and reason, and
+all open facts. Show these as context and never pre-apply them: require a fresh human outcome for every
+assumption and premise correction, including previously reviewed and unreviewed entries.
 Unanswered facts are missing information for the specification author. Record a JSON outcomes file
 with this unchanged shape:
 

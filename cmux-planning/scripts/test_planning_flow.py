@@ -23,7 +23,7 @@ import orchestrator_lib  # noqa: E402
 from planning_state import PUBLISHING_COMMANDS  # noqa: E402
 from run_briefing import project_board, read_events  # noqa: E402
 from spec_contract import validate_spec  # noqa: E402
-from test_grilling_input import extend_pair, render_extension  # noqa: E402
+from test_grilling_input import extend_pair, extend_premise_pair, render_extension  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
 from test_tracker_contract import (  # noqa: E402
     proposal as tracker_proposal, with_execution_modes, with_slice_types,
@@ -4119,7 +4119,10 @@ Option?
     def test_new_grilling_reviews_and_facts_are_context_through_planning_cli(self):
         self.check_grilling_revalidation(new_form=True)
 
-    def check_grilling_revalidation(self, new_form=False):
+    def test_premise_reviews_are_context_through_planning_cli(self):
+        self.check_grilling_revalidation(new_form=True, premise_form=True)
+
+    def check_grilling_revalidation(self, new_form=False, premise_form=False):
         self.relative_cli_paths = True
         artifact, markdown = self.grilling_pair()
         if new_form:
@@ -4130,6 +4133,8 @@ Option?
                 if outcome == "corrected":
                     review["corrected_text"] = "Earlier correction"
             render_extension(data, markdown)
+            if premise_form:
+                extend_premise_pair(data, markdown)
             artifact.write_text(json.dumps(data))
         run_dir = self.runs / "plan-grilling"
         initialized = self.cli(
@@ -4156,18 +4161,30 @@ Option?
         shown = self.cli(STATE, "show-revalidation", "--run-dir", str(run_dir))
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertIn("not freshness", shown.stdout)
-        self.assertIn("Alte Benennung", shown.stdout)
+        self.assertIn("Earlier statement 1" if premise_form else "Alte Benennung", shown.stdout)
 
         if new_form:
             view = json.loads(shown.stdout)
             self.assertEqual([r["value"] for r in view["grilling_assumption_review"]],
                              [None, "Earlier correction", "Drei"])
             self.assertEqual(view["open_facts"], data["open_facts"])
+            if premise_form:
+                reviews = view["grilling_premise_correction_review"]
+                self.assertEqual(reviews, [{**review, "value": value} for review, value in zip(
+                    data["premise_correction_review"], ["Earlier statement 1", "Earlier statement 2", "Earlier replacement", None])])
+            else:
+                self.assertNotIn("grilling_premise_correction_review", view)
             missing = self.root / "missing.json"
             missing.write_text(json.dumps({"accepted": True, "assumptions": []}))
             incomplete = self.cli(STATE, "revalidate", "--run-dir", str(run_dir), "--outcomes", str(missing))
             self.assertNotEqual(incomplete.returncode, 0)
             self.assertIn("assumption outcomes", incomplete.stderr)
+            missing.write_text(json.dumps({"accepted": True, "premise_corrections": [],
+                                          "assumptions": [{"index": i, "outcome": "confirmed"} for i in (1, 2, 3)]}))
+            incomplete = self.cli(STATE, "revalidate", "--run-dir", str(run_dir), "--outcomes", str(missing))
+            self.assertNotEqual(incomplete.returncode, 0)
+            self.assertIn("premise correction outcomes", incomplete.stderr)
+            self.assertIsNone(json.loads((run_dir / "state.json").read_text())["prepared_stage"])
 
         refused_path = self.root / "refused.json"
         refused_path.write_text('{"accepted": false}', encoding="utf-8")
@@ -4180,7 +4197,8 @@ Option?
             json.dumps(
                 {
                     "accepted": True,
-                    "premise_corrections": [{"index": 1, "outcome": "confirmed", "reason": ""}],
+                    "premise_corrections": [{"index": i, "outcome": "confirmed", "reason": ""}
+                                            for i in range(1, 5 if premise_form else 2)],
                     "assumptions": [
                         {"index": 1, "outcome": "confirmed", "reason": ""},
                         {"index": 2, "outcome": "corrected", "value": "Zwei korrigiert", "reason": "Current code"},
@@ -4210,6 +4228,14 @@ Option?
             self.assertEqual(normalized["open_facts"], data["open_facts"])
             self.assertEqual([a["grilling_review"] for a in normalized["assumptions"]], data["assumption_review"])
             self.assertEqual(normalized["assumptions"][0]["outcome"], "confirmed")
+        correction = normalized["premise_corrections"][0]
+        self.assertEqual(correction["outcome"], "confirmed")
+        if premise_form:
+            self.assertEqual([c["grilling_review"] for c in normalized["premise_corrections"]],
+                             data["premise_correction_review"])
+            self.assertEqual(correction["value"], "Earlier statement 1")
+        else:
+            self.assertNotIn("grilling_review", correction)
         rendered = self.cli(RENDER, "--run-dir", str(run_dir), "--stage", "spec", "--pass", "1")
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (run_dir / "prompts" / "spec-1.md").read_text()

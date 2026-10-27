@@ -1126,6 +1126,11 @@ def show_revalidation(run_dir: Path) -> int:
             for text, review in zip(data["assumptions"], data["assumption_review"], strict=True)
         ]
         view["open_facts"] = data["open_facts"]
+    if "premise_correction_review" in data:
+        view["grilling_premise_correction_review"] = [
+            {**review, "value": review_value(text, review)}
+            for text, review in zip(imported["premise_corrections"], data["premise_correction_review"], strict=True)
+        ]
     print(json.dumps(view, indent=2, sort_keys=True))
     return 0
 

@@ -59,10 +59,11 @@ class OnDemandDocumentation(unittest.TestCase):
     }
     ON_DEMAND_PHRASES = {"cmux-grilling": ("run_in_background: true", "persisted on first arm")}
 
-    def test_grilling_revalidation_keeps_recorded_reviews_as_context(self):
+    def test_grilling_revalidation_keeps_recorded_assumption_and_premise_reviews_as_context(self):
         text = normalized(PLANNING.parent / "references" / "grilling-revalidation.md")
         for phrase in ("recorded grilling review outcome and value", "all open facts", "never pre-apply",
-                       "fresh human outcome for every assumption"):
+                       "recorded premise-correction reviews", "outcome, value and reason",
+                       "fresh human outcome for every assumption and premise correction"):
             self.assertIn(phrase, text)
 
     def test_entrypoints_reduce_start_context_by_at_least_thirty_percent(self):

@@ -48,16 +48,38 @@ def extend_pair(data, markdown):
     render_extension(data, markdown)
 
 
+FIXTURE_REVIEW_LABELS = {"unreviewed": "ungeprüft", "confirmed": "bestätigt", "corrected": "korrigiert", "discarded": "verworfen"}
+
+
+def fixture_marker(review):
+    marker = {"Ergebnis": FIXTURE_REVIEW_LABELS[review["outcome"]], "Korrektur": review["corrected_text"], "Grund": review["reason"]}
+    return f"[Prüfung: {json.dumps(marker, ensure_ascii=False)}]"
+
+
 def render_extension(data, markdown):
-    labels = {"unreviewed": "ungeprüft", "confirmed": "bestätigt", "corrected": "korrigiert", "discarded": "verworfen"}
-    lines = []
-    for text, review in zip(data["assumptions"], data["assumption_review"]):
-        marker = {"Ergebnis": labels[review["outcome"]], "Korrektur": review["corrected_text"], "Grund": review["reason"]}
-        lines.append(f"{review['index']}. {text} [Prüfung: {json.dumps(marker, ensure_ascii=False)}]")
+    lines = [f"{review['index']}. {text} {fixture_marker(review)}"
+             for text, review in zip(data["assumptions"], data["assumption_review"])]
     text = re.sub(r"(## Definierte Annahmen\n).*?(?=## )", lambda m: m[1] + "\n".join(lines) + "\n\n",
                   markdown.read_text(), flags=re.S)
     text = text.split("## Offene Fakten")[0]
     markdown.write_text(text + "\n## Offene Fakten\n" + "\n".join("- " + json.dumps(f) for f in data["open_facts"]) + "\n")
+
+
+def extend_premise_pair(data, markdown, outcomes=("unreviewed", "confirmed", "corrected", "discarded")):
+    """Render neutral premise fixtures independently of the production renderer."""
+    data["premise_corrections"] = [f"Earlier statement {i}" for i in range(1, len(outcomes) + 1)]
+    data["premise_correction_review"] = [
+        {"index": index, "outcome": outcome,
+         "corrected_text": "Earlier replacement" if outcome == "corrected" else "",
+         "reason": "Earlier evidence" if outcome != "unreviewed" else "",
+         "reviewed_at": "2026-10-26T12:00:00Z" if outcome != "unreviewed" else ""}
+        for index, outcome in enumerate(outcomes, 1)
+    ]
+    lines = [f"- {text} {fixture_marker(review)}"
+             for text, review in zip(data["premise_corrections"], data["premise_correction_review"])]
+    markdown.write_text(re.sub(r"(## Prämissen-Korrekturen\n).*?(?=## |\Z)",
+                              lambda m: m[1] + "\n".join(lines) + "\n\n",
+                              markdown.read_text(), flags=re.S))
 
 
 class GrillingPair(unittest.TestCase):
@@ -132,12 +154,63 @@ Welche Variante?
         with self.assertRaisesRegex(GrillingInputError, "assumption outcomes"):
             normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
         outcomes["assumptions"] = [{"index": i, "outcome": "confirmed"} for i in (1, 2)]
+        outcomes["premise_corrections"] = []
+        with self.assertRaisesRegex(GrillingInputError, "premise correction outcomes"):
+            normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        outcomes["premise_corrections"] = [{"index": 1, "outcome": "confirmed"}]
         normalized = normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        self.assertNotIn("grilling_review", normalized["premise_corrections"][0])
         self.assertEqual(normalized["schema_version"], 1)
         self.assertEqual(normalized["open_facts"], self.data["open_facts"])
         for entry, review in zip(normalized["assumptions"], self.data["assumption_review"]):
             self.assertEqual(entry["grilling_review"], review)
             self.assertEqual(entry["outcome"], "confirmed")
+
+    def test_premise_reviews_are_context_and_still_require_fresh_outcomes(self):
+        extend_pair(self.data, self.markdown)
+        extend_premise_pair(self.data, self.markdown)
+        self.rewrite()
+        imported = validate_pair(self.artifact, self.markdown, self.repo)
+        self.assertEqual(imported["premise_corrections"], self.data["premise_corrections"])
+        outcomes = {"accepted": True, "assumptions": [{"index": i, "outcome": "confirmed"} for i in (1, 2)],
+                    "premise_corrections": [], "decisions": [{"id": "D1", "status": "open"}]}
+        with self.assertRaisesRegex(GrillingInputError, "premise correction outcomes"):
+            normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        outcomes["premise_corrections"] = [{"index": i, "outcome": "confirmed"} for i in range(1, 5)]
+        normalized = normalize_revalidation(imported, outcomes, input_paths=[self.task], repository=self.repo)
+        self.assertEqual(normalized["schema_version"], 1)
+        self.assertEqual(normalized["open_facts"], self.data["open_facts"])
+        for entry, text, review in zip(normalized["premise_corrections"], self.data["premise_corrections"],
+                                       self.data["premise_correction_review"]):
+            self.assertEqual(entry["source"], text)
+            self.assertEqual(entry["value"], text)
+            self.assertEqual(entry["outcome"], "confirmed")
+            self.assertEqual(entry["grilling_review"], review)
+        normalized["premise_corrections"][0]["grilling_review"]["reason"] = "Changed copy"
+        self.assertEqual(imported["data"]["premise_correction_review"][0]["reason"], "")
+        self.assertIsNone(normalize_revalidation(imported, {"accepted": False},
+                                               input_paths=[self.task], repository=self.repo))
+
+    def test_premise_markers_and_counts_must_match_supplied_markdown(self):
+        from grilling_review import validate_extension
+
+        extend_pair(self.data, self.markdown)
+        extend_premise_pair(self.data, self.markdown)
+        self.rewrite()
+        original = self.markdown.read_text()
+        for text in (original.replace("Earlier replacement", "Different replacement"),
+                     original.replace("Earlier evidence", "Different evidence"),
+                     original.replace('"Ergebnis": "verworfen"', '"Ergebnis": "bestätigt"'),
+                     original.replace('- Earlier statement 1', '- Different statement'),
+                     re.sub(r"^- Earlier statement 1.*\n", "", original, flags=re.M),
+                     original.replace("## Offene Fakten", "- Extra entry\n\n## Offene Fakten")):
+            with self.subTest(markdown=text):
+                # The disk still contains a valid pair: validation must use the supplied text.
+                self.assertTrue(validate_extension(self.data, text))
+                self.markdown.write_text(text)
+                with self.assertRaisesRegex(GrillingInputError, "ambiguous"):
+                    validate_pair(self.artifact, self.markdown, self.repo)
+                self.markdown.write_text(original)
 
     def test_new_pair_rejects_ambiguous_reviews_facts_and_markers(self):
         extend_pair(self.data, self.markdown)
