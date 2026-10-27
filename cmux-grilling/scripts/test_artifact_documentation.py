@@ -21,6 +21,25 @@ class ArtifactDocumentation(unittest.TestCase):
         for phrase in ('file_digests', 'proposal_id', 'commit.followup_proposed', 'follows_commit', 'SHA-256'):
             self.assertIn(phrase, vocabulary)
 
+    def test_premise_correction_review_contract_is_documented(self):
+        text = (SKILL_DIR / "SKILL.md").read_text()
+        finalize = " ".join(text.split("## Finalize and Artifact", 1)[1].split("## Assumptions Review", 1)[0].split())
+        for phrase in ("premise_corrections", "premise_correction_review", "correction texts verbatim",
+                       "one entry per correction", "same fields, requirements and all-unreviewed initial state",
+                       "## Prämissen-Korrekturen", "`- ` entries", "absent or empty section"):
+            self.assertIn(phrase, finalize)
+        review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]
+        for phrase in ("run_state.py premise-correction-review", "same flags", "premise_correction_review",
+                       "grill.premise_corrections_triaged", "## Prämissen-Korrekturen"):
+            self.assertIn(phrase, review)
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        for phrase in ("premise-correction-review", "premise_correction_review=N", "Legacy pairs",
+                       "render_review", "PREMISE_CORRECTION_REVIEW", "without a second recording"):
+            self.assertIn(phrase, reference)
+        event = (SKILL_DIR / "references/event-vocabulary.md").read_text()
+        line = next(line for line in event.splitlines() if "grill.premise_corrections_triaged" in line)
+        self.assertIn("{index, outcome, corrected_text, reason, reviewed_at, artifact}", line)
+
     def test_final_message_preserves_review_status_and_human_handoff_choice(self):
         text = " ".join((SKILL_DIR / "SKILL.md").read_text().split())
         review = text.split("## Assumptions Review", 1)[1].split("## Decision Walkthrough", 1)[0]

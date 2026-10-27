@@ -328,11 +328,22 @@ Welche Variante?
         planning_runtime = (Path(__file__).parent / "grilling_input.py").read_text(encoding="utf-8")
         self.assertNotRegex(planning_runtime, r"(?:from|import)\s+cmux[-_]grilling")
         self.assertNotIn("/cmux-grilling", planning_runtime)
-        for new_form in (False, True):
-            if new_form:
+        for form in ("legacy", "assumption", "premise"):
+            if form != "legacy":
                 extend_pair(self.data, self.markdown)
+            if form == "premise":
+                self.data["premise_corrections"] = ["The previous path was renamed."]
+                self.data["premise_correction_review"] = [dict(self.data["assumption_review"][0])]
+                marker = json.dumps({"Ergebnis": "ungeprüft", "Korrektur": "", "Grund": ""})
+                text = re.sub(r"(## Prämissen-Korrekturen\n).*?(?=## |\Z)",
+                              lambda m: m[1] + f"- The previous path was renamed. [Prüfung: {marker}]\n\n",
+                              self.markdown.read_text(), flags=re.S)
+                self.markdown.write_text(text)
+            if form != "legacy":
                 self.rewrite()
-            validate_pair(self.artifact, self.markdown, self.repo)
+            imported = validate_pair(self.artifact, self.markdown, self.repo)
+            if form == "premise":
+                self.assertEqual(imported["premise_corrections"], ["The previous path was renamed."])
             proc = subprocess.run(
                 [sys.executable, str(sibling), "validate-artifact", "--artifact", str(self.artifact)],
                 cwd=self.repo, capture_output=True, text=True, timeout=30,
@@ -340,8 +351,10 @@ Welche Variante?
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("open_decisions=1", proc.stdout)
             self.assertIn("valid", proc.stdout)
-            if new_form:
+            if form != "legacy":
                 self.assertIn("assumption_review=2 open_facts=1", proc.stdout)
+            if form == "premise":
+                self.assertIn("premise_correction_review=1", proc.stdout)
 
 
 if __name__ == "__main__":

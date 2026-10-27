@@ -25,7 +25,10 @@ class VendoredReviewDefinitionsTest(unittest.TestCase):
             self.skipTest("cmux-grilling is absent from this independent installation")
         vendored = definitions(Path(__file__).parent / "grilling_review.py")
         upstream = definitions(sibling)
-        for name in ("ReviewList", "ASSUMPTION_REVIEW", "REVIEW_LABELS"):
+        for name in ("ReviewList", "ASSUMPTION_REVIEW", "PREMISE_CORRECTION_REVIEW", "REVIEW_LISTS",
+                     "REVIEW_LABELS", "review_line_prefix", "render_review", "review_marker",
+                     "validate_review", "validate_review_list", "review_lines", "validate_review_markdown",
+                     "validate_fact", "json_equals", "section_lines"):
             with self.subTest(definition=name):
                 self.assertIn(name, vendored)
                 self.assertEqual(vendored[name], upstream.get(name))

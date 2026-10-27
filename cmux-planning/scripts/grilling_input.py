@@ -241,7 +241,8 @@ def validate_pair(
         "markdown_bytes": markdown_bytes,
         "json_sha256": sha256_bytes(json_bytes),
         "markdown_sha256": sha256_bytes(markdown_bytes),
-        "premise_corrections": premise_corrections(sections),
+        "premise_corrections": (list(data["premise_corrections"]) if "premise_corrections" in data
+                                else premise_corrections(sections)),
     }
 
 

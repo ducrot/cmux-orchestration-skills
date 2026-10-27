@@ -21,6 +21,7 @@ class ReviewList:
     heading: str
     entry_marker: str = "{index}. "
     marker: str = "Prüfung"
+    required: bool = True
 
     @property
     def entry_pattern(self) -> str:
@@ -31,6 +32,13 @@ ASSUMPTION_REVIEW = ReviewList(
     name="assumption_review", texts_name="assumptions", item_name="assumption",
     heading="Definierte Annahmen",
 )
+
+
+PREMISE_CORRECTION_REVIEW = ReviewList(
+    name="premise_correction_review", texts_name="premise_corrections", item_name="premise correction",
+    heading="Prämissen-Korrekturen", entry_marker="- ", required=False,
+)
+REVIEW_LISTS = (ASSUMPTION_REVIEW, PREMISE_CORRECTION_REVIEW)
 
 
 REVIEW_LABELS = {
@@ -121,8 +129,8 @@ def validate_review_list(data: dict, review_list: ReviewList) -> list[str]:
     return problems
 
 
-def review_lines(markdown: str, review_list: ReviewList) -> list[str]:
-    return section_lines(markdown, review_list.heading, review_list.entry_pattern)
+def review_lines(markdown: str, review_list: ReviewList, optional: bool = False) -> list[str]:
+    return section_lines(markdown, review_list.heading, review_list.entry_pattern, optional)
 
 
 def validate_review_markdown(lines: list[str], texts: list[str], reviews: list[dict],
@@ -155,15 +163,19 @@ def validate_fact(fact: dict, prefix: str) -> list[str]:
 
 
 def validate_extension(data: dict, markdown: str) -> list[str]:
-    """Legacy artifacts skip the extension; new artifacts must provide both lists."""
-    if "assumption_review" not in data and "open_facts" not in data:
+    """Legacy pairs omit premise review; either new field requires the complete new list."""
+    if not any(name in data for name in ("assumption_review", "open_facts", "premise_corrections", "premise_correction_review")):
         return []
     problems = [f"{name}: must be a list" for name in ("assumptions", "assumption_review", "open_facts")
                 if not isinstance(data.get(name), list)]
     if problems:
         return problems
-    assumptions, reviews, facts = data["assumptions"], data["assumption_review"], data["open_facts"]
-    problems += validate_review_list(data, ASSUMPTION_REVIEW)
+    facts = data["open_facts"]
+    review_lists = [review_list for review_list in REVIEW_LISTS
+                    if review_list.required
+                    or review_list.name in data or review_list.texts_name in data]
+    for review_list in review_lists:
+        problems += validate_review_list(data, review_list)
     seen = set()
     for index, fact in enumerate(facts, 1):
         prefix = f"open_facts entry {index}"
@@ -179,11 +191,15 @@ def validate_extension(data: dict, markdown: str) -> list[str]:
     if problems:
         return problems
     try:
-        assumption_lines = review_lines(markdown, ASSUMPTION_REVIEW)
+        # An optional empty list may omit its section; duplicates still fail.
+        sections = [(review_list, review_lines(markdown, review_list,
+                                               not review_list.required and not data[review_list.texts_name]))
+                    for review_list in review_lists]
         fact_lines = section_lines(markdown, "Offene Fakten", r"- ")
     except ValueError as error:
         return [str(error)]
-    problems += validate_review_markdown(assumption_lines, assumptions, reviews, ASSUMPTION_REVIEW)
+    for review_list, lines in sections:
+        problems += validate_review_markdown(lines, data[review_list.texts_name], data[review_list.name], review_list)
     if len(fact_lines) != len(facts):
         problems.append("open_facts Markdown: fact line count disagrees")
     for index, (line, fact) in enumerate(zip(fact_lines, facts), 1):
@@ -199,8 +215,10 @@ def json_equals(text: str, expected: object) -> bool:
         return False
 
 
-def section_lines(markdown: str, heading: str, entry: str) -> list[str]:
+def section_lines(markdown: str, heading: str, entry: str, optional: bool = False) -> list[str]:
     matches = list(re.finditer(rf"^## {re.escape(heading)}\s*$", markdown, re.MULTILINE))
+    if optional and not matches:
+        return []
     if len(matches) != 1:
         raise ValueError(f"Markdown: expected exactly one ## {heading} section")
     tail = markdown[matches[0].end():]

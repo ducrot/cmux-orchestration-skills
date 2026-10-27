@@ -27,6 +27,16 @@ The original assumption text stays intact. Transcribe the printed numbered line 
 disagreement; validate after transcription and before the commit proposal and recap, also on resume.
 Review is advisory and non-blocking; unreviewed entries remain valid.
 
+`premise-correction-review` takes the same flags and review requirements as `assumption-review`,
+but indexes `premise_corrections` and writes `premise_correction_review`. It preserves each
+correction text verbatim, emits exactly one `grill.premise_corrections_triaged` event with
+`{index, outcome, corrected_text, reason, reviewed_at, artifact}` (event time equals
+`reviewed_at`), and prints a `- ` entry with the same review marker for
+`## Prämissen-Korrekturen`. Unknown indexes, missing corrected text or required reason, and
+corrected text with another outcome leave JSON and events unchanged. Transcribe the printed
+line and validate the pair; until then the validator names that premise entry's disagreement.
+Unreviewed premise corrections are valid and review never blocks.
+
 For interrupted transcription, recover lines from recorded outcomes without a second recording
 or changing review time. From the skill directory, render the saved records with the same renderer:
 
@@ -34,15 +44,17 @@ or changing review time. From the skill directory, render the saved records with
 python3 - <artifact.json> <<'PY'
 import json, sys
 sys.path.insert(0, "scripts")
-from artifact_pair import render_assumption
+from artifact_pair import render_assumption, render_review, PREMISE_CORRECTION_REVIEW
 with open(sys.argv[1], encoding="utf-8") as source:
     data = json.load(source)
 for text, review in zip(data["assumptions"], data["assumption_review"]):
     print(render_assumption(text, review))
+for text, review in zip(data.get("premise_corrections", []), data.get("premise_correction_review", [])):
+    print(render_review(text, review, PREMISE_CORRECTION_REVIEW))
 PY
 ```
 
-Replace the assumption lines and validate both halves before presenting them as synchronized.
+Replace the assumption and premise-correction lines in their respective sections and validate both halves before presenting them as synchronized.
 
 `validate-artifact` preserves decision checks and, for new pairs, validates `assumption_review`
 (one-based indexes in assumption order, known outcome, correction/reason requirements and review
@@ -55,6 +67,16 @@ Missing sections, files, entries and mismatches fail with entry diagnostics; mat
 including all-unreviewed or empty lists, pass and print review/fact counts. Both extension lists
 are required together. Legacy artifacts without either list keep decision-only validation and
 output (`open_decisions=N valid`), without reading Markdown or reporting review/fact counts.
+
+When either `premise_corrections` or `premise_correction_review` is present, both must be
+lists, with exactly one valid review per correction in order (one-based indexes). Finalize
+keeps the correction texts verbatim and every review unreviewed with empty correction,
+reason and time. Reviews follow the assumption requirements above. The validator compares
+the bullet lines and markers under the unchanged `## Prämissen-Korrekturen` heading, rejects
+missing/disagreeing markers, mismatched counts and invalid reviews with entry diagnostics,
+and appends `premise_correction_review=N` to the summary. With two empty lists, the section
+may be absent or empty. Legacy pairs omitting both new fields keep their existing validation
+and output. The existing assumption-review/open-fact extension remains required together.
 
 Render self-contained round prompts once per lane per round, with one
 `--question` (or `--question-file`) per frontier question, numbered `Q1..Qn` in order:

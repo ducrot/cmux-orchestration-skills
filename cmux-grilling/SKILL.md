@@ -455,7 +455,7 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      (one top-level block per open decision, rendering the `open_decisions` fields in German —
      Frage, Kontext, Belege, Optionen mit Implikation, Empfehlung — plus its Ausgang once
      decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
-     each small-factual drift and its resolution. Keep this heading vocabulary stable so
+     verbatim corrections with review markers as defined below. Keep this heading vocabulary stable so
      grill-session artifacts stay comparable across sessions.
    - `<output-dir>/<slug>-<timestamp>.json` — machine-readable result assembled from the
      `synthesis/round-*.json` files:
@@ -472,6 +472,8 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      "qa": ["... every synthesized question, flattened in round order, each with its round and id ..."],
      "assumptions": ["..."],
      "assumption_review": [{"index": 1, "outcome": "unreviewed", "corrected_text": "", "reason": "", "reviewed_at": ""}],
+     "premise_corrections": [],
+     "premise_correction_review": [],
      "open_facts": [{"id": "F1", "question": "…", "why_needed": "…", "status": "open", "answer": "", "answered_at": ""}],
      "open_decisions": ["... see Open Decisions ..."],
      "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
@@ -497,6 +499,11 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    ` [Prüfung: {"Ergebnis":"ungeprüft","Korrektur":"","Grund":""}]`.
    German outcomes map to `ungeprüft|bestätigt|korrigiert|verworfen`; `Korrektur` and `Grund`
    mirror `corrected_text` and `reason` exactly. JSON escaping preserves quotes in text.
+
+   `premise_corrections` holds correction texts verbatim; `premise_correction_review` has one entry
+   per correction with the same fields, requirements and all-unreviewed initial state as
+   `assumption_review`. Under `## Prämissen-Korrekturen`, use `- ` entries with the same
+   review marker. Empty lists allow an absent or empty section.
 
    `open_facts` lists facts research could not establish and only the human can supply:
    unique non-empty `id`, `question` (the question only the human can answer), `why_needed`
@@ -550,15 +557,19 @@ unusable.
 
 After `complete`, present the defined assumptions — together with any self-resolved premise
 corrections from Drift Triage in `references/gate-recovery.md` — to the human for review: confirm, correct, or discard per
-assumption. Record each answer with `run_state.py assumption-review --run-dir <run-dir>
+item. Record each answer with `run_state.py assumption-review --run-dir <run-dir>
 --artifact <artifact.json> --index <one-based-index> --outcome confirmed|corrected|discarded`.
 For corrected, supply `--corrected-text`; for corrected or discarded, supply `--reason`.
 The command writes `assumption_review` with review time, emits one `grill.assumptions_triaged`
 event with the same outcome data, and prints the numbered assumption line with its marker.
-Transcribe the printed lines into `## Definierte Annahmen`, retaining the original assumption
+For premise corrections use `run_state.py premise-correction-review` with the same flags;
+it writes `premise_correction_review`, emits `grill.premise_corrections_triaged`, and prints
+the bullet line for `## Prämissen-Korrekturen`.
+Transcribe the printed lines into the matching review section, retaining the original
 text. Validate both halves with `run_state.py validate-artifact --artifact <artifact.json>`
 after transcription and before the commit proposal and recap, including on a resumed walkthrough.
-Repair interrupted transcription from recorded outcomes in `assumption_review` before presenting
+Repair interrupted transcription from recorded outcomes in `assumption_review` and
+`premise_correction_review` before presenting
 the pair as synchronized; render the lines from those records as described in the script reference,
 without recording the same answer again. The review stays advisory and non-blocking: unreviewed
 items are valid. State the unreviewed count in the final message, and the open-fact count when
