@@ -11,6 +11,7 @@ or `run.recap`, and set the status pill (running, done, or halted).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1249,13 +1250,45 @@ def update_pill(args: argparse.Namespace, state: dict[str, Any], outcome: dict[s
     return pill
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def grilling_pair_digests(state: dict[str, Any]) -> dict[str, str] | None:
+    """Only a complete grilling pair can establish a refresh baseline."""
+    if state["workflow"] != "grilling":
+        return None
+    deliverables = state.get("deliverables") or {}
+    paths = [deliverables.get(key) for key in ("markdown", "json")]
+    if not all(path and Path(path).is_file() for path in paths):
+        return None
+    return {path: file_sha256(Path(path)) for path in paths}
+
+
+def refresh_recap(state: dict[str, Any], events: list[dict[str, Any]], path: Path) -> bool:
+    digests = grilling_pair_digests(state)
+    if digests is None:
+        return False
+    artifact = read_artifact(Path(state["deliverables"]["json"]))
+    if grilling_review_counts(artifact) is None:
+        return False
+    latest = last_data(events, "run.recap") or {}
+    return (isinstance(latest.get("file_digests"), dict)
+            and latest["file_digests"] != digests
+            and latest.get("recap_sha256") == file_sha256(path))
+
+
 def draft(args: argparse.Namespace, filename: str, render: Any) -> int:
     run_dir = Path(args.run_dir)
     state = read_state(run_dir)
     path = run_dir / filename
-    # Never overwrite: a filled text is the orchestrator's phrasing and survives resumes.
+    # Never overwrite, except --refresh replacing the exact last shown recap of a changed review pair.
     if not path.exists():
         path.write_text(render(state, read_events(run_dir), args.lang), encoding="utf-8")
+    elif getattr(args, "refresh", False):
+        events = read_events(run_dir)
+        if refresh_recap(state, events, path):
+            path.write_text(render(state, events, args.lang), encoding="utf-8")
     print(json.dumps({"path": str(path), "placeholders": placeholders(path.read_text(encoding="utf-8"))}))
     return 0
 
@@ -1273,6 +1306,7 @@ def show(args: argparse.Namespace, filename: str, event_type: str, recap: bool) 
         raise SystemExit(f"{path} still has unfilled placeholders: {', '.join(missing)}")
     outcome = run_outcome(state, read_events(run_dir)) if recap else None
     next_step = checked_next_step(state, text) if outcome and outcome["status"] == "done" else None
+    pair_digests = grilling_pair_digests(state) if recap else None
     pill = update_pill(args, state, outcome)
     event = {
         "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -1280,6 +1314,9 @@ def show(args: argparse.Namespace, filename: str, event_type: str, recap: bool) 
         "message": f"{'recap' if recap else 'briefing'} shown to the human",
         "data": {"path": filename, "pill": pill, **({"outcome": outcome, "next_step": next_step} if recap else {})},
     }
+    if pair_digests is not None:
+        event["data"].update(file_digests=pair_digests,
+                             recap_sha256=file_sha256(path))
     with (run_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")
     if not args.no_status:
@@ -1293,11 +1330,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name, text in (
         ("draft", "Write the briefing skeleton from state.json (never overwrites)"),
-        ("recap-draft", "Write the recap skeleton of a completed or halted run (never overwrites)"),
+        ("recap-draft", "Write the recap skeleton of a completed or halted run (never overwrites without --refresh)"),
     ):
         command = subparsers.add_parser(name, help=text)
         command.add_argument("--run-dir", required=True)
         command.add_argument("--lang", choices=sorted(LABELS), default="en", help="Label language: the human's language")
+        if name == "recap-draft":
+            command.add_argument("--refresh", action="store_true",
+                                 help="Refresh a shown grilling recap when the review pair changed")
     for name, text in (
         ("show", "Validate, print, log, and set the running pill"),
         ("recap-show", "Validate, print, log, and set the done/halted pill"),

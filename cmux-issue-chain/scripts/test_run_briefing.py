@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -564,6 +565,109 @@ class RunRecap(RunDirTestCase):
                     shown = self.call("recap-show", "--run-dir", str(run_dir), "--lang", lang, "--no-status")
                     self.assertEqual(shown.returncode, 0, shown.stderr)
                     self.assertEqual(shown.stdout, text.replace("{{outcome}}", "filled outcome"))
+
+    def refresh_fixture(self, legacy=False, case="review"):
+        artifact = self.root / "pair.json"
+        data = {"assumptions": ["a"], "open_decisions": []}
+        if not legacy:
+            data.update(assumption_review=[{"index": 1, "outcome": "unreviewed"}],
+                        premise_corrections=["p"],
+                        premise_correction_review=[{"index": 1, "outcome": "unreviewed"}])
+        artifact.write_text(json.dumps(data))
+        markdown = artifact.with_suffix(".md")
+        markdown.write_text("Pair before review\n")
+        state = {**GRILLING_STATE, "run_id": f"grill-{case}",
+                 "current_stage": "done", "deliverables": {"json": str(artifact), "markdown": str(markdown)}}
+        run_dir = self.run_dir(state)
+        self.recap(run_dir, "en")
+        self.fill_recap(run_dir)
+        return run_dir, artifact, markdown
+
+    def snapshot_recap(self, run_dir):
+        return [(p.read_bytes(), p.stat().st_mtime_ns) if p.exists() else None
+                for p in (run_dir / "recap.md", run_dir / "events.jsonl")]
+
+    def refresh(self, run_dir):
+        result = self.call("recap-draft", "--refresh", "--run-dir", str(run_dir), "--lang", "en")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def show_recap(self, run_dir):
+        result = self.call("recap-show", "--run-dir", str(run_dir), "--no-status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
+
+    def test_grilling_refresh_after_late_review_cli(self):
+        run_dir, artifact, markdown = self.refresh_fixture()
+        first = self.show_recap(run_dir)
+        self.assertEqual(first["data"]["file_digests"], {
+            str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in (artifact, markdown)})
+        self.assertEqual(first["data"]["recap_sha256"],
+                         hashlib.sha256((run_dir / "recap.md").read_bytes()).hexdigest())
+        for key in ("path", "pill", "outcome", "next_step"):
+            self.assertIn(key, first["data"])
+        unchanged = self.snapshot_recap(run_dir)
+        self.refresh(run_dir)
+        self.assertEqual(self.snapshot_recap(run_dir), unchanged)
+        data = json.loads(artifact.read_text())
+        for key in ("assumption_review", "premise_correction_review"):
+            data[key][0]["outcome"] = "confirmed"
+        artifact.write_text(json.dumps(data))
+        markdown.write_text("Pair after review\n")
+        # Plain drafting preserves even a shown recap after the pair changes.
+        result = self.call("recap-draft", "--run-dir", str(run_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.snapshot_recap(run_dir), unchanged)
+        self.refresh(run_dir)
+        draft = (run_dir / "recap.md").read_text()
+        self.assertIn("{{outcome}}", draft)
+        self.assertIn("0 unreviewed", draft)
+        self.assertNotIn("1 unreviewed", draft)
+        self.assertEqual(self.snapshot_recap(run_dir)[1], unchanged[1])
+        self.fill_recap(run_dir)
+        # A filled refresh has not been shown yet and is protected too.
+        protected = self.snapshot_recap(run_dir)
+        self.refresh(run_dir)
+        self.assertEqual(self.snapshot_recap(run_dir), protected)
+        second = self.show_recap(run_dir)
+        events = list(map(json.loads, (run_dir / "events.jsonl").read_text().splitlines()))
+        self.assertEqual(events, [first, second])
+        self.assertNotEqual(first["data"]["file_digests"], second["data"]["file_digests"])
+        unchanged = self.snapshot_recap(run_dir)
+        self.refresh(run_dir)
+        self.assertEqual(self.snapshot_recap(run_dir), unchanged)
+        # A markdown-only edit also refreshes from the latest shown event.
+        markdown.write_text(markdown.read_text() + "Late transcription\n")
+        self.refresh(run_dir)
+        self.assertIn("{{outcome}}", (run_dir / "recap.md").read_text())
+        self.assertEqual(self.snapshot_recap(run_dir)[1], unchanged[1])
+
+    def test_grilling_refresh_preserves_unshown_and_legacy_recaps_cli(self):
+        for case in ("unshown", "edited", "legacy", "old-event"):
+            with self.subTest(case=case):
+                run_dir, artifact, markdown = self.refresh_fixture(legacy=case == "legacy", case=case)
+                if case != "unshown":
+                    self.show_recap(run_dir)
+                if case == "edited":
+                    path = run_dir / "recap.md"
+                    path.write_text(path.read_text() + "Unshown human wording\n")
+                if case == "old-event":
+                    self.write_events(run_dir, [event("run.recap", data={"path": "recap.md"})])
+                markdown.write_text("Changed pair\n")
+                before = self.snapshot_recap(run_dir)
+                self.refresh(run_dir)
+                self.assertEqual(self.snapshot_recap(run_dir), before)
+
+    def test_refresh_keeps_other_workflow_recaps_cli(self):
+        for state in (DONE_ISSUE_STATE, {**PLANNING_STATE, "current_stage": "complete"}):
+            with self.subTest(workflow=state["workflow"]):
+                run_dir = self.run_dir(state)
+                self.recap(run_dir)
+                self.fill_recap(run_dir)
+                shown = self.show_recap(run_dir)
+                self.assertNotIn("file_digests", shown["data"])
+                before = self.snapshot_recap(run_dir)
+                self.refresh(run_dir)
+                self.assertEqual(self.snapshot_recap(run_dir), before)
 
     def test_grilling_recap_reads_the_artifact(self):
         artifact = self.root / "grilling" / "briefing.json"

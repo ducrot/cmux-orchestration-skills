@@ -5,7 +5,7 @@ consistently within a run.
 |--------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
 | `run.init`, `run.completed`                            | Written by `run_state.py init` / `complete`                                                                                        |
 | `run.briefing`                                         | Briefing shown to the human, pill text in data; written by `run_briefing.py show`                                                 |
-| `run.recap`                                            | Recap shown to the human, outcome and pill in data; written by `run_briefing.py recap-show`                                       |
+| `run.recap`                                            | Recap shown to the human; data: path, outcome, next_step, pill, plus `file_digests` (pair path to SHA-256 content digest) and `recap_sha256` (shown text) for a complete grilling pair; appended by `run_briefing.py recap-show`, keeping earlier events |
 | `launch_wave.prepared`                                 | All four lanes resolved, preflighted, audited, and frozen before pane creation                                                     |
 | `pane.launched`, `pane.labeled`, `pane.closed`         | Lane pane lifecycle with round; written by `open-round`, `launch`, or `close`                                                                     |
 | `pane.orphans_detected`                                | Lane tooling left panes behind; record IDs, then close them                                                                        |

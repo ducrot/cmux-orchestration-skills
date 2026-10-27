@@ -25,6 +25,25 @@ class ArtifactDocumentation(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, reference)
 
+    def test_late_review_recap_refresh_contract(self):
+        text = (SKILL_DIR / "SKILL.md").read_text()
+        closing = text.split("In both commit modes, a late review follows this order:", 1)[1].split("When the loop", 1)[0]
+        steps = ("run_state.py transcribe-artifact", "run_state.py validate-artifact",
+                 "proposal refresh (or follow-up)", "recap-draft --refresh", "recap-show")
+        positions = [closing.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+        recap = text.split("## Run Recap", 1)[1].split("## Worker input readiness", 1)[0]
+        for phrase in ("plain drafting never overwrites", "recap-draft --refresh",
+                       "latest shown recap", "content digests", "current artifact",
+                       "keeping earlier recap events", "neither file nor events change",
+                       "never shown stays untouched", "Legacy pairs"):
+            self.assertIn(phrase, recap)
+        vocabulary = (SKILL_DIR / "references/event-vocabulary.md").read_text()
+        row = next(line for line in vocabulary.splitlines() if "`run.recap`" in line)
+        for phrase in ("path", "outcome", "next_step", "pill", "file_digests", "SHA-256",
+                       "recap_sha256", "keeping earlier events"):
+            self.assertIn(phrase, row)
+
     def test_late_review_proposal_refresh_and_followup_contract(self):
         text = (SKILL_DIR / 'SKILL.md').read_text()
         closing = text.split('The order of the closing steps is fixed:', 1)[1].split('When the loop', 1)[0]

@@ -362,9 +362,11 @@ before `init` — resolves by the same table. First match wins:
 ## Finalize and Artifact
 
 The order of the closing steps is fixed: finalize, ending with `complete` (below) → assumptions
-review → decision walkthrough → `run_state.py transcribe-artifact --artifact <artifact.json>` → commit proposal → commit
+review → decision walkthrough → `run_state.py transcribe-artifact --artifact <artifact.json>` → pair validation → commit proposal → commit
 (commit mode) → run recap. After a late review, refresh the proposal in propose mode; after a created
-commit, propose a follow-up for the changed pair. The sections below expand these steps.
+commit, propose a follow-up for the changed pair. In both commit modes, a late review follows this order:
+`run_state.py transcribe-artifact --artifact <artifact.json>` → `run_state.py validate-artifact --artifact <artifact.json>`
+→ proposal refresh (or follow-up) → `recap-draft --refresh --lang <de|en>` → fill outcome → `recap-show`.
 
 When the loop ends cleanly (`max-rounds` or `griller-done`):
 
@@ -590,7 +592,12 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
   with counts, then offers planning with the artifact JSON and a prompt block
   `/cmux-planning <artifact.json>`. Planning revalidates every assumption and treats open facts as
   missing information. With nothing outstanding it offers planning directly. Legacy artifacts keep
-  their previous recap. Prompt additions do not carry over; recaps are never overwritten.
+  their previous recap. Prompt additions do not carry over; plain drafting never overwrites.
+- `recap-draft --refresh --lang <de|en>` replaces only the latest shown recap when the pair's content digests
+  changed, using the current artifact and the given language. Fill the new outcome, then `recap-show` appends a new event,
+  keeping earlier recap events. With an unchanged pair, neither file nor events change. A filled
+  recap that was never shown stays untouched, including edits after the latest show. Legacy pairs
+  without review fields and other workflows keep their existing behavior.
 - Fill only `{{outcome}}` in one or two sentences: key findings, or the halt reason and required human decision. State the unreviewed assumption count and
   unreviewed premise-correction count in the final message, plus the open-fact count when facts are open.
   With outstanding review, describe the run as technically finished with review outstanding, not
