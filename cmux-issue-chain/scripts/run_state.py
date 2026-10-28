@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
 import hashlib
 import json
 import os
@@ -31,6 +30,7 @@ from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
     append_jsonl,
     blocker_status,
+    dated_tracker_slug,
     issue_ready,
     load_issues,
     read_json,
@@ -165,15 +165,10 @@ def dispatch_command(args: argparse.Namespace) -> int:
 
 def chain_run_id(args: argparse.Namespace, now: str) -> str:
     """Validate the tracker before writes and share its identity with the board."""
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})-(.+)", Path(args.tracker).resolve().name)
-    message = "--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix"
-    if not match:
-        raise SystemExit(message)
-    try:
-        date.fromisoformat(match[1])
-    except ValueError as error:
-        raise SystemExit(message) from error
-    return args.run_id or run_identifier("chain", f"{match[2]}-{slugify(args.issue)}", now)
+    tracker_slug = dated_tracker_slug(Path(args.tracker).resolve().name)
+    if tracker_slug is None:
+        raise SystemExit("--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix")
+    return args.run_id or run_identifier("chain", f"{tracker_slug}-{slugify(args.issue)}", now)
 
 
 def run_command(args: argparse.Namespace) -> int:

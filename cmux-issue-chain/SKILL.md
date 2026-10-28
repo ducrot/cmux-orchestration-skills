@@ -873,6 +873,14 @@ and `render_prompt.py` refuse malformed trackers too.
 
 Read when a to-tickets tracker needs frontmatter adoption: [references/tracker-adoption.md](references/tracker-adoption.md).
 
+Before adopting an undated tracker, propose a `YYYY-MM-DD-<slug>` basename and ask the human to
+approve or replace it, like the commit-mode question, before any rename. Pass the approved name as
+`adopt_tracker.py --feature <name>`; dry-run first, then adopt. A dated tracker keeps its name and
+needs no name question, including for later ticket batches. After a rename, use the dated tracker
+for `init` and replace the old tracker path in `--invocation` with the dated path, preserving the rest
+of the prompt and chosen options. This adoption exception to verbatim invocation keeps next-run
+prompts pointed at the renamed folder.
+
 `init` requires a tracker folder with a valid calendar-date prefix `YYYY-MM-DD-` and a nonempty tracker slug. The folder may live anywhere. Invalid or undated names are rejected before any writes or board publication, including with an explicit `--run-id`. Issue listing, status, and prompt rendering remain available for undated trackers.
 
 Create and append run-state. The default run id is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-<issue>` in local time, with the issue key lowercased

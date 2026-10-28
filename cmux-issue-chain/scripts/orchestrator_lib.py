@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -277,6 +277,18 @@ def run_identifier(workflow: str, key: str, now: str) -> str:
     """Build a chronological identity in the executing machine's local timezone."""
     local = datetime.fromisoformat(now).astimezone()
     return RUN_ID_RE.sub("-", f"{local:%Y-%m-%d-%H%M}-{workflow}-{key}").strip("-")
+
+
+def dated_tracker_slug(name: str) -> str | None:
+    """Return the slug after a valid YYYY-MM-DD- prefix, or None for an undated name."""
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})-(.+)", name)
+    if not match:
+        return None
+    try:
+        date.fromisoformat(match[1])
+    except ValueError:
+        return None
+    return match[2]
 
 
 def read_run_state(run_dir: Path) -> dict[str, Any]:

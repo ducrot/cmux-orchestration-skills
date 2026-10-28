@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Adopt a `to-tickets` issue directory into the tracker shape this skill orchestrates.
 
-Rewrites issue files in place — filenames are never changed, so the other skills that
-address tickets by their `NN-slug.md` path keep working. Idempotent: files that already
-carry frontmatter are left untouched.
+Rewrites issue files in place — ticket filenames are never changed, so the other skills that
+address tickets by their `NN-slug.md` path keep working. An undated tracker folder is renamed
+to the approved `--feature` name first. Idempotent: files that already carry frontmatter are
+left untouched.
 
-    python3 scripts/adopt_tracker.py --tracker .scratch/<feature> --dry-run
-    python3 scripts/adopt_tracker.py --tracker .scratch/<feature> --check-command "pnpm test"
+    python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --feature YYYY-MM-DD-<slug> --dry-run
+    python3 scripts/adopt_tracker.py --tracker .scratch/<tracker> --feature YYYY-MM-DD-<slug> --check-command "pnpm test"
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 from orchestrator_lib import (
     FRONTMATTER_RE,
     NON_ISSUE_ALLOWLIST,
+    dated_tracker_slug,
     issue_number_from_filename,
     normalize_issue_id,
     parse_frontmatter,
@@ -62,19 +64,48 @@ class Plan:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tracker", required=True, help="Tracker directory containing issues/")
+    parser.add_argument("--feature", help="Approved YYYY-MM-DD-<slug> basename for an undated tracker; rename within its parent")
     parser.add_argument("--dry-run", action="store_true", help="Report what would change, write nothing")
     parser.add_argument("--check-command", action="append", default=[], help="Canonical check command for the README ground rules (repeatable)")
     parser.add_argument("--branch", help="Working branch to declare in the README ground rules")
     return parser
 
 
+def adoption_target(tracker: Path, feature: str | None) -> Path:
+    # Existing dated trackers follow the chain's date-prefix rule, not the stricter
+    # grammar for newly approved names. Later ticket batches must keep this identity.
+    if dated_tracker_slug(tracker.name) is not None:
+        return tracker
+    match = re.fullmatch(r"\d{4}-\d{2}-\d{2}-([a-z0-9]+(?:-[a-z0-9]+)*)", feature or "")
+    if not match or len(match[1]) > 30:
+        raise ValueError("undated --tracker requires --feature YYYY-MM-DD-<slug>, with a lowercase kebab-case slug of at most 30 characters")
+    if dated_tracker_slug(feature) is None:
+        raise ValueError("--feature must contain a valid calendar date")
+    target = tracker.with_name(feature)
+    if target.exists() or target.is_symlink():
+        raise ValueError(f"--feature destination already exists: {target}")
+    return target
+
+
 def main() -> int:
     args = build_parser().parse_args()
-    tracker = Path(args.tracker)
+    given = Path(args.tracker)
+    tracker = given.resolve()
     issue_dir = tracker / "issues"
     if not issue_dir.is_dir():
         print(f"Missing issue directory: {issue_dir}", file=sys.stderr)
         return 1
+
+    try:
+        target = adoption_target(tracker, args.feature)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    if target != tracker and given.is_symlink():
+        print(f"refusing to rename a symlinked --tracker; pass the real folder: {tracker}", file=sys.stderr)
+        return 2
+    if target == tracker and args.feature and args.feature != tracker.name:
+        print(f"dated tracker keeps its name {tracker.name}; ignoring --feature {args.feature}")
 
     plans: list[Plan] = []
     skipped: list[str] = []
@@ -110,23 +141,31 @@ def main() -> int:
         verb = "would adopt" if args.dry_run else "adopt "
         print(f"{verb} {plan.path.name} -> {plan.issue_id} type={plan.type} status={plan.status} (from {plan.triage}) blocked_by={blockers}")
 
-    scaffolds = plan_scaffolds(tracker, args.check_command, args.branch)
+    scaffolds = plan_scaffolds(tracker, target.name, args.check_command, args.branch)
     for path, _ in scaffolds:
         print(f"{'would create' if args.dry_run else 'create'} {path.relative_to(tracker)}")
+
+    if target != tracker:
+        print(f"{'would rename' if args.dry_run else 'rename'} {tracker} -> {target}")
 
     if args.dry_run:
         return 0
 
-    for plan in plans:
-        plan.path.write_text(plan.text, encoding="utf-8")
-    for path, content in scaffolds:
-        path.write_text(content, encoding="utf-8")
+    if target != tracker:
+        # All adoption planning has succeeded; move before the first frontmatter
+        # write. A retry against target skips any files already adopted.
+        tracker.rename(target)
 
-    if not plans and not scaffolds:
+    for plan in plans:
+        (target / plan.path.relative_to(tracker)).write_text(plan.text, encoding="utf-8")
+    for path, content in scaffolds:
+        (target / path.relative_to(tracker)).write_text(content, encoding="utf-8")
+
+    if not plans and not scaffolds and target == tracker:
         print("Nothing to do — tracker already adopted.")
     if any("<TODO" in content for _, content in scaffolds):
         print("README ground rules contain TODO placeholders — fill in the canonical check commands before starting a chain.")
-    readme = tracker / "README.md"
+    readme = target / "README.md"
     if readme.exists() and not re.search(r"^##\s+.*ground rules.*$", read_text(readme), re.MULTILINE | re.IGNORECASE):
         print(f"{readme} has no ground-rules section — workers will get no canonical check commands.")
     return 0
@@ -219,7 +258,7 @@ def ensure_criteria_heading(body: str) -> str:
     return body[: checkbox.start()] + "## Acceptance Criteria\n\n" + body[checkbox.start() :]
 
 
-def plan_scaffolds(tracker: Path, check_commands: list[str], branch: str | None) -> list[tuple[Path, str]]:
+def plan_scaffolds(tracker: Path, title: str, check_commands: list[str], branch: str | None) -> list[tuple[Path, str]]:
     scaffolds = []
     readme = tracker / "README.md"
     if not readme.exists():
@@ -227,7 +266,7 @@ def plan_scaffolds(tracker: Path, check_commands: list[str], branch: str | None)
         scaffolds.append(
             (
                 readme,
-                f"# {tracker.name}\n\n"
+                f"# {title}\n\n"
                 "## Ground rules\n\n"
                 f"- Working branch: `{branch or '<TODO: working branch>'}`\n"
                 "- Canonical check commands:\n"

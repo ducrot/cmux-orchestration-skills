@@ -687,7 +687,7 @@ sha256 {resulting}
         summary = render_summary(result)
         self.assertIn("### 2. ISSUE-002 — Build on the first behavior [HITL]", summary)
         self.assertEqual(summary.count("[HITL]"), 1)
-        tracker = self.root / "mixed"
+        tracker = self.root / "2026-10-28-mixed"
         native = stage_native_tracker(tracker, result, approved_spec=self.spec)
         self.assertEqual(native["ready_frontier"], ["ISSUE-001", "ISSUE-002"])
         for item in result["tickets"]:
