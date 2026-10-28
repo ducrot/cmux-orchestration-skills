@@ -164,3 +164,99 @@ Use the creation tool's registry entry id and recorded `skill_state` verbatim, r
   - Issue chain not run, so there is no simplify, review, test, end-to-end or migration evidence. The export trap is addressed only in planning:
     - ISSUE-001: byte-identical documents from cents, and stored currency in place of the first position's currency.
     - ISSUE-004 and ISSUE-006: document criteria.
+
+### Run 2026-10-27 (450779c)
+
+- Date: 2026-10-27 (initialized; all worker stages ran on 2026-10-28, see the pause note below)
+- Testbed version: 1.0.0
+- Scenario: 01-partial-invoices
+- Registry entry id: a557420b-7cb5-44b6-a6a0-a5134060acad
+- Recorded skill state: 450779c
+- Date-attributed skill commit: 450779c0 (2026-10-27), reported by `tools/orchestrator_usage.py --workflow planning --project partial-invoices-4` for this run; matches the recorded skill state.
+- Run identifier: plan-partial-invoices-incoming-2026-10-27-0824 (planning only, no issue-chain run)
+- Observations met: Planning 1 (money prefactor, with caveat), Planning 2 (vertical slices), Planning 3 (blocker edges, with caveat), Planning 4 (owner rules in the specification).
+- Observations missed: none.
+- Observations not exercised: all five complete issue-chain observations (no issue chain was run).
+- Evidence and notes:
+  - Paths below are relative to the run copy `zeiterfassung-1.0.0-01-partial-invoices-4` (HEAD 9c54fb7): tracker `docs/partial-invoices-incoming/` (uncommitted, proposal mode), run dir `.scratch/orchestrator/runs/plan-partial-invoices-incoming-2026-10-27-0824/`. `recap.md` reports status done after 30 h 40 min, "Revisionen: Spec 1 · Tickets 1", 6 issues, ready frontier ISSUE-001. Spec author passes 1 and 2, spec reviews 1 and 2, tickets and tickets review 2 passes each. Authors ran on Claude Code (fable), reviewers on Codex (gpt-6-astra) (`events.jsonl` `pane.launched`).
+  - Pause: the spec-1 pane hit the Fable usage limit before executing its assignment (`events.jsonl` `worker.startup_status`, 2026-10-27T08:30:21Z: "Fable limit reached ... assignment never executed"). The orchestrator asked how to continue; the human chose "Später fortsetzen", not the recommended "Guthaben freigeben" (transcript `670c622d…jsonl`, answer 2026-10-27T10:42Z). The run resumed on 2026-10-28 at 13:23:50Z ("Die Limits sind resettet"; 14:23 local CET). The assignment was re-delivered to the same pane (`worker.readiness_consumed`, `worker.prompt_sent` 13:24:01Z). The 30 h 40 min in the recap therefore includes about 29 h of pause and no planning work.
+  - Supervisor policy: the supervising agent played the human and took the recommended option at every gate (answers in the orchestrator transcript):
+    - init: proposal-only commit, English artifacts;
+    - spec review 1 blocked (F1, project deletion while an advance references it): "Löschen sperren + Name snapshotten (Recommended)" (`run.relaunch_approved` 13:44:24Z), which forced spec pass 2;
+    - spec review 2 `pass_with_fixes`, approved as `artifacts/spec-reviewed-2.md` (`spec.approved` 14:12:38Z; identical to the published `spec.md`);
+    - tickets review 1 blocked: "Reviewer-Empfehlung umsetzen (Recommended)" (`run.relaunch_approved` 14:40:26Z), which forced tickets pass 2 against the unchanged spec;
+    - tickets review 2 `pass`, approved `artifacts/tickets-2.json`; quiz Passt/Korrekt/Keine Änderung (Fits/Correct/No change);
+    - tracker target `docs/partial-invoices-incoming`, offered as the recommended option this time.
+  - Planning 1 met, with caveat. `issues/ISSUE-001-invoice-money-in-integer-cents-with-a-stored-invoice-currency.md` carries `slice_type: prefactor` (frontmatter line 4) and is the first ticket and the only ready one. It is behavior-preserving and scoped to money:
+    - Scope: position amounts, net, VAT and gross in integer cents in the value objects, storage and calculation, one migration converting stored floats and backfilling the invoice currency, and documents formatted from cents with the stored currency (`map.md:11`).
+    - Checks: exact Markdown and HTML text captured from the current renderer before the representation changes, then compared for new and migrated invoices (criterion 1, line 19); migration round trip through both adapters (line 20); unchanged JSON numbers and zero fractions (line 21); cent-exact value-object examples without delta tolerance (line 22).
+    - No new refusal behavior: no ceiling, overflow rejection or preflight. A failed migration leaves the previous schema version in place through the existing migrator transaction (`spec.md:73`). The one-currency rule is kept out on purpose, "because it changes behavior for period mode" (`map.md:24`), and lands in ISSUE-002. No advance, deduction or payment storage (`spec.md:73`: "It adds nothing else").
+    - Both tickets reviews accepted the label: `reports/tickets-review-1.md` ("not a mislabeled test-only prefactor"); `reports/tickets-review-2.md` ("introduces no speculative advance or payment storage").
+    - Caveats:
+      - No dedicated money type is named. Cents live in the existing `Invoice`/`InvoicePosition` value objects (`spec.md:157`), and export formats from cents with no shared money abstraction.
+      - Invoice objects gain an additive `currency` field (criterion 3, line 21), so the public JSON is not strictly unchanged.
+      - The claim that the new cent formula (seconds × rate cents / 3600, half up) yields "the same two-decimal amounts as today's computation for supported values" (`spec.md:69`) is not verified here. Today's code is `round($hours * $rateCents / 100, 2)` on unrounded float hours (`src/Domain/InvoicePosition.php:9`), so the two can differ only at float rounding boundaries, and criterion 4 pins only the known examples.
+  - Planning 2 met. ISSUE-002 to ISSUE-006 are `slice_type: vertical` with console, API and README outcomes: selection invoices, fixed advances, deductions, payments with history, and open items.
+    - No test-only, service-only or schema-only ticket exists. `reports/tickets-review-2.md` checked "No horizontal, test-only, fixture-only or unreachable-code slice".
+    - First-use storage holds throughout: ISSUE-001 cents and currency only, the advance migration in ISSUE-003, deductions and the settlement link in ISSUE-004, payments in ISSUE-005, and no storage for open items (`map.md:54`, `:72`, `:88`).
+    - Deletion rule placement: tickets pass 1 had a standalone ISSUE-006 "Refuse to delete a project that an advance invoice refers to", blocked by payments (`artifacts/tickets-1.md:93`, `:105`). Tickets review 1 F1 blocked on it: the spec places the rule under Advance invoices, and the split would ship a state where the deletion reports "Project with time entries cannot be deleted." (`src/Infrastructure/Storage/ProjectRepository.php:46`). Pass 2 moved the refusal into ISSUE-003 (criterion at `map.md:53`, with seven criteria justified at `map.md:59`). It placed the settled-state regression in ISSUE-004 (`map.md:71`) and the paid-state regression in ISSUE-005 (`map.md:87`).
+    - The spec's suggested "README consolidation" step (`spec.md:199`) became per-slice documentation, not a docs-only ticket (`map.md:110`).
+  - Planning 3 met with caveat. Every edge has a stated reason in `map.md`:
+    - 002→001 and 003→001: stored currency and cent amounts (`:41`, `:57`).
+    - 004→002/003: option parsing on the same command plus the one-currency rule, and an advance to deduct (`:74`, `:76`).
+    - 005→004: zero-gross invoice and separate advance/deducting-invoice histories needed for verification (`:91`, `:93`).
+    - 006→005: read-only reporting over payment balances (`:108`, `:110`).
+
+    Money slices reach the prefactor directly or transitively. Settlement depends on advances and on the entry invoice path. Open balances depend on payments. 002 and 003 are parallel.
+
+    Caveat, as in b39fbdd:
+    - 005→004 is verification-driven, not a functional prerequisite: payments need only cents and stored currency.
+    - 004→002 is partly shared code (the `--advances=` option on the same command), since deductions also work in period mode.
+    - Result: a serial chain 001→004→005→006.
+  - Planning 4 met (`spec.md`):
+    - Selection is validated before writing, "in one database transaction", with no number consumed on failure (`:140`, `:88`).
+    - Advances "lock no time entries" (`:97`).
+    - Deduction once: "An advance can be settled by at most one invoice" (`:109`), backed by a settlement link and a transaction check. Unlike b39fbdd, no storage uniqueness rule is stated. The receivable survives: "The advance invoice keeps its own gross and payment history" (`:110`), and user story 34 keeps separate histories (`:52`).
+    - One currency per invoice in both modes (`:90`); deduction currency must match (`:104`); open-items totals per currency (`:126`). Legacy mixed-currency invoices are grandfathered explicitly (`:180`), closing the b39fbdd caveat.
+    - Migration keeps values and documents identical (`:73`, `:132`).
+    - "Period mode with neither is unchanged" (`:87`).
+    - Open Decisions: "None" (`:187`).
+  - Revision churn and the dad2ee6..450779c skill changes (15c3ebe: edge-case blocking limited to reachable inputs; 90c4572: internal-representation tests are implementation details, and shared representation changes are behavior-preserving steps):
+    - Churn fell from 5 spec author passes (b39fbdd) to 2. One spec-review blocker, down from 3, and one tickets-review blocker, as before.
+    - No extreme-magnitude probes appear in any blocker or fix. Both spec drafts carry a supported-range assumption: "amounts up to nine integer digits ... and realistic entry durations; cent arithmetic stays far inside 64-bit integer range, and no additional limits are introduced" (`spec.md:181`; already in `artifacts/spec-1.md:168`). Spec review 1 checked "supported range" without a finding (`reports/spec-review-1.md:15`).
+    - The single spec blocker came from an ordinary reachable sequence (create project, issue advance, delete project, export advance) against existing deletion code and tests (`reports/spec-review-1.md:5`). That is a genuine product decision, not a magnitude defect.
+    - The enforced-rule check no longer turns internal-representation tests into human decisions:
+      - Spec pass 1 already classed the `typeof(...) = 'real'` assertion (`tests/Integration/InvoicesTest.php:127-130`) and the float-typed properties (`tests/Unit/InvoiceTest.php:11`) as internal representation (`reports/spec-1.md:17-18`; `spec.md:170`).
+      - Both reviewers agreed: "REAL storage assertions and float value-object implementation can change" (`reports/spec-review-1.md:30`); "internal representation checks" (`reports/spec-review-2.md:30`).
+      - Numeric JSON stayed an observable contract and was kept without a blocker (`spec.md:171`).
+      - The only enforced-rule narrowing that reached a human was the project-deletion rule, a real public behavior (`spec.md:99`).
+    - The behavior-preserving staging rule caught the bundling that b39fbdd showed. Spec pass 1's money step also added advance attributes, settlement links, deductions and payment storage (`artifacts/spec-1.md:71`). Spec review 1 raised this as nonblocking F2 with an established-intent correction, and spec pass 2 split it (`spec.md:73`, `:203`). The fix needed no human decision, but it did not change the pass count, because pass 2 was already forced by F1.
+    - Tickets review 1 also tightened ISSUE-001 (F2: baseline captured from the pre-change renderer instead of comparing new and migrated output under the same new renderer; F3: restoration and all-migrations coverage in the upgrade note). Both landed in ISSUE-001 criteria 1 and 5.
+  - Timing (`orchestrator_usage.py` stages CSV, `orchestrator-usage-stages.csv` in the evaluation scratchpad): totals are 1,840.9 min wall and 1,783.2 min worker, both inflated by the pause, which falls entirely inside the spec-1 worker interval (launch 2026-10-27T08:25:00Z, capture 2026-10-28T13:31:53Z, 1,746.9 min).
+
+    Active time per stage:
+
+    | Stage | Active time | Basis |
+    | --- | --- | --- |
+    | Spec | 13.6 min | spec-1 from re-delivery 13:24:01Z to capture 13:31:53Z is 7.9 min, plus spec-2 at 5.7 min |
+    | Spec review | 10.6 min | 5.6 + 5.0 |
+    | Tickets | 10.9 min | 6.6 + 4.3 |
+    | Tickets review | 9.1 min | 5.1 + 4.0 |
+    | Human gates | 56.2 min | 6.7 + 17.2 + 15.9 + 16.4, supervising agent |
+    | Orchestrator gaps | 1.0 min | |
+    | Total | about 101 min | resume 13:23:50Z to recap 15:05:37Z |
+
+    Before the pause, about 6 min of orchestrator setup ran on 2026-10-27 (init 08:24:43Z to the limit status at 08:30:21Z). The 2 h 12 min until the "Später fortsetzen" answer is not part of the active time.
+  - Comparison with b39fbdd:
+    - Planning 1 moved from missed to met. The prefactor is labeled, behavior-preserving and money-only. The b39fbdd blockers on ceiling, preflight and exact JSON tokens did not recur.
+    - Planning 2, 3 and 4 are met in both runs. Planning 4 loses the b39fbdd legacy-currency caveat. Planning 3 keeps the verification-driven serial-edge caveat.
+    - Ticket count went from 7 to 6. ISSUE-001 has 6 criteria, down from 10.
+    - Active worker time went from about 92 min to 44 min, and spec work from 44 min to 13.6 min.
+    - Human-gate time rose from 10.5 min to 56.2 min. This is supervising-agent deliberation, not worker work; the cause is not verified.
+  - New skill findings:
+    - The ticket author applied first-use placement to storage but not to rules. It deferred the advance deletion refusal to a later ticket behind payments, although the approved spec placed it with advances. Only the tickets reviewer's blocker fixed this.
+    - The recap reports total wall time (30 h 40 min) with no pause marker. `orchestrator_usage.py` counts the whole pause as spec-1 worker minutes. Neither separates the usage-limit wait from active time.
+    - Verified only for the spec-1 pane on resume: re-delivering the assignment to the existing pane after a 29 h wait worked (start marker confirmed at 13:24:22Z).
+  - Issue chain not run, so there is no simplify, review, test, end-to-end or migration evidence. The export trap is addressed only in planning:
+    - ISSUE-001: pre-change document baseline and stored currency in place of the first position's currency.
+    - ISSUE-003 and ISSUE-004: document criteria for advances and deduction blocks (`map.md:52`, `:70`).
