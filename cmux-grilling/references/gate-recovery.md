@@ -8,7 +8,8 @@ method, missing or empty section, unfilled `|` menu, missing question block) doe
    not the substance"), using the waited procedure below, naming the questions. Re-parse only after
    the watcher returns the re-emitted report.
 2. A question still failing on any lane is **deferred**: record `grill.question_deferred` with
-   `{round, id, lanes, reason}`, leave it out of the synthesis, and ask it again in a later round as
+   `{round, id, lanes, reason}`, leave it out of the synthesis `questions` array, and store its
+   `id`, `question` and `reason` in the synthesis `deferred` array for protocol rendering. Ask it again in a later round as
    a new question, so all four lanes see it again. The other questions of the round synthesize
    normally.
 3. A question that cannot be deferred because no round is left is `hitl` for the session; a human

@@ -290,7 +290,8 @@ set it to `false`. Keep a `true` reasoning focused on those caveats. The rendere
 explicit judgment instead of guessing from keywords or language. Missing classification
 for a dependency fails closed to `--context-digest`. Write a synthesis file with an empty
 `questions` array even if every question was deferred, so context can distinguish no settled
-answers from missing metadata.
+answers from missing metadata. Store deferred questions alongside `questions` in a `deferred` array,
+with `id`, `question` and `reason` strings; omit the array when none were deferred.
 
 ## Gate Rule
 
@@ -375,19 +376,18 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    research. Record `grill.assumptions` with the count.
 2. Distill the **open decisions** in the same step (see Open Decisions below). Record
    `grill.open_decisions` with the count.
-3. Write the artifact pair to the output directory from `state.json`:
-   - `<output-dir>/<slug>-<timestamp>.md` — human-readable protocol in the established
-     grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
-     `## Q&A` (per round a `### Runde <N>` heading, per question: question, Antwort, Confidence,
-     Quellen, Reasoning, plus the four lane findings in a collapsible block; deferred questions
-     are listed with their reason), `## Definierte Annahmen`, `## Offene Fakten`, `## Entscheidungen`
-     (one top-level block per open decision, rendering the `open_decisions` fields in German —
-     Frage, Kontext, Belege, Optionen mit Implikation, Empfehlung — plus its Ausgang once
-     decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
-     verbatim corrections with review markers as defined below. Keep this heading vocabulary stable so
-     grill-session artifacts stay comparable across sessions.
-   - `<output-dir>/<slug>-<timestamp>.json` — machine-readable result assembled from the
-     `synthesis/round-*.json` files:
+3. Write only the JSON half to the output directory from `state.json`:
+   `<output-dir>/<slug>-<timestamp>.json`, assembled from `synthesis/round-*.json`.
+   Then run `run_state.py render-artifact --run-dir <run-dir> --artifact <artifact.json>`
+   (optional `--title <title>`; defaults to the task). It writes `markdownPath` in the established
+   protocol format: header (generation time from the run, question count, stop reason), `## Aufgabe`,
+   `## Q&A` with `### Runde <N>`, question, Antwort, Confidence, Quellen, Reasoning and collapsible
+   lane findings, deferred questions with reasons, `## Definierte Annahmen`, `## Prämissen-Korrekturen`,
+   `## Offene Fakten`, and `## Entscheidungen` with German fields and recorded Ausgang.
+   Free text is quoted so task headings cannot open protocol sections. Invalid JSON is refused
+   before writing, and the written pair is validated. Existing Markdown requires explicit
+   `--overwrite`; never replace recorded human edits silently.
+   Rendering details: [references/script-reference.md](references/script-reference.md).
 
    ```json
    {
@@ -423,23 +423,23 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    strings empty. Later reviews require an ISO timestamp with timezone; corrected entries
    need corrected text and a reason, discarded entries need a reason.
 
-   In `## Definierte Annahmen`, keep each assumption text **verbatim**, in order, as a
-   numbered single line. Append this exact suffix (the object is JSON):
+   The renderer keeps assumption text **verbatim**, in order, as a numbered single line in
+   `## Definierte Annahmen`, appending this exact suffix (the object is JSON):
    ` [Prüfung: {"Ergebnis":"ungeprüft","Korrektur":"","Grund":""}]`.
    German outcomes map to `ungeprüft|bestätigt|korrigiert|verworfen`; `Korrektur` and `Grund`
    mirror `corrected_text` and `reason` exactly. JSON escaping preserves quotes in text.
 
    `premise_corrections` holds correction texts verbatim; `premise_correction_review` has one entry
    per correction with the same fields, requirements and all-unreviewed initial state as
-   `assumption_review`. Under `## Prämissen-Korrekturen`, use `- ` entries with the same
+   `assumption_review`. The renderer uses `- ` entries under `## Prämissen-Korrekturen` with the same
    review marker. Empty lists allow an absent or empty section.
 
    `open_facts` lists facts research could not establish and only the human can supply:
    unique non-empty `id`, `question` (the question only the human can answer), `why_needed`
    (why the plan needs it), `status` (`open|answered`), `answer`, and `answered_at`.
    Finalize writes open facts with empty answer/time; answered facts need a non-empty answer
-   and ISO timestamp with timezone. In `## Offene Fakten`, write one `- {…}` JSON object
-   per line, exactly matching each open-fact entry in order; include the empty section if none.
+   and ISO timestamp with timezone. The renderer writes one `- {…}` JSON object per line in
+   `## Offene Fakten`, exactly matching each open-fact entry in order, with an empty section if none.
    This list is separate from decisions. In `options`, never write an option whose only
    content defers to missing facts: the genuine alternatives are the options; deferral is
    covered by the later-decide option plus open facts.

@@ -132,3 +132,34 @@ python3 scripts/test_agents_config.py
 python3 scripts/test_launch_wave.py
 ```
 
+
+### Render the initial artifact protocol
+
+After writing only the JSON half, run:
+
+```bash
+python3 cmux-grilling/scripts/run_state.py render-artifact --run-dir <run-dir> --artifact <artifact.json>
+```
+
+`render-artifact` needs only that JSON and the run directory, plus optional `--title <title>`.
+The default title is the task with line breaks collapsed. Generation time is `state.json`'s
+`created_at`. Deferred questions come from each `synthesis/round-<N>.json`'s optional `deferred`
+array, with non-empty `id`, `question` and `reason` strings; they are not artifact `qa` entries.
+Every completed round needs a synthesis file, including rounds with no settled questions.
+The artifact JSON schema and planning import stay unchanged.
+
+The command writes the JSON's `markdownPath` (relative to the current repository root,
+expanding `~`; the JSON's sibling `.md` when omitted). The run directory's `run_id` must match
+the artifact's. It refuses invalid JSON with the existing validator's diagnostics before
+writing anything. It builds the complete protocol in memory, reuses `transcribe-artifact`
+for review markers, open-fact JSON lines and recorded decision outcomes, validates the
+candidate, publishes it, and runs `validate-artifact` on the written pair before success.
+Task text, questions, sources, reasoning, lane findings, deferred reasons and decision text
+are quoted; they cannot introduce protocol headings. Review entries remain verbatim single
+lines with their JSON markers, and facts remain escaped JSON lines.
+
+Existing Markdown is refused unless `--overwrite` is explicit. This flag regenerates the
+whole protocol and can replace human edits; use it only deliberately. For recorded reviews,
+use `run_state.py transcribe-artifact --artifact <artifact.json>` instead: it preserves the
+rest of the protocol. Rendering changes neither JSON nor run state/events. Later validation,
+review, transcription and recap follow the same closing-step order.

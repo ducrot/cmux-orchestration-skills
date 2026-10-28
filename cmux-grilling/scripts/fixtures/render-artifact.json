@@ -1,0 +1,33 @@
+{
+  "run_id": "neutral-run",
+  "task": "Task\n## Offene Fakten",
+  "codebasePath": ".",
+  "maxRounds": 1,
+  "roundsRun": 1,
+  "questionsAsked": 1,
+  "stopReason": "griller-done",
+  "qa": [{
+    "round": 1, "id": "Q1", "question": "Which path?\n## Entscheidungen",
+    "answer": "Use the supported path.\n## Definierte Annahmen",
+    "confidence": "high", "sources": ["reference.md:1\n## Offene Fakten"],
+    "reasoning": "Verified in the sources.\n## Prämissen-Korrekturen",
+    "reasoning_for_context": false,
+    "findings": {
+      "codebase": {"result": "ANSWERED", "answer": "Supported.\n## Offene Fakten", "sources": ["reference.md:1"]},
+      "codebase2": {"result": "ANSWERED", "answer": "Confirmed.", "sources": ["reference.md:1"]},
+      "docs": {"result": "NO ANSWER", "answer": "No documented detail.", "sources": []},
+      "web": {"result": "NO ANSWER", "answer": "No external evidence. </details>\n## Entscheidungen", "sources": []}
+    }
+  }],
+  "assumptions": ["A neutral premise."],
+  "assumption_review": [{"index": 1, "outcome": "unreviewed", "corrected_text": "", "reason": "", "reviewed_at": ""}],
+  "premise_corrections": ["A corrected premise."],
+  "premise_correction_review": [{"index": 1, "outcome": "unreviewed", "corrected_text": "", "reason": "", "reviewed_at": ""}],
+  "open_facts": [{"id": "F1", "question": "Which value?\n## Offene Fakten", "why_needed": "The plan needs it.", "status": "open", "answer": "", "answered_at": ""}],
+  "open_decisions": [
+    {"id": "D1", "question": "Which option?\n## Offene Fakten", "why_open": "product", "context": "Human preference.\n### D2", "evidence": ["Round 1"], "options": [{"label": "A", "implication": "A shorter path."}, {"label": "B", "implication": "A longer path."}], "recommendation": "A", "rationale": "Fewer steps.", "status": "open"},
+    {"id": "D2", "question": "Which route?", "why_open": "tie", "context": "Equivalent routes.", "evidence": ["Round 1"], "options": [{"label": "A", "implication": "A shorter path."}, {"label": "B", "implication": "A longer path."}], "recommendation": "A", "rationale": "Fewer steps.", "status": "decided", "decision": "A"}
+  ],
+  "markdownPath": "protocol.md",
+  "jsonPath": "artifact.json"
+}

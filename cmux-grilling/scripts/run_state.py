@@ -17,6 +17,7 @@ from artifact_pair import (ASSUMPTION_REVIEW, PREMISE_CORRECTION_REVIEW, extensi
                            render_review, single_line, validate_extension, validate_extension_data,
                            validate_review)
 from transcribe_artifact import decision_outcome, transcribe
+from render_artifact import render_protocol
 
 from run_briefing import BoardPublication, publish_board
 from run_commit import capture_baseline
@@ -169,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe = subparsers.add_parser("transcribe-artifact", help="Validate and transcribe recorded JSON outcomes into Markdown")
     transcribe.add_argument("--artifact", required=True)
 
+    render = subparsers.add_parser("render-artifact", help="Render the Markdown protocol from JSON and round syntheses")
+    render.add_argument("--run-dir", required=True)
+    render.add_argument("--artifact", required=True)
+    render.add_argument("--title", help="Protocol title; defaults to the task")
+    render.add_argument("--overwrite", action="store_true", help="Explicitly replace an existing Markdown protocol")
+
     pending = subparsers.add_parser(
         "pending-decisions",
         help="Print pending decisions, assumption reviews and facts of the newest artifact. Resolves its directory like init",
@@ -215,6 +222,8 @@ def run_command(args: argparse.Namespace) -> int:
         return validate_artifact(args)
     if args.command == "transcribe-artifact":
         return transcribe_artifact(args)
+    if args.command == "render-artifact":
+        return render_artifact(args)
     if args.command == "pending-decisions":
         return print_pending_decisions(args)
     raise AssertionError(args.command)
@@ -689,19 +698,50 @@ def record_decision(args: argparse.Namespace) -> int:
     return 0
 
 
+def check_artifact_json(artifact: object, separator: str) -> None:
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("open_decisions"), list):
+        raise ValueError("artifact must contain an open_decisions list")
+    if problems := decision_problems(artifact["open_decisions"]) + validate_extension_data(artifact):
+        raise ValueError(separator.join(problems))
+
+
+def markdown_target(target: object) -> Path:
+    if not single_line(target):
+        raise ValueError("markdownPath must be a non-empty path")
+    return Path(target).expanduser()
+
+
+def render_artifact(args: argparse.Namespace) -> int:
+    artifact_path = Path(args.artifact)
+    try:
+        artifact = read_json(artifact_path)
+        check_artifact_json(artifact, "\n")
+        path = markdown_target(markdown_path(artifact, artifact_path))
+        if path.resolve() == artifact_path.resolve():
+            raise ValueError("markdownPath must differ from the JSON path")
+        if path.exists() and not args.overwrite:
+            raise ValueError("Markdown already exists; pass --overwrite to replace recorded edits")
+        candidate = render_protocol(artifact, Path(args.run_dir), args.title)
+        if problems := validate_extension(artifact, artifact_path, candidate):
+            raise ValueError("\n".join(problems))
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
+        # A hard-link publication refuses a racing creation too; overwrite is opt-in.
+        durable_publish(path, candidate.encode("utf-8"), mode=mode, suffix=".tmp",
+                        publish=os.replace if args.overwrite else os.link)
+    except (ValueError, OSError, UnicodeError, KeyError, TypeError) as error:
+        raise SystemExit(f"rendering refused: {error}") from error
+    validate_artifact(args)
+    print(f"markdown={path} rendered valid")
+    return 0
+
+
 def transcribe_artifact(args: argparse.Namespace) -> int:
     artifact_path = Path(args.artifact)
     artifact = read_json(artifact_path)
     try:
-        if not isinstance(artifact, dict) or not isinstance(artifact.get("open_decisions"), list):
-            raise ValueError("artifact must contain an open_decisions list")
         # Validate JSON before rendering; Markdown disagreements are expected at this point.
-        if problems := decision_problems(artifact["open_decisions"]) + validate_extension_data(artifact):
-            raise ValueError("; ".join(problems))
-        target = markdown_path(artifact, artifact_path)
-        if not single_line(target):
-            raise ValueError("markdownPath must be a non-empty path")
-        path = Path(target).expanduser()
+        check_artifact_json(artifact, "; ")
+        path = markdown_target(markdown_path(artifact, artifact_path))
         original = path.read_bytes()
         candidate = transcribe(artifact, original.decode("utf-8"))
         if problems := validate_extension(artifact, artifact_path, candidate):

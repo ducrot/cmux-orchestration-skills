@@ -7,6 +7,19 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_finalize_renders_markdown_from_json(self):
+        skill = (SKILL_DIR / "SKILL.md").read_text()
+        finalize = skill.split("## Finalize and Artifact", 1)[1].split("## Assumptions Review", 1)[0]
+        for phrase in ("Write only the JSON half", "run_state.py render-artifact --run-dir <run-dir> --artifact <artifact.json>",
+                       "--title", "--overwrite", "Free text is quoted"):
+            self.assertIn(phrase, finalize)
+        self.assertLess(finalize.index("run_state.py render-artifact"), finalize.index("4. Validate"))
+        self.assertLess(finalize.index("4. Validate"), finalize.index("5. Record"))
+        self.assertNotIn("Write the artifact pair", finalize)
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        for phrase in ("render-artifact", "created_at", "`deferred`", "--overwrite", "planning import stay unchanged"):
+            self.assertIn(phrase, reference)
+
     def test_entrypoint_reserves_room_for_remaining_grilling_work(self):
         self.assertLessEqual((SKILL_DIR / "SKILL.md").stat().st_size, 75894 * .7 - 4000)
 
