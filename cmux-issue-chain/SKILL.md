@@ -43,8 +43,8 @@ Read when `compare-defaults` reports `ask: true`: [references/default-assignment
 Ask the assignment question in the same `AskUserQuestion` call as the commit-mode question, as its
 last question; alone when the commit mode is already named. A kept answer travels with the
 next-run prompt like the commit mode, so a chain asks once at its first issue and again only when
-the listed differences change. Init records the digest as `kept_assignments` and refuses a
-malformed or contradictory one.
+the listed differences change. Init reads the digest from `--invocation` only (there is no direct
+init flag), records it as `kept_assignments`, and refuses a malformed or contradictory one.
 
 ## Worker Profile Configuration
 
@@ -927,7 +927,8 @@ contents stay invisible rather than failing capture. Then:
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/<run-id> --label "report-captured review-1" --data '{"role":"review","pass":1}'
 ```
 
-Record a gate decision. `--next-stage` moves `current_stage` forward on `advance`:
+Record a gate decision. `--next-stage` moves `current_stage` forward on `advance`, and back to
+`implement` on the `stop` that records a human-authorized corrective pass (`resume-hitl.md`):
 
 ```bash
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --decision advance --reason "no findings, evidence check passed" --next-stage review

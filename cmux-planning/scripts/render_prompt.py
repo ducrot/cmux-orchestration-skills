@@ -733,6 +733,8 @@ def ticket_ground_rules(state: dict) -> str:
   A prototype snippet is also allowed when it encodes a decision more precisely than prose:
   note its prototype origin and trim it to the decision-rich parts, rather than a working demo.
   `canonical_check_commands` may contain paths.
+- A documentation criterion names what the docs must explain, not every document that must repeat it:
+  one place holds each rule and the others link to it.
 - Describe end-to-end behavior from the user's perspective, not a layer-by-layer implementation list,
   except for the standalone prefactor and wide-refactor tickets described in the vertical-slice policy.
 - Number tickets in dependency order: every blocker must have a smaller numeric ID than its dependent.

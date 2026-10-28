@@ -142,6 +142,16 @@ class GateEvidenceCli(unittest.TestCase):
                     state = json.loads((self.run_dir / "state.json").read_text())
                     self.assertEqual(state["gate_decisions"][-1]["decision"], decision)
 
+    def test_stop_closing_hitl_returns_run_to_implement(self):
+        self.reset("test")
+        result = subprocess.run([
+            sys.executable, str(SCRIPT), "gate", "--run-dir", str(self.run_dir),
+            "--stage", "test", "--decision", "stop", "--reason", "corrective pass authorized",
+            "--next-stage", "implement"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(state["current_stage"], "implement")
+
 
 if __name__ == "__main__":
     unittest.main()

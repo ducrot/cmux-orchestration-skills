@@ -9,7 +9,9 @@ resolution, and continue with the final test. This is the only case in which the
 `advance` over a parsed `stop`: the human resolved the gate, the orchestrator did not overrule it.
 
 Any authorized product edit, or any snapshot difference, takes the existing path instead: a scoped
-corrective implement pass for the approved items, then the final test. This is a regular implement
+corrective implement pass for the approved items, then the final test. Record the halted gate as
+`stop` with `--next-stage implement` so `current_stage` returns to implement; never edit `state.json`
+by hand. This is a regular implement
 pass even at pass 2 or higher: use `prepare --stage implement --pass <next-pass>` without
 `--followup`, and render without `--followup-file`. It owes failing-then-passing regression proof
 and green own after-evidence, not before-evidence. Reserve `prepare --followup` and the matching

@@ -103,7 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("--stage", required=True)
     gate.add_argument("--decision", choices=GATE_DECISIONS, required=True)
     gate.add_argument("--reason", required=True)
-    gate.add_argument("--next-stage", help="Stage to move to. Only meaningful with --decision advance")
+    gate.add_argument("--next-stage", help="Stage to move to: the next stage on advance, or implement on the "
+                      "stop that closes a HITL with an authorized corrective pass")
 
     snapshot = subparsers.add_parser("snapshot", help="Record a working-tree fingerprint as a tree.snapshot event")
     snapshot.add_argument("--run-dir", required=True)
