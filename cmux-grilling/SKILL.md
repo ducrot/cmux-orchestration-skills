@@ -1,6 +1,6 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four fresh research lanes per round (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four fresh research lanes per round (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair as <timestamp>.md and <timestamp>.json in the feature folder's grilling directory; feature-name approval shares the commit mode dialog, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
@@ -97,7 +97,7 @@ matters and attacks the open decisions behind them instead.
 - The orchestrator never edits product code and never performs the research itself. It may
   write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, run logs, prompts,
   gate decisions, snapshots, synthesis files, and the final artifact pair in the output
-  directory (`<tracker>/grilling/` by default, see Artifact Location).
+  directory (`<feature_dir>/grilling/`, see Artifact Location).
 - Research lanes are strictly read-only towards the repository: no file edits, no
   state-changing commands. A lane may write exactly two files per round: its named draft
   path and its report handoff path. Drafts default to
@@ -339,16 +339,19 @@ Read when arming or re-arming a round watcher, waiting for lane reports, or inte
 
 ## Artifact Location
 
-`init` records the resolved `output_dir` and `tracker` in `state.json`; later run steps
-reuse them. First match wins:
+Fresh `init` requires `--feature YYYY-MM-DD-<slug>` directly in repository `.scratch/`:
+a name or path with a valid date and lowercase kebab-case slug (at most 30 characters).
+State freezes absolute `feature_dir` and local `timestamp` (`YYYY-MM-DD-HHMM`, same instant
+as the run name); the slug is the run key. Re-init cannot change the feature.
 
-| Input                            | Output directory        |
-|----------------------------------|-------------------------|
-| `--output-dir <path>`            | `<path>`, verbatim      |
-| `--tracker .scratch/<tracker>`   | `.scratch/<tracker>/grilling/` |
-| nothing, exactly one `.scratch/*/issues/` | that tracker's `grilling/` |
-| nothing, several such trackers   | hard stop — ask the human which tracker, pass `--tracker` |
-| nothing, no tracker at all       | `.scratch/grilling/`    |
+Without `--feature`, propose today's local date and a short slug; ask for name approval
+in the same dialog as commit mode. Skip name approval for supplied `--feature`, resume,
+re-init and smoke tests. A supplied commit mode skips only its own question.
+
+Init never creates the feature folder. Finalize creates `<feature_dir>/grilling/` and writes
+`<timestamp>.md` and `<timestamp>.json`; an existing feature keeps its tracker and earlier
+pairs. Briefing/recap name this directory; the next-run prompt names the dated pair.
+`complete` accepts exactly these existing paths.
 
 Before `init`, `pending-decisions` searches all `.scratch/*/grilling/` feature directories.
 It takes no folder options; see [script reference](references/script-reference.md) for selection and output.
@@ -369,8 +372,9 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    research. Record `grill.assumptions` with the count.
 2. Distill the **open decisions** in the same step (see Open Decisions below). Record
    `grill.open_decisions` with the count.
-3. Write the artifact pair to the output directory from `state.json`:
-   - `<output-dir>/<slug>-<timestamp>.md` — human-readable protocol in the established
+3. Create `<feature_dir>/grilling/` at finalize and write the artifact pair using the frozen
+   `feature_dir` and `timestamp` from `state.json`:
+   - `<feature_dir>/grilling/<timestamp>.md` — human-readable protocol in the established
      grill-session format: header (generation time, question count, stop reason), `## Aufgabe`,
      `## Q&A` (per round a `### Runde <N>` heading, per question: question, Antwort, Confidence,
      Quellen, Reasoning, plus the four lane findings in a collapsible block; deferred questions
@@ -380,7 +384,7 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      decided), and — when any drift was self-resolved — `## Prämissen-Korrekturen` listing
      verbatim corrections with review markers as defined below. Keep this heading vocabulary stable so
      grill-session artifacts stay comparable across sessions.
-   - `<output-dir>/<slug>-<timestamp>.json` — machine-readable result assembled from the
+   - `<feature_dir>/grilling/<timestamp>.json` — machine-readable result assembled from the
      `synthesis/round-*.json` files:
 
    ```json
@@ -399,8 +403,8 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      "premise_correction_review": [],
      "open_facts": [{"id": "F1", "question": "…", "why_needed": "…", "status": "open", "answer": "", "answered_at": ""}],
      "open_decisions": ["... see Open Decisions ..."],
-     "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
-     "jsonPath": "<output-dir>/<slug>-<timestamp>.json"
+     "markdownPath": "<feature_dir>/grilling/<timestamp>.md",
+     "jsonPath": "<feature_dir>/grilling/<timestamp>.json"
    }
    ```
 
@@ -712,13 +716,9 @@ writes one immutable launch wave, and pins the run's cmux workspace
 for offline runs outside cmux) and installs the lifecycle ignore rules described above:
 
 ```bash
-python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-rounds 4
-python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
-python3 scripts/run_state.py init --task-file path/to/task.md --config path/to/agents.json
-python3 scripts/run_state.py init --task-file path/to/task.md --probe-profiles --probe-timeout 180
+python3 scripts/run_state.py init --feature YYYY-MM-DD-<slug> --task "Plan plus fixed constraints" --max-rounds 4
+python3 scripts/run_state.py init --feature YYYY-MM-DD-<slug> --task-file path/to/task.md --config path/to/agents.json
 ```
-
-`init` also resolves the artifact location; the precedence is in Artifact Location.
 
 Read when using artifact, rendering, parsing, snapshot, gate, completion, or regression-test CLI examples: [references/script-reference.md](references/script-reference.md).
 

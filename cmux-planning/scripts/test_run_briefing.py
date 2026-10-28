@@ -54,7 +54,7 @@ GRILLING_STATE = {
     "slug": "briefing",
     "max_rounds": 4,
     "lanes": {"codebase": {}, "codebase2": {}, "docs": {}, "web": {}},
-    "output_dir": ".scratch/grilling",
+    "feature_dir": ".scratch/2026-10-28-test",
 }
 
 
@@ -249,7 +249,7 @@ class RunBriefing(RunDirTestCase):
         self.assertEqual(self.draft(grilling)["placeholders"], ["constraints", "focus", "subject"])
         text = (grilling / "briefing.md").read_text(encoding="utf-8")
         self.assertIn("höchstens 4 Runden · Lanes codebase, codebase2, docs, web", text)
-        self.assertIn("`.scratch/grilling`", text)
+        self.assertIn("`.scratch/2026-10-28-test/grilling`", text)
 
     def test_inline_planning_sources_use_text_labels(self):
         for lang, text_label, summary_label in (
@@ -276,7 +276,7 @@ class RunBriefing(RunDirTestCase):
         self.assertIn("grilling result result.json", text)
 
     def test_grilling_input_source_is_named(self):
-        state = {**PLANNING_STATE, "grilling_import": {"source_json": "/x/.scratch/grilling/result.json"}}
+        state = {**PLANNING_STATE, "grilling_import": {"source_json": "/x/.scratch/2026-10-28-test/grilling/result.json"}}
         run_dir = self.run_dir(state)
         self.draft(run_dir, lang="en")
         self.assertIn("grilling result result.json", (run_dir / "briefing.md").read_text(encoding="utf-8"))
@@ -904,7 +904,8 @@ class NextStep(RunDirTestCase):
         text = self.recap(run_dir)
         self.assertIn("- Nächster Schritt: Issue-Chain mit ISSUE-001 – Title ISSUE-001 (schaltet 1 Issue frei)", text)
         self.assertIn(f"~~~\n/cmux-issue-chain {tracker} ISSUE-001\n~~~", text)
-        artifact = self.root / "result.json"
+        artifact = self.root / "2026-10-28-test/grilling/2026-10-28-0915.json"
+        artifact.parent.mkdir(parents=True)
         grilling = {**GRILLING_STATE, "created_at": "2026-09-23T08:00:00+00:00", "current_stage": "done",
                     "deliverables": {"json": str(artifact)}}
         run_dir = self.run_dir(grilling)
@@ -916,6 +917,8 @@ class NextStep(RunDirTestCase):
         (run_dir / "recap.md").unlink()
         artifact.write_text(json.dumps({"open_decisions": [{"status": "decided"}]}))
         text = self.recap(run_dir)
+        outcome_line = next(line for line in text.splitlines() if line.startswith("- Ergebnis:"))
+        self.assertIn("`.scratch/2026-10-28-test/grilling`", outcome_line)
         self.assertIn("- Nächster Schritt: Planning mit dem Grilling-Ergebnis", text)
         self.assertIn(f"~~~\n/cmux-planning {artifact}\n~~~", text)
 

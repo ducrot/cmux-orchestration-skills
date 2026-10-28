@@ -204,6 +204,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         return self.run_state(
             "init",
             "--task", "Grill this prepared plan",
+            "--feature", "2026-10-28-test",
             "--run-id", run_id,
             "--runs-root", str(self.runs_root),
             "--workspace-id", "WORKSPACE",
@@ -340,29 +341,31 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
                 self.assertIn("gate=advance", validated.stdout)
 
-    def test_default_identity_and_slug_override(self):
-        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
+    def test_default_identity_and_feature_slug(self):
+        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--feature", "2026-10-28-chosen", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip()
-        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-grill-task-static-teaser-website-for$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-grill-chosen$")
         state = json.loads((run_dir / "state.json").read_text())
-        self.assertEqual(state["slug"], "task-static-teaser-website-for")
+        self.assertEqual(state["slug"], "chosen")
         self.assertLessEqual(len(state["slug"]), 30)
         self.assertEqual(state["workflow"], "grilling")
         self.assertEqual(state["layout_version"], 2)
         created = datetime.fromisoformat(state["created_at"])
         self.assertEqual(created.utcoffset(), timedelta(0))
-        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-grill-task-static-teaser-website-for")
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-grill-chosen")
         for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
             self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
+        self.assertEqual(state["timestamp"], run_dir.name.split("-grill-")[0])
+        self.assertFalse(Path(state["feature_dir"]).exists())
         self.assertEqual(state["deliverables"], {})
-        override = self.init_for("custom", "--slug", "chosen-slug")
+        override = self.init_for("custom", "--feature", "2026-10-28-chosen-slug")
         self.assertEqual(override.returncode, 0, override.stderr)
         self.assertEqual(self.read_state("custom")["slug"], "chosen-slug")
         for slug in ("", "Upper", "a--b", "../x", "x" * 31):
-            invalid = self.init_for("invalid", "--slug", slug)
+            invalid = self.init_for("invalid", "--feature", "2026-10-28-" + slug)
             self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn("--slug", invalid.stderr)
+            self.assertIn("--feature", invalid.stderr)
             self.assertFalse(self.run_dir("invalid").exists())
 
     def test_run_without_max_rounds_is_not_resumed(self):

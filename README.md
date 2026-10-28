@@ -103,6 +103,11 @@ Give it a task or plan and any constraints already settled. The orchestrator ask
 
 The research ends when the round budget is spent or no relevant open question remains. It produces a Markdown + JSON pair containing assumptions and open decisions. You then review the assumptions and walk through the open decisions; the artifacts are updated with those outcomes. Research is autonomous, while the closing review involves you.
 
+Before a fresh Grilling init, the orchestrator proposes today's local date and a short slug
+and asks for feature-name approval in the same dialog as commit mode. Supplied `--feature`,
+resume, re-init and smoke tests skip name approval. Init leaves the feature folder uncreated;
+finalize writes the timestamped pair to its `grilling/` folder.
+
 [Workflow and artifact details](cmux-grilling/SKILL.md). A separate interactive grilling skill, where you answer every research question, is not bundled here.
 
 ### cmux-planning: approve a specification and tracker
@@ -186,7 +191,7 @@ Workers run in visible cmux panes. The launch command carries a start prompt ins
 
 Structured reports gate advancement, and Git snapshots support checks for unauthorized changes, including staged changes and commits. Coverage has limits, including ignored files and some untracked content; see the [integrity boundaries](cmux-planning/SKILL.md#ground-rules) for the exact scope. A clean report alone does not establish that a stage is safe to advance.
 
-All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Default run names use `YYYY-MM-DD-HHMM-<skill>-<key>` in local time, with `grill`, `plan`, and `chain` as the skill keys. Issue-chain requires a valid dated tracker folder wherever it lives; its default run name is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-issue-NNN`. Run-state and event timestamps remain UTC. Explicit `--run-id` values are preserved. New runs store `layout_version: 2`. Grilling results live beside the selected tracker or in `.scratch/grilling/`; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
+All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Default run names use `YYYY-MM-DD-HHMM-<skill>-<key>` in local time, with `grill`, `plan`, and `chain` as the skill keys. Issue-chain requires a valid dated tracker folder wherever it lives; its default run name is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-issue-NNN`. Run-state and event timestamps remain UTC. Explicit `--run-id` values are preserved. New runs store `layout_version: 2`. Grilling requires an approved `--feature YYYY-MM-DD-<slug>` folder directly in repository `.scratch/`, freezes its path and local minute at init, and creates `<feature>/grilling/<timestamp>.md` and `.json` only at finalize, beside any tracker or earlier pairs; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
 
 Older run layouts remain readable with `status` and refuse continuation with “unsupported legacy layout”. Follow the relevant skill's recovery guidance before continuing an older run.
 

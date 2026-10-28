@@ -7,6 +7,29 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_feature_location_and_name_approval_replace_old_location_rules(self):
+        skill = (SKILL_DIR / "SKILL.md").read_text()
+        reference = (SKILL_DIR / "references/script-reference.md").read_text()
+        overview = (SKILL_DIR.parent / "README.md").read_text()
+        for text in (skill, reference, overview):
+            for phrase in ("--feature", "YYYY-MM-DD-<slug>", "local date", "short slug",
+                           "same dialog", "commit", "resume", "re-init", "smoke tests", "finalize"):
+                with self.subTest(phrase=phrase):
+                    self.assertIn(phrase, text)
+        for path in [SKILL_DIR / "SKILL.md", SKILL_DIR.parent / "README.md",
+                     *(SKILL_DIR / "references").glob("*.md")]:
+            text = path.read_text()
+            for obsolete in ("--output-dir", "--tracker", "--slug", ".scratch/grilling/",
+                             "Autodetected", "First match wins", "<slug>-<timestamp>"):
+                with self.subTest(path=path.name, obsolete=obsolete):
+                    self.assertNotIn(obsolete, text)
+        for phrase in ("feature_dir", "timestamp", "YYYY-MM-DD-HHMM", "<timestamp>.md",
+                       "<timestamp>.json", "existing feature", "Init never creates"):
+            self.assertIn(phrase, skill)
+        description = skill.split("---", 2)[1]
+        for phrase in ("feature folder", "<timestamp>.md", "<timestamp>.json", "feature-name approval", "commit mode"):
+            self.assertIn(phrase, description)
+
     def test_entrypoint_reserves_room_for_remaining_grilling_work(self):
         self.assertLessEqual((SKILL_DIR / "SKILL.md").stat().st_size, 75894 * .7 - 4000)
 

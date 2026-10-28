@@ -25,18 +25,11 @@ from test_launch_wave import file_contents  # noqa: E402
 from run_state import (  # noqa: E402
     DECISION_STATUSES,
     DECISION_WHY_OPEN,
-    NO_TRACKER_OUTPUT_DIR,
-    detect_tracker,
     print_pending_decisions,
     record_decision,
-    resolve_output,
     validate_artifact,
     validate_decision,
 )
-
-
-def output_args(tracker: str | None = None, output_dir: str | None = None) -> argparse.Namespace:
-    return argparse.Namespace(tracker=tracker, output_dir=output_dir)
 
 
 def run_quietly(command, args: argparse.Namespace) -> str:
@@ -112,7 +105,7 @@ class SkillDirectoryRunsRoot(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(wave_tests.RUN_STATE), "init", "--task", "Grill this plan",
              "--run-id", "skill-cwd", "--config", str(self.config_path),
-             "--output-dir", str(self.repo / "grilling"), "--workspace-id", "WORKSPACE"],
+             "--feature", "2026-10-28-test", "--workspace-id", "WORKSPACE"],
             cwd=skill, env=self.env(), capture_output=True, text=True, timeout=30,
         )
         self.assertNotEqual(result.returncode, 0, result.stdout)
@@ -169,62 +162,114 @@ class OutputPathDerivation(unittest.TestCase):
                 ensure_runs_root_ignored(root, Path(tmp))
             self.assertTrue(ignore.is_dir())
 
-    def test_explicit_tracker_wins_over_detection(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            make_tracker(root, "other")
-            tracker, output = resolve_output(output_args(tracker=".scratch/chosen"), root)
-            self.assertEqual(tracker, Path(".scratch/chosen"))
-            self.assertEqual(output, Path(".scratch/chosen/grilling"))
+    def test_feature_cli_validation_and_frozen_reinit(self):
+        fixture = wave_tests.PreparedLaunchWaveCli()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        for value in (None, "2026-02-30-test", "2026-10-28-Upper", "2026-10-28-" + "x" * 31,
+                      "elsewhere/2026-10-28-test", ".scratch/nested/2026-10-28-test", "../2026-10-28-test"):
+            before = file_contents(fixture.repo)
+            extra = [] if value is None else ["--feature", value]
+            result = fixture.run_state("init", "--task", "Validate", "--no-workspace", *extra)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("--feature", result.stderr)
+            self.assertEqual(file_contents(fixture.repo), before)
+        for option in ("--slug", "--tracker", "--output-dir"):
+            before = file_contents(fixture.repo)
+            result = fixture.init_for("removed-option", option, "ignored")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unrecognized arguments", result.stderr)
+            self.assertEqual(file_contents(fixture.repo), before)
+        result = fixture.init_for("frozen")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = fixture.read_state("frozen")
+        feature = fixture.repo / ".scratch/2026-10-28-test"
+        self.assertEqual(state["feature_dir"], str(feature.resolve()))
+        self.assertFalse(feature.exists())
+        before = file_contents(fixture.repo)
+        result = fixture.init_for("frozen", "--feature", "2026-10-28-other")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("feature", result.stderr)
+        self.assertEqual(file_contents(fixture.repo), before)
+        result = fixture.init_for("frozen", "--feature", str(feature.resolve()))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(file_contents(fixture.repo), before)
 
-    def test_single_tracker_is_detected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            make_tracker(root, "t12")
-            tracker, output = resolve_output(output_args(), root)
-            self.assertEqual(tracker, root / ".scratch/t12")
-            self.assertEqual(output, root / ".scratch/t12/grilling")
 
-    def test_several_trackers_stop_instead_of_guessing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            make_tracker(root, "t12")
-            make_tracker(root, "t13")
-            with self.assertRaises(SystemExit) as caught:
-                resolve_output(output_args(), root)
-            self.assertIn("--tracker", str(caught.exception))
 
-    def test_no_tracker_falls_back(self):
-        """Grilling a free-standing plan without a tracker must stay possible."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tracker, output = resolve_output(output_args(), Path(tmp))
-            self.assertIsNone(tracker)
-            self.assertEqual(output, Path(NO_TRACKER_OUTPUT_DIR))
+class ReviewRefusals(unittest.TestCase):
+    setUp = wave_tests.PreparedLaunchWaveCli.setUp
+    tearDown = wave_tests.PreparedLaunchWaveCli.tearDown
+    env = wave_tests.PreparedLaunchWaveCli.env
+    run_state = wave_tests.PreparedLaunchWaveCli.run_state
+    initialize_config = wave_tests.PreparedLaunchWaveCli.initialize_config
+    init_for = wave_tests.PreparedLaunchWaveCli.init_for
 
-    def test_output_dir_overrides_and_skips_detection(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            make_tracker(root, "t12")
-            make_tracker(root, "t13")  # ambiguous, but never consulted
-            tracker, output = resolve_output(output_args(output_dir="somewhere/else"), root)
-            self.assertIsNone(tracker)
-            self.assertEqual(output, Path("somewhere/else"))
+    def test_init_refuses_feature_naming_a_regular_file_before_any_write(self):
+        feature = self.repo / ".scratch/2026-10-28-test"
+        feature.write_text("Existing file\n")
+        before = file_contents(self.root)
+        result = self.init_for("feature-file")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--feature must name a folder, not a file", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(file_contents(self.root), before)
+        self.assertFalse(self.runs_root.exists())
 
-    def test_output_dir_keeps_an_explicit_tracker(self):
-        tracker, output = resolve_output(output_args(tracker=".scratch/t12", output_dir="out"), Path("."))
-        self.assertEqual(tracker, Path(".scratch/t12"))
-        self.assertEqual(output, Path("out"))
+    def test_complete_refuses_missing_frozen_fields_before_any_write(self):
+        result = self.init_for("missing-frozen-fields")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.runs_root / "missing-frozen-fields"
+        state_path = run_dir / "state.json"
+        original = json.loads(state_path.read_text())
+        for missing in (("feature_dir",), ("timestamp",), ("feature_dir", "timestamp")):
+            with self.subTest(missing=missing):
+                state = dict(original)
+                for field in missing:
+                    del state[field]
+                state_path.write_text(json.dumps(state))
+                before = file_contents(self.root)
+                result = self.run_state("complete", "--run-dir", str(run_dir),
+                                        "--markdown", "x.md", "--json", "x.json")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsupported legacy layout", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(file_contents(self.root), before)
 
-    def test_detection_ignores_directories_without_issues(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".scratch" / "orchestrator" / "runs").mkdir(parents=True)
-            make_tracker(root, "t12")
-            self.assertEqual(detect_tracker(root), root / ".scratch/t12")
+    def test_complete_refuses_symlinked_feature_or_grilling_before_any_write(self):
+        for linked in ("feature", "grilling"):
+            with self.subTest(linked=linked):
+                run_id = "symlink-" + linked
+                feature = self.repo / (".scratch/2026-10-28-" + run_id)
+                result = self.init_for(run_id, "--feature", str(feature))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run_dir = self.runs_root / run_id
+                state = json.loads((run_dir / "state.json").read_text())
+                outside = self.root / run_id
+                outside.mkdir()
+                if linked == "feature":
+                    (outside / "grilling").mkdir()
+                    feature.symlink_to(outside, target_is_directory=True)
+                else:
+                    feature.mkdir()
+                    (feature / "grilling").symlink_to(outside, target_is_directory=True)
+                output = feature / "grilling"
+                md = output / (state["timestamp"] + ".md")
+                artifact = output / (state["timestamp"] + ".json")
+                md.write_text("# Complete\n")
+                artifact.write_text(json.dumps({"run_id": run_id, "open_decisions": []}))
+                before = file_contents(self.root)
+                result = self.run_state("complete", "--run-dir", str(run_dir),
+                                        "--markdown", str(md), "--json", str(artifact))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must not be symlinks", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(file_contents(self.root), before)
+                self.assertTrue((feature if linked == "feature" else output).is_symlink())
 
 
 class CompletionMapping(unittest.TestCase):
-    def test_complete_cli_requires_paths_and_preserves_output_mapping(self):
+    def test_complete_cli_requires_frozen_pair_and_preserves_feature_contents(self):
         from test_launch_wave import PreparedLaunchWaveCli
         # Reuse the real CLI fixture with local fake harness executables.
         fixture = PreparedLaunchWaveCli()
@@ -233,35 +278,51 @@ class CompletionMapping(unittest.TestCase):
         for mode, extra in (
             ("default", []),
             ("custom-id", ["--run-id", "custom-run"]),
-            ("custom-root", ["--runs-root", str(fixture.repo / "custom-runs"), "--slug", "custom-artifact"]),
+            ("custom-root", ["--runs-root", str(fixture.repo / "custom-runs"), "--feature", ".scratch/2026-10-28-custom-artifact"]),
         ):
             with self.subTest(mode=mode):
-                result = fixture.run_state("init", "--task", "Completion " + mode, "--no-workspace", "--tracker", ".scratch/completion", *extra)
+                result = fixture.run_state("init", "--task", "Completion " + mode, "--no-workspace", "--feature", "2026-10-28-completion", *extra)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 run_dir = fixture.repo / result.stdout.strip()
                 state_path = run_dir / "state.json"
                 state = json.loads(state_path.read_text())
-                output = fixture.repo / state["output_dir"]
+                output = Path(state["feature_dir"]) / "grilling"
+                if mode == "default":
+                    self.assertFalse(output.parent.exists())
+                # Finalize may add a result beside a tracker and earlier results.
+                (output.parent / "issues").mkdir(parents=True, exist_ok=True)
+                tracker_issue = output.parent / "issues/ISSUE-001.md"
+                tracker_issue.write_text("Existing tracker issue")
                 output.mkdir(parents=True, exist_ok=True)
-                md = output / (state["slug"] + ".md")
-                artifact = output / (state["slug"] + ".json")
+                old = output / "2020-01-01-0000.md"
+                old.write_text("Earlier result")
+                preserved = {p: p.read_bytes() for p in output.iterdir() if p.is_file()}
+                md = output / (state["timestamp"] + ".md")
+                artifact = output / (state["timestamp"] + ".json")
+                if not md.exists() or not artifact.exists():
+                    absent = fixture.run_state("complete", "--run-dir", str(run_dir), "--markdown", str(md), "--json", str(artifact))
+                    self.assertNotEqual(absent.returncode, 0)
+                    self.assertIn("must exist", absent.stderr)
                 md.write_text("# Complete\n")
                 artifact.write_text(json.dumps({"run_id": state["run_id"], "open_decisions": [valid_decision()]}))
                 before = state_path.read_bytes()
                 missing = fixture.run_state("complete", "--run-dir", str(run_dir), "--json", str(artifact))
                 self.assertNotEqual(missing.returncode, 0)
                 self.assertIn("--markdown", missing.stderr)
-                for paths in ((fixture.repo / "outside.md", artifact), (md, fixture.repo / "outside.json")):
+                for paths in ((fixture.repo / "outside.md", artifact), (md, fixture.repo / "outside.json"), (output / "wrong.md", artifact), (artifact, md)):
                     outside = fixture.run_state("complete", "--run-dir", str(run_dir), "--markdown", str(paths[0]), "--json", str(paths[1]))
                     self.assertNotEqual(outside.returncode, 0)
-                    self.assertIn("output_dir", outside.stderr)
+                    self.assertIn("frozen", outside.stderr)
                     self.assertEqual(before, state_path.read_bytes())
                 finished = fixture.run_state("complete", "--run-dir", str(run_dir), "--markdown", str(md), "--json", str(artifact), "--data", '{"stop_reason":"done"}')
                 self.assertEqual(finished.returncode, 0, finished.stderr)
+                self.assertEqual(tracker_issue.read_text(), "Existing tracker issue")
+                for path, content in preserved.items():
+                    if path not in (md, artifact):
+                        self.assertEqual(path.read_bytes(), content)
                 final = json.loads(state_path.read_text())
                 self.assertEqual(final["current_stage"], "done")
-                self.assertEqual(final["output_dir"], state["output_dir"])
-                self.assertEqual(final["tracker"], state["tracker"])
+                self.assertEqual(final["feature_dir"], state["feature_dir"])
                 self.assertEqual(final["deliverables"], {"markdown": str(md.resolve()), "json": str(artifact.resolve())})
                 event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
                 self.assertEqual(event["data"]["stop_reason"], "done")
@@ -457,7 +518,7 @@ class RecordDecision(unittest.TestCase):
 
 class PendingDecisions(unittest.TestCase):
     script = Path(__file__).with_name("run_state.py").resolve()
-    empty = (f"dir={NO_TRACKER_OUTPUT_DIR} artifact=none open=none deferred=none unreviewed_assumptions=none "
+    empty = (f"dir=none artifact=none open=none deferred=none unreviewed_assumptions=none "
              "open_facts=none unreviewed_premise_corrections=none")
 
     def setUp(self):
