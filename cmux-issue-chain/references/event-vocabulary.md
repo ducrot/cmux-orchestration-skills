@@ -20,7 +20,7 @@ ways (`plan.drift.resolved`, never also `plan.drift_resolved`).
 | `worker.launch_blocked`                                  | A worker launch was denied (permissions, environment)                                                                                            |
 | `gate`                                                   | Only via `run_state.py gate`                                                                                                                     |
 | `tree.snapshot`                                          | Only via `run_state.py snapshot`                                                                                                                 |
-| `report.reformat_requested`                              | Re-emission asked for a format-only parse failure                                                                                                |
+| `report.reformat_requested` | One re-emission request per `{role, pass}`; `run_state.py event` adds `report_sha256` from the current report before delivery. Opens a fresh watcher window; a second request requires HITL. |
 | `report.integrity`, `report.integrity.retracted`         | Report-claim accusation and its explicit retraction                                                                                              |
 | `plan.drift`, `plan.drift.resolved`                      | Drift recorded / resolved per the Replanning rules                                                                                               |
 | `hitl.resolved`, `decision.human`                        | Human decisions and HITL resolutions                                                                                                             |

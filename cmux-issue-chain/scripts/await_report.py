@@ -18,7 +18,7 @@ from pathlib import Path
 
 from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_run_state, utc_now
 from worker_readiness import read_events
-from watch_deadlines import arm, settled_report, monotonic_deadlines, wait_key
+from watch_deadlines import arm, settled_report, monotonic_deadlines, wait_key, reformat_request
 from run_briefing import WATCHER_HITL_OUTCOMES, publish_board
 
 EXIT_REPORT = 0     # report bytes settled — parse it next; NOT an advance verdict
@@ -208,6 +208,10 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     launch = pending_launch(events, identity)
     report_launch = current_launch(events, identity)
     key = wait_key(events, identity, [identity])
+    request = reformat_request(events, {"role": args.role, "pass": args.pass_num})
+    baseline = request[1]["report_sha256"] if request else None
+    if request:
+        key = f"{key}:reformat:{request[0]}"
     reason = args.reason if args.extend else args.deadline_reason
     def record_clock(data):
         # A replayed clock emits nothing; a new key must not buy another extension.
@@ -223,6 +227,8 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         publish_board(run_dir, args.cmux_cmd)
         extended = True
     deadline, start_deadline = monotonic_deadlines(clock)
+    expired_rearm = deadline <= start and any(
+        event.get("data", {}).get("watch_clock", {}).get("key") == key for event in window)
     deadline_minutes = clock["minutes"]
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
@@ -251,6 +257,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return code
 
     previous_digest = None
+    settle_once = expired_rearm
     while True:
         previous_digest, report_settled = settled_report(report, report_launch, previous_digest)
         has_report = previous_digest is not None
@@ -263,10 +270,16 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                          "marker_path": launch.get("marker_path")},
             })
             launch = None
-        if report_settled:
+        eligible = has_report and previous_digest != baseline
+        if report_settled and eligible:
             return finish("report", EXIT_REPORT, f"report captured: {report}")
         now = time.monotonic()
         if now >= deadline:
+            if settle_once and eligible:
+                # An expired re-arm may confirm bytes once, without renewing its clock.
+                settle_once = False
+                time.sleep(args.poll_seconds)
+                continue
             return finish("deadline", EXIT_DEADLINE, f"deadline of {deadline_minutes} minutes exceeded")
         if not has_report and args.surface and now >= next_health:
             health_status, health_detail = check_health(cmd, args.surface)

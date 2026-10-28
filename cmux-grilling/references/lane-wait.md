@@ -27,10 +27,12 @@ pass `--extend --reason "<recorded reason>" --deadline-minutes <additional-minut
 the watcher records the reason and grants that duration from the later of the existing
 deadline and extension arm. Re-arm without `--extend` to keep that persisted deadline;
 a second `--extend` is refused. The compatible `--deadline-reason` spelling retains
-idempotent replay of the same reason and duration, sharing the same one-extension budget. The start window is not extended by this flag. Only a recorded exit-9 recovery for a
+idempotent replay of the same reason and duration, sharing the same one-extension budget. The start window is not extended by this flag. A recorded exit-9 recovery for a
 `not_started` lane (`respond`, readiness-gated re-delivery, a recovery launch, or screen
 confirmation) starts a new window without spending the extension. A follow-up, new launch
 outside exit-9 recovery, observation, assessment, or re-arm does not renew the round clock.
+A recorded `report.reformat_requested` also opens a fresh window for the changed digest, through
+the waited re-emission procedure in [gate-recovery.md](gate-recovery.md).
 Never run two watchers for the same work concurrently.
 
 The same poll loop tracks starts and reports independently for every lane. A round marker
@@ -42,6 +44,8 @@ marker path. A previous round's marker or report cannot confirm the new round.
 A report is captured only after it has settled: identical non-empty bytes on two consecutive polls.
 This applies independently per lane; the round waits until every report has settled. First sight
 may confirm start, but changing bytes keep the lane pending. An unsettled report at the deadline takes exit 8.
+An already-expired persisted re-arm allows exactly one settling poll for reports already on disk;
+unchanged eligible bytes return 0, while missing or changing reports return 8.
 
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.

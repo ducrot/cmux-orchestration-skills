@@ -444,6 +444,18 @@ def append_event(args: argparse.Namespace) -> int:
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
+    if args.type == "report.reformat_requested":
+        from await_report import report_path
+        from watch_deadlines import reformat_data
+        identity = {"role": data.get("role"), "pass": data.get("pass")}
+        if (identity["role"] not in MINIMUM_WAIT_MINUTES
+                or type(identity["pass"]) is not int or identity["pass"] < 1):
+            raise SystemExit("report.reformat_requested requires a valid role and positive pass")
+        report = report_path(Path(args.run_dir), identity["role"], identity["pass"])
+        try:
+            data.update(reformat_data(read_events(Path(args.run_dir)), identity, report))
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
     append_jsonl(
         Path(args.run_dir) / "events.jsonl",
         {"time": utc_now(), "type": args.type, "message": args.message, "data": data},

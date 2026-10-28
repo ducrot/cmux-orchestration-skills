@@ -455,6 +455,19 @@ def append_event(args: argparse.Namespace) -> int:
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
+    if args.type == "report.reformat_requested":
+        from watch_deadlines import reformat_data
+        from worker_readiness import read_events
+        from orchestrator_lib import round_report_path
+        identity = {"round": data.get("round"), "lane": data.get("lane")}
+        if (identity["lane"] not in LANES
+                or type(identity["round"]) is not int or identity["round"] < 1):
+            raise SystemExit("report.reformat_requested requires a positive round and valid lane")
+        report = round_report_path(Path(args.run_dir), identity["round"], identity["lane"])
+        try:
+            data.update(reformat_data(read_events(Path(args.run_dir)), identity, report))
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
     if args.type == "grill.question":
         from round_context import recorded_questions, validate_question
         from worker_readiness import read_events

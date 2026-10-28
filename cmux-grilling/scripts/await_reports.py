@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from worker_readiness import read_events
-from watch_deadlines import arm, monotonic_deadlines, settled_report
+from watch_deadlines import arm, monotonic_deadlines, settled_report, reformat_request
 from orchestrator_lib import (
     LANES, append_jsonl, read_run_state, round_marker_path, round_report_path, round_wait_minutes, utc_now,
 )
@@ -194,14 +194,19 @@ def current_launch(events: list[dict], lane: str, surface: str | None, number: i
     return launch
 
 
-def round_clock(events, identity, launches, minutes, start_minutes, reason, emit):
+def round_clock(events, identity, launches, minutes, start_minutes, reason, emit, request_indices=()):
     # A round owns one clock even if a lane is replaced. Only an exit-9 recovery for
-    # a named not-started lane creates a new window. Follow-ups never renew it.
+    # a named not-started lane, or a report re-emission request, creates a new window.
+    # Follow-ups never renew it.
     pending = set()
     recoveries = []
     anchor = min((data["start_time_ns"] / 1e9 for data in launches.values() if data), default=None)
     for index, event in enumerate(events):
         data = event.get("data", {})
+        if index in request_indices:
+            recoveries.append(index)
+            # A re-emission window starts at first arm after the request, not at launch.
+            anchor = None
         if (event.get("type") == "worker.waiting" and data.get("round") == identity["round"]
                 and data.get("outcome") == "not_started"):
             pending.update(data.get("not_started", []))
@@ -260,6 +265,9 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.extend and extended:
         raise SystemExit("deadline extension already recorded for this round")
     reports = {lane: report_path(run_dir, args.round_number, lane) for lane in lanes}
+    requests = {lane: reformat_request(events, {"round": args.round_number, "lane": lane}) for lane in lanes}
+    baselines = {lane: request[1]["report_sha256"] if request else None for lane, request in requests.items()}
+    request_indices = {request[0] for request in requests.values() if request}
     deadline_minutes = args.deadline_minutes if args.deadline_minutes is not None else round_wait_minutes(args.questions)
     # File-only mode (no lane surfaces) never shells out, so it needs no workspace.
     cmd = health_command(args, parser) if surfaces else []
@@ -275,7 +283,8 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         waiting_event(run_dir, "round deadline recorded", {
             **identity, "delivered_lanes": [], "missing_lanes": lanes,
             "elapsed_seconds": 0, "deadline_minutes": deadline_minutes, **data})
-    clock = round_clock(events, identity, launches, deadline_minutes, args.start_minutes, reason, record_clock)
+    clock = round_clock(events, identity, launches, deadline_minutes, args.start_minutes, reason, record_clock,
+                        request_indices)
     if reason is not None and not extended:
         waiting_event(run_dir, "deadline extension approved", {
             "round": args.round_number, "lanes": lanes,
@@ -283,6 +292,8 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         })
         extended = True
     deadline, start_deadline = monotonic_deadlines(clock)
+    expired_rearm = deadline <= start and any(
+        event.get("data", {}).get("watch_clock", {}).get("key") == clock["key"] for event in events)
     deadline_minutes = clock["minutes"]
     next_health = start
     next_heartbeat = start + args.heartbeat_seconds
@@ -306,7 +317,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             )
             previous_digests[lane] = digest
             report = digest is not None
-            if settled:
+            if settled and digest != baselines[lane]:
                 done.append(lane)
             if offline:
                 started_lanes.append(lane)
@@ -364,6 +375,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         )
         return code
 
+    settle_once = expired_rearm
     while True:
         done = progress()
         pending = [lane for lane in lanes if lane not in done]
@@ -380,6 +392,12 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             if health_status == "dead":
                 return finish("pane_dead", EXIT_PANE_DEAD, f"lane pane dead: {health_detail}", done)
         if now >= deadline:
+            if settle_once and any(
+                    previous_digests[lane] is not None and previous_digests[lane] != baselines[lane]
+                    for lane in pending):
+                settle_once = False
+                time.sleep(args.poll_seconds)
+                continue
             return finish("deadline", EXIT_DEADLINE, f"deadline of {deadline_minutes} minutes exceeded", done)
         if len(started_lanes) < len(lanes) and now >= start_deadline:
             return finish("not_started", EXIT_NOT_STARTED, "round start window elapsed", done)

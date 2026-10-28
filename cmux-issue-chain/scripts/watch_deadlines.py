@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import stat
 import time
 from pathlib import Path
@@ -96,6 +97,34 @@ def fresh_report(path: Path, launch: dict | None) -> bool:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0 and (
         not launch or isinstance(launch.get("start_time_ns"), int)
         and info.st_mtime_ns >= launch["start_time_ns"])
+
+
+def reformat_request(events: list[dict], identity: dict) -> tuple[int, dict] | None:
+    """Find the one durable re-emission baseline for a role/pass or round/lane."""
+    requests = [(index, event["data"]) for index, event in enumerate(events)
+                if event.get("type") == "report.reformat_requested"
+                and all(event.get("data", {}).get(k) == v for k, v in identity.items())]
+    if len(requests) > 1:
+        raise ValueError("second request for report re-emission requires HITL")
+    if not requests:
+        return None
+    digest = requests[0][1].get("report_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("report re-emission baseline is missing or invalid; requires HITL")
+    return requests[0]
+
+
+def reformat_data(events: list[dict], identity: dict, report: Path) -> dict:
+    """Capture bytes before delivery; callers merge this into the request event."""
+    if reformat_request(events, identity) is not None:
+        raise ValueError("second request for report re-emission requires HITL")
+    try:
+        content = report.read_bytes()
+    except OSError:
+        content = b""
+    if not content:
+        raise ValueError("report re-emission requires a non-empty report")
+    return {**identity, "report_sha256": hashlib.sha256(content).hexdigest()}
 
 
 def settled_report(path: Path, launch: dict | None,
