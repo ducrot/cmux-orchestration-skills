@@ -452,7 +452,8 @@ Spec approval keeps its existing flow without a fixed quiz.
 
 Approval freezes the exact reviewed proposal digest, stages `README.md`, `spec.md`, `map.md`,
 `decisions.md`, and every native issue file under the run directory, and validates the complete staged
-tracker with this skill's standalone native contract. The target must remain absent and its basename must
+tracker with this skill's standalone native contract. The target must be absent or contain only a real
+`grilling/` directory (variant B); its basename must
 equal the dated feature name `YYYY-MM-DD-<slug>`; `tracker.slug` remains the pure slug:
 
 ```bash
@@ -460,15 +461,14 @@ python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
   --decision approve --reason <human-reason>
 ```
 
-After approval and successful staging, publish in one same-filesystem directory move:
+Publish on one filesystem; variant B moves `grilling/` first:
 
 ```bash
 python3 scripts/planning_state.py publish --run-dir <run-dir>
 ```
 
-Publication refuses path escape, collisions, changed approved identities, malformed or partial issue
-sets, duplicate IDs, unknown blockers, cycles, changed staging, and second publication. Staging or
-validation failure leaves the target unchanged and records diagnostics for human resolution.
+Publication refuses path escape, collisions, changed identities or staging, malformed issues, duplicate
+IDs, unknown blockers, cycles, and second publication. Validation failure preserves the target.
 
 Read when recovering interrupted ticket staging or publication: [references/ticket-publication-recovery.md](references/ticket-publication-recovery.md).
 
@@ -476,8 +476,9 @@ Read when recovering interrupted ticket staging or publication: [references/tick
 
 After successful `publish`, record a proposal with `run_commit.py propose` for the published
 `README.md`, `spec.md`, `map.md`, `decisions.md`, and `issues/<file>` leaf files. Build the file list as
-repository-relative literal leaf paths from `git status --porcelain=v1 -z --untracked-files=all` under
-`published_tracker.path`, never a directory or an expanded glob. Pass each leaf with `--file`, and
+repository-relative literal leaves from `git status --porcelain=v1 -z --untracked-files=all`, limited to
+`published_tracker.artifacts` under `published_tracker.path`; exclude `grilling/` and expanded globs.
+Pass each leaf with `--file`, and
 exclude unrelated changes from the proposal while listing them with `--ride-along`. Use an English
 one-line subject explaining what changed and why, an optional body, and no trailers.
 

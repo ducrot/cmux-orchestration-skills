@@ -5,13 +5,28 @@ already moved but not recorded, and completed. Repeating explicit ticket approva
 unrecorded staging only after it validates against the reviewed proposal and approved spec; partial or
 changed staging stops for inspection. If interruption happens after the atomic move but before the final
 state write, rerunning `publish` validates the existing target against the approved spec, proposal,
-ticket set, and staged artifact identities before completing state. If both staging and target exist,
-identities differ, or the run is already complete, publication refuses to duplicate or partially
-overwrite anything.
+ticket set, and staged artifact identities before completing state. Changed identities, duplicate grilling
+directories, or an already complete run refuse publication.
 
 The target is the frozen `feature_dir` directly in repository `.scratch/`, named `YYYY-MM-DD-<slug>`.
 Ticket approval takes no `--target` and asks no target-path question. The proposal's `tracker.slug`
-and frozen `tracker_slug` stay the pure slug. Approval requires an absent feature folder; publish
-also refuses existing targets (including empty ones) unless validating the already-moved approved
-tracker for recovery as above. Re-init with the same feature is idempotent even after the move or
+and frozen `tracker_slug` stay the pure slug. Approval accepts an absent folder or exactly one real
+`grilling/` directory (variant B).
+Other entries (including hidden files), a grilling file or symlink, and an empty target are refused.
+Publish validates approval identities, tracker digests, canonical paths and the shared filesystem
+before moving anything. It moves the whole grilling directory into staging, removes the now empty
+target, then atomically renames staging to the target. The pair bytes remain unchanged.
+
+Status reports `grilling_locations` and these recoverable states:
+
+- Grilling-only target plus staging: `validated`; publish moves grilling, removes target, then renames.
+- Empty target plus staging with grilling: `validated`; publish removes target, then renames.
+- Absent target plus staging with grilling: `validated`; publish renames staging.
+- Published tracker with grilling: `published`; publish validates and completes the state write.
+
+An empty target is accepted only when this run's canonical staging already holds grilling.
+Grilling in both target and staging is `inconsistent` and nothing moves. These checks also apply
+when recovering each interruption. Native validation and `published_tracker.artifacts` enumerate
+only required tracker files and issues; build the commit proposal from those leaves, excluding grilling.
+Re-init with the same feature is idempotent even after the move or
 completion; a different feature is refused before target or staging changes.

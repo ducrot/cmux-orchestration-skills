@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parent))
 
 import orchestrator_lib  # noqa: E402
-from planning_state import PUBLISHING_COMMANDS  # noqa: E402
+from planning_state import PUBLISHING_COMMANDS, publish_tracker  # noqa: E402
 from run_briefing import project_board, read_events  # noqa: E402
-from spec_contract import validate_spec  # noqa: E402
+from spec_contract import ContractError, validate_spec  # noqa: E402
 from test_grilling_input import extend_pair, extend_premise_pair, render_extension  # noqa: E402
 from test_spec_contract import checked_evidence, review_report, spec  # noqa: E402
 from test_tracker_contract import (  # noqa: E402
@@ -5731,6 +5731,184 @@ Option?
         status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
         self.assertEqual(status["classification"], "inconsistent")
         self.assertFalse(status["approval"]["spec"]["valid"])
+
+    def grilling_publication_case(self, interruption):
+        self.reach_ticket_approval()
+        target = self.repo / ".scratch" / self.DEFAULT_FEATURE
+        grilling = target / "grilling"
+        grilling.mkdir(parents=True)
+        (grilling / "result.md").write_bytes(b"# Original grilling\n")
+        (grilling / "result.json").write_bytes(b'{"original": true}\n')
+        pair = file_contents(grilling)
+        approved = self.ticket_approval("approve", "Approve grilling feature tracker")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        staged = Path(state["staged_tracker"]["path"])
+        if interruption >= 1:
+            os.rename(grilling, staged / "grilling")
+        if interruption >= 2:
+            target.rmdir()
+        if interruption >= 3:
+            os.rename(staged, target)
+        before = (file_contents(target), file_contents(staged))
+        repeated = self.cli(STATE, "init", "--run-id", "plan-test", "--feature",
+                            self.DEFAULT_FEATURE, "--repo", str(self.repo),
+                            "--task-file", self.plan_file("Same task"))
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual((file_contents(target), file_contents(staged)), before)
+        status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(status["publication"]["phase"], "published" if interruption == 3 else "validated")
+        location = (staged if interruption in (1, 2) else target) / "grilling"
+        self.assertEqual(status["publication"]["grilling_locations"], [str(location.resolve())])
+        # Every resumable location must reject changed identities and artifacts before moving.
+        original_state = (self.run_dir / "state.json").read_bytes()
+        live_tracker = target if interruption == 3 else staged
+        readme = live_tracker / "README.md"
+        original_readme = readme.read_bytes()
+        for mutation in ("artifact", "approval", "escape", "staging"):
+            changed = json.loads(original_state)
+            if mutation == "artifact":
+                readme.write_bytes(original_readme + b"changed\n")
+            elif mutation == "approval":
+                changed["approved_tickets"]["sha256"] = "0" * 64
+            elif mutation == "escape":
+                changed["approved_tickets"]["target"] = str(self.repo / "outside")
+            else:
+                changed["staged_tracker"]["path"] = str(staged.parent / "other" / ".." / staged.name)
+            (self.run_dir / "state.json").write_text(json.dumps(changed))
+            untouched = (file_contents(target), file_contents(staged))
+            refused = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+            self.assertNotEqual(refused.returncode, 0, mutation)
+            self.assertEqual((file_contents(target), file_contents(staged)), untouched, mutation)
+            readme.write_bytes(original_readme)
+            (self.run_dir / "state.json").write_bytes(original_state)
+        if interruption < 3:
+            original_stat = Path.stat
+            def different_device(path, *args, **kwargs):
+                result = original_stat(path, *args, **kwargs)
+                if path == staged:
+                    values = list(result)
+                    values[2] += 1
+                    return os.stat_result(values)
+                return result
+            untouched = (file_contents(target), file_contents(staged))
+            with patch.object(Path, "stat", different_device):
+                with self.assertRaisesRegex(ContractError, "different filesystems"):
+                    publish_tracker(self.run_dir)
+            self.assertEqual((file_contents(target), file_contents(staged)), untouched)
+        result = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(file_contents(target / "grilling"), pair)
+        self.assertFalse(staged.exists())
+        final = json.loads((self.run_dir / "state.json").read_text())
+        self.assertEqual(len(final["published_tracker"]["artifacts"]), 6)
+        args = ["propose", "--run-dir", str(self.run_dir), "--subject", "Publish tracker"]
+        for leaf in final["published_tracker"]["artifacts"]:
+            args += ["--file", str((target / leaf).relative_to(self.repo))]
+        proposal = self.cli(STATE.with_name("run_commit.py"), *args)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(all("/grilling/" not in path for path in json.loads(proposal.stdout)["files"]))
+
+    def test_grilling_publication_from_target(self):
+        self.grilling_publication_case(0)
+
+    def test_grilling_publication_from_empty_target(self):
+        self.grilling_publication_case(1)
+
+    def test_grilling_publication_from_absent_target(self):
+        self.grilling_publication_case(2)
+
+    def test_grilling_publication_from_moved_tracker(self):
+        self.grilling_publication_case(3)
+
+    def test_grilling_publication_with_missing_recorded_staging(self):
+        self.reach_ticket_approval()
+        target = self.repo / ".scratch" / self.DEFAULT_FEATURE
+        grilling = target / "grilling"
+        grilling.mkdir(parents=True)
+        (grilling / "result.md").write_bytes(b"# Original grilling\n")
+        (grilling / "result.json").write_bytes(b'{"original": true}\n')
+        approved = self.ticket_approval("approve", "Approve grilling feature tracker")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state_path = self.run_dir / "state.json"
+        original_state = state_path.read_bytes()
+        state = json.loads(original_state)
+        staged = Path(state["staged_tracker"]["path"])
+        backup = self.root / "staging-backup"
+        staged.rename(backup)
+        before = (file_contents(target), file_contents(backup))
+
+        result = self.cli(STATE, "status", "--run-dir", str(self.run_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads(result.stdout)
+        self.assertEqual(status["publication"]["phase"], "staging-missing")
+        self.assertEqual(status["publication"]["grilling_locations"], [str(grilling.resolve())])
+        refused = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("recorded staged tracker is missing; the target holds only grilling/", refused.stderr)
+        self.assertEqual((file_contents(target), file_contents(backup)), before)
+        self.assertEqual(sorted(path.name for path in target.iterdir()), ["grilling"])
+        self.assertFalse(staged.exists())
+        after_state = json.loads(state_path.read_text())
+        # The refused publish refreshes the integrity audit's check timestamp.
+        after_state["artifact_audit"]["checked_at"] = state["artifact_audit"]["checked_at"]
+        self.assertEqual(after_state, state)
+
+    def test_status_handles_non_dict_staged_tracker(self):
+        self.reach_ticket_approval()
+        approved = self.ticket_approval("approve", "Approve tracker for status inspection")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state_path = self.run_dir / "state.json"
+        original_state = state_path.read_bytes()
+        for malformed in ([], "invalid", 7):
+            with self.subTest(staged_tracker=malformed):
+                state = json.loads(original_state)
+                state["staged_tracker"] = malformed
+                state_path.write_text(json.dumps(state))
+                before = state_path.read_bytes()
+                result = self.cli(STATE, "status", "--run-dir", str(self.run_dir))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertIsInstance(json.loads(result.stdout)["publication"], dict)
+                self.assertEqual(state_path.read_bytes(), before)
+
+    def test_grilling_publication_rejects_collisions_and_changed_staging(self):
+        self.reach_ticket_approval()
+        target = self.repo / ".scratch" / self.DEFAULT_FEATURE
+        target.mkdir()
+        for entry in (None, ".hidden", "README.md", "grilling", "symlink"):
+            path = target / ("grilling" if entry == "symlink" else entry or "unused")
+            if entry == "symlink":
+                path.symlink_to(self.repo, target_is_directory=True)
+            elif entry:
+                path.write_text("keep")
+            before = file_contents(target)
+            refused = self.ticket_approval("approve", "Unsafe target")
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("grilling" if entry == "symlink" else entry or "empty", refused.stderr)
+            self.assertEqual(file_contents(target), before)
+            if entry:
+                path.unlink()
+        (target / "grilling").mkdir()
+        (target / "grilling" / "pair.json").write_text("preserve")
+        approved = self.ticket_approval("approve", "Valid target")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        state = json.loads((self.run_dir / "state.json").read_text())
+        staged = Path(state["staged_tracker"]["path"])
+        (staged / "grilling").mkdir()
+        before = (file_contents(target), file_contents(staged))
+        status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+        self.assertEqual(status["publication"]["phase"], "inconsistent")
+        refused = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("both", refused.stderr)
+        self.assertEqual((file_contents(target), file_contents(staged)), before)
+        (staged / "grilling").rmdir()
+        (staged / "README.md").write_text("changed")
+        before = (file_contents(target), file_contents(staged))
+        refused = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual((file_contents(target), file_contents(staged)), before)
 
     def test_publication_recovers_an_already_moved_tracker_and_refuses_duplicates(self):
         self.reach_ticket_approval()

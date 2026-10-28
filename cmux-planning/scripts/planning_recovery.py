@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from publication_layout import check_publication_paths, grilling_directory, target_layout
+
 from planning_inputs import planning_inputs
 from worker_readiness import readiness_status
 
@@ -386,8 +388,17 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
         and canonical_staging.resolve() != canonical_staging
     ):
         errors.append("unrecorded staging resolves outside the canonical planning staging directory")
+    layout_errors = []
+    if isinstance(approved, dict):
+        try:
+            check_publication_paths(run_dir, state)
+        except (ContractError, KeyError, TypeError, ValueError) as error:
+            layout_errors.append(str(error))
     target_exists = bool(target and target.exists())
     staged_exists = staged_path.exists()
+    grilling_only_target = bool(
+        target_exists and target.is_dir() and [p.name for p in target.iterdir()] == ["grilling"]
+    )
     phase = "not-started"
     if published is not None or state.get("current_stage") == "complete":
         phase = "completed"
@@ -407,7 +418,7 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
             except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
                 phase = "inconsistent"
                 errors.append(f"published tracker is missing or changed: {error}")
-    elif target_exists and not staged_exists:
+    elif target_exists and not staged_exists and not grilling_only_target:
         try:
             validate_publication_tracker(
                 target,
@@ -418,11 +429,10 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
         except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
             phase = "inconsistent"
             errors.append(f"moved publication target is missing or changed: {error}")
-    elif target_exists and staged_exists:
-        phase = "inconsistent"
-        errors.append("both staged and target tracker directories exist")
     elif staged_exists:
         try:
+            if target is not None:
+                target_layout(target, staged_grilling=grilling_directory(staged_path))
             validate_publication_tracker(
                 staged_path,
                 state,
@@ -438,7 +448,21 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
     elif staged is not None:
         phase = "staging-missing"
         errors.append("recorded staged tracker is missing")
+    grilling_locations = []
+    for root in (target, staged_path):
+        if root is not None:
+            try:
+                if grilling_directory(root):
+                    grilling_locations.append(str(root / "grilling"))
+            except ContractError as error:
+                layout_errors.append(str(error))
+    if len(grilling_locations) > 1:
+        layout_errors.append("grilling exists in both target and staging")
+    if layout_errors:
+        phase = "inconsistent"
+        errors.extend(layout_errors)
     return {
+        "grilling_locations": grilling_locations,
         "phase": phase,
         "staged": staged,
         "staged_exists": staged_exists,

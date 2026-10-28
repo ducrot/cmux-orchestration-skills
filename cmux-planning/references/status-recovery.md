@@ -67,3 +67,10 @@ blocked review routes back to an author and cannot be relabeled as another revie
 review found an approved-spec defect, use `ticket-approval --decision revise --scope spec` so the full
 spec author/review/approval sequence repeats.
 
+
+Variant B publication preserves the complete `grilling/` directory. Status reports its exact path in
+`publication.grilling_locations`. Grilling-only target plus staging, empty target plus staging with
+grilling, and absent target plus staging with grilling use phase `validated`; a moved tracker with
+grilling uses `published`. Run `publish` to complete each after identity validation. Both locations
+containing grilling are `inconsistent`. An initially empty target is refused; recovery permits it only
+with grilling already in this run's canonical staging. See [publication recovery](ticket-publication-recovery.md).

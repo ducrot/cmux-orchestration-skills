@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from publication_layout import check_publication_paths, grilling_directory, target_layout
 from planning_inputs import planning_inputs
 from run_commit import capture_baseline
 
@@ -2149,8 +2150,8 @@ def frozen_feature_target(state: dict, *, allow_existing: bool = False) -> Path:
     target, slug = checked_feature(Path(state["repository"]), state["feature_dir"])
     if slug != state["tracker_slug"]:
         raise ContractError("feature folder slug must match frozen tracker slug")
-    if target.exists() and not allow_existing:
-        raise ContractError(f"publication target already exists: {target}")
+    if not allow_existing:
+        target_layout(target)
     return target
 
 
@@ -2425,11 +2426,10 @@ def publish_tracker(run_dir: Path) -> int:
     if Path(approved_tickets["target"]) != target:
         raise ContractError("publication target must match the frozen feature folder and slug")
     staged = checked_staging_path(run_dir, staged_state.get("path"))
-    if target.exists():
-        if staged.exists():
-            raise ContractError(
-                "publication is inconsistent: both the staged tracker and target exist; refusing a duplicate or partial overwrite"
-            )
+    check_publication_paths(run_dir, state)
+    if target.exists() and not staged.exists():
+        if grilling_directory(target) and [p.name for p in target.iterdir()] == ["grilling"]:
+            raise ContractError("recorded staged tracker is missing; the target holds only grilling/")
         published = validate_native_tracker(
             target,
             expected_spec_sha256=approved_spec["sha256"],
@@ -2468,8 +2468,21 @@ def publish_tracker(run_dir: Path) -> int:
     )
     if validated["artifacts"] != staged_state["artifacts"]:
         raise ContractError("staged tracker changed after ticket approval")
-    if staged.stat().st_dev != target.parent.stat().st_dev:
+    staged_grilling = grilling_directory(staged)
+    layout = target_layout(target, staged_grilling=staged_grilling)
+    devices = [staged.stat().st_dev, target.parent.stat().st_dev]
+    if target.exists():
+        devices.append(target.stat().st_dev)
+    if layout == "grilling":
+        devices.append((target / "grilling").stat().st_dev)
+    if staged_grilling:
+        devices.append((staged / "grilling").stat().st_dev)
+    if len(set(devices)) != 1:
         raise ContractError("staged tracker and publication target are on different filesystems")
+    if layout == "grilling":
+        os.rename(target / "grilling", staged / "grilling")
+    if layout in {"grilling", "empty"}:
+        target.rmdir()
     os.rename(staged, target)
     published = validate_native_tracker(
         target,

@@ -117,8 +117,13 @@ Without grilling input, choose a fresh run, then approve a feature folder name i
 commit mode. The proposal uses today's local date and a short slug: `.scratch/YYYY-MM-DD-<slug>`.
 An explicit `--feature` skips the name question, as do resume, re-init, the unfinished-run path and
 smoke tests. Init freezes the folder and pure tracker slug. Ticket approval derives its publication
-target from that folder without a target-path question; an existing target, including an empty one,
-is refused at approval and publication. Same-feature re-init preserves interrupted and completed
+target from that folder without a target-path question. Targets may be absent or contain only a real
+`grilling/` directory (variant B). Other entries, symlinks and initially empty targets are refused.
+Publication moves `grilling/` into staging, removes the empty target, then renames staging atomically.
+Status identifies the grilling location in all four recovery states: grilling-only target plus staging,
+empty target plus staging with grilling, absent target plus staging with grilling, and published tracker
+with grilling. `publish` completes each after checking identities; duplicate grilling locations refuse.
+The commit proposal includes only tracker artifacts. Same-feature re-init preserves interrupted and completed
 publication; a different feature is refused.
 
 1. A fresh author inspects the repository and writes a specification.
