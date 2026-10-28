@@ -1,8 +1,10 @@
-"""The persisted clock contract is identical in each standalone skill."""
+"""The persisted clock and report settlement contracts are identical in each standalone skill."""
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from watch_deadlines import arm, wait_key
+from watch_deadlines import arm, settled_report, wait_key
 
 
 class DurableClock(unittest.TestCase):
@@ -82,3 +84,41 @@ class DurableClock(unittest.TestCase):
                  ("cmux-issue-chain", "cmux-planning", "cmux-grilling")]
         if all(p.is_file() for p in paths):
             self.assertEqual(len({p.read_bytes() for p in paths}), 1)
+
+
+class ReportSettlement(unittest.TestCase):
+    def test_only_consecutive_identical_nonempty_bytes_settle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.md"
+            previous = None
+            for content, expected in ((b"draft", False), (b"final", False), (b"final", True),
+                                      (b"", False), (b"final", False), (b"final", True),
+                                      (None, False), (b"final", False), (b"final", True)):
+                with self.subTest(content=content, expected=expected):
+                    if content is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(content)
+                    previous, settled = settled_report(path, None, previous)
+                    self.assertEqual(settled, expected)
+                    self.assertEqual(previous is None, not content)
+
+    def test_stale_report_resets_previous_observation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.md"
+            path.write_bytes(b"final")
+            stamp = path.stat().st_mtime_ns
+            previous, _ = settled_report(path, None, None)
+            self.assertEqual(settled_report(path, {"start_time_ns": stamp + 1}, previous),
+                             (None, False))
+            os.utime(path, ns=(stamp, stamp))
+            self.assertTrue(settled_report(path, {"start_time_ns": stamp}, previous)[1])
+
+    def test_disappearing_or_truncated_report_is_not_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.md"
+            path.write_bytes(b"final")
+            for result in (FileNotFoundError(), b""):
+                kwargs = {"side_effect": result} if isinstance(result, Exception) else {"return_value": result}
+                with self.subTest(result=result), patch.object(Path, "read_bytes", **kwargs):
+                    self.assertEqual(settled_report(path, None, "previous"), (None, False))

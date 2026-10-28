@@ -370,7 +370,7 @@ Exit vocabulary: 0 = report, 1 = crash, 2 = usage, 3–6 = report gates, 7 = pan
 
 | Exit | Condition                             | Orchestrator action                                                                      |
 |------|---------------------------------------|------------------------------------------------------------------------------------------|
-| 0    | Report file exists                    | Snapshot, parse, gate — exit 0 is not an advance verdict                                 |
+| 0    | Report bytes settled                  | Snapshot, parse, gate — exit 0 is not an advance verdict                                 |
 | 7    | Pane dead per `cmux surface-health`   | Stop as HITL; a dead pane with no report is orchestration uncertainty, not findings      |
 | 8    | Deadline exceeded, pane alive/unknown | Extend once with `--extend --reason`, else stop as HITL                                  |
 | 9    | Assignment not started within `--start-minutes` (default 5) | Follow the exit-9 exception path below |
@@ -959,7 +959,9 @@ python3 scripts/parse_report.py path/to/worker-report.md --json
 ```
 
 Await a worker report deterministically (see Worker Wait Policy for the background Bash invocation). The deadline
-defaults to the role's minimum wait; exit 0 = report exists, 7 = pane dead, 8 = deadline exceeded, 9 = not started.
+defaults to the role's minimum wait; exit 0 = report settled, 7 = pane dead, 8 = deadline exceeded, 9 = not started.
+A report is captured only after it has settled: identical non-empty bytes on two consecutive polls.
+First sight may confirm start; changing bytes keep the watcher waiting, and an unsettled report at the deadline takes exit 8.
 `--start-minutes` defaults to 5; the role deadline keeps counting from arming.
 Watcher exits 7 and 8 publish `hitl` on the board. The recorded extension returns the card to
 `running`; a later `gate`/`prepare` supersedes watcher attention with its own result (a continuing gate

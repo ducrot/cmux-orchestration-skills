@@ -226,7 +226,7 @@ For each round `N` (1-based), in order:
    `await_reports.py --round <N> --questions <n> --lane-surface …` watch using the Lane Wait
    Policy. No normal-path observation or separate delivery is needed. First-step markers are
    `artifacts/round-<N>-<lane>/started`; reports land at `reports/round-<N>-<lane>.md`.
-4. When all four reports exist, record one tree snapshot:
+4. When all four reports have settled (watcher exit 0), record one tree snapshot:
    `run_state.py snapshot --label "reports-captured round-<N>"`. Compare the staged fields
    and HEAD against the round delivery baseline before parsing advance gates.
 5. Parse each report with `parse_research_report.py --questions <n>` and record one gate per lane

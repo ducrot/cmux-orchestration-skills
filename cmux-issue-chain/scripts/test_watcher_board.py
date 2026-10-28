@@ -52,7 +52,9 @@ class Projection(unittest.TestCase):
     def test_documented_extension(self):
         text = (Path(__file__).parents[1] / "SKILL.md").read_text()
         for phrase in ('--extend --reason', '--deadline-minutes', 'exits 7 and 8 publish `hitl`',
-                       'recorded extension', 'later `gate`/`prepare`'):
+                       'recorded extension', 'later `gate`/`prepare`',
+                       'captured only after it has settled',
+                       'identical non-empty bytes on two consecutive polls'):
             self.assertIn(phrase, text)
         self.assertNotIn('reason in a `decision.human` or `worker.waiting`', text)
 

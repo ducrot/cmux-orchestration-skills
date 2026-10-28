@@ -96,3 +96,20 @@ def fresh_report(path: Path, launch: dict | None) -> bool:
     return stat.S_ISREG(info.st_mode) and info.st_size > 0 and (
         not launch or isinstance(launch.get("start_time_ns"), int)
         and info.st_mtime_ns >= launch["start_time_ns"])
+
+
+def settled_report(path: Path, launch: dict | None,
+                   previous_digest: str | None) -> tuple[str | None, bool]:
+    """Return this poll's digest and whether fresh non-empty bytes match the last poll.
+
+    Callers retain the digest, including None, so missing, stale or empty reports
+    break the sequence. First sight can confirm start; only the boolean permits capture.
+    """
+    content = b""
+    if fresh_report(path, launch):
+        try:
+            content = path.read_bytes()
+        except FileNotFoundError:
+            pass  # A worker can replace or truncate the file between stat and read.
+    digest = hashlib.sha256(content).hexdigest() if content else None
+    return digest, digest is not None and digest == previous_digest

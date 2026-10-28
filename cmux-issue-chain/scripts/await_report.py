@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch for a worker report; exit 0=report exists, 7=pane dead, 8=deadline exceeded, 9=not started.
+"""Watch for a worker report; exit 0=report settled, 7=pane dead, 8=deadline exceeded, 9=not started.
 
 Run in background Bash, or Monitor with re-arm, to wake the orchestrator at exit.
 The report file is ground truth; the pane state only matters when it is affirmatively
@@ -18,10 +18,10 @@ from pathlib import Path
 
 from orchestrator_lib import MINIMUM_WAIT_MINUTES, append_jsonl, read_run_state, utc_now
 from worker_readiness import read_events
-from watch_deadlines import arm, fresh_report, monotonic_deadlines, wait_key
+from watch_deadlines import arm, settled_report, monotonic_deadlines, wait_key
 from run_briefing import WATCHER_HITL_OUTCOMES, publish_board
 
-EXIT_REPORT = 0     # report file exists — parse it next; NOT an advance verdict
+EXIT_REPORT = 0     # report bytes settled — parse it next; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # surface affirmatively gone/dead per surface-health
 EXIT_DEADLINE = 8   # deadline exceeded with the pane alive/unknown
 EXIT_NOT_STARTED = 9  # assignment start not confirmed within the start window
@@ -250,8 +250,10 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         print(f"outcome={outcome} elapsed_seconds={data['elapsed_seconds']} report={report}")
         return code
 
+    previous_digest = None
     while True:
-        has_report = fresh_report(report, report_launch)
+        previous_digest, report_settled = settled_report(report, report_launch, previous_digest)
+        has_report = previous_digest is not None
         if launch and (has_report or marker_ready(launch)):
             append_jsonl(run_dir / "events.jsonl", {
                 "time": utc_now(), "type": "worker.started", "message": "assignment start confirmed",
@@ -261,12 +263,12 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                          "marker_path": launch.get("marker_path")},
             })
             launch = None
-        if has_report:
+        if report_settled:
             return finish("report", EXIT_REPORT, f"report captured: {report}")
         now = time.monotonic()
         if now >= deadline:
             return finish("deadline", EXIT_DEADLINE, f"deadline of {deadline_minutes} minutes exceeded")
-        if args.surface and now >= next_health:
+        if not has_report and args.surface and now >= next_health:
             health_status, health_detail = check_health(cmd, args.surface)
             next_health = now + args.health_interval_seconds
             if health_status == "dead":

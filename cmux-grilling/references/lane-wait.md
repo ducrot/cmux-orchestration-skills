@@ -39,6 +39,10 @@ that freshness, confirms start. Marker evidence is preferred. The watcher record
 one `worker.started` per `launch_id`, including lane, round, surface UUID, evidence, and
 marker path. A previous round's marker or report cannot confirm the new round.
 
+A report is captured only after it has settled: identical non-empty bytes on two consecutive polls.
+This applies independently per lane; the round waits until every report has settled. First sight
+may confirm start, but changing bytes keep the lane pending. An unsettled report at the deadline takes exit 8.
+
 Health is checked only for lanes whose report is still missing. A lane whose pane exits right
 after writing its report has delivered, not died.
 
@@ -46,7 +50,7 @@ The watcher uses these exit codes:
 
 | Exit | Condition                                               | Orchestrator action                                                                               |
 |------|---------------------------------------------------------|---------------------------------------------------------------------------------------------------|
-| 0    | All fresh non-empty round reports exist | Snapshot, parse each lane, gate — exit 0 is not an advance verdict |
+| 0    | All fresh non-empty round reports have settled | Snapshot, parse each lane, gate — exit 0 is not an advance verdict |
 | 7    | A pending lane's pane is dead per `cmux surface-health` | Stop as HITL for that lane; a dead pane with no report is orchestration uncertainty, not findings |
 | 8    | Round deadline exceeded, pending panes alive/unknown          | Extend once with `--extend --reason`, else stop as HITL                                          |
 | 9    | Round lanes not started within the start window | Inspect only `not_started` lanes using the round exception path, then re-arm |

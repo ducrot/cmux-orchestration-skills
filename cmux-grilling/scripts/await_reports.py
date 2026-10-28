@@ -21,12 +21,12 @@ import time
 from pathlib import Path
 
 from worker_readiness import read_events
-from watch_deadlines import arm, monotonic_deadlines, fresh_report
+from watch_deadlines import arm, monotonic_deadlines, settled_report
 from orchestrator_lib import (
     LANES, append_jsonl, read_run_state, round_marker_path, round_report_path, round_wait_minutes, utc_now,
 )
 
-EXIT_REPORTS = 0    # all round reports exist; NOT an advance verdict
+EXIT_REPORTS = 0    # all round report bytes settled; NOT an advance verdict
 EXIT_PANE_DEAD = 7  # a lane surface with a pending report is gone per surface-health
 EXIT_DEADLINE = 8   # deadline exceeded with the pending panes alive/unknown
 EXIT_NOT_STARTED = 9  # round start window elapsed with lanes unconfirmed
@@ -289,6 +289,7 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     health_status, health_detail, dead_lanes = "unchecked", "", []
 
     started_lanes = []
+    previous_digests = {lane: None for lane in lanes}
 
     def progress() -> list[str]:
         events = read_events(run_dir)
@@ -299,8 +300,13 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         started_ids = {e.get("data", {}).get("launch_id") for e in events if e.get("type") == "worker.started"}
         for lane in lanes:
             launch = current_launch(events, lane, surfaces.get(lane), args.round_number)
-            report = fresh_report(reports[lane], launch) if launch or offline else False
-            if report:
+            digest, settled = (
+                settled_report(reports[lane], launch, previous_digests[lane])
+                if launch or offline else (None, False)
+            )
+            previous_digests[lane] = digest
+            report = digest is not None
+            if settled:
                 done.append(lane)
             if offline:
                 started_lanes.append(lane)
@@ -364,9 +370,10 @@ def watch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         if not pending:
             return finish("reports", EXIT_REPORTS, f"all {len(lanes)} lane reports captured", done)
         now = time.monotonic()
-        # Health only for lanes still owing a report: a lane whose pane exits right after
-        # writing its report has delivered, and must not read as a dead pane.
-        pending_surfaces = {lane: surfaces[lane] for lane in pending if lane in surfaces}
+        # Fresh report evidence suppresses health checks even while its bytes settle:
+        # a lane whose pane exits right after writing must not read as a dead pane.
+        pending_surfaces = {lane: surfaces[lane] for lane in pending
+                            if lane in surfaces and previous_digests[lane] is None}
         if pending_surfaces and now >= next_health:
             health_status, dead_lanes, health_detail = check_health(cmd, pending_surfaces)
             next_health = now + args.health_interval_seconds

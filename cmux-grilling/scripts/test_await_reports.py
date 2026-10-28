@@ -239,7 +239,44 @@ class Cli(unittest.TestCase):
             with self.subTest(doc=name):
                 self.assertNotIn('record its reason as a `worker.waiting` or', (skill / name).read_text())
 
-    def test_all_reports_present_exits_zero_immediately(self):
+    def test_reports_settle_independently_after_rewrite_between_polls(self):
+        from await_reports import build_parser, watch
+        with tempfile.TemporaryDirectory() as tmp:
+            write_state(tmp)
+            self.write_all(tmp)
+            report = self.write_report(tmp, "web")
+            report.write_bytes(b"draft")
+            parser = build_parser()
+            args = parser.parse_args(["--run-dir", tmp, "--round", "1", "--questions", "1",
+                                      "--heartbeat-seconds", "0"])
+            delivered = []
+
+            def next_poll(_seconds):
+                events = list(map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines()))
+                self.assertFalse(any(e.get("data", {}).get("outcome") == "reports" for e in events))
+                delivered.append(events[-1]["data"]["delivered_lanes"])
+                self.assertLessEqual(len(delivered), 2, "settled reports were never captured")
+                report.write_bytes(b"final")
+
+            with patch("await_reports.time.sleep", side_effect=next_poll):
+                self.assertEqual(watch(args, parser), EXIT_REPORTS)
+            self.assertEqual(delivered, [[], ["codebase", "codebase2", "docs"]])
+            self.assertEqual(report.read_bytes(), b"final")
+            events = list(map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines()))
+            captures = [e for e in events if e["type"] == "worker.waiting"
+                        and e["data"].get("outcome") == "reports"]
+            self.assertEqual(len(captures), 1)
+            self.assertEqual(captures[0]["data"]["missing_lanes"], [])
+
+    def test_unsettled_reports_at_deadline_are_not_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_all(tmp)
+            proc = self.run_cli(tmp, "--deadline-minutes", "0")
+            self.assertEqual(proc.returncode, EXIT_DEADLINE, proc.stderr)
+            self.assertIn("delivered=none", proc.stdout)
+            self.assertIn("missing=codebase,codebase2,docs,web", proc.stdout)
+
+    def test_all_reports_present_exits_zero_after_settling(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.write_all(tmp)
             proc = self.run_cli(tmp)

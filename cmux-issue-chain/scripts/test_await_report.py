@@ -176,7 +176,42 @@ class Cli(CliHarness):
             self.assertEqual(repeated.returncode, 8, repeated.stderr)
             self.assertEqual(clocks(), [original, current])
 
-    def test_existing_report_exits_zero_immediately(self):
+    def test_report_rewrite_between_polls_waits_for_final_bytes(self):
+        from await_report import watch
+        with tempfile.TemporaryDirectory() as tmp:
+            write_state(tmp)
+            report = self.write_report(tmp)
+            report.write_bytes(b"draft")
+            parser = build_parser()
+            args = parser.parse_args(["--run-dir", tmp, "--role", "review", "--pass", "1"])
+            polls = []
+
+            def next_poll(_seconds):
+                events = list(map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines()))
+                self.assertFalse(any(e.get("data", {}).get("outcome") == "report" for e in events))
+                polls.append(report.read_bytes())
+                self.assertLessEqual(len(polls), 2, "settled report was never captured")
+                report.write_bytes(b"final")  # Same length; settlement must compare bytes.
+
+            with patch("await_report.time.sleep", side_effect=next_poll):
+                self.assertEqual(watch(args, parser), EXIT_REPORT)
+            self.assertEqual(polls, [b"draft", b"final"])
+            self.assertEqual(report.read_bytes(), b"final")
+            events = list(map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines()))
+            captures = [e for e in events if e["type"] == "worker.waiting"
+                        and e["data"].get("outcome") == "report"]
+            self.assertEqual(len(captures), 1)
+
+    def test_unsettled_report_at_deadline_is_not_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_report(tmp)
+            proc = self.run_cli(tmp, "--deadline-minutes", "0")
+            self.assertEqual(proc.returncode, EXIT_DEADLINE, proc.stderr)
+            self.assertIn("outcome=deadline", proc.stdout)
+            events = list(map(json.loads, (Path(tmp) / "events.jsonl").read_text().splitlines()))
+            self.assertFalse(any(e.get("data", {}).get("outcome") == "report" for e in events))
+
+    def test_existing_report_exits_zero_after_settling(self):
         with tempfile.TemporaryDirectory() as tmp:
             write_state(tmp, workspace_id="TEST")
             self.write_report(tmp)

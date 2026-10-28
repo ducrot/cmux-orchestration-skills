@@ -21,7 +21,10 @@ class ArtifactDocumentation(unittest.TestCase):
                        "one `worker.started` per `launch_id`", "Health is checked only",
                        "| 0 ", "| 7 ", "| 8 ", "| 9 ",
                        "sole emitter of `worker.waiting`", "Exactly one deadline extension",
-                       "Never close a lane pane while its report is pending"):
+                       "Never close a lane pane while its report is pending",
+                       "captured only after it has settled",
+                       "identical non-empty bytes on two consecutive polls",
+                       "independently per lane"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, reference)
 

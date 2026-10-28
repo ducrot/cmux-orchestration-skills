@@ -86,19 +86,22 @@ class FreshRounds(PaneCtlCase):
                 marker.write_text('started')
                 report = self.run_dir / 'reports' / f'round-{number}-{lane}.md'
                 report.write_text('## Q1\n### Result\nNO ANSWER\n\n### Answer\nNo applicable evidence.\n\n### Sources\n- None\n\n### Method\n- Read task; outside this lane.\n\n### Blockers\n- None\n\n### Plan Drift\n- None\n')
-            args = ['--run-dir', str(self.run_dir), '--round', str(number), '--questions', '1']
+            args = ['--run-dir', str(self.run_dir), '--round', str(number), '--questions', '1',
+                    '--poll-seconds', '.01']
             for lane, surface in surfaces.items():
                 args += ['--lane-surface', f'{lane}={surface}']
             # Extend a real prompt-attached round; fresh sessions must not lose the
             # persisted extension or grant a second one in the same round.
+            # First sight confirms starts, but an expired clock cannot capture reports
+            # before a second poll establishes that their bytes have settled.
             watched = self.script('await_reports.py', *args, '--deadline-minutes', '0')
-            self.assertEqual(watched.returncode, 0, watched.stderr)
+            self.assertEqual(watched.returncode, 8, watched.stderr)
             clocks = lambda: [e['data']['watch_clock'] for e in self.events()
                               if e.get('data', {}).get('round') == number
                               and 'watch_clock' in e.get('data', {})]
             original = clocks()[-1]
             extended = self.script('await_reports.py', *args, '--extend', '--reason', 'round research',
-                                   '--deadline-minutes', '.001')
+                                   '--deadline-minutes', '.1')
             self.assertEqual(extended.returncode, 0, extended.stderr)
             current = clocks()[-1]
             self.assertEqual(current['extension'], 1)
@@ -106,7 +109,7 @@ class FreshRounds(PaneCtlCase):
             self.assertEqual(current['start_deadline'], original['start_deadline'])
             before = (self.run_dir / 'events.jsonl').read_bytes()
             refused = self.script('await_reports.py', *args, '--extend', '--reason', 'again',
-                                  '--deadline-minutes', '.001')
+                                  '--deadline-minutes', '.1')
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn('already recorded for this round', refused.stderr)
             self.assertEqual((self.run_dir / 'events.jsonl').read_bytes(), before)
