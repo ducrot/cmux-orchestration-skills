@@ -346,10 +346,8 @@ Read when arming or re-arming a round watcher, waiting for lane reports, or inte
 
 ## Artifact Location
 
-The artifact pair lands next to the tracker it belongs to. `run_state.py init` resolves the
-location once and records it in `state.json` as `output_dir` (with the `tracker` it came
-from); every later step of the run reads it from there. `pending-decisions` — which runs
-before `init` — resolves by the same table. First match wins:
+`init` records the resolved `output_dir` and `tracker` in `state.json`; later run steps
+reuse them. First match wins:
 
 | Input                            | Output directory        |
 |----------------------------------|-------------------------|
@@ -358,6 +356,9 @@ before `init` — resolves by the same table. First match wins:
 | nothing, exactly one `.scratch/*/issues/` | that tracker's `grilling/` |
 | nothing, several such trackers   | hard stop — ask the human which tracker, pass `--tracker` |
 | nothing, no tracker at all       | `.scratch/grilling/`    |
+
+Before `init`, `pending-decisions` searches all `.scratch/*/grilling/` feature directories.
+It takes no folder options; see [script reference](references/script-reference.md) for selection and output.
 
 ## Finalize and Artifact
 

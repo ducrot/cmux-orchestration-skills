@@ -9,6 +9,14 @@ python3 scripts/run_state.py transcribe-artifact --artifact <artifact.json>
 python3 scripts/run_state.py pending-decisions
 ```
 
+`pending-decisions` searches all `.scratch/*/grilling/` feature directories without tracker
+autodetection or folder options (`--tracker` and `--output-dir` are rejected). It reports the
+newest artifact by modification time, then filename, in one line: `dir` names that artifact's
+Grilling directory, followed by the artifact path and open/deferred decision ids, unreviewed
+assumption indexes, open fact ids and unreviewed premise-correction indexes. `.scratch/grilling/`
+itself is not searched; without any artifact the line reads `dir=.scratch/grilling artifact=none`
+with every list `none`.
+
 `decision --status decided --decision` requires an exact option label from the JSON
 (no `(Empfohlen)` suffix) or the explicit `[custom] <non-empty choice>` mark. Unknown text is refused with the known labels and mark;
 `deferred` keeps free text. The existing `decision` field (and event data) stores the selected

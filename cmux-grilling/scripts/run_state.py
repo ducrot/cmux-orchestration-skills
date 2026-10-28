@@ -169,12 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe = subparsers.add_parser("transcribe-artifact", help="Validate and transcribe recorded JSON outcomes into Markdown")
     transcribe.add_argument("--artifact", required=True)
 
-    pending = subparsers.add_parser(
+    subparsers.add_parser(
         "pending-decisions",
-        help="Print pending decisions, assumption reviews and facts of the newest artifact. Resolves its directory like init",
+        help="Print unfinished walkthrough items from the newest artifact across all .scratch/*/grilling/ feature directories",
     )
-    pending.add_argument("--tracker", help="Tracker directory. Autodetected when omitted")
-    pending.add_argument("--output-dir", help="Override the directory to look in")
 
     status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
     status.add_argument("--run-dir", required=True)
@@ -785,20 +783,17 @@ def print_pending_decisions(args: argparse.Namespace) -> int:
 
     Deferred decisions stay separate because they must not be re-asked.
     """
-    _, output_dir = resolve_output(args)
-    artifacts = {path: data for path in output_dir.glob("*.json") if (data := load_artifact(path)) is not None}
-    if not artifacts:
-        print(f"dir={output_dir} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
-        return 0
-    newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name))
+    artifacts = {path: data for path in Path(TRACKER_ROOT).glob(f"*/{GRILLING_DIRNAME}/*.json")
+                 if path.is_file() and (data := load_artifact(path)) is not None}
+    newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name), default=None)
 
     def ids(field: str, status: str, *, status_key: str = "status", id_key: str = "id") -> str:
-        items = artifacts[newest].get(field)
+        items = artifacts[newest].get(field) if newest is not None else None
         listed = [str(item[id_key]) for item in (items if isinstance(items, list) else [])
                   if isinstance(item, dict) and item.get(status_key) == status and id_key in item]
         return ",".join(listed) if listed else "none"
 
-    print(f"dir={output_dir} artifact={newest} "
+    print(f"dir={newest.parent if newest is not None else NO_TRACKER_OUTPUT_DIR} artifact={newest or 'none'} "
           f"open={ids('open_decisions', 'open')} deferred={ids('open_decisions', 'deferred')} "
           f"unreviewed_assumptions={ids('assumption_review', 'unreviewed', status_key='outcome', id_key='index')} "
           f"open_facts={ids('open_facts', 'open')} "

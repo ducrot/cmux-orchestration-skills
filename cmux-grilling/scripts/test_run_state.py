@@ -236,7 +236,7 @@ class CompletionMapping(unittest.TestCase):
             ("custom-root", ["--runs-root", str(fixture.repo / "custom-runs"), "--slug", "custom-artifact"]),
         ):
             with self.subTest(mode=mode):
-                result = fixture.run_state("init", "--task", "Completion " + mode, "--no-workspace", *extra)
+                result = fixture.run_state("init", "--task", "Completion " + mode, "--no-workspace", "--tracker", ".scratch/completion", *extra)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 run_dir = fixture.repo / result.stdout.strip()
                 state_path = run_dir / "state.json"
@@ -265,7 +265,7 @@ class CompletionMapping(unittest.TestCase):
                 self.assertEqual(final["deliverables"], {"markdown": str(md.resolve()), "json": str(artifact.resolve())})
                 event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
                 self.assertEqual(event["data"]["stop_reason"], "done")
-                pending = fixture.run_state("pending-decisions", "--output-dir", str(output))
+                pending = fixture.run_state("pending-decisions")
                 self.assertEqual(pending.returncode, 0, pending.stderr)
                 self.assertIn("D1", pending.stdout)
                 reopened = fixture.run_state("decision", "--run-dir", str(run_dir), "--artifact", str(artifact), "--id", "D1", "--status", "decided", "--decision", "Ab 12 Jahren")
@@ -456,25 +456,38 @@ class RecordDecision(unittest.TestCase):
 
 
 class PendingDecisions(unittest.TestCase):
+    script = Path(__file__).with_name("run_state.py").resolve()
+    empty = (f"dir={NO_TRACKER_OUTPUT_DIR} artifact=none open=none deferred=none unreviewed_assumptions=none "
+             "open_facts=none unreviewed_premise_corrections=none")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.out = Path(self.tmp.name)
+        self.root = Path(self.tmp.name)
+        self.out = Path(".scratch/feature-a/grilling")
+        self.previous_cwd = Path.cwd()
+        os.chdir(self.root)
 
     def tearDown(self):
+        os.chdir(self.previous_cwd)
         self.tmp.cleanup()
 
     def write(self, name: str, statuses: list[str], mtime: float, **extra) -> Path:
         path = self.out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         decisions = [valid_decision(id=f"D{index + 1}", status=status, decision="x") for index, status in enumerate(statuses)]
         path.write_text(json.dumps({"open_decisions": decisions, **extra}), encoding="utf-8")
         os.utime(path, (mtime, mtime))
         return path
 
     def run_command(self) -> str:
-        return run_quietly(print_pending_decisions, output_args(output_dir=str(self.out)))
+        return run_quietly(print_pending_decisions, argparse.Namespace())
+
+    def run_cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(self.script), "pending-decisions", *args],
+                              capture_output=True, text=True)
 
     def test_new_form_reports_only_unreviewed_assumptions_and_open_facts_via_cli(self):
-        self.write("old.json", ["open"], 1000, assumption_review=[{"index": 99, "outcome": "unreviewed"}],
+        self.write("../../feature-b/grilling/old.json", ["open"], 1000, assumption_review=[{"index": 99, "outcome": "unreviewed"}],
                    open_facts=[{"id": "OLD", "status": "open"}])
         newest = self.write(
             "new.json", ["decided", "open", "deferred"], 2000,
@@ -486,10 +499,7 @@ class PendingDecisions(unittest.TestCase):
                         {"id": "F3", "status": "open"}],
         )
         before = {path: path.read_bytes() for path in self.out.iterdir()}
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).with_name("run_state.py")),
-             "pending-decisions", "--output-dir", str(self.out)], capture_output=True, text=True,
-        )
+        result = self.run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(),
                          f"dir={self.out} artifact={newest} open=D2 deferred=D3 "
@@ -516,7 +526,7 @@ class PendingDecisions(unittest.TestCase):
                          "unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
 
     def test_empty_directory(self):
-        self.assertEqual(self.run_command(), f"dir={self.out} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
+        self.assertEqual(self.run_command(), self.empty)
 
     def test_open_and_deferred_of_the_newest_artifact_stay_apart(self):
         self.write("old.json", ["open"], 1000)
@@ -536,13 +546,36 @@ class PendingDecisions(unittest.TestCase):
         os.utime(self.out / "broken.json", (4000, 4000))
         self.assertEqual(self.run_command(), f"dir={self.out} artifact={newest} open=D1 deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
 
-    def test_directory_is_resolved_like_init(self):
-        """No output dir passed: the resume check derives the same path init would."""
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(
-                run_quietly(print_pending_decisions, output_args(tracker=tmp + "/.scratch/t12")),
-                f"dir={tmp}/.scratch/t12/grilling artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none",
-            )
+    def test_newest_comparison_uses_mtime_then_name_across_features(self):
+        newest = self.write("z.json", ["open"], 2000)
+        self.write("../../feature-b/grilling/a.json", ["deferred"], 2000)
+        self.write("../../feature-c/grilling/later-name.json", ["decided"], 1000)
+        self.assertIn(f"dir={self.out} artifact={newest} open=D1", self.run_command())
+        # A newer mtime beats the name, even in another feature without issues/.
+        self.write("../../feature-b/grilling/a.json", ["deferred"], 3000)
+        self.assertIn("dir=.scratch/feature-b/grilling artifact=.scratch/feature-b/grilling/a.json open=none deferred=D1", self.run_command())
+
+    def test_multiple_trackers_do_not_block_discovery(self):
+        make_tracker(Path("."), "feature-a")
+        make_tracker(Path("."), "feature-b")
+        newest = self.write("new.json", ["open"], 1000)
+        result = self.run_cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"dir={self.out} artifact={newest} open=D1", result.stdout)
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+
+    def test_fallback_and_deeper_artifacts_are_not_discovered(self):
+        self.write("../../grilling/legacy.json", ["open"], 4000)
+        self.write("nested/deeper.json", ["open"], 4000)
+        self.write("../../feature-b/nested/grilling/deeper.json", ["open"], 4000)
+        self.assertEqual(self.run_command(), self.empty)
+
+    def test_folder_options_are_rejected(self):
+        for option in ("--tracker", "--output-dir"):
+            with self.subTest(option=option):
+                result = self.run_cli(option, "anywhere")
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("unrecognized arguments", result.stderr)
 
 
 class ValidateArtifact(unittest.TestCase):

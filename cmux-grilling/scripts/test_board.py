@@ -75,7 +75,7 @@ class Board(unittest.TestCase):
             if not fail: self.assert_board('waiting', 'Round 2/4', 1, '0 open decisions')
             self.assertEqual(json.loads(artifact.read_text())['open_decisions'][0]['status'], 'decided')
             self.assertIn('grill.decision_recorded', (directory / 'events.jsonl').read_text())
-            for command, extra in [('status', ['--run-dir', str(directory)]), ('pending-decisions', ['--output-dir', str(output)]), ('validate-artifact', ['--artifact', str(artifact)]), ('event', ['--run-dir', str(directory), '--type', 'grill.assumptions_triaged', '--message', 'reviewed'])]:
+            for command, extra in [('status', ['--run-dir', str(directory)]), ('pending-decisions', []), ('validate-artifact', ['--artifact', str(artifact)]), ('event', ['--run-dir', str(directory), '--type', 'grill.assumptions_triaged', '--message', 'reviewed'])]:
                 self.command(command, *extra)
                 self.assertEqual(self.cmux_calls(), [])
             recap = directory / 'recap.md'
