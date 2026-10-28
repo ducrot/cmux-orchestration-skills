@@ -854,19 +854,18 @@ def init_run(args: argparse.Namespace) -> int:
         return 3
     sources = task_inputs(args)
     now = utc_now()
+    explicit_run_id = checked_run_id(args.run_id) if args.run_id else None
+    reinit = explicit_run_id is not None and (runs_root / explicit_run_id / "state.json").is_file()
+    feature = slug = None
     if args.grilling_json:
         feature, slug = grilling_feature(repository, args.grilling_json)
         if args.feature is not None and checked_feature(repository, args.feature)[0] != feature:
             raise ConfigError("--feature must match the grilling feature folder")
-    else:
-        if args.feature is None:
-            raise ConfigError("init without grilling input requires --feature")
+    elif args.feature is not None:
         feature, slug = checked_feature(repository, args.feature)
-    run_id = (
-        checked_run_id(args.run_id)
-        if args.run_id
-        else run_identifier("plan", slug, now)
-    )
+    elif not reinit:
+        raise ConfigError("init without grilling input requires --feature")
+    run_id = explicit_run_id or run_identifier("plan", slug, now)
     run_dir = runs_root / run_id
     args._board_publication.bind(run_dir)
     # Like the sibling workflows, a persisted state makes init idempotent. This only returns
@@ -878,7 +877,7 @@ def init_run(args: argparse.Namespace) -> int:
             raise ConfigError(f"planning run belongs to another repository: {run_dir}")
         if not isinstance(existing.get("feature_dir"), str):
             raise ConfigError(f"planning run {run_dir} predates the frozen feature folder; inspect read-only and restart the run")
-        if Path(existing["feature_dir"]).resolve() != feature:
+        if feature is not None and Path(existing["feature_dir"]).resolve() != feature:
             raise ConfigError("re-initialization cannot change the feature folder")
         stored_mode = existing.get("commit_mode", "propose")
         if args.commit_mode is not None and args.commit_mode != stored_mode:

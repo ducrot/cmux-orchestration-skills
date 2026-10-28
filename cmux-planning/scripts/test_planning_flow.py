@@ -310,6 +310,38 @@ class PlanningFlow(unittest.TestCase):
         self.assertEqual(file_contents(self.run_dir), run_before)
         self.assertEqual(file_contents(feature), before)
 
+    def test_fresh_init_without_feature_or_grilling_writes_nothing(self):
+        self.omit_feature = True
+        task = self.plan_file("# Feature is still required")
+        before = file_contents(self.repo)
+        for extra in ([], ["--run-id", "missing-state"]):
+            with self.subTest(extra=extra):
+                result = self.cli(STATE, "init", "--task-file", task,
+                                  "--workspace-id", "WORKSPACE-1", *extra)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("init without grilling input requires --feature", result.stderr)
+                self.assertEqual(file_contents(self.repo), before)
+                self.assertFalse(self.runs.exists())
+                self.assertEqual(self.board_calls(), [])
+
+    def test_reinit_without_feature_preserves_existing_state(self):
+        initialized = self.init_direct()
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        self.omit_feature = True
+        before = file_contents(self.repo)
+        state_path = self.run_dir / "state.json"
+        state_mtime = state_path.stat().st_mtime_ns
+        board_before = self.board_calls()
+
+        repeated = self.cli(STATE, "init", "--task-file", self.plan_file("Replacement task"),
+                            "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(repeated.stdout.strip(), str(self.run_dir.relative_to(self.repo)))
+        self.assertEqual(file_contents(self.repo), before)
+        self.assertEqual(state_path.stat().st_mtime_ns, state_mtime)
+        self.assertEqual(self.board_calls(), board_before)
+
     def test_reinit_without_frozen_feature_refuses_cleanly_without_writes(self):
         initialized = self.init_direct()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
@@ -319,12 +351,15 @@ class PlanningFlow(unittest.TestCase):
         state_path.write_text(json.dumps(state))
         before = file_contents(self.repo)
 
-        refused = self.init_direct()
-
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("predates the frozen feature folder", refused.stderr)
-        self.assertNotIn("Traceback", refused.stderr)
-        self.assertEqual(file_contents(self.repo), before)
+        for omit_feature in (False, True):
+            with self.subTest(omit_feature=omit_feature):
+                self.omit_feature = omit_feature
+                refused = self.cli(STATE, "init", "--task-file", self.plan_file("Task"),
+                                   "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("predates the frozen feature folder", refused.stderr)
+                self.assertNotIn("Traceback", refused.stderr)
+                self.assertEqual(file_contents(self.repo), before)
 
     def test_ticket_approval_without_frozen_feature_refuses_without_publication(self):
         self.reach_ticket_approval()
