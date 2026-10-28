@@ -85,6 +85,7 @@ LABELS = {
         "pill_grilling": "Grilling",
         "result": "Status",
         "status_done": "done",
+        "status_review_pending": "done, review pending",
         "status_halted": "halted at {stage}: {decision}",
         "tracker_status": "Tracker status",
         "tracker_status_value": "{status} · {done}/{total} criteria checked",
@@ -133,8 +134,6 @@ LABELS = {
         "unreviewed_premise_correction_one": "1 unreviewed premise correction",
         "unreviewed_assumptions": "{count} unreviewed assumptions",
         "unreviewed_assumption_one": "1 unreviewed assumption",
-        "open_facts_count": "{count} open facts",
-        "open_fact_one": "1 open fact",
         "planning_revalidation": "Planning revalidates every assumption and treats open facts as missing information.",
         "decisions": "decisions",
         "decided": "decided",
@@ -191,6 +190,7 @@ LABELS = {
         "pill_grilling": "Grilling",
         "result": "Status",
         "status_done": "abgeschlossen",
+        "status_review_pending": "abgeschlossen, Prüfung ausstehend",
         "status_halted": "angehalten bei {stage}: {decision}",
         "tracker_status": "Tracker-Status",
         "tracker_status_value": "{status} · {done}/{total} Kriterien abgehakt",
@@ -239,8 +239,6 @@ LABELS = {
         "unreviewed_premise_correction_one": "1 ungeprüfte Prämissen-Korrektur",
         "unreviewed_assumptions": "{count} ungeprüfte Annahmen",
         "unreviewed_assumption_one": "1 ungeprüfte Annahme",
-        "open_facts_count": "{count} offene Fakten",
-        "open_fact_one": "1 offener Fakt",
         "planning_revalidation": "Planning revalidiert jede Annahme und behandelt offene Fakten als fehlende Informationen.",
         "decisions": "Entscheidungen",
         "decided": "entschieden",
@@ -670,6 +668,11 @@ def grilling_review_counts(artifact: Any) -> tuple[int, int, int | None] | None:
     return count("assumption_review", "outcome", "unreviewed"), count("open_facts", "status", "open"), premises
 
 
+def review_pending(review: tuple[int, int, int | None] | None) -> bool:
+    """Open facts are missing information for planning, not a review step."""
+    return review is not None and bool(review[0] or review[2])
+
+
 def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: dict[str, str]) -> list[str]:
     lines = [f"- {labels['outcome']}: {{{{outcome}}}}"]
     deliverables = state.get("deliverables") or {}
@@ -757,6 +760,10 @@ def render_recap(state: dict[str, Any], events: list[dict[str, Any]], lang: str)
     lines = [heading + (f" · {elapsed}**" if elapsed else "**"), ""]
     if outcome["status"] == "done":
         status = labels["status_done"]
+        if state["workflow"] == "grilling":
+            json_path = (state.get("deliverables") or {}).get("json")
+            if json_path and Path(json_path).is_file() and review_pending(grilling_review_counts(read_artifact(Path(json_path)))):
+                status = labels["status_review_pending"]
     else:
         status = labels["status_halted"].format(stage=outcome["stage"], decision=outcome["decision"])
     lines.append(f"{labels['result']}: **{status}**")
@@ -786,12 +793,13 @@ def next_step_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
         return [f"- {labels['next']}: {template.format(count=still_open)}"]
     planning = labels["plan_from"].format(path=display_path(json_path))
     review = grilling_review_counts(artifact)
-    if review is None or not any(review):
+    if not review_pending(review):
         return [f"- {labels['next']}: {planning}"] + prompt_block(state, None, labels)
-    items = [counted(labels, "unreviewed_assumption_one", "unreviewed_assumptions", review[0])]
-    if review[2] is not None:
+    items = []
+    if review[0]:
+        items.append(counted(labels, "unreviewed_assumption_one", "unreviewed_assumptions", review[0]))
+    if review[2]:
         items.append(counted(labels, "unreviewed_premise_correction_one", "unreviewed_premise_corrections", review[2]))
-    items.append(counted(labels, "open_fact_one", "open_facts_count", review[1]))
     return [
         f"- {labels['next']}: " + labels["finish_review"].format(items=", ".join(items)),
         f"- {planning}",

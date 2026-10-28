@@ -585,14 +585,14 @@ python3 scripts/run_briefing.py recap-show --run-dir <run-dir> --lang <de|en>
 ```
 
 - `recap-draft` refuses an active run. It writes `recap.md` with the facts from `state.json`,
-  `events.jsonl`, and the artifact JSON: status (done, or halted at stage and decision), duration,
+  `events.jsonl`, and the artifact JSON: status (done, done with review pending, or halted at a gate), duration,
   questions asked against the round budget and stop reason, total and unreviewed assumption counts,
   unreviewed premise-correction count, open facts, decisions by status, artifact paths, and commit subject.
-  The next step resolves open decisions first, else recommends finishing outstanding review
-  with counts, then offers planning with the artifact JSON and a prompt block
+  The next step resolves open decisions first, else recommends finishing review
+  with counts for unreviewed assumptions and premise corrections, omitting zeros, then offers planning with
   `/cmux-planning <artifact.json>`. Planning revalidates every assumption and treats open facts as
-  missing information. With nothing outstanding it offers planning directly. Legacy artifacts keep
-  their previous recap. Prompt additions do not carry over; plain drafting never overwrites.
+  missing information. With no review pending it offers planning directly, even with open facts.
+  Legacy artifacts keep their previous recap. Prompt additions do not carry over; plain drafting never overwrites.
 - `recap-draft --refresh --lang <de|en>` replaces only the latest shown recap when the pair's content digests
   changed, using the current artifact and the given language. Fill the new outcome, then `recap-show` appends a new event,
   keeping earlier recap events. With an unchanged pair, neither file nor events change. A filled

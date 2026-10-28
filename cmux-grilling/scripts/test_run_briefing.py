@@ -481,6 +481,9 @@ class RunRecap(RunDirTestCase):
                 ("all-singular", 1, 1, 0, 1),
                 ("all-plural", 2, 2, 0, 2),
                 ("premises-clear", 0, 0, 0, 0),
+                ("premises-clear-facts", 0, 8, 0, 0),
+                ("assumptions-premises-clear", 2, 2, 0, 0),
+                ("singular-premise", 0, 1, 0, 1),
                 ("premises-decisions", 0, 0, 1, 2),
             ):
                 with self.subTest(lang=lang, case=case):
@@ -529,21 +532,30 @@ class RunRecap(RunDirTestCase):
                     next_label = "Next step" if lang == "en" else "Nächster Schritt"
                     plan = (f"planning with the grilling result `{artifact}`" if lang == "en"
                             else f"Planning mit dem Grilling-Ergebnis `{artifact}`")
-                    if unreviewed == 1 and facts == 1:
-                        review = ("finish the outstanding review: 1 unreviewed assumption, 1 open fact"
-                                  if lang == "en" else
-                                  "ausstehende Prüfung abschließen: 1 ungeprüfte Annahme, 1 offener Fakt")
-                    else:
-                        review = (f"finish the outstanding review: {unreviewed} unreviewed assumptions, {facts} open facts"
-                                  if lang == "en" else
-                                  f"ausstehende Prüfung abschließen: {unreviewed} ungeprüfte Annahmen, {facts} offene Fakten")
-                    if premises is not None:
-                        premise_words = (("1 unreviewed premise correction" if premises == 1
-                                          else f"{premises} unreviewed premise corrections") if lang == "en"
-                                         else ("1 ungeprüfte Prämissen-Korrektur" if premises == 1
-                                               else f"{premises} ungeprüfte Prämissen-Korrekturen"))
-                        prefix, fact_words = review.rsplit(", ", 1)
-                        review = f"{prefix}, {premise_words}, {fact_words}"
+                    review_items = []
+                    if unreviewed:
+                        review_items.append(("1 unreviewed assumption" if unreviewed == 1
+                                             else f"{unreviewed} unreviewed assumptions") if lang == "en"
+                                            else ("1 ungeprüfte Annahme" if unreviewed == 1
+                                                  else f"{unreviewed} ungeprüfte Annahmen"))
+                    if premises:
+                        review_items.append(("1 unreviewed premise correction" if premises == 1
+                                             else f"{premises} unreviewed premise corrections") if lang == "en"
+                                            else ("1 ungeprüfte Prämissen-Korrektur" if premises == 1
+                                                  else f"{premises} ungeprüfte Prämissen-Korrekturen"))
+                    review_prefix = ("finish the outstanding review" if lang == "en"
+                                     else "ausstehende Prüfung abschließen")
+                    review = f"{review_prefix}: {', '.join(review_items)}"
+                    status = "done" if lang == "en" else "abgeschlossen"
+                    if unreviewed or premises:
+                        status += ", review pending" if lang == "en" else ", Prüfung ausstehend"
+                    self.assertEqual(text.splitlines()[2], f"Status: **{status}**")
+                    self.assertEqual(run_briefing.run_outcome(state, []), {"status": "done"})
+                    without_pair = {**state, "deliverables": {}}
+                    self.assertEqual(run_briefing.pill_text(state, lang, {"status": "done"}),
+                                     run_briefing.pill_text(without_pair, lang, {"status": "done"}))
+                    self.assertEqual(run_briefing.project_board(state, []),
+                                     run_briefing.project_board(without_pair, []))
                     note = ("Planning revalidates every assumption and treats open facts as missing information."
                             if lang == "en" else
                             "Planning revalidiert jede Annahme und behandelt offene Fakten als fehlende Informationen.")
@@ -552,15 +564,40 @@ class RunRecap(RunDirTestCase):
                                     else "1 offene Entscheidung im Walkthrough klären")
                         self.assertIn(f"- {next_label}: {expected}\n", text)
                         self.assertNotIn("/cmux-planning", text)
-                        self.assertNotIn(review, text)
+                        self.assertNotIn(review_prefix, text)
                     else:
                         self.assertIn(f"~~~\n/cmux-planning {artifact}\n~~~", text)
-                        if unreviewed or facts or premises:
+                        if unreviewed or premises:
                             self.assertIn(f"- {next_label}: {review}\n- {plan}\n", text)
                             self.assertIn(note, text)
                         else:
                             self.assertIn(f"- {next_label}: {plan}\n", text)
                             self.assertNotIn(note, text)
+                            self.assertNotIn(review_prefix, text)
+                    self.fill_recap(run_dir)
+                    shown = self.call("recap-show", "--run-dir", str(run_dir), "--lang", lang, "--no-status")
+                    self.assertEqual(shown.returncode, 0, shown.stderr)
+                    self.assertEqual(shown.stdout, text.replace("{{outcome}}", "filled outcome"))
+
+    def test_grilling_pending_review_keeps_halted_status_through_cli(self):
+        artifact = self.root / "pending.json"
+        artifact.write_text(json.dumps({
+            "assumption_review": [{"outcome": "unreviewed"}],
+            "premise_correction_review": [{"outcome": "unreviewed"}],
+            "open_facts": [{"status": "open"}],
+        }))
+        for lang in ("en", "de"):
+            for decision in ("hitl", "blocked", "stop"):
+                with self.subTest(lang=lang, decision=decision):
+                    state = {**GRILLING_STATE, "run_id": f"halted-{lang}-{decision}",
+                             "current_stage": "review", "deliverables": {"json": str(artifact)}}
+                    run_dir = self.run_dir(state)
+                    self.write_events(run_dir, [event("gate", stage="review", decision=decision)])
+                    text = self.recap(run_dir, lang)
+                    status = (f"halted at review: {decision}" if lang == "en"
+                              else f"angehalten bei review: {decision}")
+                    self.assertEqual(text.splitlines()[2], f"Status: **{status}**")
+                    self.assertNotIn("/cmux-planning", text)
                     self.fill_recap(run_dir)
                     shown = self.call("recap-show", "--run-dir", str(run_dir), "--lang", lang, "--no-status")
                     self.assertEqual(shown.returncode, 0, shown.stderr)
