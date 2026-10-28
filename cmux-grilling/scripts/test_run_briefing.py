@@ -853,10 +853,10 @@ class NextStep(RunDirTestCase):
             "ISSUE-003": issue_file("ISSUE-003", status="done"),
             "ISSUE-004": issue_file("ISSUE-004", blockers=("ISSUE-003",)),
         })
-        invocation = "/cmux-issue-chain tracker ISSUE-003\nsiehe ISSUE-003-slug.md, bitte Tests zuerst"
+        invocation = "/cmux-issue-chain .scratch/2026-10-28-tracker ISSUE-003\nsiehe ISSUE-003-slug.md, bitte Tests zuerst"
         text = self.recap(self.invoked_run(tracker, invocation))
         self.assertIn(
-            "~~~\n/cmux-issue-chain tracker ISSUE-004\nsiehe ISSUE-004-slug.md, bitte Tests zuerst\n~~~", text
+            "~~~\n/cmux-issue-chain .scratch/2026-10-28-tracker ISSUE-004\nsiehe ISSUE-004-slug.md, bitte Tests zuerst\n~~~", text
         )
         self.assertNotIn("unverändert", text)
 

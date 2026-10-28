@@ -181,7 +181,7 @@ class PreparedStageCli(unittest.TestCase):
         for command in ("init", "prepare", "gate", "complete", "publish-triage"):
             for exits in (0, 2):
                 args = run_state.build_parser().parse_args(
-                    ["init", "--tracker", "unused", "--issue", "ISSUE-001", "--run-id", "prepared-run", "--runs-root", str(self.runs_root)]
+                    ["init", "--tracker", "2026-10-28-unused", "--issue", "ISSUE-001", "--run-id", "prepared-run", "--runs-root", str(self.runs_root)]
                     if command == "init" else
                     [command, "--run-dir", str(self.run_dir)] +
                     (["--stage", "implement", "--pass", "1"] if command == "prepare" else
@@ -234,7 +234,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertFalse(stray.exists(), "remove the stray skill-local runs root before testing")
         self.addCleanup(shutil.rmtree, stray, ignore_errors=True)
         result = subprocess.run(
-            [sys.executable, str(RUN_STATE), "init", "--tracker", str(self.repo / ".scratch" / "tracker"),
+            [sys.executable, str(RUN_STATE), "init", "--tracker", str(self.repo / ".scratch" / "2026-10-28-tracker"),
              "--issue", "ISSUE-001", "--run-id", "skill-cwd", "--config", str(self.config_path),
              "--workspace-id", "WORKSPACE"],
             cwd=skill, env=self.env(), capture_output=True, text=True, timeout=30,
@@ -257,7 +257,7 @@ class PreparedStageCli(unittest.TestCase):
             f'[projects.{json.dumps(str(self.repo.resolve()))}]\ntrust_level = "trusted"\n'
         )
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        issue_dir = self.repo / ".scratch" / "tracker" / "issues"
+        issue_dir = self.repo / ".scratch" / "2026-10-28-tracker" / "issues"
         issue_dir.mkdir(parents=True)
         (issue_dir / "ISSUE-001-prepared.md").write_text(ISSUE, encoding="utf-8")
 
@@ -325,7 +325,7 @@ class PreparedStageCli(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         return self.run_state(
             "init",
-            "--tracker", ".scratch/tracker",
+            "--tracker", ".scratch/2026-10-28-tracker",
             "--issue", "ISSUE-001",
             "--run-id", run_id,
             "--runs-root", str(self.runs_root),
@@ -419,20 +419,70 @@ class PreparedStageCli(unittest.TestCase):
         snapshot = json.loads((self.runs_root / "migrated-v1" / state["prepared_stage"]["path"]).read_text(encoding="utf-8"))
         self.assertEqual(snapshot["selected_worker"]["profile"], "codex-astra-medium")
 
-    def test_default_run_identity_and_deliverables(self):
-        result = self.run_state("init", "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
+    def test_invalid_tracker_refused_before_writes_or_board(self):
+        for name in ("tracker", "2026-02-30-tracker", "2026-13-01-tracker",
+                     "2026-1-01-tracker", "2026-10-28-", "0000-01-01-tracker"):
+            for explicit in ((), ("--run-id", "explicit")):
+                with self.subTest(name=name, explicit=explicit):
+                    tracker = self.root / name
+                    (tracker / "issues").mkdir(parents=True, exist_ok=True)
+                    (tracker / "issues" / "ISSUE-001.md").write_text(ISSUE)
+                    before = file_contents(self.root)
+                    result = self.run_state("init", "--tracker", str(tracker),
+                                            "--issue", "ISSUE-001", "--workspace-id", "WORKSPACE",
+                                            *explicit)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("YYYY-MM-DD-", result.stderr)
+                    self.assertEqual(file_contents(self.root), before)
+                    self.assertFalse(self.runs_root.exists())
+                    self.assertFalse(self.cmux_log.exists())
+
+    def test_init_accepts_current_directory_as_dated_tracker(self):
+        tracker = self.repo / ".scratch" / "2026-10-28-tracker"
+        result = subprocess.run(
+            [sys.executable, str(RUN_STATE), "init", "--tracker", ".",
+             "--issue", "ISSUE-001", "--no-workspace", "--runs-root", str(self.runs_root)],
+            cwd=tracker, env=self.env(), capture_output=True, text=True, timeout=30,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip()
-        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-chain-issue-001$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-chain-tracker-issue-001$")
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["deliverables"]["tracker"], ".")
+
+    def test_default_run_distinguishes_trackers_and_board_uses_created_directory(self):
+        directories = []
+        for name in ("2024-02-29-first-tracker", "2026-10-28-second-tracker"):
+            tracker = self.root / name  # Valid outside .scratch and outside the repository.
+            (tracker / "issues").mkdir(parents=True)
+            (tracker / "issues" / "ISSUE-001.md").write_text(ISSUE)
+            self.cmux_log.unlink(missing_ok=True)
+            result = self.run_state("init", "--tracker", str(tracker),
+                                    "--issue", "ISSUE-001", "--workspace-id", "WORKSPACE")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            directory = self.repo / result.stdout.strip()
+            directories.append(directory)
+            self.assertTrue((directory / "state.json").is_file())
+            self.assertTrue(directory.name.endswith("-chain-" + name[11:] + "-issue-001"))
+            calls = self.board_calls()
+            self.assertTrue(calls)
+            self.assertEqual([call[0] for call in calls], ["workspace-action", "set-progress"])
+        self.assertNotEqual(*directories)
+
+    def test_default_run_identity_and_deliverables(self):
+        result = self.run_state("init", "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run_dir = self.repo / result.stdout.strip()
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-chain-tracker-issue-001$")
         state = json.loads((run_dir / "state.json").read_text())
         self.assertEqual(state["workflow"], "issue-chain")
         self.assertEqual(state["layout_version"], 2)
         created = datetime.fromisoformat(state["created_at"])
         self.assertEqual(created.utcoffset(), timedelta(0))
-        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-chain-issue-001")
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-chain-tracker-issue-001")
         for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
             self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
-        self.assertEqual(state["deliverables"], {"tracker": ".scratch/tracker", "issue": ".scratch/tracker/issues/ISSUE-001-prepared.md"})
+        self.assertEqual(state["deliverables"], {"tracker": ".scratch/2026-10-28-tracker", "issue": ".scratch/2026-10-28-tracker/issues/ISSUE-001-prepared.md"})
 
     def test_legacy_run_refuses_preparation_and_lifecycle_without_writes(self):
         self.assertEqual(self.init().returncode, 0)
@@ -487,7 +537,7 @@ class PreparedStageCli(unittest.TestCase):
 
     def triage_fixture(self, *, followup=True, numeric=False, item_content=""):
         from test_parse_report import report, verdict, DRAFT
-        tracker = self.repo / ".scratch" / "tracker"
+        tracker = self.repo / ".scratch" / "2026-10-28-tracker"
         if numeric:
             (tracker / "issues" / "ISSUE-001-prepared.md").rename(tracker / "issues" / "01-prepared.md")
         self.assertEqual(self.init().returncode, 0)
@@ -576,7 +626,7 @@ class PreparedStageCli(unittest.TestCase):
                 result = self.init_for(run_id, "--invocation", invocation, "--commit-mode", other)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(file_contents(self.runs_root), before)
-        issue = self.repo / ".scratch/tracker/issues/ISSUE-001-prepared.md"
+        issue = self.repo / ".scratch/2026-10-28-tracker/issues/ISSUE-001-prepared.md"
         issue.write_text(ISSUE.replace("type: AFK", "type: HITL"))
         self.assertEqual(self.init("--commit-mode", "commit").returncode, 0)
         self.assertEqual(self.read_state()["commit_mode"], "commit")
@@ -1352,7 +1402,7 @@ class PreparedStageCli(unittest.TestCase):
         self.assertEqual(self.read_snapshot()["selected_worker"]["model"], "gpt-6.1-sol")
 
     def test_init_records_the_invocation_and_reinit_keeps_it(self):
-        prompt = "/cmux-issue-chain .scratch/tracker ISSUE-001 bitte Tests zuerst"
+        prompt = "/cmux-issue-chain .scratch/2026-10-28-tracker ISSUE-001 bitte Tests zuerst"
         self.assertEqual(self.init("--invocation", prompt).returncode, 0)
         self.assertEqual(self.read_state()["invocation"], prompt)
 

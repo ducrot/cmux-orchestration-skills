@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import json
 import os
@@ -57,9 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = subparsers.add_parser("init", help="Create run directory and initial state")
     init.add_argument("--commit-mode", choices=["commit", "propose"], default=None)
-    init.add_argument("--tracker", required=True, help="Tracker directory, e.g. .scratch/<tracker>")
+    init.add_argument("--tracker", required=True, help="Dated tracker directory, e.g. .scratch/YYYY-MM-DD-<tracker-slug>")
     init.add_argument("--issue", required=True)
-    init.add_argument("--run-id", help="Stable run id. Defaults to YYYY-MM-DD-HHMM-chain-issue-NNN (local time)")
+    init.add_argument("--run-id", help="Stable run id. Defaults to YYYY-MM-DD-HHMM-chain-<tracker-slug>-issue-NNN (local time)")
     init.add_argument("--runs-root", default=".scratch/orchestrator/runs")
     init.add_argument(
         "--config",
@@ -161,12 +162,25 @@ def dispatch_command(args: argparse.Namespace) -> int:
     raise AssertionError(args.command)
 
 
+def chain_run_id(args: argparse.Namespace, now: str) -> str:
+    """Validate the tracker before writes and share its identity with the board."""
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})-(.+)", Path(args.tracker).resolve().name)
+    message = "--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix"
+    if not match:
+        raise SystemExit(message)
+    try:
+        date.fromisoformat(match[1])
+    except ValueError as error:
+        raise SystemExit(message) from error
+    return args.run_id or run_identifier("chain", f"{match[2]}-{slugify(args.issue)}", now)
+
+
 def run_command(args: argparse.Namespace) -> int:
     if args.command not in {"init", "prepare", "gate", "complete", "publish-triage"}:
         return dispatch_command(args)
     if args.command == "init":
         args.init_now = utc_now()
-        args.run_id = args.run_id or run_identifier("chain", slugify(args.issue), args.init_now)
+        args.run_id = chain_run_id(args, args.init_now)
         run_dir = Path(args.runs_root) / args.run_id
     else:
         run_dir = Path(args.run_dir)
@@ -237,6 +251,7 @@ def invocation_kept_assignments(invocation: str | None) -> str | None:
 
 
 def init_run(args: argparse.Namespace) -> int:
+    now, run_id = args.init_now, args.run_id
     commit_mode = args.commit_mode
     invocation_modes = re.findall(r"(?:^|\s)--commit-mode(?:\s+|=)(commit|propose)(?=\s|$)", args.invocation or "")
     if invocation_modes:
@@ -250,9 +265,6 @@ def init_run(args: argparse.Namespace) -> int:
     if args.issue not in issues:
         raise SystemExit(f"Unknown issue: {args.issue}")
     issue = issues[args.issue]
-    now = getattr(args, "init_now", None) or utc_now()
-    # Workflow and issue key group execution runs in the shared flat root.
-    run_id = args.run_id or run_identifier("chain", slugify(issue.id), now)
     runs_root = Path(args.runs_root)
     refuse_runs_root_in_skill(runs_root)
     run_dir = runs_root / run_id

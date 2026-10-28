@@ -846,14 +846,14 @@ with the parsed report's gate. It never executes the worker check commands.
 
 The scripts are deterministic helpers. They live canonically at `scripts/`
 (`~/.claude/skills/cmux-issue-chain` is a symlink to the same directory). Run them from the repo root.
-`--tracker` is always required and points at the local tracker directory (e.g. `.scratch/<tracker>`).
+`--tracker` is always required and points at the local tracker directory (e.g. `.scratch/YYYY-MM-DD-<tracker-slug>`).
 
 Inspect issue state and blockers:
 
 ```bash
-python3 scripts/issue_state.py list --tracker .scratch/<tracker>
-python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
-python3 scripts/issue_state.py show --tracker .scratch/<tracker> --issue ISSUE-001
+python3 scripts/issue_state.py list --tracker .scratch/YYYY-MM-DD-<tracker-slug>
+python3 scripts/issue_state.py ready --tracker .scratch/YYYY-MM-DD-<tracker-slug>
+python3 scripts/issue_state.py show --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001
 ```
 
 Issue files are `ISSUE-NNN-<slug>.md` or `NN-<slug>.md` — the latter is what `to-tickets` writes, and its
@@ -868,7 +868,9 @@ and `render_prompt.py` refuse malformed trackers too.
 
 Read when a to-tickets tracker needs frontmatter adoption: [references/tracker-adoption.md](references/tracker-adoption.md).
 
-Create and append run-state. The default run id is `YYYY-MM-DD-HHMM-chain-<issue>` in local time, with the issue key lowercased
+`init` requires a tracker folder with a valid calendar-date prefix `YYYY-MM-DD-` and a nonempty tracker slug. The folder may live anywhere. Invalid or undated names are rejected before any writes or board publication, including with an explicit `--run-id`. Issue listing, status, and prompt rendering remain available for undated trackers.
+
+Create and append run-state. The default run id is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-<issue>` in local time, with the issue key lowercased
 (for example `issue-001`); run-state and event timestamps remain UTC, and explicit `--run-id` values are
 preserved. New runs use `layout_version: 2`; `status` reads older layouts, while continuation refuses them
 with “unsupported legacy layout”. Runs sort chronologically by name; an existing directory is reused only
@@ -886,8 +888,8 @@ on resume: a re-init refuses a value that differs from the recorded one, and onl
 recorded prompt adopts it (`run.invocation`):
 
 ```bash
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --probe-profiles
+python3 scripts/run_state.py init --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
+python3 scripts/run_state.py init --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --probe-profiles
 python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "assignment visibly working on exception path" --data '{"role":"review","pass":1,"surface_id":"<surface-id>","launch_id":"<launch-id>","evidence":"screen"}'
 ```
 
@@ -944,9 +946,9 @@ current pass with `--context-file` (repeatable), plus relevant prior-pass decisi
 approval records for later reviewers, per the context-files rule in CMUX Control:
 
 ```bash
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/<run-id>
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 1 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/review-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-2.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-2.md
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/<run-id>
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role review --pass 1 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role review --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/review-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-2.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-2.md
 ```
 
 The pass-2 example assumes the pass-1 implement, simplify, and review reports carry protected decisions

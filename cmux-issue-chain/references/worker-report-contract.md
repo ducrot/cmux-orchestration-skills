@@ -122,7 +122,7 @@ A follow-up implement report adds `## Change Summary` (changed files per approve
 `## Not Applied` (approved items that no longer fit the code, each with a one-line reason).
 
 Runs use the shared `.scratch/orchestrator/runs/` root and default local-time id
-`YYYY-MM-DD-HHMM-chain-issue-NNN`; run-state and event timestamps remain UTC, and explicit `--run-id`
+`YYYY-MM-DD-HHMM-chain-<tracker-slug>-issue-NNN`; run-state and event timestamps remain UTC, and explicit `--run-id`
 values are preserved. Each `state.json` records `workflow: issue-chain`,
 `layout_version: 2`, and `deliverables` with the tracker and issue paths. Inspect an existing run
 read-only with `run_state.py status --run-dir <run-dir>`; an unsupported legacy layout must be
