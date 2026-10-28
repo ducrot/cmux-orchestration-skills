@@ -162,6 +162,16 @@ Claude model names are provider aliases. These assignments describe the shipped 
 
 Use the installed skill's `scripts/agents_config.py validate` and `show-resolved` commands to inspect configuration. Typed profile, CLI, model, effort, and executable overrides are supported; runtime safety policies remain code-owned. See the [configuration reference](cmux-issue-chain/references/configuration.md) for commands, precedence, profiles, and probes.
 
+Lifecycle `init` writes a self-ignoring `.gitignore` containing `*` and a newline to
+`.scratch/orchestrator/.gitignore` when the resolved runs root is the repository's standard
+`.scratch/orchestrator/runs`. This ignores runs, `.scratch/orchestrator/agents.json`, and all
+other orchestrator internals. A new worker configuration must be added with `git add -f` to
+version it; an already tracked configuration remains tracked. With a custom `--runs-root`,
+the ignore file lives inside that runs root (even if it is named `runs`), and its parent is
+unchanged. Existing ignore files are never overwritten; a deleted file is restored on the
+next initialization. A legacy `.gitignore` inside the standard runs root is left untouched.
+Configuration management commands never change ignore rules.
+
 ### Upgrading an existing configuration
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.

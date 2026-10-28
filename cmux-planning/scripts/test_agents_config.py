@@ -232,6 +232,8 @@ class AgentsConfigCli(unittest.TestCase):
             },
         )
         self.assertFalse((self.repo / ".gitignore").exists())
+        self.assertFalse((self.repo / ".scratch/orchestrator/.gitignore").exists())
+        self.assertFalse((self.repo / ".scratch/orchestrator/runs/.gitignore").exists())
 
     def test_explicit_path_works_outside_git_and_existing_file_is_never_changed(self):
         outside = self.tmp / "outside"

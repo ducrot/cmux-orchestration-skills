@@ -17,3 +17,12 @@ original bytes untouched on failure. It refuses targets with no
 write bit or more than one hard link, preserves a symlink path, and applies both guards to its resolved
 target. `atomic_initialize` remains create-only.
 
+Lifecycle `init` writes a self-ignoring `.gitignore` containing `*` and a newline to
+`.scratch/orchestrator/.gitignore` when the resolved runs root is the repository's standard
+`.scratch/orchestrator/runs`. This ignores runs, `.scratch/orchestrator/agents.json`, and all
+other orchestrator internals. A new worker configuration must be added with `git add -f` to
+version it; an already tracked configuration remains tracked. With a custom `--runs-root`,
+the ignore file lives inside that runs root (even if it is named `runs`), and its parent is
+unchanged. Existing ignore files are never overwritten; a deleted file is restored on the
+next initialization. A legacy `.gitignore` inside the standard runs root is left untouched.
+Configuration management commands never change ignore rules.

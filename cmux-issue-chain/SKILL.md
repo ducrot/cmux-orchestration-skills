@@ -806,6 +806,11 @@ Read when the watcher exits 9 or sending any re-delivery or follow-up text: [ref
 
 Do not use hidden subagents as worker substitutes during a live run. If CMUX cannot launch the visible worker, stop and report the CMUX failure. This rule covers the workers themselves; the internal subagents a worker spawns inside its own TUI (e.g. `/code-review` review agents) are part of that worker, not substitutes for it.
 
+`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
+`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
+gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
+`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
+
 ## Event Vocabulary
 
 `commit.proposed` is written only by `run_commit.py propose`.
@@ -876,9 +881,8 @@ preserved. New runs use `layout_version: 2`; `status` reads older layouts, while
 with “unsupported legacy layout”. Runs sort chronologically by name; an existing directory is reused only
 through the existing-run checks. `init` pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out for
-offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs root, so run state
-never reaches git in any target repo. For an AFK issue, initialization requires the configuration
-checkpoint above to be complete, then preflights every role and prepares `implement-1`; a missing or
+offline runs outside cmux) and installs the lifecycle ignore rules described above. For an AFK issue,
+initialization requires the configuration checkpoint above to be complete, then preflights every role and prepares `implement-1`; a missing or
 invalid configuration and any preflight failure happen before a launchable state or stage snapshot is
 written. HITL issues get no configuration source and no snapshot, so `prepare` stays unavailable on
 them, and re-running `init` on an existing run re-prepares nothing — it refuses `--config` and typed

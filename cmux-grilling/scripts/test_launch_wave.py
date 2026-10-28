@@ -85,6 +85,46 @@ def file_contents(root: Path) -> dict[Path, bytes]:
 
 
 class PreparedLaunchWaveCli(unittest.TestCase):
+
+    def test_init_keeps_already_tracked_worker_configuration(self):
+        config = self.config_path
+        # Only this disposable fixture repository's index is changed.
+        subprocess.run(["git", "add", str(config)], cwd=self.repo, check=True)
+        before = config.read_bytes()
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", str(config)], cwd=self.repo, capture_output=True)
+        self.assertEqual(tracked.returncode, 0, tracked.stderr)
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_standard_ignore_cli_preserves_restores_and_covers_all_internals(self):
+        runs = self.runs_root
+        config = self.config_path
+        ignore = runs.parent / ".gitignore"
+        runs.mkdir(parents=True, exist_ok=True)
+        legacy = runs / ".gitignore"
+        legacy.write_bytes(b"legacy rules\n")
+        legacy_before = legacy.stat().st_mtime_ns
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"*\n")
+        run_dir = next(path for path in runs.iterdir() if path.is_dir())
+        for target in (run_dir, config, runs.parent / "other-internal"):
+            checked = subprocess.run(["git", "check-ignore", str(target)], cwd=self.repo, capture_output=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(legacy.read_bytes(), b"legacy rules\n")
+        self.assertEqual(legacy.stat().st_mtime_ns, legacy_before)
+        ignore.write_bytes(b"custom rules\n")
+        before = ignore.stat().st_mtime_ns
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"custom rules\n")
+        self.assertEqual(ignore.stat().st_mtime_ns, before)
+        ignore.unlink()
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"*\n")
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)

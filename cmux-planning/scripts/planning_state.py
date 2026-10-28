@@ -347,10 +347,13 @@ def refuse_runs_root_in_skill(runs_root: Path) -> None:
         )
 
 
-def ensure_runs_root_ignored(runs_root: Path) -> None:
-    """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
+def ensure_runs_root_ignored(runs_root: Path, repository: Path) -> None:
+    """Ignore all standard orchestrator internals, or only a custom runs root."""
+    runs_root = runs_root.resolve()
+    standard = (repository / ".scratch" / "orchestrator" / "runs").resolve()
+    ignore_root = runs_root.parent if runs_root == standard else runs_root
     runs_root.mkdir(parents=True, exist_ok=True)
-    ignore = runs_root / ".gitignore"
+    ignore = ignore_root / ".gitignore"
     # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
         durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
@@ -892,7 +895,7 @@ def init_run(args: argparse.Namespace) -> int:
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
                 "inputs belong to planning_state.py prepare, not to re-initialization"
             )
-        ensure_runs_root_ignored(runs_root)
+        ensure_runs_root_ignored(runs_root, repository)
         for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
@@ -930,7 +933,7 @@ def init_run(args: argparse.Namespace) -> int:
             config_source=str(configuration_source),
         )
 
-    ensure_runs_root_ignored(runs_root)
+    ensure_runs_root_ignored(runs_root, repository)
     for name in ("artifacts", "inputs", "prompts", "reports", "stage-snapshots", "tree-snapshots"):
         (run_dir / name).mkdir(parents=True, exist_ok=True)
     inputs = []

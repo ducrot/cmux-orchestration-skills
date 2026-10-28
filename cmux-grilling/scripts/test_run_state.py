@@ -155,18 +155,18 @@ class OutputPathDerivation(unittest.TestCase):
                 self.assertFalse(ignore.exists())
                 replace(source, target)
             with patch("run_state.os.replace", side_effect=publish):
-                ensure_runs_root_ignored(root)
+                ensure_runs_root_ignored(root, Path(tmp))
             self.assertEqual(observed, [b"*\n"])
             self.assertEqual(ignore.read_bytes(), b"*\n")
             ignore.write_text("existing rules\n")
             before = ignore.stat().st_mtime_ns
-            ensure_runs_root_ignored(root)
+            ensure_runs_root_ignored(root, Path(tmp))
             self.assertEqual(ignore.read_text(), "existing rules\n")
             self.assertEqual(ignore.stat().st_mtime_ns, before)
             ignore.unlink()
             ignore.mkdir()
             with self.assertRaises(OSError):
-                ensure_runs_root_ignored(root)
+                ensure_runs_root_ignored(root, Path(tmp))
             self.assertTrue(ignore.is_dir())
 
     def test_explicit_tracker_wins_over_detection(self):

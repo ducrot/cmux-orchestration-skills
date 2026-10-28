@@ -24,6 +24,7 @@ from agents_config import (
     add_override_options,
     add_probe_options,
     durable_publish,
+    git_root,
     supplied_configuration_inputs,
 )
 from orchestrator_lib import (
@@ -210,10 +211,13 @@ def refuse_runs_root_in_skill(runs_root: Path) -> None:
         )
 
 
-def ensure_runs_root_ignored(runs_root: Path) -> None:
-    """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
+def ensure_runs_root_ignored(runs_root: Path, repository: Path) -> None:
+    """Ignore all standard orchestrator internals, or only a custom runs root."""
+    runs_root = runs_root.resolve()
+    standard = (repository / ".scratch" / "orchestrator" / "runs").resolve()
+    ignore_root = runs_root.parent if runs_root == standard else runs_root
     runs_root.mkdir(parents=True, exist_ok=True)
-    ignore = runs_root / ".gitignore"
+    ignore = ignore_root / ".gitignore"
     # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
         durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
@@ -295,7 +299,7 @@ def init_run(args: argparse.Namespace) -> int:
                 {"time": utc_now(), "type": "run.invocation", "message": "initial prompt recorded on re-init",
                  "data": {"invocation": args.invocation}},
             )
-        ensure_runs_root_ignored(runs_root)
+        ensure_runs_root_ignored(runs_root, git_root(Path.cwd()))
         (run_dir / "prompts").mkdir(parents=True, exist_ok=True)
         (run_dir / "reports").mkdir(parents=True, exist_ok=True)
         print(run_dir)
@@ -319,7 +323,7 @@ def init_run(args: argparse.Namespace) -> int:
         commit_baseline = capture_baseline(Path.cwd())
     except ValueError as error:
         raise SystemExit(f"cannot record the commit baseline: {error}") from error
-    ensure_runs_root_ignored(runs_root)
+    ensure_runs_root_ignored(runs_root, git_root(Path.cwd()))
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "prompts").mkdir(exist_ok=True)
     (run_dir / "reports").mkdir(exist_ok=True)

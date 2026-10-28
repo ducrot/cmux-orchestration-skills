@@ -48,13 +48,6 @@ Read when preparing workers for the first time, upgrading harnesses or snapshots
 
 Read when resolving the configuration path before init, creating or migrating configuration, or inspecting profiles: [references/configuration.md](references/configuration.md).
 
-`run_state.py init` requires an existing configuration at the default or explicit path; it never
-creates one. After the first-use checkpoint, it resolves and preflights all four lanes as one
-cohort. It publishes run state only after every lane passes and records one immutable launch-wave
-snapshot. Preparation resolves each unique assigned executable, captures its version, checks
-required help capabilities and local authentication status, and records provider entitlement as
-`unverified` by default. This local preflight is mandatory.
-
 Initialization accepts repeatable typed overrides in `LANE=VALUE` form: `--profile`,
 `--harness`, `--model`, `--effort`, and `--executable`. File assignment resolves first,
 then profile selection, then direct field overrides. Overrides live only in the new run's
@@ -690,6 +683,11 @@ retries with `close-surface --force`, but only for the round's recorded lane sur
 While a round is in flight, the four reports belong to the lanes: do not edit anything under
 `reports/` yourself, and compare snapshot fingerprints before any `report.integrity` claim.
 
+`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
+`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
+gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
+`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
+
 ## Event Vocabulary
 
 `commit.proposed` and `commit.followup_proposed` are written only by `run_commit.py propose`.
@@ -711,8 +709,7 @@ with “unsupported legacy layout”. After the configuration checkpoint above,
 `init` loads the existing worker configuration, validates and preflights all four lanes together,
 writes one immutable launch wave, and pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out
-for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs
-root, so run state never reaches git in any target repo:
+for offline runs outside cmux) and installs the lifecycle ignore rules described above:
 
 ```bash
 python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-rounds 4

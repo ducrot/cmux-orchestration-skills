@@ -179,10 +179,10 @@ also pass `--grilling-json <result.json>` and optionally the exact `--grilling-m
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
-Direct input starts at `spec` with an immutable prepared snapshot. If author and reviewer share a
-harness and model, init instead prints an extra warning object (`prepared: null`) before the run
-directory, exits with code 2, and awaits confirmation at `spec` without a snapshot. Grilling starts at
-`awaiting-grilling-revalidation` without a snapshot.
+`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
+`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
+gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
+`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
 
 Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
 

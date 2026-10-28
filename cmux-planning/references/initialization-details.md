@@ -24,6 +24,11 @@ command, then exits before creation. Without `--run-id`, this check precedes inp
 so `init` without inputs already reports an unfinished run. Completed runs do not block init. Use
 `--new-run` only after the human chooses a separate session; it never resets an existing run.
 
+Direct input starts at `spec` with an immutable prepared snapshot. If author and reviewer share a
+harness and model, init instead prints an extra warning object (`prepared: null`) before the run
+directory, exits with code 2, and awaits confirmation at `spec` without a snapshot. Grilling starts at
+`awaiting-grilling-revalidation` without a snapshot.
+
 ## Feature name at initialization
 
 For planning without grilling input, ask for the feature folder name in the same dialog as the
