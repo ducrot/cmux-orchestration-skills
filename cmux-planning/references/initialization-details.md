@@ -5,8 +5,8 @@ Concrete direct-task and optional grilling-pair starts are:
 ```bash
 python3 scripts/planning_state.py init --feature 2026-10-27-example --task-file ./task.md --repo . \
   --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
-python3 scripts/planning_state.py init --feature 2026-10-27-example --task-file ./task.md --repo . \
-  --grilling-json ./grilling-result.json --grilling-markdown ./grilling-result.md \
+python3 scripts/planning_state.py init --task-file ./task.md --repo . \
+  --grilling-json .scratch/2026-10-27-example/grilling/result.json \
   --workspace-id "$CMUX_WORKSPACE_ID" --accept-config
 ```
 
@@ -38,6 +38,11 @@ and free text allowed. Pass the approved name to `init --feature <name>`; withou
 init requires it before any writes.
 Skip this name question with explicit `--feature`, on resume, re-init, the exit-3 unfinished-run
 path, and smoke tests. Inspect unfinished runs before asking.
+
+With grilling input, ask no feature-name question. Inherit the folder and slug from the JSON's
+location in `.scratch/YYYY-MM-DD-<slug>/grilling/`. The tracker is published in that same feature
+folder. An optional `--feature` must identify the same folder; invalid locations and conflicts
+are refused before writes. The JSON format and existing pair validation stay unchanged.
 
 The feature folder lives directly in repository `.scratch/`. `--feature` accepts its basename,
 repository-relative path, or absolute path. Its prefix must be a valid calendar date; the slug is

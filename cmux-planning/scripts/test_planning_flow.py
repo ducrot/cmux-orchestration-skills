@@ -92,6 +92,7 @@ def file_contents(root: Path) -> dict[Path, bytes]:
 
 
 class PlanningFlow(unittest.TestCase):
+    DEFAULT_FEATURE = "2026-10-27-planned-feature"
 
     def test_init_keeps_already_tracked_worker_configuration(self):
         config = self.config
@@ -125,7 +126,7 @@ class PlanningFlow(unittest.TestCase):
         before = ignore.stat().st_mtime_ns
         def reinit():
             return self.cli(STATE, "init", "--task-file", self.plan_file("Task"),
-                            "--feature", "2026-10-27-planned-feature", "--repo", str(self.repo),
+                            "--feature", self.DEFAULT_FEATURE, "--repo", str(self.repo),
                             "--run-id", "plan-test", "--workspace-id", "WORKSPACE-1")
         result = reinit()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -193,7 +194,7 @@ class PlanningFlow(unittest.TestCase):
 
     def cli(self, script: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         if script == STATE and args[0] == "init" and "--feature" not in args and not getattr(self, "omit_feature", False):
-            args += ("--feature", "2026-10-27-planned-feature")
+            args += ("--feature", self.DEFAULT_FEATURE)
         if getattr(self, "relative_cli_paths", False):
             argv = list(args)
             for index, value in enumerate(argv[:-1]):
@@ -350,6 +351,98 @@ class PlanningFlow(unittest.TestCase):
         self.assertFalse((self.run_dir / "publication-stage").exists())
         self.assertFalse(target.exists())
 
+    def test_grilling_inherits_source_feature_and_slug_without_name(self):
+        self.omit_feature = True
+        feature = self.repo / ".scratch" / "2024-02-29-source-choice"
+        artifact, markdown = self.grilling_pair(feature / "grilling")
+        original = (artifact.read_bytes(), markdown.read_bytes())
+        initialized = self.cli(
+            STATE, "init", "--task-file", self.plan_file("# Unrelated title"),
+            "--grilling-json", str(artifact.relative_to(self.repo)), "--no-workspace",
+        )
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        run_dir = self.repo / initialized.stdout.strip().splitlines()[-1]
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["feature_dir"], str(feature.resolve()))
+        self.assertEqual(state["tracker_slug"], "source-choice")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-plan-source-choice$")
+        self.assertEqual(state["current_stage"], "awaiting-grilling-revalidation")
+        self.assertEqual((run_dir / "inputs/grilling-source.json").read_bytes(), original[0])
+        self.assertEqual((run_dir / "inputs/grilling-source.md").read_bytes(), original[1])
+        for value in (feature.name, str(feature), str(feature.relative_to(self.repo))):
+            with self.subTest(feature=value):
+                repeated = self.cli(
+                    STATE, "init", "--task-file", self.plan_file("Plan"),
+                    "--grilling-json", str(artifact), "--feature", value,
+                    "--run-id", run_dir.name, "--no-workspace",
+                )
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+
+        other, _ = self.grilling_pair(self.repo / ".scratch" / "2024-02-29-other" / "grilling")
+        before = file_contents(self.repo)
+        changed = self.cli(
+            STATE, "init", "--task-file", self.plan_file("Plan"),
+            "--grilling-json", str(other), "--run-id", run_dir.name, "--no-workspace",
+        )
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("cannot change the feature folder", changed.stderr)
+        self.assertEqual(file_contents(self.repo), before)
+
+    def test_grilling_invalid_location_or_conflicting_feature_writes_nothing(self):
+        self.omit_feature = True
+        task = self.plan_file("# Plan")
+        scratch = self.repo / ".scratch"
+        cases = (
+            (self.repo, None),
+            (scratch / "2026-10-27-valid", None),
+            (scratch / "undated" / "grilling", None),
+            (scratch / "2026-02-30-invalid" / "grilling", None),
+            (scratch / "nested" / "2026-10-27-valid" / "grilling", None),
+            (self.root / "2026-10-27-outside" / "grilling", None),
+            (scratch / "2026-10-27-valid" / "grilling", "2026-10-27-other"),
+        )
+        for directory, feature in cases:
+            with self.subTest(directory=directory, feature=feature):
+                artifact, _ = self.grilling_pair(directory)
+                before = file_contents(self.repo)
+                result = self.cli(
+                    STATE, "init", "--task-file", task, "--grilling-json", str(artifact),
+                    "--run-id", "invalid", "--no-workspace",
+                    *([] if feature is None else ["--feature", feature]),
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("feature", result.stderr)
+                if directory == scratch / "undated" / "grilling":
+                    self.assertIn("grilling JSON feature folder is invalid:", result.stderr)
+                self.assertEqual(file_contents(self.repo), before)
+                self.assertFalse(self.runs.exists())
+
+    def test_grilling_symlink_locations_write_nothing(self):
+        self.omit_feature = True
+        task = self.plan_file("Plan")
+        artifact, _ = self.grilling_pair()
+        scratch = self.repo / ".scratch"
+        feature_alias = scratch / "2026-10-27-feature-alias"
+        feature_alias.symlink_to(artifact.parent.parent, target_is_directory=True)
+        grilling_alias = scratch / "2026-10-27-grilling-alias"
+        grilling_alias.mkdir()
+        (grilling_alias / "grilling").symlink_to(artifact.parent, target_is_directory=True)
+        external, _ = self.grilling_pair(self.root / "outside")
+        json_alias = artifact.parent / "external.json"
+        json_alias.symlink_to(external)
+        for source in (feature_alias / "grilling" / artifact.name,
+                       grilling_alias / "grilling" / artifact.name, json_alias):
+            with self.subTest(source=source):
+                before = file_contents(self.repo)
+                result = self.cli(
+                    STATE, "init", "--task-file", task, "--grilling-json", str(source),
+                    "--run-id", "invalid", "--no-workspace",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("feature", result.stderr)
+                self.assertEqual(file_contents(self.repo), before)
+                self.assertFalse(self.runs.exists())
+
     def test_grilling_reinit_without_feature_preserves_folder_on_different_local_date(self):
         self.omit_feature = True
         artifact, markdown = self.grilling_pair()
@@ -364,7 +457,7 @@ class PlanningFlow(unittest.TestCase):
         first_date = created.astimezone(ZoneInfo(first_zone)).strftime("%Y-%m-%d")
         later_date = created.astimezone(ZoneInfo(later_zone)).strftime("%Y-%m-%d")
         self.assertNotEqual(first_date, later_date)
-        self.assertEqual(Path(state["feature_dir"]).name, first_date + "-plan")
+        self.assertEqual(Path(state["feature_dir"]), artifact.parent.parent.resolve())
         before = file_contents(self.repo)
 
         # The two zones are 26 hours apart, so this exercises a changed local date
@@ -377,7 +470,7 @@ class PlanningFlow(unittest.TestCase):
                 )
                 if feature == later_date + "-plan":
                     self.assertNotEqual(repeated.returncode, 0)
-                    self.assertIn("cannot change the feature folder", repeated.stderr)
+                    self.assertIn("must match the grilling feature folder", repeated.stderr)
                 else:
                     self.assertEqual(repeated.returncode, 0, repeated.stderr)
                     self.assertEqual(self.repo / repeated.stdout.strip(), self.run_dir)
@@ -4277,9 +4370,11 @@ sha256 {resulting_digest or digest}
         ):
             self.assertEqual(getattr(after, field), getattr(before, field), field)
 
-    def grilling_pair(self) -> tuple[Path, Path]:
-        markdown = self.repo / "grilling-result.md"
-        artifact = self.repo / "grilling-result.json"
+    def grilling_pair(self, directory=None) -> tuple[Path, Path]:
+        directory = directory or self.repo / ".scratch" / self.DEFAULT_FEATURE / "grilling"
+        directory.mkdir(parents=True, exist_ok=True)
+        markdown = directory / "grilling-result.md"
+        artifact = directory / "grilling-result.json"
         markdown.write_text(
             """# Result
 ## Aufgabe

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
-from datetime import date, datetime
+from datetime import date
 import json
 import os
 import re
@@ -69,7 +69,6 @@ from orchestrator_lib import (
     integrity_boundary,
     read_json,
     run_identifier,
-    slugify,
     read_planning_state,
     sha256_bytes,
     sha256_file,
@@ -114,7 +113,6 @@ from stage_snapshot import (
 from tree_integrity import IntegrityError, capture_tree, compare_tree, snapshot_digest, verify
 from tracker_contract import (
     SLUG_BODY,
-    ascii_fold,
     stage_native_tracker,
     ticket_modes,
     ticket_phases,
@@ -834,6 +832,19 @@ def fresh_feature_available(feature: Path) -> None:
         raise ConfigError("existing --feature folder must contain exactly the grilling/ directory")
 
 
+def grilling_feature(repository: Path, value: str) -> tuple[Path, str]:
+    source = Path(value).expanduser().absolute()
+    if source.parent.name != "grilling":
+        raise ConfigError("grilling JSON must be in a feature folder's grilling/ directory")
+    try:
+        feature, slug = checked_feature(repository, str(source.parent.parent))
+    except ConfigError as error:
+        raise ConfigError(f"grilling JSON feature folder is invalid: {error}") from error
+    if source.parent.is_symlink() or source.resolve().parent != feature / "grilling":
+        raise ConfigError("grilling JSON must be inside the feature folder's own grilling/ directory")
+    return feature, slug
+
+
 def init_run(args: argparse.Namespace) -> int:
     repository = git_root(Path(args.repo))
     runs_root = Path(args.runs_root)
@@ -841,25 +852,15 @@ def init_run(args: argparse.Namespace) -> int:
     if not args.new_run and not args.run_id and offer_unfinished_run(runs_root, repository):
         return 3
     sources = task_inputs(args)
-    brief = next((payload for payload, _, _, kind in sources if kind == "conversation-brief"), None)
-    title_text = (brief_sections(brief.decode("utf-8"))["Goal"] if brief is not None
-                  else sources[0][0].decode("utf-8"))
     now = utc_now()
-    lines = title_text.strip().splitlines()
-    title, fenced = lines[0] if lines else "conversation", False
-    for line in lines:
-        if re.match(r"^\s*(```|~~~)", line):
-            fenced = not fenced
-        elif not fenced and re.match(r"^#{1,6}\s+", line):
-            title = line.lstrip("#").strip()
-            break
-    if args.feature is None and not args.grilling_json:
-        raise ConfigError("init without grilling input requires --feature")
-    # Grilling source-folder inheritance is handled separately; retain its title default for now.
-    feature_value = args.feature if args.feature is not None else (
-        datetime.fromisoformat(now).astimezone().strftime("%Y-%m-%d") + "-" + slugify(ascii_fold(title))
-    )
-    feature, slug = checked_feature(repository, feature_value)
+    if args.grilling_json:
+        feature, slug = grilling_feature(repository, args.grilling_json)
+        if args.feature is not None and checked_feature(repository, args.feature)[0] != feature:
+            raise ConfigError("--feature must match the grilling feature folder")
+    else:
+        if args.feature is None:
+            raise ConfigError("init without grilling input requires --feature")
+        feature, slug = checked_feature(repository, args.feature)
     run_id = (
         checked_run_id(args.run_id)
         if args.run_id
@@ -876,7 +877,7 @@ def init_run(args: argparse.Namespace) -> int:
             raise ConfigError(f"planning run belongs to another repository: {run_dir}")
         if not isinstance(existing.get("feature_dir"), str):
             raise ConfigError(f"planning run {run_dir} predates the frozen feature folder; inspect read-only and restart the run")
-        if args.feature is not None and Path(existing["feature_dir"]).resolve() != feature:
+        if Path(existing["feature_dir"]).resolve() != feature:
             raise ConfigError("re-initialization cannot change the feature folder")
         stored_mode = existing.get("commit_mode", "propose")
         if args.commit_mode is not None and args.commit_mode != stored_mode:

@@ -1,5 +1,11 @@
 ## Revalidate optional grilling input
 
+At init, ask no feature-name question for grilling input. The JSON must be in
+`.scratch/YYYY-MM-DD-<slug>/grilling/` directly under the repository's `.scratch/`.
+Planning inherits that feature folder and its pure slug; the tracker is published in the same
+feature folder. Omit `--feature`, or supply the same folder. A different feature or an invalid
+source location is refused before any writes. The JSON format and pair validation are unchanged.
+
 Show every item that the human must consider:
 
 ```bash

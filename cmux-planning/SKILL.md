@@ -33,11 +33,11 @@ stored choices cannot change. Briefing ends with `Commit: automatic|proposal` (`
 
 ## Feature name at initialization
 
-Without grilling input, require `--feature`. Ask for its name in the same dialog as the commit-mode
+Without grilling input, require `--feature`; ask in the same dialog as the commit-mode
 question, after the human chooses a fresh run. Skip with explicit `--feature`, on resume,
 re-init, the exit-3 unfinished-run path, and smoke tests.
-
-Name rules: [references/initialization-details.md](references/initialization-details.md).
+With grilling input, ask no name question; inherit the JSON's feature folder and slug;
+publish the tracker in that feature folder.
 
 ## Artifact language at initialization
 
@@ -158,10 +158,10 @@ Read when installing planning or setting it up for first use: [references/instal
 
 ## Initialize
 
-Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one question call for commit
-mode, feature name, language and assignments, draft and confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
-for its six English headings, human-language content and verbatim quotes; show it fully as its own message,
-then confirm it with one `AskUserQuestion` single-select as described there.
+Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one call for commit
+mode, feature name, language and assignments, confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
+for six English headings, human-language content and verbatim quotes; show it fully as its own message,
+then confirm it with one `AskUserQuestion` single-select.
 Require a plan file or brief; grilling is additional. Only brief entries the human stated beat revalidated grilling
 decisions, which beat plan files; entries taken from files keep the rank of their source.
 Other contradictions go to `Open Decisions`.
@@ -175,7 +175,7 @@ python3 scripts/planning_state.py init --feature <YYYY-MM-DD-slug> --task-file <
 
 For conversation input, pass `--conversation-brief <path> --brief-confirmed`, optionally alongside
 plan files. For grilling input,
-also pass `--grilling-json <result.json>` and optionally the exact `--grilling-markdown <result.md>`.
+replace `--feature` with `--grilling-json <result.json>` and optionally the exact `--grilling-markdown <result.md>`.
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 

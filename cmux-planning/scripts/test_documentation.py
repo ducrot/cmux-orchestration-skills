@@ -230,6 +230,16 @@ class TicketApprovalQuizDocumentation(unittest.TestCase):
         self.assertIn("same dialog as commit mode", readme)
         self.assertIn("without a target-path question", readme)
 
+    def test_grilling_feature_inheritance_is_documented(self):
+        guide = normalized(PLANNING)
+        self.assertIn("with grilling input, ask no name question", guide)
+        self.assertIn("publish the tracker in that feature folder", guide)
+        reference = normalized(PLANNING.parent / "references/grilling-revalidation.md")
+        for phrase in ("ask no feature-name question", "inherits that feature folder and its pure slug",
+                       "tracker is published in the same feature folder", "before any writes",
+                       "json format and pair validation are unchanged"):
+            self.assertIn(phrase, reference)
+
     def test_quiz_answers_route_to_approval_ticket_revision_or_spec_revision(self):
         for phrase in (
             "only when all three answers are positive (fits, correct, no change), approve using the frozen feature folder",
