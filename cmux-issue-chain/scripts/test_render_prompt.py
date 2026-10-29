@@ -132,11 +132,18 @@ class RenderFunction(unittest.TestCase):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         items_file = items_fixture(Path(root.name))
-        for opted_in in (False, True):
-            rules = LEGACY_GROUND_RULES + ("\n" + targeted if opted_in else "")
-            for harness in ("claude-code", "codex"):
-                for role, followup in [(role, "") for role in render_prompt.ROLES] + [("implement", FOLLOWUP_ITEMS)]:
-                    with self.subTest(opted_in=opted_in, harness=harness, role=role, followup=bool(followup)):
+        cases = [(role, "") for role in render_prompt.ROLES] + [("implement", FOLLOWUP_ITEMS)]
+        baselines = {
+            (harness, role, followup): duties_section(render_prompt.render(
+                role, "ISSUE-001", ISSUE, {}, harness=harness,
+                ground_rules=LEGACY_GROUND_RULES, followup=followup,
+                items_file=items_file if role == "triage" else None))
+            for harness in ("claude-code", "codex", "other-harness") for role, followup in cases}
+        for entry in ("", targeted, targeted.split("\n")[0], targeted.replace("python3 targeted.py", "<TODO: choose check>")):
+            rules = LEGACY_GROUND_RULES + ("\n" + entry if entry else "")
+            for harness in ("claude-code", "codex", "other-harness"):
+                for role, followup in cases:
+                    with self.subTest(entry=entry, harness=harness, role=role, followup=bool(followup)):
                         text = render_prompt.render(
                             role, "ISSUE-001", ISSUE, {}, harness=harness,
                             ground_rules=rules, followup=followup,
@@ -144,12 +151,14 @@ class RenderFunction(unittest.TestCase):
                         self.assertIn(rules, text)
                         duties = text.split("## Orchestrator Contract", 1)[1].split("## Tracker Ground Rules", 1)[0]
                         self.assertIn("These role-specific test duties override the embedded README wording", duties)
+                        self.assertIn("legacy baseline-suite wording", duties)
+                        self.assertIn("Targeted check commands for implement, simplify, and review:", duties)
+                        self.assertEqual(duties_section(text), baselines[harness, role, followup])
                         if role == "triage":
                             self.assertNotIn("Full applicable suite", duties)
                             self.assertIn("Do not run any test suite", duties)
                         else:
-                            expected, other = (("python3 targeted.py", "python3 check.py") if opted_in and role != "test"
-                                               else ("python3 check.py", "python3 targeted.py"))
+                            expected, other = "python3 check.py", "python3 targeted.py"
                             self.assertIn(f"Full applicable suite for this role:\n  - `{expected}`", duties)
                             self.assertNotIn(f"`{other}`", duties)
 
@@ -552,7 +561,7 @@ class RenderCli(unittest.TestCase):
         self.assertIn("one after another, never in parallel", prompt)
         self.assertIn("- cited: artifacts/<earlier-stage>/check-<hash>.log", prompt)
 
-    def test_cli_delivers_targeted_suite_and_verbatim_rules(self):
+    def test_cli_ignores_targeted_suite_and_keeps_verbatim_rules(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:\n  - `python3 targeted.py`"
         (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
         self.assertEqual(self.init().returncode, 0)
@@ -560,15 +569,26 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(rules, prompt)
-        self.assertIn("Full applicable suite for this role:\n  - `python3 targeted.py`", prompt)
+        self.assertIn("Full applicable suite for this role:\n  - `python3 check.py`", prompt)
 
-    def test_cli_refuses_empty_targeted_declaration_without_traceback(self):
+    def test_cli_accepts_empty_targeted_declaration(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:"
         (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
         self.assertEqual(self.init().returncode, 0)
         rendered = self.render("implement")
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        prompt = (self.run_dir / "prompts/implement-1.md").read_text()
+        self.assertIn(rules, prompt)
+        self.assertIn("Full applicable suite for this role:\n  - `python3 check.py`", prompt)
+
+    def test_cli_refuses_placeholder_canonical_declaration_without_traceback(self):
+        rules = ("- Canonical check commands:\n  - `<TODO: canonical test command>`\n"
+                 "- Targeted check commands for implement, simplify, and review:\n  - `python3 targeted.py`")
+        (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
+        self.assertEqual(self.init().returncode, 0)
+        rendered = self.render("implement")
         self.assertNotEqual(rendered.returncode, 0)
-        self.assertIn("cannot render implement-1: tracker targeted check commands are empty", rendered.stderr)
+        self.assertIn("cannot render implement-1: tracker canonical check commands are empty", rendered.stderr)
         self.assertNotIn("Traceback", rendered.stderr)
         self.assertFalse((self.run_dir / "prompts/implement-1.md").exists())
 

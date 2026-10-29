@@ -5,12 +5,10 @@ import re
 
 
 CANONICAL_LABEL = r"Canonical check commands(?:, run as the baseline suite by every worker)?"
-TARGETED_LABEL = r"Targeted check commands for implement, simplify, and review"
-TARGETED_ROLES = ("implement", "simplify", "review")
 
 
-def command_group(rules: str, label: str) -> list[str] | None:
-    match = re.search(rf"^[-*] {label}:[ \t]*$", rules, re.MULTILINE)
+def command_group(rules: str) -> list[str] | None:
+    match = re.search(rf"^[-*] {CANONICAL_LABEL}:[ \t]*$", rules, re.MULTILINE)
     if not match:
         return None
     commands = []
@@ -24,21 +22,14 @@ def command_group(rules: str, label: str) -> list[str] | None:
     return list(dict.fromkeys(commands))
 
 
-def validated(commands: list[str], kind: str) -> list[str]:
-    if not commands or any("<TODO" in command for command in commands):
-        raise ValueError(f"tracker {kind} check commands are empty or contain placeholders")
-    return commands
-
-
 def applicable_commands(rules: str, role: str, *, require_canonical: bool = False) -> list[str]:
     if role == "triage":
         return []
-    canonical = command_group(rules, CANONICAL_LABEL)
-    if require_canonical and canonical is None:
-        raise ValueError("tracker ground rules have no canonical check commands")
-    if canonical is not None:
-        validated(canonical, "canonical")
-    targeted = command_group(rules, TARGETED_LABEL) if role in TARGETED_ROLES else None
-    if targeted is not None:
-        return validated(targeted, "targeted")
-    return canonical or []
+    canonical = command_group(rules)
+    if canonical is None:
+        if require_canonical:
+            raise ValueError("tracker ground rules have no canonical check commands")
+        return []
+    if not canonical or any(not command.strip() or "<TODO" in command for command in canonical):
+        raise ValueError("tracker canonical check commands are empty or contain placeholders")
+    return canonical

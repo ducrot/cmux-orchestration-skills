@@ -168,7 +168,7 @@ class EvidenceCli(unittest.TestCase):
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertEqual({item["phase"] for item in self.event()["data"]["results"]}, {"after"})
 
-    def test_targeted_commands_for_each_stage_through_real_clis(self):
+    def test_targeted_commands_are_ignored_for_each_stage_through_real_clis(self):
         canonical = self.commands[:]
         targeted = ["printf 'targeted one\\n'", "printf 'targeted two\\n'"]
         self.rules(targeted=targeted)
@@ -176,24 +176,44 @@ class EvidenceCli(unittest.TestCase):
                                         ("simplify", 1, False), ("review", 1, False),
                                         ("test", 1, False)):
             with self.subTest(stage=stage, followup=followup):
-                expected, wrong = (canonical, targeted) if stage == "test" else (targeted, canonical)
-                self.commands = wrong
+                self.commands = targeted
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
                 self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
-                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(canonical))
                 self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
-                self.commands = expected
+                self.commands = canonical
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
                 self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
-                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(canonical))
+                baseline_results = self.event()["data"]["results"]
+                for entry in (None, [], ["<TODO: choose check>"]):
+                    self.rules(commands=canonical, targeted=entry)
+                    checked = self.check(stage, number)
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                    self.assertEqual(self.event()["data"]["results"], baseline_results)
+                self.rules(commands=canonical, targeted=targeted)
 
     def test_targeted_triage_still_exempt_without_capture_or_logs(self):
         self.rules(targeted=["false"])
         checked = self.check("triage")
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertIn("verdict=exempt", checked.stdout)
+
+    def test_targeted_entry_cannot_replace_executable_canonical_commands(self):
+        for declaration in ("", "- Canonical check commands:\n",
+                            "- Canonical check commands:\n  - `<TODO: choose check>`\n",
+                            "- Canonical check commands:\n  - `   `\n"):
+            (self.tracker / "README.md").write_text(
+                "## Ground rules\n\n" + declaration
+                + "- Targeted check commands for implement, simplify, and review:\n  - `true`\n")
+            for stage in ("implement", "simplify", "review", "test"):
+                with self.subTest(declaration=declaration, stage=stage):
+                    checked = self.check(stage)
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertIn("canonical check commands", checked.stderr)
+            self.assertEqual(self.check("triage").returncode, 0)
 
     def test_before_evidence_follows_marker_not_pass_number(self):
         self.prepared(True, pass_num=1)

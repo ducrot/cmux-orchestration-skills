@@ -197,7 +197,7 @@ def script_path(name: str) -> str:
 
 
 def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str) -> str:
-    common = f"""- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording.
+    common = f"""- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording and the ignored `Targeted check commands for implement, simplify, and review:` entry.
 - Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
 - For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.
 - Pass the declared command byte-for-byte as that one quoted argument; write each single quote inside it as `'\\''`, because evidence only counts when the logged command equals the declared one exactly.

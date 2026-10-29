@@ -757,8 +757,9 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
 
     def test_check_commands_and_diff_inspection(self):
         commands = self.section("## canonical check commands", "## worker wait policy")
-        for phrase in ("targeted check commands for implement, simplify, and review:",
-                       "test worker always runs the full canonical suite", "one after another",
+        self.assertNotIn("targeted check commands for implement, simplify, and review:", commands)
+        for phrase in ("canonical check commands remain mandatory", "triage has no suite duty",
+                       "no runnable canonical check commands", "`hitl`", "one after another",
                        "run_check.py", "byte-for-byte"):
             self.assertIn(phrase, commands)
         diff = self.section("### diff inspection at code-changing gates", "## canonical check commands")

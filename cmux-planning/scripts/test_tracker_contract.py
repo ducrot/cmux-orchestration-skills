@@ -947,6 +947,7 @@ sha256 {resulting}
             readme,
         )
         self.assertNotIn("run as the baseline suite", readme)
+        self.assertNotIn("Targeted check commands", readme)
 
     def check_native_readme(self, tracker: Path, command_rules: str) -> subprocess.CompletedProcess:
         (tracker / "README.md").write_text(

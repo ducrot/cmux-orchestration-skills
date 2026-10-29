@@ -291,10 +291,9 @@ suite, optionally lint — as exact runnable commands. `render_prompt.py` embeds
 role's applicable suite. Workers must use those commands byte-for-byte through `run_check.py`, one
 wrapper log per command, instead of guessing their own suite.
 
-An optional ground-rules entry `Targeted check commands for implement, simplify, and review:` followed
-by indented command bullets opts those three roles into a targeted suite. Without it they use the
-canonical suite. The test worker always runs the full canonical suite. An empty or placeholder targeted
-entry is an error, not a fallback. Triage has no suite duty.
+Canonical check commands remain mandatory. Implement, simplify, review, and test workers use the
+canonical suite. Triage has no suite duty.
+An empty or placeholder canonical entry invalidates the entire command list; it is not skipped.
 
 Regular implement passes prove a failing regression and run their own applicable suite after the change.
 Simplify and marked follow-up implement passes may cite matching green before-evidence, but must run
@@ -307,7 +306,7 @@ Workers run suites one after another, never in parallel. The orchestrator runs n
 evidence rather than rerunning the worker's checks.
 
 Verify the declaration during run preflight, together with the branch check: if the ground rules declare
-no runnable check commands, record a `hitl` gate instead of starting the chain — the human adds the
+no runnable canonical check commands, record a `hitl` gate instead of starting the chain — the human adds the
 commands to the tracker README once, and every later run inherits them.
 
 ## Worker Wait Policy
