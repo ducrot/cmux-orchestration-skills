@@ -7,6 +7,7 @@ import ast
 import re
 from functools import lru_cache
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -763,15 +764,20 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
                        "canonical declarations remain required",
                        "no runnable canonical check commands", "`hitl`"):
             self.assertIn(phrase, commands)
-        for phrase in ("analysis of the diff", "orientation and fallback",
-                       "tests of changed modules", "ticket's regression test",
-                       "tests of dependent modules", "repository protection tests",
-                       "next larger unit", "one after another", "run_check.py",
-                       "full canonical suite byte-for-byte", "without citations",
-                       "triage has no suite duty"):
-            self.assertIn(phrase, self.policy)
         diff = self.section("### diff inspection at code-changing gates", "## canonical check commands")
         self.assertIn("evidence check", diff)
+
+    def test_selection_policy_has_one_authoritative_home(self):
+        # Wording belongs to issue-chain's test_test_evidence_docs.py. Keep only
+        # stable identity anchors here so policy edits do not require two suites.
+        for anchor in ("# test selection and evidence policy", "authoritative policy"):
+            self.assertIn(anchor, self.policy)
+        chain = self.section("## default chain", "## review self-fix policy")
+        self.assertIn("(references/test-evidence.md)", chain)
+        for consumer in (self.text,
+                         normalized(self.references / "worker-report-contract.md"),
+                         normalized(self.references / "follow-up-pass.md")):
+            self.assertNotIn("## test selection", consumer)
 
     def test_script_invocations_and_pane_guidance(self):
         self.assertNotIn("quick-check", self.text)
@@ -798,12 +804,6 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
         for phrase in ("[test selection and evidence policy](test-evidence.md)",
                        "`evidence:`", "`cited:`", "`selection:`"):
             self.assertIn(phrase, report)
-        for phrase in ("- evidence: <path>", "- cited: <path>", "- selection:",
-                       "copy the path from the wrapper's", "run-directory-relative paths",
-                       "only logs named", "own stage directory", "capture tree",
-                       "exactly one", "neither the evidence check nor the report parser",
-                       "unlisted_logs", "checked_logs"):
-            self.assertIn(phrase, self.policy)
         scripts = normalized(self.references / "script-tests.md")
         for name in ("run_check", "check_evidence", "check_commands", "evidence_contract", "gate_evidence"):
             self.assertIn(f"test_{name}.py", scripts)
@@ -815,6 +815,60 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
         self.assertIn("evidence check", step)
         self.assertIn("before every", step)
         self.assertNotIn("rerun", step)
+
+
+class IssueChainEvidenceDocumentationRegression(unittest.TestCase):
+    def setUp(self):
+        self.guide = REPOSITORY / "cmux-issue-chain" / "SKILL.md"
+        if not self.guide.is_file():
+            self.skipTest("issue-chain skill is absent in this independent installation")
+
+    def run_with_rewrite(self, relative_path, rewrite):
+        target = self.guide.parent / relative_path
+        read_text = Path.read_text
+
+        # Rewrite at file level so on-demand references inlined into SKILL.md change too.
+        def changed(path, *args, **kwargs):
+            text = read_text(path, *args, **kwargs)
+            return rewrite(text) if path == target else text
+
+        def clear_caches():
+            documentation.cache_clear()
+            normalized.cache_clear()
+
+        clear_caches()
+        try:
+            with patch.object(Path, "read_text", autospec=True, side_effect=changed):
+                result = unittest.TestResult()
+                unittest.defaultTestLoader.loadTestsFromTestCase(
+                    IssueChainEvidenceDocumentation).run(result)
+        finally:
+            clear_caches()
+        self.assertFalse(result.errors, result.errors)
+        return result
+
+    def test_policy_rewording_preserving_anchors_passes(self):
+        result = self.run_with_rewrite(
+            "references/test-evidence.md",
+            lambda _: "# Test selection and evidence policy\n\n"
+                      "This is the authoritative policy. Its rules have been reworded.\n",
+        )
+        self.assertTrue(result.wasSuccessful(), result.failures)
+
+    def test_missing_consumer_link_fails(self):
+        baseline = self.run_with_rewrite("SKILL.md", lambda text: text)
+        self.assertTrue(baseline.wasSuccessful(), baseline.failures)
+        for path, link in (
+            ("SKILL.md", "[test selection and evidence policy](references/test-evidence.md)"),
+            ("references/worker-report-contract.md",
+             "[Test selection and evidence policy](test-evidence.md)"),
+            ("references/follow-up-pass.md",
+             "[test selection and evidence policy](test-evidence.md#simplify-and-marked-follow-up-implement)"),
+        ):
+            with self.subTest(path=path):
+                self.assertIn(link, documentation(self.guide.parent / path))
+                result = self.run_with_rewrite(path, lambda text: text.replace(link, "test policy"))
+                self.assertFalse(result.wasSuccessful(), "missing policy link must fail")
 
 
 class CommitModeDocumentation(unittest.TestCase):

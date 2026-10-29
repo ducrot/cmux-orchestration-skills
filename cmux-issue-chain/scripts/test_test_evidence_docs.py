@@ -28,15 +28,20 @@ class EvidenceDocumentation(unittest.TestCase):
             self.assertNotIn("repository-relative", prompt)
 
     def test_authoritative_policy_and_references(self):
-        policy = (ROOT / "references/test-evidence.md").read_text()
-        for phrase in ("analysis of the diff", "orientation", "regression test",
-                       "dependent modules", "protection tests", "next larger unit",
+        policy = " ".join((ROOT / "references/test-evidence.md").read_text().split())
+        for phrase in ("analysis of the diff", "orientation and fallback",
+                       "tests of changed modules", "ticket's regression test",
+                       "tests of dependent modules", "repository protection tests", "next larger unit",
                        "`- evidence:", "`- cited:", "`- selection:",
-                       "Copy the path from the wrapper's", "run-directory-relative",
+                       "Copy the path from the wrapper's", "run-directory-relative paths",
+                       "exactly one `- selection:`",
                        "Only logs named", "unlisted_logs", "checked_logs",
-                       "gate-checks this explanation", "full canonical suite", "without citations",
+                       "gate-checks this explanation", "full canonical suite byte-for-byte", "without citations",
                        "Review selects the affected tests", "identical launch and capture HEAD",
-                       "A changed review must name its own", "Review checks only named"):
+                       "A changed review must name its own", "Review checks only named",
+                       "one after another", "`run_check.py`", "Triage has no suite duty",
+                       "own stage directory", "capture tree",
+                       "neither the evidence check nor the report parser"):
             self.assertIn(phrase, policy)
         self.assertIn("references/test-evidence.md", (ROOT / "SKILL.md").read_text())
         self.assertIn("(test-evidence.md)", (ROOT / "references/worker-report-contract.md").read_text())
