@@ -185,6 +185,8 @@ def validate_proposal(
     commands = _string_list(tracker["canonical_check_commands"], "canonical_check_commands")
     if any("\n" in command or "\r" in command or "`" in command for command in commands):
         raise ContractError("canonical check commands must each fit safely on one Markdown line")
+    if any("<TODO" in command for command in commands):
+        raise ContractError("canonical check commands contain a <TODO placeholder entry")
 
     tickets_value = data["tickets"]
     if not isinstance(tickets_value, list) or not tickets_value:
@@ -686,8 +688,12 @@ def validate_native_tracker(
         re.MULTILINE,
     )
     commands = re.findall(r"`([^`]*)`", canonical[1]) if canonical else []
-    if not any(command.strip() and "<TODO" not in command for command in commands):
+    if not commands:
         raise ContractError("native tracker README has no runnable canonical check command")
+    if any(not command.strip() or "<TODO" in command for command in commands):
+        raise ContractError(
+            "native tracker README canonical check commands contain an empty, whitespace-only, or <TODO placeholder entry"
+        )
     spec_digest = sha256_bytes(required_raw["spec.md"])
     if expected_spec_sha256 is not None and spec_digest != expected_spec_sha256:
         raise ContractError("native tracker spec.md does not match the approved specification")
