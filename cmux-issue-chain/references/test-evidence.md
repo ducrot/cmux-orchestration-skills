@@ -3,17 +3,17 @@
 This is the authoritative policy for test selection, report labels, and evidence validation.
 The rendered worker prompt carries the applicable duties into each harness.
 
-## Regular implement
+## Regular implement and review
 
 Select tests by your own analysis of the diff. Canonical commands in the tracker are orientation
-and fallback, rather than a mandatory suite for regular implement passes. Apply these four guardrails:
+and fallback, rather than a mandatory suite for regular implement and review passes. Apply these four guardrails:
 
 1. Always run tests of changed modules and the ticket's regression test.
 2. For shared or imported code, also run tests of dependent modules.
 3. Run affected repository protection tests, such as drift or contract tests.
 4. When uncertain, run the next larger unit.
 
-Prove that a regression fails without the change and execute the changed path end-to-end.
+Regular implement proves that a regression fails without the change and executes the changed path end-to-end.
 Run checks one after another, never in parallel, through `run_check.py` in your own stage artifact
 directory. Freely chosen commands are allowed.
 
@@ -35,7 +35,7 @@ For example:
 - selection: Changed parser; module, regression and dependent contract tests cover its callers.
 ```
 
-Regular implement reports must include exactly one `- selection:` bullet naming affected areas,
+Regular implement and review reports must include exactly one `- selection:` bullet naming affected areas,
 applied guardrails, and why the selection is sufficient. This is a prompt duty for triage and human
 review; neither the evidence check nor the report parser gate-checks this explanation.
 
@@ -58,12 +58,23 @@ an earlier green stage with a later red final test on the same tree.
 A passing check writes the existing test-evidence event used by `run_state.py gate` to advance.
 Combined report/evidence gates retain report severity: blocked, hitl, stop, advance.
 
+## Review citations
+
+Review selects the affected tests using the four guardrails above and reports its selection.
+Only an unchanged review, with identical launch and capture HEAD and fingerprint, may cite the
+previous stage's green logs for the same tree, including freely chosen commands, with `cited:`.
+A changed review must name its own green capture-tree runs with `evidence:`; citations are rejected
+even when own evidence passes. Review checks only named own runs and citations, using the same
+validation and repeat rules as regular implement. At least one named run is required. Cited logs
+must resolve inside a stage artifact directory under the run; their command, resolved path,
+repository, HEAD and fingerprints are recorded in `checked_logs`. Unlisted own logs are recorded
+separately and do not block.
+
 ## Other roles
 
 Simplify and marked follow-up implement still use every canonical command byte-for-byte, with
 matching green before-evidence (own or cited) and distinct own after-runs, even for a no-op.
-An unchanged review may cite matching green canonical evidence; a review that changes the tree
-must run its own canonical after-suite. These stages continue checking the declared commands.
+These stages continue checking the declared commands.
 
 The final test remains unchanged: run the full canonical suite byte-for-byte through own wrapper
 runs, one log per command, without citations. A freely chosen command cannot replace a canonical

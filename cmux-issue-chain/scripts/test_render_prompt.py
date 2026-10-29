@@ -173,7 +173,7 @@ class RenderFunction(unittest.TestCase):
                             self.assertIn("Do not run any test suite", duties)
                         else:
                             expected, other = "python3 check.py", "python3 targeted.py"
-                            label = "Canonical commands for orientation and fallback" if role == "implement" and not followup else "Full applicable suite for this role"
+                            label = "Canonical commands for orientation and fallback" if role == "review" or (role == "implement" and not followup) else "Full applicable suite for this role"
                             self.assertIn(f"{label}:\n  - `{expected}`", duties)
                             self.assertNotIn(f"`{other}`", duties)
 
@@ -182,7 +182,7 @@ class RenderFunction(unittest.TestCase):
             for role in render_prompt.ROLES:
                 with self.subTest(role=role, harness=harness):
                     text = self.render(role, harness)
-                    for phrase in () if role == "implement" else (
+                    for phrase in () if role in ("implement", "review") else (
                         "These role-specific test duties override the embedded README wording",
                         "one after another, never in parallel",
                         "never substitute a different suite",
@@ -209,7 +209,11 @@ class RenderFunction(unittest.TestCase):
                     elif role == "simplify":
                         self.assert_before_after_duty(text)
                     elif role == "review":
-                        self.assertIn("If the review changed anything, run the full applicable suite", text)
+                        self.assertIn("If the review changed anything", text)
+                        self.assertIn("citations are rejected", text)
+                        self.assertIn("exactly one `- selection:` bullet", text)
+                        self.assertNotIn("byte-for-byte", duties_section(text))
+                        self.assertNotIn("never substitute a different suite", duties_section(text))
                         self.assertIn("Otherwise, cite the previous stage's green evidence for the same working tree", text)
                         self.assertNotIn("re-run the baseline suite", text)
                     elif role == "test":

@@ -144,7 +144,7 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
 There is deliberately no test worker between simplify and review: the simplify after-run is verified
-evidence, and review cites or runs the applicable suite. Review covers the full working diff, including
+evidence, and review cites or runs tests following the [test selection and evidence policy](references/test-evidence.md). Review covers the full working diff, including
 simplify changes. The final test after review remains independent and always runs the full canonical
 suite on the final tree; reviewers must not accept their own fixes.
 
@@ -288,7 +288,7 @@ The product-code boundary holds: inspect, never edit.
 
 The tracker README's ground-rules section declares canonical check commands as exact runnable
 commands. The authoritative [test selection and evidence policy](references/test-evidence.md) defines
-regular implement's diff-based selection and four guardrails, all report labels and path forms,
+regular implement and review's diff-based selection and four guardrails, all report labels and path forms,
 the check of named evidence, the other roles' duties, and the unchanged full canonical final test.
 `render_prompt.py` carries the applicable policy into every harness. See the
 [worker report contract](references/worker-report-contract.md) for the report structure.

@@ -63,6 +63,7 @@ def read_log(path: Path) -> dict:
 
 
 CITATION_REFUSAL = "citations are not allowed for this stage"
+REVIEW_CHANGED_REFUSAL = "review changed the tree; own logs required"
 
 
 def named_paths(report_text: str, label: str) -> list[str]:
@@ -86,8 +87,14 @@ def resolve_log_path(value: str, run_dir: Path, repository: Path) -> Path:
     return (base / path).resolve()
 
 
+def check_citation_boundary(path: Path, artifact_root: Path) -> None:
+    if len(path.relative_to(artifact_root).parts) < 2:
+        raise ValueError("citation must be inside a stage artifact directory")
+
+
 def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
-                      report_text: str, capture: dict) -> dict:
+                      report_text: str, capture: dict,
+                      citation_refusal: str | None) -> dict:
     logs, invalid, selected = [], [], set()
     for value in named_paths(report_text, "evidence"):
         try:
@@ -100,15 +107,27 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
             logs.append({**log, **log_verdict(log, capture)})
         except (OSError, ValueError, KeyError) as error:
             invalid.append({"path": value, "cited": False, "error": str(error)})
+    rejected = []
+    for value in cited_paths(report_text):
+        if citation_refusal:
+            rejected.append({"citation": value, "error": citation_refusal})
+            continue
+        try:
+            path = resolve_log_path(value, run_dir, repository)
+            check_citation_boundary(path, own_dir.parent)
+            log = {**read_log(path), "cited": True, "citation": value}
+            logs.append({**log, **log_verdict(log, capture)})
+        except (OSError, ValueError, KeyError) as error:
+            invalid.append({"path": value, "citation": value, "cited": True, "error": str(error)})
     commands = list(dict.fromkeys(log["command"] for log in logs))
     results = [evidence_result(command, logs, capture, "after") for command in commands]
     for item in invalid:
-        results.append({"command": "<unreadable evidence>", "phase": "after",
+        results.append({"command": "<unreadable evidence>",
+                        "phase": "citation" if item["cited"] else "after",
                         "verdict": "missing", **item})
-    for citation in cited_paths(report_text):
+    for citation in rejected:
         results.append({"command": "<citation>", "phase": "citation", "verdict": "missing",
-                        "cited": True, "citation": citation,
-                        "error": CITATION_REFUSAL})
+                        "cited": True, **citation})
     if not results:
         results.append({"command": "<named evidence required>", "phase": "after",
                         "verdict": "missing", "cited": False})
@@ -185,16 +204,17 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
         stage == "implement" and preparation.get("followup") is True)
     artifact_root = (run_dir / "artifacts").resolve()
     own_dir = artifact_root / f"{stage}-{pass_num}"
-    if stage == "implement" and not needs_before:
-        return {"stage": stage, "pass": pass_num, "capture": capture, "launch": None,
-                **selected_evidence(run_dir, own_dir, repository, report_text, capture)}
     launch = snapshot(LAUNCH) if needs_before or stage == "review" else None
     unchanged_review = stage == "review" and all(
         launch[key] == capture[key] for key in ("head", "fingerprint"))
-    citations = cited_paths(report_text)
     citation_refusal = (None if needs_before or unchanged_review
-                        else "review changed the tree; own logs required" if stage == "review"
+                        else REVIEW_CHANGED_REFUSAL if stage == "review"
                         else CITATION_REFUSAL)
+    if stage == "review" or (stage == "implement" and not needs_before):
+        return {"stage": stage, "pass": pass_num, "capture": capture, "launch": launch,
+                **selected_evidence(run_dir, own_dir, repository, report_text, capture,
+                                    citation_refusal)}
+    citations = cited_paths(report_text)
     own, cited, invalid = [], [], []
 
     def load(path, citation=None):
@@ -203,9 +223,10 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
         try:
             resolved = path.resolve()
             # Both own and cited logs must remain inside their artifact boundary.
-            relative = resolved.relative_to(artifact_root if is_cited else own_dir)
-            if is_cited and len(relative.parts) < 2:
-                raise ValueError("citation must be inside a stage artifact directory")
+            if is_cited:
+                check_citation_boundary(resolved, artifact_root)
+            else:
+                resolved.relative_to(own_dir)
             (cited if is_cited else own).append({**read_log(resolved), "cited": is_cited, **tag})
         except (OSError, ValueError, KeyError) as error:
             invalid.append({"path": str(path), "cited": is_cited, "error": str(error), **tag})
@@ -233,8 +254,6 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
             # Even a no-op pass must supply a distinct own after-run.
             if "log" in before:
                 after_logs = [log for log in own if log["path"] != before["log"]["path"]]
-        elif unchanged_review:
-            after_logs = own + cited
         results.append(evidence_result(command, after_logs, capture, "after"))
     # A forbidden or unreadable citation cannot be silently rescued by own logs.
     rejected = ([{"citation": path, "error": citation_refusal}

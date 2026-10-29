@@ -208,17 +208,21 @@ PATH_ONLY_BULLETS = "- Each `evidence:` or `cited:` bullet must contain only the
 
 
 def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str) -> str:
-    if role == "implement" and not followup:
+    if role == "review" or (role == "implement" and not followup):
         commands = applicable_commands(ground_rules, role)
+        evidence_duty = (
+            "- If the review changed anything (launch and capture HEAD or fingerprint differ), name green own runs on the capture tree with `evidence:`; citations are rejected. Otherwise, cite the previous stage's green evidence for the same working tree with `- cited: <path>`, or name own runs. Only named runs are checked; at least one is required; without evidence there is no advance.\n"
+            if role == "review" else
+            "- At least one named green own run on the capture tree is required; without evidence there is no advance. Do not cite earlier evidence.\n"
+        )
         return TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Select tests by your own analysis of the diff, following the authoritative test-selection policy in `{reference_path("test-evidence.md")}`:
   1. Always run tests of changed modules and the ticket's regression test.
   2. For shared or imported code, also run tests of dependent modules.
   3. Run affected repository protection tests, such as drift or contract tests.
   4. When uncertain, run the next larger unit.
 - Run checks one after another, never in parallel. Use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<chosen command>'` from the repository root for every own run.
-- Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet. Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; repository-relative, absolute, and run-directory-relative paths are accepted.
-- At least one named green own run on the capture tree is required; without evidence there is no advance. Do not cite earlier evidence.
-- Include exactly one `- selection:` bullet naming affected areas, applied guardrails, and why the selection is sufficient. This explanation is for triage and human review, not gate-checked by the evidence check or report parser.
+- Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet for an own run (or `- cited: <path>` where citing is allowed). Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; repository-relative, absolute, and run-directory-relative paths are accepted.
+{evidence_duty}- Include exactly one `- selection:` bullet naming affected areas, applied guardrails, and why the selection is sufficient. This explanation is for triage and human review, not gate-checked by the evidence check or report parser.
 """ + ("- Canonical commands for orientation and fallback:\n"
          + "\n".join(f"  - `{command}`" for command in commands) if commands else "")
     common = TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
@@ -239,11 +243,6 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
             "for each applicable check command. Otherwise, run your own before-run of the full applicable suite through the wrapper.\n"
             "- Always run your own after-run of the full applicable suite through the wrapper, even when nothing was applied. "
             "List the before evidence (own logs or citations) and your own after logs under `## Tests / Checks`."
-        )
-    elif role == "review":
-        duty = (
-            "- If the review changed anything, run the full applicable suite through the wrapper into your own artifact directory. "
-            "Otherwise, cite the previous stage's green evidence for the same working tree, one log per applicable check command."
         )
     elif role == "triage":
         duty = "- Do not run any test suite. List your read-only checks under `## Tests / Checks`."
