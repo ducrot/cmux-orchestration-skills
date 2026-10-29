@@ -832,7 +832,9 @@ a non-zero exit. Board failures never change command results.
 
 Workers run each declared command through the wrapper from the repository root; the log records the
 exact command, exit code, duration, repository, HEAD, and before/after tree fingerprints. Repeat runs
-create new logs rather than overwriting earlier evidence. The rendered prompt gives workers the
+create new logs rather than overwriting earlier evidence. After each completed command, including a
+non-zero exit, the wrapper reports the exact written log path, repeat suffix included, on its own
+stderr; stdout and the exit code stay the command's own. The rendered prompt gives workers the
 installed wrapper path; the form is:
 
 ```bash

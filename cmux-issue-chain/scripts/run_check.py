@@ -8,6 +8,7 @@ Command and repository values are JSON strings so even embedded newlines cannot
 break the header. Remaining values are numbers or Git hashes. Below the header,
 combined stdout/stderr is preserved byte-for-byte. Logs are named by the SHA-256
 of the exact command, with -2, -3, ... for repeat runs (exclusive creation).
+After writing the log, its exact path is reported on the wrapper's stderr.
 """
 from __future__ import annotations
 
@@ -85,6 +86,12 @@ def run_check(artifact_dir: Path, command: str) -> int:
         except BaseException:
             os.unlink(log.name)
             raise
+    # Unbuffered fd 2: a closed or broken stderr must neither reach stdout (sys.stderr is
+    # None then) nor turn the command's exit code into a shutdown flush failure.
+    try:
+        os.write(2, os.fsencode(f"run_check: log written to {log.name}\n"))
+    except OSError:
+        pass
     return exit_code
 
 

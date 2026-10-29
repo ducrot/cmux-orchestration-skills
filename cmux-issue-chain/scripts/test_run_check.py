@@ -50,7 +50,9 @@ class RunCheckCli(unittest.TestCase):
         result = self.run_check(command)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, output)
-        fields, raw = self.read_log(next(self.artifacts.glob("*.log")))
+        log = next(self.artifacts.glob("*.log"))
+        self.assertEqual(result.stderr, f"run_check: log written to {log}\n".encode())
+        fields, raw = self.read_log(log)
         self.assertEqual(raw, output)
         self.assertEqual(fields["evidence_version"], "1")
         self.assertEqual(json.loads(fields["command"]), command)
@@ -73,17 +75,87 @@ class RunCheckCli(unittest.TestCase):
         self.assertEqual(first.returncode, 7, first.stderr)
         self.assertEqual(first.stdout, b"base\nfailed\n")
         log = next(self.artifacts.glob("*.log"))
+        self.assertEqual(first.stderr, f"run_check: log written to {log}\n".encode())
         original = log.read_bytes()
         second = self.run_check(command)
         self.assertEqual(second.returncode, 7)
         logs = sorted(self.artifacts.glob("*.log"))
         self.assertEqual(len(logs), 2)
         self.assertEqual(log.read_bytes(), original)
-        self.assertIn(log.with_stem(log.stem + "-2"), logs)
+        repeated_log = log.with_stem(log.stem + "-2")
+        self.assertIn(repeated_log, logs)
+        self.assertEqual(second.stderr, f"run_check: log written to {repeated_log}\n".encode())
+        self.assertEqual(second.stdout, first.stdout)
         for path in logs:
             fields, raw = self.read_log(path)
             self.assertEqual(fields["exit_code"], "7")
             self.assertEqual(raw, first.stdout)
+
+    def test_closed_stderr_preserves_output_exit_code_and_log(self):
+        for status in (0, 7):
+            with self.subTest(exit_code=status):
+                output = b"stdout\n\xff\x00stderr\r\n"
+                command = shlex.join([
+                    sys.executable, "-c",
+                    f"import os; os.write(1, {output[:7]!r}); "
+                    f"os.write(2, {output[7:]!r}); raise SystemExit({status})",
+                ])
+                normal = self.run_check(command)
+                # Close fd 2 before interpreter startup so sys.stderr is None.
+                closed = subprocess.run(
+                    [sys.executable, str(WRAPPER), "--artifact-dir", str(self.artifacts),
+                     "--command", command], cwd=self.repo, env=self.env,
+                    stdout=subprocess.PIPE, preexec_fn=lambda: os.close(2),
+                )
+                self.assertEqual(normal.returncode, status, normal.stderr)
+                self.assertEqual(closed.returncode, normal.returncode)
+                self.assertEqual(normal.stdout, output)
+                self.assertEqual(closed.stdout, normal.stdout)
+                stem = "check-" + hashlib.sha256(command.encode()).hexdigest()
+                fields, raw = self.read_log(self.artifacts / f"{stem}.log")
+                closed_fields, closed_raw = self.read_log(self.artifacts / f"{stem}-2.log")
+                self.assertEqual(raw, output)
+                self.assertEqual(closed_raw, raw)
+                self.assertEqual(fields["exit_code"], str(status))
+                self.assertEqual(fields["evidence_version"], "1")
+                fields.pop("duration_seconds")
+                closed_fields.pop("duration_seconds")
+                self.assertEqual(closed_fields, fields)
+
+    def test_broken_stderr_pipe_preserves_output_exit_code_and_log(self):
+        for status in (0, 7):
+            with self.subTest(exit_code=status):
+                output = b"stdout\n\xff\x00stderr\r\n"
+                command = shlex.join([
+                    sys.executable, "-c",
+                    f"import os; os.write(1, {output[:7]!r}); "
+                    f"os.write(2, {output[7:]!r}); raise SystemExit({status})",
+                ])
+                normal = self.run_check(command)
+                reader, writer = os.pipe()
+                os.close(reader)
+                try:
+                    broken = subprocess.run(
+                        [sys.executable, str(WRAPPER), "--artifact-dir", str(self.artifacts),
+                         "--command", command], cwd=self.repo, env=self.env,
+                        stdout=subprocess.PIPE, stderr=writer,
+                    )
+                finally:
+                    os.close(writer)
+                self.assertEqual(normal.returncode, status, normal.stderr)
+                self.assertEqual(broken.returncode, normal.returncode)
+                self.assertEqual(normal.stdout, output)
+                self.assertEqual(broken.stdout, normal.stdout)
+                stem = "check-" + hashlib.sha256(command.encode()).hexdigest()
+                fields, raw = self.read_log(self.artifacts / f"{stem}.log")
+                broken_fields, broken_raw = self.read_log(self.artifacts / f"{stem}-2.log")
+                self.assertEqual(raw, output)
+                self.assertEqual(broken_raw, raw)
+                self.assertEqual(fields["exit_code"], str(status))
+                self.assertEqual(fields["evidence_version"], "1")
+                fields.pop("duration_seconds")
+                broken_fields.pop("duration_seconds")
+                self.assertEqual(broken_fields, fields)
 
     def test_multiline_command_has_one_header_line_and_deterministic_name(self):
         command = "printf 'first\\n'\nprintf 'second\\n'"
