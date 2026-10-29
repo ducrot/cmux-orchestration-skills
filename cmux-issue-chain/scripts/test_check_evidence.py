@@ -58,7 +58,7 @@ class EvidenceCli(unittest.TestCase):
                           self.run_dir / "artifacts" / f"{stage}-{pass_num}",
                           "--command", command or self.command, cwd=cwd)
         # Fixtures explicitly report each selected own run, as real workers must.
-        if stage in ("implement", "review"):
+        if stage in ("implement", "review", "simplify"):
             path = re.search(r"^run_check: log written to (.+)$", result.stderr, re.MULTILINE)
             self.assertIsNotNone(path, result.stderr)
             self.report.write_text(self.report.read_text().replace(
@@ -89,6 +89,58 @@ class EvidenceCli(unittest.TestCase):
         self.report_text()
         self.report.write_text(self.report.read_text().replace(
             "- `example`: passed", "\n".join(f"- evidence: {path}" for path in paths)))
+
+    def test_selected_comparison_free_commands_and_missing_second_before(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.report_text()
+                self.file.write_text("base\n")
+                if stage == "implement":
+                    self.prepared(True, stage, number)
+                self.capture(stage, number, prefix="launched")
+                self.wrap("true", "test")
+                cited = sorted((self.run_dir / "artifacts/test-1").glob("*.log"))[-1]
+                self.wrap("printf targeted", stage, number)
+                before = list((self.run_dir / f"artifacts/{stage}-{number}").glob("*.log"))
+                # Keep the own targeted before-run unlisted initially.
+                self.select([])
+                self.cite([cited])
+                self.file.write_text(f"after {stage}\n")
+                self.wrap("true", stage, number)
+                self.wrap("printf targeted", stage, number)
+                self.capture(stage, number)
+                checked = self.check(stage, number)
+                self.assertIn("missing: printf targeted phase=before source=own", checked.stdout)
+                self.assertEqual(checked.returncode, 3)
+                self.report.write_text(self.report.read_text().replace(
+                    "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {before[-1]}\n"))
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.phase_results("after")},
+                                 {"true", "printf targeted"})
+
+    def test_comparison_cited_command_cannot_use_green_own_before(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.select([])
+                self.file.write_text("stale citation\n")
+                wrapped = self.wrap("true", "test")
+                cited = Path(re.search(r"log written to (.+)", wrapped.stderr)[1])
+                self.file.write_text("launch\n")
+                if stage == "implement":
+                    self.prepared(True, stage, number)
+                self.capture(stage, number, prefix="launched")
+                self.wrap("true", stage, number)
+                self.file.write_text("capture\n")
+                self.wrap("true", stage, number)
+                self.capture(stage, number)
+                self.assertEqual(self.check(stage, number).returncode, 0)
+                self.report.write_text(self.report.read_text().replace(
+                    "## Tests / Checks\n", f"## Tests / Checks\n- cited: {cited}\n"))
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                self.assertIn("stale: true differed=fingerprint phase=before source=cited",
+                              checked.stdout)
 
     def test_regular_implement_selects_free_command_and_gate_advances(self):
         self.wrap("true")
@@ -279,7 +331,7 @@ class EvidenceCli(unittest.TestCase):
                 self.commands = targeted
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
-                regular = stage == "review" or (stage == "implement" and not followup)
+                regular = stage != "test"
                 self.assertEqual(checked.returncode, 0 if regular else 3, checked.stdout + checked.stderr)
                 self.assertEqual({item["command"] for item in self.event()["data"]["results"]},
                                  set(targeted if regular else canonical))
@@ -491,6 +543,7 @@ class EvidenceCli(unittest.TestCase):
     def test_own_before_and_after_and_missing_before(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                self.report_text()
                 if stage == "implement":
                     self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")
@@ -512,8 +565,10 @@ class EvidenceCli(unittest.TestCase):
                 self.assertEqual(self.check(stage, number).returncode, 0)
 
     def test_noop_own_before_requires_distinct_after(self):
+        self.commands = ["true", "printf free"]
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                self.report_text()
                 if stage == "implement":
                     self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")

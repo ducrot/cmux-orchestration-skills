@@ -148,6 +148,8 @@ evidence, and review cites or runs tests following the [test selection and evide
 simplify changes. The final test after review remains independent and always runs the full canonical
 suite on the final tree; reviewers must not accept their own fixes.
 
+Simplify and marked follow-up implement follow the shared [before/after selection rules](references/test-evidence.md#simplify-and-marked-follow-up-implement).
+
 Simplify is an editing role, not a passive reviewer. If the simplify pass proposes behavior-preserving cleanup within the current issue scope, the simplify worker may apply it and must report changed files plus the checks used to confirm behavior preservation.
 
 Review is an editing role, not a passive reviewer. If the review pass finds fixable review findings within the current issue scope, the review worker may apply those fixes and must report changed files plus the checks used to validate them.
@@ -169,7 +171,7 @@ same way. Earlier-stage decisions include every item under `## Not Applied` and 
 kept choice explained under `## Change Summary` or `## Notes`. Unless explicitly superseded by recorded
 human approval, the review worker never reverts one. If the fix pass reverted such an item without that
 approval — `/code-review --fix` briefs its internal agents from the diff alone and does not see the
-`## Not Applied` list — the worker restores it before its own after-run of the applicable suite.
+`## Not Applied` list — the worker restores it before its own after-run of the selected checks.
 
 How the proposal is reported depends on its reason. A quality-only reason (reuse, simplification,
 efficiency, altitude, style) is never a finding: the earlier decision stands, and the proposal goes under
@@ -288,7 +290,7 @@ The product-code boundary holds: inspect, never edit.
 
 The tracker README's ground-rules section declares canonical check commands as exact runnable
 commands. The authoritative [test selection and evidence policy](references/test-evidence.md) defines
-regular implement and review's diff-based selection and four guardrails, all report labels and path forms,
+diff-based selection and four guardrails for editing and review roles, all report labels and path forms,
 the check of named evidence, the other roles' duties, and the unchanged full canonical final test.
 `render_prompt.py` carries the applicable policy into every harness. See the
 [worker report contract](references/worker-report-contract.md) for the report structure.

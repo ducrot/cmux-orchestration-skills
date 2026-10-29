@@ -3,10 +3,10 @@
 This is the authoritative policy for test selection, report labels, and evidence validation.
 The rendered worker prompt carries the applicable duties into each harness.
 
-## Regular implement and review
+## Test selection
 
 Select tests by your own analysis of the diff. Canonical commands in the tracker are orientation
-and fallback, rather than a mandatory suite for regular implement and review passes. Apply these four guardrails:
+and fallback for regular implement, review, simplify, and marked follow-up implement passes. Apply these four guardrails:
 
 1. Always run tests of changed modules and the ticket's regression test.
 2. For shared or imported code, also run tests of dependent modules.
@@ -35,7 +35,7 @@ For example:
 - selection: Changed parser; module, regression and dependent contract tests cover its callers.
 ```
 
-Regular implement and review reports must include exactly one `- selection:` bullet naming affected areas,
+All test-selecting reports must include exactly one `- selection:` bullet naming affected areas,
 applied guardrails, and why the selection is sufficient. This is a prompt duty for triage and human
 review; neither the evidence check nor the report parser gate-checks this explanation.
 
@@ -70,11 +70,25 @@ must resolve inside a stage artifact directory under the run; their command, res
 repository, HEAD and fingerprints are recorded in `checked_logs`. Unlisted own logs are recorded
 separately and do not block.
 
-## Other roles
+## Simplify and marked follow-up implement
 
-Simplify and marked follow-up implement still use every canonical command byte-for-byte, with
-matching green before-evidence (own or cited) and distinct own after-runs, even for a no-op.
-These stages continue checking the declared commands.
+Both roles select commands using the four guardrails above and report `evidence:` and `selection:`.
+For every chosen command, obtain green before-evidence on the launch tree before the first edit:
+cite a matching green log with `cited:`, or run the command yourself and name its log with `evidence:`.
+Then name a distinct green own after-run of the same command on the capture tree, even for a no-op.
+This is the cite-before, run-after rule: selection is free, but both sides are mandatory for every
+chosen command. The checker derives commands from named own runs and citations, never from the
+canonical list or unlisted logs. An empty selection, missing side, unreadable log, red or stale
+evidence fails; one log cannot serve as both before and after. A cited command takes its
+before-evidence only from citations, even when an own before-run is green. Unlisted own logs remain
+available in `unlisted_logs` and cannot satisfy either side.
+
+In a follow-up, citable test evidence covers only canonical commands from the most recent stage
+with green evidence for the same starting tree (normally test). Targeted commands need your own
+before-runs before editing. This is a worker selection duty; the checker accepts freely chosen
+commands from cited logs and enforces their launch-tree identity.
+
+## Final test and triage
 
 The final test remains unchanged: run the full canonical suite byte-for-byte through own wrapper
 runs, one log per command, without citations. A freely chosen command cannot replace a canonical

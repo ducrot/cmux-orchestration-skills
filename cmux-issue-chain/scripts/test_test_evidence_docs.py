@@ -56,3 +56,21 @@ class EvidenceDocumentation(unittest.TestCase):
         for phrase in ("byte-for-byte", "never substitute a different suite",
                        "full canonical suite", "Do not cite earlier evidence", "`python3 check.py`"):
             self.assertIn(phrase, final)
+
+    def test_shared_comparison_policy_and_consumer_links(self):
+        policy = " ".join((ROOT / "references/test-evidence.md").read_text().split())
+        for phrase in ("both sides are mandatory for every chosen command",
+                       "before the first edit", "distinct green own after-run",
+                       "even for a no-op", "only from citations", "derives commands from named",
+                       "Targeted commands need your own before-runs", "only canonical commands"):
+            self.assertIn(phrase, policy)
+        for path in ("SKILL.md", "references/follow-up-pass.md"):
+            text = (ROOT / path).read_text()
+            self.assertIn("test-evidence.md#simplify-and-marked-follow-up-implement", text)
+            self.assertNotIn("full applicable suite", text)
+        for role, followup in (("simplify", False), ("implement", True)):
+            duties = render_prompt.test_duties(role, "artifacts/stage", followup,
+                                              "- Canonical check commands:\n  - `check`")
+            for phrase in ("before the first edit", "distinct green own after-run", "selection:",
+                           "Canonical commands for orientation and fallback"):
+                self.assertIn(phrase, duties)

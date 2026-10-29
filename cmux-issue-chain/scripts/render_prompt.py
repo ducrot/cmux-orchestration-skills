@@ -208,13 +208,19 @@ PATH_ONLY_BULLETS = "- Each `evidence:` or `cited:` bullet must contain only the
 
 
 def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str) -> str:
-    if role == "review" or (role == "implement" and not followup):
+    if role in ("implement", "simplify", "review"):
         commands = applicable_commands(ground_rules, role)
-        evidence_duty = (
-            "- If the review changed anything (launch and capture HEAD or fingerprint differ), name green own runs on the capture tree with `evidence:`; citations are rejected. Otherwise, cite the previous stage's green evidence for the same working tree with `- cited: <path>`, or name own runs. Only named runs are checked; at least one is required; without evidence there is no advance.\n"
-            if role == "review" else
-            "- At least one named green own run on the capture tree is required; without evidence there is no advance. Do not cite earlier evidence.\n"
-        )
+        if role == "simplify" or followup:
+            evidence_duty = (
+                "- For every chosen command, obtain green before-evidence on the launch tree before the first edit: cite a matching green log with `- cited: <path>`, or run it yourself and name it with `evidence:`. A cited command takes its before-evidence only from citations.\n"
+                "- For every chosen command, always name a distinct green own after-run of the same command on the capture tree with `evidence:`, even when nothing was applied. Only named runs are checked; at least one command is required; without evidence there is no advance.\n"
+            )
+            if followup:
+                evidence_duty += "- In a follow-up, citable test evidence covers only canonical commands (normally from the test stage); targeted commands need your own before-runs.\n"
+        elif role == "review":
+            evidence_duty = "- If the review changed anything (launch and capture HEAD or fingerprint differ), name green own runs on the capture tree with `evidence:`; citations are rejected. Otherwise, cite the previous stage's green evidence for the same working tree with `- cited: <path>`, or name own runs. Only named runs are checked; at least one is required; without evidence there is no advance.\n"
+        else:
+            evidence_duty = "- At least one named green own run on the capture tree is required; without evidence there is no advance. Do not cite earlier evidence.\n"
         return TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Select tests by your own analysis of the diff, following the authoritative test-selection policy in `{reference_path("test-evidence.md")}`:
   1. Always run tests of changed modules and the ticket's regression test.
   2. For shared or imported code, also run tests of dependent modules.
@@ -233,18 +239,7 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
   - cited: artifacts/<earlier-stage>/check-<hash>.log
 - A cited log counts only when its logged command equals one of the applicable check commands for this role; for any other command, run your own wrapper run instead.
 """
-    if followup or role == "simplify":
-        baseline = (
-            "the most recent stage that left wrapper logs for the same starting tree has green evidence (normally the test stage)"
-            if followup else "the previous stage left green logs of the applicable check commands for the same starting tree"
-        )
-        duty = (
-            f"- If {baseline}, skip the before-run and cite that log "
-            "for each applicable check command. Otherwise, run your own before-run of the full applicable suite through the wrapper.\n"
-            "- Always run your own after-run of the full applicable suite through the wrapper, even when nothing was applied. "
-            "List the before evidence (own logs or citations) and your own after logs under `## Tests / Checks`."
-        )
-    elif role == "triage":
+    if role == "triage":
         duty = "- Do not run any test suite. List your read-only checks under `## Tests / Checks`."
     else:
         duty = (

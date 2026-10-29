@@ -92,9 +92,23 @@ def check_citation_boundary(path: Path, artifact_root: Path) -> None:
         raise ValueError("citation must be inside a stage artifact directory")
 
 
+def own_logs(own_dir: Path, skip: set[Path] = frozenset()) -> tuple[list[dict], list[dict]]:
+    logs, invalid = [], []
+    for path in sorted(own_dir.glob("check-*.log")):
+        resolved = path.resolve()
+        if resolved in skip:
+            continue
+        try:
+            resolved.relative_to(own_dir)
+            logs.append({**read_log(resolved), "cited": False})
+        except (OSError, ValueError, KeyError) as error:
+            invalid.append({"path": str(path), "cited": False, "error": str(error)})
+    return logs, invalid
+
+
 def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
                       report_text: str, capture: dict,
-                      citation_refusal: str | None) -> dict:
+                      citation_refusal: str | None, launch: dict | None = None) -> dict:
     logs, invalid, selected = [], [], set()
     for value in named_paths(report_text, "evidence"):
         try:
@@ -107,7 +121,7 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
             logs.append({**log, **log_verdict(log, capture)})
         except (OSError, ValueError, KeyError) as error:
             invalid.append({"path": value, "cited": False, "error": str(error)})
-    rejected = []
+    rejected, seen_citations = [], set()
     for value in cited_paths(report_text):
         if citation_refusal:
             rejected.append({"citation": value, "error": citation_refusal})
@@ -115,12 +129,28 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
         try:
             path = resolve_log_path(value, run_dir, repository)
             check_citation_boundary(path, own_dir.parent)
+            if path in seen_citations:
+                continue
+            seen_citations.add(path)
             log = {**read_log(path), "cited": True, "citation": value}
             logs.append({**log, **log_verdict(log, capture)})
         except (OSError, ValueError, KeyError) as error:
             invalid.append({"path": value, "citation": value, "cited": True, "error": str(error)})
     commands = list(dict.fromkeys(log["command"] for log in logs))
-    results = [evidence_result(command, logs, capture, "after") for command in commands]
+    results = []
+    if launch is not None:
+        own = [log for log in logs if not log["cited"]]
+        own_before = [log for log in own if not differences(log, launch)]
+    for command in commands:
+        after_logs = logs
+        if launch is not None:
+            cited = [log for log in logs if log["cited"] and log["command"] == command]
+            before = evidence_result(command, cited or own_before, launch, "before")
+            results.append(before)
+            # A no-op still needs two distinct runs; citations are before-only.
+            after_logs = [log for log in own
+                          if "log" not in before or log["path"] != before["log"]["path"]]
+        results.append(evidence_result(command, after_logs, capture, "after"))
     for item in invalid:
         results.append({"command": "<unreadable evidence>",
                         "phase": "citation" if item["cited"] else "after",
@@ -131,17 +161,9 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
     if not results:
         results.append({"command": "<named evidence required>", "phase": "after",
                         "verdict": "missing", "cited": False})
-    unlisted = []
-    for path in sorted(own_dir.glob("check-*.log")):
-        if path.resolve() in selected:
-            continue
-        try:
-            path.resolve().relative_to(own_dir)
-            unlisted.append(read_log(path))
-        except (OSError, ValueError, KeyError) as error:
-            unlisted.append({"path": str(path), "error": str(error)})
+    unlisted, unreadable = own_logs(own_dir, skip=selected)
     return {"results": results, "checked_logs": logs, "invalid_logs": invalid,
-            "unlisted_logs": unlisted,
+            "unlisted_logs": unlisted + unreadable,
             "verdict": "pass" if all(item["verdict"] == "pass" for item in results) else "fail"}
 
 
@@ -210,62 +232,20 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     citation_refusal = (None if needs_before or unchanged_review
                         else REVIEW_CHANGED_REFUSAL if stage == "review"
                         else CITATION_REFUSAL)
-    if stage == "review" or (stage == "implement" and not needs_before):
+    if stage in ("implement", "simplify", "review"):
         return {"stage": stage, "pass": pass_num, "capture": capture, "launch": launch,
                 **selected_evidence(run_dir, own_dir, repository, report_text, capture,
-                                    citation_refusal)}
-    citations = cited_paths(report_text)
-    own, cited, invalid = [], [], []
-
-    def load(path, citation=None):
-        is_cited = citation is not None
-        tag = {"citation": citation} if is_cited else {}
-        try:
-            resolved = path.resolve()
-            # Both own and cited logs must remain inside their artifact boundary.
-            if is_cited:
-                check_citation_boundary(resolved, artifact_root)
-            else:
-                resolved.relative_to(own_dir)
-            (cited if is_cited else own).append({**read_log(resolved), "cited": is_cited, **tag})
-        except (OSError, ValueError, KeyError) as error:
-            invalid.append({"path": str(path), "cited": is_cited, "error": str(error), **tag})
-
-    for path in sorted(own_dir.glob("check-*.log")):
-        load(path)
-    for citation in citations if not citation_refusal else ():
-        try:
-            load(resolve_log_path(citation, run_dir, repository), citation)
-        except ValueError as error:
-            invalid.append({"path": citation, "citation": citation, "cited": True,
-                            "error": str(error)})
-
-    if needs_before:
-        # Own logs from the capture tree are after-evidence, not stale before-runs.
-        own_before = [log for log in own if not differences(log, launch)]
-    results = []
-    for command in commands:
-        after_logs = own
-        if needs_before:
-            # A cited command takes its before evidence from citations only; others may use own before-runs.
-            cited_command = [log for log in cited if log["command"] == command]
-            before = evidence_result(command, cited_command or own_before, launch, "before")
-            results.append(before)
-            # Even a no-op pass must supply a distinct own after-run.
-            if "log" in before:
-                after_logs = [log for log in own if log["path"] != before["log"]["path"]]
-        results.append(evidence_result(command, after_logs, capture, "after"))
-    # A forbidden or unreadable citation cannot be silently rescued by own logs.
-    rejected = ([{"citation": path, "error": citation_refusal}
-                 for path in citations] if citation_refusal else [])
-    rejected += [item for item in invalid if item["cited"]]
-    for citation in rejected:
+                                    citation_refusal, launch if needs_before else None)}
+    own, invalid = own_logs(own_dir)
+    results = [evidence_result(command, own, capture, "after") for command in commands]
+    # A forbidden citation cannot be silently rescued by own logs.
+    for citation in cited_paths(report_text):
         for command in commands:
             results.append({"command": command, "phase": "citation", "verdict": "missing",
-                            "cited": True, **citation})
+                            "cited": True, "citation": citation, "error": citation_refusal})
     return {"stage": stage, "pass": pass_num, "capture": capture, "launch": launch,
             "results": results,
-            "checked_logs": [log for log in own + cited if log["command"] in commands],
+            "checked_logs": [log for log in own if log["command"] in commands],
             "invalid_logs": invalid,
             "verdict": "pass" if all(item["verdict"] == "pass" for item in results) else "fail"}
 

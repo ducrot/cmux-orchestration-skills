@@ -783,8 +783,7 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
 
     def test_references_describe_evidence_and_citations(self):
         followup = normalized(self.references / "follow-up-pass.md")
-        for phrase in ("cite-before, run-after", "most recent stage with green evidence",
-                       "same starting tree", "normally test", "own after-run"):
+        for phrase in ("cite-before, run-after", "test-evidence.md#simplify-and-marked-follow-up-implement"):
             self.assertIn(phrase, followup)
         self.assertNotIn("baseline suite before and after", followup)
         events = documentation(self.references / "event-vocabulary.md").lower()

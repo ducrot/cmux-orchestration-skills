@@ -45,14 +45,6 @@ COUNTER_PROPOSAL_RULE = (
     "or data-safety reason is a finding with `Recommendation: ask-user` and that reason."
 )
 LEGACY_GROUND_RULES = "- Canonical check commands, run as the baseline suite by every worker:\n  - `python3 check.py`"
-SIMPLIFY_BEFORE_DUTY = (
-    "If the previous stage left green logs of the applicable check commands for the same starting tree, "
-    "skip the before-run and cite that log for each applicable check command."
-)
-FOLLOWUP_BEFORE_DUTY = (
-    "If the most recent stage that left wrapper logs for the same starting tree has green evidence "
-    "(normally the test stage), skip the before-run and cite that log for each applicable check command."
-)
 FOLLOWUP_ITEMS = "- F1: wrap `levels` in `useMemo`; supersedes simplify-1 Not Applied item 5.\n"
 
 
@@ -173,7 +165,7 @@ class RenderFunction(unittest.TestCase):
                             self.assertIn("Do not run any test suite", duties)
                         else:
                             expected, other = "python3 check.py", "python3 targeted.py"
-                            label = "Canonical commands for orientation and fallback" if role == "review" or (role == "implement" and not followup) else "Full applicable suite for this role"
+                            label = "Canonical commands for orientation and fallback" if role in ("implement", "simplify", "review") else "Full applicable suite for this role"
                             self.assertIn(f"{label}:\n  - `{expected}`", duties)
                             self.assertNotIn(f"`{other}`", duties)
 
@@ -182,7 +174,7 @@ class RenderFunction(unittest.TestCase):
             for role in render_prompt.ROLES:
                 with self.subTest(role=role, harness=harness):
                     text = self.render(role, harness)
-                    for phrase in () if role in ("implement", "review") else (
+                    for phrase in () if role in ("implement", "simplify", "review") else (
                         "These role-specific test duties override the embedded README wording",
                         "one after another, never in parallel",
                         "never substitute a different suite",
@@ -226,17 +218,19 @@ class RenderFunction(unittest.TestCase):
                         self.assertNotIn("canonical suite may reproduce items", text)
 
     def assert_before_after_duty(self, text, followup=False):
-        if followup:
-            self.assertIn(FOLLOWUP_BEFORE_DUTY, text)
-            self.assertNotIn("previous stage", duties_section(text))
-        else:
-            self.assertIn(SIMPLIFY_BEFORE_DUTY, text)
         for phrase in (
-            "Otherwise, run your own before-run of the full applicable suite through the wrapper",
-            "Always run your own after-run of the full applicable suite through the wrapper",
-            "even when nothing was applied",
+            "before the first edit", "green before-evidence on the launch tree",
+            "distinct green own after-run of the same command on the capture tree",
+            "even when nothing was applied", "exactly one `- selection:`",
+            "tests of changed modules", "ticket's regression test", "tests of dependent modules",
+            "repository protection tests", "next larger unit", "`- evidence: <path>`",
         ):
             self.assertIn(phrase, text)
+        self.assertNotIn("byte-for-byte", duties_section(text))
+        self.assertNotIn("never substitute a different suite", duties_section(text))
+        if followup:
+            self.assertIn("citable test evidence covers only canonical commands", text)
+            self.assertIn("targeted commands need your own before-runs", text)
 
     def test_followup_evidence_duties_are_harness_neutral(self):
         prompts = []
@@ -793,7 +787,7 @@ class RenderCli(unittest.TestCase):
         self.assertIn("## Approved Follow-up Items", text)
         self.assertIn(FOLLOWUP_ITEMS.strip(), text)
         self.assertIn(f"Worker artifact directory: `{self.run_dir / 'artifacts' / 'implement-2'}`", text)
-        self.assertIn(FOLLOWUP_BEFORE_DUTY, text)
+        RenderFunction.assert_before_after_duty(self, text, followup=True)
         self.assertNotIn("previous stage", duties_section(text))
 
     def test_renders_the_snapshot_harness_variant(self):
