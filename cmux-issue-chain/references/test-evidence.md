@@ -21,17 +21,18 @@ directory. Freely chosen commands are allowed.
 
 Under `## Tests / Checks`, give every relied-upon own run's command, outcome, and log path using a
 separate `- evidence: <path>` bullet. Copy the path from the wrapper's
-`run_check: log written to <path>` stderr line unchanged.
+`run_check: log written to <path>` stderr line unchanged; the wrapper reports an absolute path.
 Each `evidence:` or `cited:` bullet must contain only the path after the label, with no trailing
 annotations; put the command and outcome on a separate bullet.
-The checker accepts repository-relative or absolute wrapper paths and run-directory-relative paths;
-it normalizes them before enforcing the allowed stage artifact boundary, including symlink targets.
-Paths in the evidence event identify the resolved log; run-relative report paths remain supported.
+The checker accepts absolute wrapper paths and run-directory-relative paths;
+all relative paths resolve against the run directory, independently of the check's working directory.
+It normalizes them before enforcing the allowed stage artifact boundary, including symlink targets.
+Paths in the evidence event identify the resolved log.
 For example:
 
 ```markdown
 - `python3 -m unittest example`: passed
-- evidence: .scratch/orchestrator/runs/<run-id>/artifacts/implement-1/check-<hash>.log
+- evidence: /absolute/repository/.scratch/orchestrator/runs/<run-id>/artifacts/implement-1/check-<hash>.log
 - selection: Changed parser; module, regression and dependent contract tests cover its callers.
 ```
 

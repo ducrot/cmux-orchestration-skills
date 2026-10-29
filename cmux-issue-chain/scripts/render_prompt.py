@@ -227,7 +227,7 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
   3. Run affected repository protection tests, such as drift or contract tests.
   4. When uncertain, run the next larger unit.
 - Run checks one after another, never in parallel. Use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<chosen command>'` from the repository root for every own run.
-- Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet for an own run (or `- cited: <path>` where citing is allowed). Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; repository-relative, absolute, and run-directory-relative paths are accepted.
+- Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet for an own run (or `- cited: <path>` where citing is allowed). Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; the wrapper reports an absolute path, and run-directory-relative paths are also accepted.
 {evidence_duty}- Include exactly one `- selection:` bullet naming affected areas, applied guardrails, and why the selection is sufficient. This explanation is for triage and human review, not gate-checked by the evidence check or report parser.
 """ + ("- Canonical commands for orientation and fallback:\n"
          + "\n".join(f"  - `{command}`" for command in commands) if commands else "")
@@ -235,7 +235,7 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
 - For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.
 - Pass the declared command byte-for-byte as that one quoted argument; write each single quote inside it as `'\\''`, because evidence only counts when the logged command equals the declared one exactly.
 - A stage that reports or cites a suite run must deposit one wrapper log per applicable check command or name the cited log; without evidence there is no advance.
-- When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the wrapper's reported path unchanged (run-relative, repository-relative, or absolute), for example:
+- When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the wrapper's reported path unchanged (absolute; run-directory-relative paths are also accepted), for example:
   - cited: artifacts/<earlier-stage>/check-<hash>.log
 - A cited log counts only when its logged command equals one of the applicable check commands for this role; for any other command, run your own wrapper run instead.
 """

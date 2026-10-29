@@ -16,6 +16,17 @@ class EvidenceDocumentation(unittest.TestCase):
             policy,
         )
 
+    def test_absolute_wrapper_path_contract(self):
+        policy = " ".join((ROOT / "references/test-evidence.md").read_text().split())
+        self.assertIn("absolute path", policy)
+        self.assertNotIn("repository-relative", policy)
+        for role in render_prompt.ROLES:
+            prompt = render_prompt.test_duties(role, "artifacts/stage-1", False,
+                                               "- Canonical check commands:\n  - `true`")
+            self.assertIn("unchanged", prompt)
+            self.assertIn("absolute", prompt)
+            self.assertNotIn("repository-relative", prompt)
+
     def test_authoritative_policy_and_references(self):
         policy = (ROOT / "references/test-evidence.md").read_text()
         for phrase in ("analysis of the diff", "orientation", "regression test",

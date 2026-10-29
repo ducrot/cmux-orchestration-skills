@@ -174,13 +174,15 @@ class EvidenceCli(unittest.TestCase):
         path = self.log_path()
         self.capture()
         for form in (str(path), str(path.relative_to(self.run_dir)),
-                     os.path.relpath(path, self.repo), f"`{path}`"):
+                     f"unused/../{path.relative_to(self.run_dir)}", f"`{path}`"):
             self.select([form])
             self.assertEqual(self.check().returncode, 0, form)
         outside = self.run_dir / "artifacts/review-1/check-copy.log"
         outside.parent.mkdir()
         outside.write_bytes(path.read_bytes())
-        for bad in (outside, self.run_dir / "artifacts/implement-1/missing.log", ".", "./"):
+        external = self.root / "external.log"
+        external.write_bytes(path.read_bytes())
+        for bad in (outside, external, self.run_dir / "artifacts/implement-1/missing.log", ".", "./"):
             self.select([bad])
             self.assertEqual(self.check().returncode, 3)
         link = path.parent / "check-link.log"
@@ -194,13 +196,42 @@ class EvidenceCli(unittest.TestCase):
         self.capture("review")
         paths = sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
         for form in (lambda path: str(path),
-                     lambda path: os.path.relpath(path, self.repo),
+                     lambda path: f"unused/../{path.relative_to(self.run_dir)}",
                      lambda path: str(path.relative_to(self.run_dir))):
             self.report_text()
             self.report.write_text(self.report.read_text().replace(
                 "- `example`: passed", "\n".join(f"- cited: {form(path)}" for path in paths)))
             checked = self.check("review")
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+    def test_repository_relative_evidence_and_citations_fail_with_path_hint(self):
+        nested_run = self.repo / ".scratch/orchestrator/runs/example"
+        nested_run.parent.mkdir(parents=True)
+        self.run_dir.rename(nested_run)
+        self.run_dir = nested_run
+        # Match real runs: orchestration artifacts must not change the tree identity.
+        with (self.repo / ".git/info/exclude").open("a") as exclude:
+            exclude.write("\n.scratch/\n")
+        self.wrap("true")
+        path = self.log_path().relative_to(self.repo)
+        self.capture()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        for label, stage in (("evidence", "implement"), ("cited", "review")):
+            with self.subTest(label=label):
+                self.report_text()
+                self.report.write_text(self.report.read_text().replace(
+                    "- `example`: passed", f"- {label}: {path}"))
+                checked = self.check(stage)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                data = self.event()["data"]
+                self.assertEqual(data["verdict"], "fail")
+                self.assertEqual(data["results"][0]["verdict"], "missing")
+                invalid, = data["invalid_logs"]
+                self.assertEqual(invalid["path"], str(path))
+                hint = "evidence paths must be absolute or relative to the run directory"
+                self.assertIn(hint, invalid["error"])
+                self.assertIn(hint, checked.stdout)
 
     def test_named_repeat_rescues_red_and_stale_for_same_command(self):
         self.wrap("true")
@@ -929,12 +960,28 @@ class EvidenceCli(unittest.TestCase):
                 self.assertEqual(result.returncode, 3, result.stderr)
                 self.assertIn("missing:", result.stdout)
 
-    def test_requires_repository_root(self):
+    def test_named_paths_work_from_repository_subdirectory(self):
         nested = self.repo / "nested"
         nested.mkdir()
-        result = self.check(cwd=nested)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("repository root", result.stderr)
+        self.wrap("true")
+        self.capture()
+        path = self.log_path()
+        for form in (path, path.relative_to(self.run_dir)):
+            self.select([form])
+            result = self.check(cwd=nested)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        for form in (path, path.relative_to(self.run_dir)):
+            self.report_text()
+            self.report.write_text(self.report.read_text().replace(
+                "## Tests / Checks\n", f"## Tests / Checks\n- cited: {form}\n"))
+            result = self.check("review", cwd=nested)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        relative = ["--run-dir", os.path.relpath(self.run_dir, self.repo), "--stage", "review",
+                    "--pass", 1, "--report", self.report]
+        result = self.cli("check_evidence.py", *relative, cwd=nested)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

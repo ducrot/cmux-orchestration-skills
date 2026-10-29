@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify own and cited wrapper logs against stage launch and capture trees.
 
-Run from the repository root with --run-dir, --stage, --pass and optionally
+Run from within the repository with --run-dir, --stage, --pass and optionally
 --report. Only events.jsonl is appended; checks are never executed here.
 """
 from __future__ import annotations
@@ -75,16 +75,12 @@ def cited_paths(report_text: str) -> list[str]:
     return named_paths(report_text, "cited")
 
 
-def resolve_log_path(value: str, run_dir: Path, repository: Path) -> Path:
-    """Accept wrapper cwd-relative/absolute paths and run-relative report paths."""
+def resolve_log_path(value: str, run_dir: Path) -> Path:
+    """Resolve absolute wrapper paths or paths relative to the run directory."""
     path = Path(value)
     if not path.parts:
         raise ValueError("empty evidence path")
-    if path.is_absolute():
-        return path.resolve()
-    # Run-relative artifact paths are unambiguous, including missing logs.
-    base = run_dir if path.parts[0] == "artifacts" else repository
-    return (base / path).resolve()
+    return (run_dir / path).resolve()
 
 
 def check_citation_boundary(path: Path, artifact_root: Path) -> None:
@@ -106,13 +102,13 @@ def own_logs(own_dir: Path, skip: set[Path] = frozenset()) -> tuple[list[dict], 
     return logs, invalid
 
 
-def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
+def selected_evidence(run_dir: Path, own_dir: Path,
                       report_text: str, capture: dict,
                       citation_refusal: str | None, launch: dict | None = None) -> dict:
     logs, invalid, selected = [], [], set()
     for value in named_paths(report_text, "evidence"):
         try:
-            path = resolve_log_path(value, run_dir, repository)
+            path = resolve_log_path(value, run_dir)
             path.relative_to(own_dir)
             if path in selected:
                 continue
@@ -120,14 +116,15 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
             log = {**read_log(path), "cited": False}
             logs.append({**log, **log_verdict(log, capture)})
         except (OSError, ValueError, KeyError) as error:
-            invalid.append({"path": value, "cited": False, "error": str(error)})
+            invalid.append({"path": value, "cited": False,
+                            "error": f"{error}; evidence paths must be absolute or relative to the run directory"})
     rejected, seen_citations = [], set()
     for value in cited_paths(report_text):
         if citation_refusal:
             rejected.append({"citation": value, "error": citation_refusal})
             continue
         try:
-            path = resolve_log_path(value, run_dir, repository)
+            path = resolve_log_path(value, run_dir)
             check_citation_boundary(path, own_dir.parent)
             if path in seen_citations:
                 continue
@@ -135,7 +132,8 @@ def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
             log = {**read_log(path), "cited": True, "citation": value}
             logs.append({**log, **log_verdict(log, capture)})
         except (OSError, ValueError, KeyError) as error:
-            invalid.append({"path": value, "citation": value, "cited": True, "error": str(error)})
+            invalid.append({"path": value, "citation": value, "cited": True,
+                            "error": f"{error}; evidence paths must be absolute or relative to the run directory"})
     commands = list(dict.fromkeys(log["command"] for log in logs))
     results = []
     if launch is not None:
@@ -234,7 +232,7 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
                         else CITATION_REFUSAL)
     if stage in ("implement", "simplify", "review"):
         return {"stage": stage, "pass": pass_num, "capture": capture, "launch": launch,
-                **selected_evidence(run_dir, own_dir, repository, report_text, capture,
+                **selected_evidence(run_dir, own_dir, report_text, capture,
                                     citation_refusal, launch if needs_before else None)}
     own, invalid = own_logs(own_dir)
     results = [evidence_result(command, own, capture, "after") for command in commands]
@@ -261,8 +259,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--pass must be positive")
     try:
         repository = repository_root()
-        if Path.cwd().resolve() != repository.resolve():
-            raise ValueError("invoke check_evidence.py from the repository root")
+        # Relative arguments keep their repository-root meaning from any working directory.
+        args.run_dir = repository / args.run_dir
+        if args.report:
+            args.report = repository / args.report
         gate = ADVANCE
         report_text = ""
         if args.report:

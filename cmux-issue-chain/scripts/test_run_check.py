@@ -51,7 +51,7 @@ class RunCheckCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, output)
         log = next(self.artifacts.glob("*.log"))
-        self.assertEqual(result.stderr, f"run_check: log written to {log}\n".encode())
+        self.assertEqual(result.stderr, f"run_check: log written to {log.resolve()}\n".encode())
         fields, raw = self.read_log(log)
         self.assertEqual(raw, output)
         self.assertEqual(fields["evidence_version"], "1")
@@ -75,7 +75,7 @@ class RunCheckCli(unittest.TestCase):
         self.assertEqual(first.returncode, 7, first.stderr)
         self.assertEqual(first.stdout, b"base\nfailed\n")
         log = next(self.artifacts.glob("*.log"))
-        self.assertEqual(first.stderr, f"run_check: log written to {log}\n".encode())
+        self.assertEqual(first.stderr, f"run_check: log written to {log.resolve()}\n".encode())
         original = log.read_bytes()
         second = self.run_check(command)
         self.assertEqual(second.returncode, 7)
@@ -84,12 +84,27 @@ class RunCheckCli(unittest.TestCase):
         self.assertEqual(log.read_bytes(), original)
         repeated_log = log.with_stem(log.stem + "-2")
         self.assertIn(repeated_log, logs)
-        self.assertEqual(second.stderr, f"run_check: log written to {repeated_log}\n".encode())
+        self.assertEqual(second.stderr, f"run_check: log written to {repeated_log.resolve()}\n".encode())
         self.assertEqual(second.stdout, first.stdout)
         for path in logs:
             fields, raw = self.read_log(path)
             self.assertEqual(fields["exit_code"], "7")
             self.assertEqual(raw, first.stdout)
+
+    def test_relative_artifacts_report_absolute_paths_including_repeats(self):
+        self.artifacts = self.artifacts.relative_to(self.repo)
+        command = "printf 'relative\\n'; exit 7"
+        stem = "check-" + hashlib.sha256(command.encode()).hexdigest()
+        for suffix in ("", "-2"):
+            result = self.run_check(command)
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual(result.stdout, b"relative\n")
+            path = (self.repo / self.artifacts / f"{stem}{suffix}.log").resolve()
+            self.assertEqual(result.stderr, f"run_check: log written to {path}\n".encode())
+            fields, raw = self.read_log(path)
+            self.assertEqual(raw, result.stdout)
+            self.assertEqual(fields["exit_code"], "7")
+            self.assertEqual(json.loads(fields["command"]), command)
 
     def test_closed_stderr_preserves_output_exit_code_and_log(self):
         for status in (0, 7):
