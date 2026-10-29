@@ -286,24 +286,15 @@ The product-code boundary holds: inspect, never edit.
 
 ## Canonical Check Commands
 
-The tracker README's ground-rules section declares canonical check commands — at minimum the test
-suite, optionally lint — as exact runnable commands. `render_prompt.py` embeds these rules and the
-role's applicable suite. Workers must use those commands byte-for-byte through `run_check.py`, one
-wrapper log per command, instead of guessing their own suite.
+The tracker README's ground-rules section declares canonical check commands as exact runnable
+commands. The authoritative [test selection and evidence policy](references/test-evidence.md) defines
+regular implement's diff-based selection and four guardrails, all report labels and path forms,
+the check of named evidence, the other roles' duties, and the unchanged full canonical final test.
+`render_prompt.py` carries the applicable policy into every harness. See the
+[worker report contract](references/worker-report-contract.md) for the report structure.
 
-Canonical check commands remain mandatory. Implement, simplify, review, and test workers use the
-canonical suite. Triage has no suite duty.
+The orchestrator runs no suite; it validates worker evidence. Canonical declarations remain required.
 An empty or placeholder canonical entry invalidates the entire command list; it is not skipped.
-
-Regular implement passes prove a failing regression and run their own applicable suite after the change.
-Simplify and marked follow-up implement passes may cite matching green before-evidence, but must run
-their own suite after the pass, even for a no-op. An unchanged review may cite matching green evidence
-or run its own suite; a review that changes the tree must run its own after-suite. A test worker runs
-its own full canonical suite. Citations must match the applicable command and starting tree; see the
-worker report contract for their exact form.
-
-Workers run suites one after another, never in parallel. The orchestrator runs no suite; it validates
-evidence rather than rerunning the worker's checks.
 
 Verify the declaration during run preflight, together with the branch check: if the ground rules declare
 no runnable canonical check commands, record a `hitl` gate instead of starting the chain — the human adds the
@@ -829,7 +820,7 @@ a non-zero exit. Board failures never change command results.
 `run_state.py publish-triage --run-dir <run-dir> --pass <1|2>` publishes a passing triage report;
 `parse_report.py --items-file <path> <report>` validates the verdicts.
 
-Workers run each declared command through the wrapper from the repository root; the log records the
+Workers run each check command through the wrapper from the repository root; the log records the
 exact command, exit code, duration, repository, HEAD, and before/after tree fingerprints. Repeat runs
 create new logs rather than overwriting earlier evidence. After each completed command, including a
 non-zero exit, the wrapper reports the exact written log path, repeat suffix included, on its own
@@ -837,7 +828,7 @@ stderr; stdout and the exit code stay the command's own. The rendered prompt giv
 installed wrapper path; the form is:
 
 ```bash
-python3 scripts/run_check.py --artifact-dir <run-dir>/artifacts/<role>-<pass> --command '<declared check command>'
+python3 scripts/run_check.py --artifact-dir <run-dir>/artifacts/<role>-<pass> --command '<check command>'
 ```
 
 After capturing the report and tree, the orchestrator checks evidence before the gate:

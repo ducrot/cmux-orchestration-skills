@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -52,9 +54,16 @@ class EvidenceCli(unittest.TestCase):
                               text=True, timeout=30)
 
     def wrap(self, command=None, stage="implement", pass_num=1, cwd=None):
-        return self.cli("run_check.py", "--artifact-dir",
-                        self.run_dir / "artifacts" / f"{stage}-{pass_num}",
-                        "--command", command or self.command, cwd=cwd)
+        result = self.cli("run_check.py", "--artifact-dir",
+                          self.run_dir / "artifacts" / f"{stage}-{pass_num}",
+                          "--command", command or self.command, cwd=cwd)
+        # Fixtures explicitly report each own implement run, as real workers must.
+        if stage == "implement":
+            path = re.search(r"^run_check: log written to (.+)$", result.stderr, re.MULTILINE)
+            self.assertIsNotNone(path, result.stderr)
+            self.report.write_text(self.report.read_text().replace(
+                "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {path[1]}\n"))
+        return result
 
     BASELINE_STAGES = (("simplify", 1), ("implement", 2))
 
@@ -75,6 +84,94 @@ class EvidenceCli(unittest.TestCase):
 
     def log_path(self):
         return next((self.run_dir / "artifacts/implement-1").glob("*.log"))
+
+    def select(self, paths):
+        self.report_text()
+        self.report.write_text(self.report.read_text().replace(
+            "- `example`: passed", "\n".join(f"- evidence: {path}" for path in paths)))
+
+    def test_regular_implement_selects_free_command_and_gate_advances(self):
+        self.wrap("true")
+        self.select([self.log_path()])
+        self.capture()
+        checked = self.check()
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(self.event()["data"]["results"][0]["command"], "true")
+        gated = self.cli("run_state.py", "gate", "--run-dir", self.run_dir,
+                         "--stage", "implement", "--decision", "advance",
+                         "--reason", "selected evidence", "--next-stage", "simplify")
+        self.assertEqual(gated.returncode, 0, gated.stderr)
+
+    def test_regular_requires_named_evidence_and_ignores_unlisted_red(self):
+        self.wrap("false")
+        red = self.log_path()
+        before = set(red.parent.glob("*.log"))
+        self.wrap("true")
+        green, = set(red.parent.glob("*.log")) - before
+        self.capture()
+        self.select([])
+        self.assertEqual(self.check().returncode, 3)
+        self.select([green])
+        self.assertEqual(self.check().returncode, 0)
+        data = self.event()["data"]
+        self.assertEqual([log["path"] for log in data["unlisted_logs"]], [str(red.resolve())])
+        self.assertEqual(data["checked_logs"][0]["verdict"], "pass")
+
+    def test_named_paths_normalize_and_stay_in_own_stage(self):
+        self.wrap("true")
+        path = self.log_path()
+        self.capture()
+        for form in (str(path), str(path.relative_to(self.run_dir)),
+                     os.path.relpath(path, self.repo), f"`{path}`"):
+            self.select([form])
+            self.assertEqual(self.check().returncode, 0, form)
+        outside = self.run_dir / "artifacts/review-1/check-copy.log"
+        outside.parent.mkdir()
+        outside.write_bytes(path.read_bytes())
+        for bad in (outside, self.run_dir / "artifacts/implement-1/missing.log", ".", "./"):
+            self.select([bad])
+            self.assertEqual(self.check().returncode, 3)
+        link = path.parent / "check-link.log"
+        link.symlink_to(outside)
+        self.select([link])
+        self.assertEqual(self.check().returncode, 3)
+
+    def test_cited_paths_accept_wrapper_and_run_relative_forms(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        paths = sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
+        for form in (lambda path: str(path),
+                     lambda path: os.path.relpath(path, self.repo),
+                     lambda path: str(path.relative_to(self.run_dir))):
+            self.report_text()
+            self.report.write_text(self.report.read_text().replace(
+                "- `example`: passed", "\n".join(f"- cited: {form(path)}" for path in paths)))
+            checked = self.check("review")
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+    def test_named_repeat_rescues_red_and_stale_for_same_command(self):
+        self.wrap("true")
+        stale = self.log_path()
+        self.file.write_text("changed\n")
+        self.wrap("true")
+        paths = sorted(stale.parent.glob("*.log"))
+        fresh = next(path for path in paths if path != stale)
+        self.capture()
+        self.select([stale])
+        self.assertIn("stale: true", self.check().stdout)
+        payload = fresh.read_text()
+        fresh.write_text(payload.replace("exit_code: 0", "exit_code: 7"))
+        self.select([fresh])
+        self.assertIn("red: true", self.check().stdout)
+        fresh.write_text(payload)
+        self.select(paths)
+        self.assertEqual(self.check().returncode, 0)
+        self.assertEqual({log["verdict"] for log in self.event()["data"]["checked_logs"]},
+                         {"stale", "pass"})
+        fresh.write_text("unreadable header\n")
+        self.select([fresh])
+        self.assertIn("missing:", self.check().stdout)
 
     def test_gate_accepts_the_real_evidence_check_event(self):
         self.green()
@@ -179,10 +276,14 @@ class EvidenceCli(unittest.TestCase):
                 self.commands = targeted
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
-                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
-                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(canonical))
-                self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
+                regular = stage == "implement" and not followup
+                self.assertEqual(checked.returncode, 0 if regular else 3, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]},
+                                 set(targeted if regular else canonical))
+                if not regular:
+                    self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
                 self.commands = canonical
+                self.report_text()
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
                 self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
@@ -602,6 +703,8 @@ class EvidenceCli(unittest.TestCase):
         self.state["deliverables"]["tracker"] = "../tracker"
         (self.run_dir / "state.json").write_text(json.dumps(self.state))
         self.green()
+        (self.run_dir / "reports").mkdir(exist_ok=True)
+        (self.run_dir / "reports/implement-1.md").write_text(self.report.read_text())
         self.assertEqual(self.check(report=False).returncode, 0)
 
     def test_missing_own_log_and_nonzero_log(self):
@@ -609,11 +712,14 @@ class EvidenceCli(unittest.TestCase):
         self.assertEqual(self.wrap("exit 7").returncode, 7)
         # Another stage's log never satisfies the stage being checked.
         self.wrap(stage="review")
+        other = next((self.run_dir / "artifacts/review-1").glob("*.log"))
+        self.report.write_text(self.report.read_text().replace(
+            "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {other}\n"))
         self.capture()
         result = self.check()
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("red: exit 7 exit_code=7", result.stdout)
-        self.assertIn(f"missing: {self.command}", result.stdout)
+        self.assertIn("missing:", result.stdout)
 
     def test_fingerprint_stale_and_passing_repeat_supersedes_before_run(self):
         self.green()
@@ -697,7 +803,7 @@ class EvidenceCli(unittest.TestCase):
         self.capture()
         result = self.check()
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn(f"missing: {self.command}", result.stdout)
+        self.assertIn("missing:", result.stdout)
         self.assertIn("invalid log:", result.stdout)
 
     def test_missing_capture_or_canonical_commands_fails_closed(self):
@@ -723,7 +829,7 @@ class EvidenceCli(unittest.TestCase):
                 path.write_bytes(original.replace(before, after, 1))
                 result = self.check()
                 self.assertEqual(result.returncode, 3, result.stderr)
-                self.assertIn(f"missing: {self.command}", result.stdout)
+                self.assertIn("missing:", result.stdout)
 
     def test_requires_repository_root(self):
         nested = self.repo / "nested"

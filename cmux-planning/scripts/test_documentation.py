@@ -740,6 +740,7 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
             self.skipTest("issue-chain skill is absent in this independent installation")
         self.text = normalized(self.guide)
         self.references = self.guide.parent / "references"
+        self.policy = normalized(self.references / "test-evidence.md")
 
     def section(self, start, end):
         return self.text.split(start, 1)[1].split(end, 1)[0]
@@ -758,10 +759,17 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
     def test_check_commands_and_diff_inspection(self):
         commands = self.section("## canonical check commands", "## worker wait policy")
         self.assertNotIn("targeted check commands for implement, simplify, and review:", commands)
-        for phrase in ("canonical check commands remain mandatory", "triage has no suite duty",
-                       "no runnable canonical check commands", "`hitl`", "one after another",
-                       "run_check.py", "byte-for-byte"):
+        for phrase in ("[test selection and evidence policy](references/test-evidence.md)",
+                       "canonical declarations remain required",
+                       "no runnable canonical check commands", "`hitl`"):
             self.assertIn(phrase, commands)
+        for phrase in ("analysis of the diff", "orientation and fallback",
+                       "tests of changed modules", "ticket's regression test",
+                       "tests of dependent modules", "repository protection tests",
+                       "next larger unit", "one after another", "run_check.py",
+                       "full canonical suite byte-for-byte", "without citations",
+                       "triage has no suite duty"):
+            self.assertIn(phrase, self.policy)
         diff = self.section("### diff inspection at code-changing gates", "## canonical check commands")
         self.assertIn("evidence check", diff)
 
@@ -788,9 +796,15 @@ class IssueChainEvidenceDocumentation(unittest.TestCase):
         for phrase in ("resume the same stage", "own evidence", "does not rerun checks"):
             self.assertIn(phrase, infrastructure)
         report = normalized(self.references / "worker-report-contract.md")
-        for phrase in ("- cited: artifacts/", "run_check.py", "byte-for-byte",
-                       "relative to the run directory"):
+        for phrase in ("[test selection and evidence policy](test-evidence.md)",
+                       "`evidence:`", "`cited:`", "`selection:`"):
             self.assertIn(phrase, report)
+        for phrase in ("- evidence: <path>", "- cited: <path>", "- selection:",
+                       "copy the path from the wrapper's", "run-directory-relative paths",
+                       "only logs named", "own stage directory", "capture tree",
+                       "exactly one", "neither the evidence check nor the report parser",
+                       "unlisted_logs", "checked_logs"):
+            self.assertIn(phrase, self.policy)
         scripts = normalized(self.references / "script-tests.md")
         for name in ("run_check", "check_evidence", "check_commands", "evidence_contract", "gate_evidence"):
             self.assertIn(f"test_{name}.py", scripts)

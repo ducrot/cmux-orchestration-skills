@@ -62,9 +62,68 @@ def read_log(path: Path) -> dict:
     return {"path": str(path), **fields}
 
 
-def cited_paths(report_text: str) -> list[str]:
+CITATION_REFUSAL = "citations are not allowed for this stage"
+
+
+def named_paths(report_text: str, label: str) -> list[str]:
     checks = tests_section(split_sections(report_text))
-    return list(dict.fromkeys(re.findall(r"^[ \t]*[-*][ \t]+cited:[ \t]*`?(.*?)`?[ \t]*$", checks, re.MULTILINE)))
+    return list(dict.fromkeys(re.findall(rf"^[ \t]*[-*][ \t]+{label}:[ \t]*`?(.*?)`?[ \t]*$", checks, re.MULTILINE)))
+
+
+def cited_paths(report_text: str) -> list[str]:
+    return named_paths(report_text, "cited")
+
+
+def resolve_log_path(value: str, run_dir: Path, repository: Path) -> Path:
+    """Accept wrapper cwd-relative/absolute paths and run-relative report paths."""
+    path = Path(value)
+    if not path.parts:
+        raise ValueError("empty evidence path")
+    if path.is_absolute():
+        return path.resolve()
+    # Run-relative artifact paths are unambiguous, including missing logs.
+    base = run_dir if path.parts[0] == "artifacts" else repository
+    return (base / path).resolve()
+
+
+def selected_evidence(run_dir: Path, own_dir: Path, repository: Path,
+                      report_text: str, capture: dict) -> dict:
+    logs, invalid, selected = [], [], set()
+    for value in named_paths(report_text, "evidence"):
+        try:
+            path = resolve_log_path(value, run_dir, repository)
+            path.relative_to(own_dir)
+            if path in selected:
+                continue
+            selected.add(path)
+            log = {**read_log(path), "cited": False}
+            logs.append({**log, **log_verdict(log, capture)})
+        except (OSError, ValueError, KeyError) as error:
+            invalid.append({"path": value, "cited": False, "error": str(error)})
+    commands = list(dict.fromkeys(log["command"] for log in logs))
+    results = [evidence_result(command, logs, capture, "after") for command in commands]
+    for item in invalid:
+        results.append({"command": "<unreadable evidence>", "phase": "after",
+                        "verdict": "missing", **item})
+    for citation in cited_paths(report_text):
+        results.append({"command": "<citation>", "phase": "citation", "verdict": "missing",
+                        "cited": True, "citation": citation,
+                        "error": CITATION_REFUSAL})
+    if not results:
+        results.append({"command": "<named evidence required>", "phase": "after",
+                        "verdict": "missing", "cited": False})
+    unlisted = []
+    for path in sorted(own_dir.glob("check-*.log")):
+        if path.resolve() in selected:
+            continue
+        try:
+            path.resolve().relative_to(own_dir)
+            unlisted.append(read_log(path))
+        except (OSError, ValueError, KeyError) as error:
+            unlisted.append({"path": str(path), "error": str(error)})
+    return {"results": results, "checked_logs": logs, "invalid_logs": invalid,
+            "unlisted_logs": unlisted,
+            "verdict": "pass" if all(item["verdict"] == "pass" for item in results) else "fail"}
 
 
 def differences(log: dict, identity: dict) -> list[str]:
@@ -77,15 +136,18 @@ def differences(log: dict, identity: dict) -> list[str]:
     return differed
 
 
+def log_verdict(log: dict, identity: dict) -> dict:
+    differed = differences(log, identity)
+    return {"verdict": "red" if log["exit_code"] else "stale" if differed else "pass",
+            "differed": differed}
+
+
 def evidence_result(command: str, logs: list[dict], identity: dict, phase: str) -> dict:
     candidates = []
     for log in logs:
         if log["command"] != command:
             continue
-        differed = differences(log, identity)
-        verdict = "red" if log["exit_code"] else "stale" if differed else "pass"
-        candidates.append({"verdict": verdict, "differed": differed,
-                           "cited": log["cited"], "log": log})
+        candidates.append({**log_verdict(log, identity), "cited": log["cited"], "log": log})
     # A valid repeat supersedes all earlier attempts.
     chosen = min(candidates, key=lambda item: (item["verdict"] != "pass",
                                               bool(item["differed"])), default=None)
@@ -121,16 +183,19 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     # no marker and retain the regular implement contract, regardless of pass number.
     needs_before = stage == "simplify" or (
         stage == "implement" and preparation.get("followup") is True)
+    artifact_root = (run_dir / "artifacts").resolve()
+    own_dir = artifact_root / f"{stage}-{pass_num}"
+    if stage == "implement" and not needs_before:
+        return {"stage": stage, "pass": pass_num, "capture": capture, "launch": None,
+                **selected_evidence(run_dir, own_dir, repository, report_text, capture)}
     launch = snapshot(LAUNCH) if needs_before or stage == "review" else None
     unchanged_review = stage == "review" and all(
         launch[key] == capture[key] for key in ("head", "fingerprint"))
     citations = cited_paths(report_text)
     citation_refusal = (None if needs_before or unchanged_review
                         else "review changed the tree; own logs required" if stage == "review"
-                        else "citations are not allowed for this stage")
+                        else CITATION_REFUSAL)
     own, cited, invalid = [], [], []
-    artifact_root = (run_dir / "artifacts").resolve()
-    own_dir = artifact_root / f"{stage}-{pass_num}"
 
     def load(path, citation=None):
         is_cited = citation is not None
@@ -148,12 +213,11 @@ def check_evidence(run_dir: Path, stage: str, pass_num: int, repository: Path,
     for path in sorted(own_dir.glob("check-*.log")):
         load(path)
     for citation in citations if not citation_refusal else ():
-        path = Path(citation)
-        if path.is_absolute() or not citation:
+        try:
+            load(resolve_log_path(citation, run_dir, repository), citation)
+        except ValueError as error:
             invalid.append({"path": citation, "citation": citation, "cited": True,
-                            "error": "citation must be relative to the run directory"})
-        else:
-            load(run_dir / path, citation)
+                            "error": str(error)})
 
     if needs_before:
         # Own logs from the capture tree are after-evidence, not stale before-runs.

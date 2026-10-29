@@ -187,29 +187,52 @@ def parser_path() -> str:
     return script_path("parse_report.py")
 
 
-def script_path(name: str) -> str:
-    """Resolve an installed sibling script for invocation from the worker's repo root."""
-    script = Path(__file__).resolve().parent / name
+def worker_path(path: Path) -> str:
+    """Express an installed skill file for use from the worker's repo root."""
     try:
-        return str(script.relative_to(Path.cwd()))
+        return str(path.relative_to(Path.cwd()))
     except ValueError:
-        return str(script)
+        return str(path)
+
+
+def script_path(name: str) -> str:
+    return worker_path(Path(__file__).resolve().parent / name)
+
+
+def reference_path(name: str) -> str:
+    return worker_path(Path(__file__).resolve().parents[1] / "references" / name)
+
+
+TEST_DUTIES_OVERRIDE = "- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording and the ignored `Targeted check commands for implement, simplify, and review:` entry.\n"
+PATH_ONLY_BULLETS = "- Each `evidence:` or `cited:` bullet must contain only the path after the label, with no trailing annotations; put the command and outcome on a separate bullet.\n"
 
 
 def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str) -> str:
-    common = f"""- These role-specific test duties override the embedded README wording, including legacy baseline-suite wording and the ignored `Targeted check commands for implement, simplify, and review:` entry.
-- Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
+    if role == "implement" and not followup:
+        commands = applicable_commands(ground_rules, role)
+        return TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Select tests by your own analysis of the diff, following the authoritative test-selection policy in `{reference_path("test-evidence.md")}`:
+  1. Always run tests of changed modules and the ticket's regression test.
+  2. For shared or imported code, also run tests of dependent modules.
+  3. Run affected repository protection tests, such as drift or contract tests.
+  4. When uncertain, run the next larger unit.
+- Run checks one after another, never in parallel. Use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<chosen command>'` from the repository root for every own run.
+- Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet. Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; repository-relative, absolute, and run-directory-relative paths are accepted.
+- At least one named green own run on the capture tree is required; without evidence there is no advance. Do not cite earlier evidence.
+- Include exactly one `- selection:` bullet naming affected areas, applied guardrails, and why the selection is sufficient. This explanation is for triage and human review, not gate-checked by the evidence check or report parser.
+""" + ("- Canonical commands for orientation and fallback:\n"
+         + "\n".join(f"  - `{command}`" for command in commands) if commands else "")
+    common = TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
 - For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.
 - Pass the declared command byte-for-byte as that one quoted argument; write each single quote inside it as `'\\''`, because evidence only counts when the logged command equals the declared one exactly.
 - A stage that reports or cites a suite run must deposit one wrapper log per applicable check command or name the cited log; without evidence there is no advance.
-- When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the log's path relative to the run directory, for example:
+- When citation is allowed by your role below, list each cited log under `## Tests / Checks` as a bullet beginning with the literal label `cited`, a colon, and the wrapper's reported path unchanged (run-relative, repository-relative, or absolute), for example:
   - cited: artifacts/<earlier-stage>/check-<hash>.log
 - A cited log counts only when its logged command equals one of the applicable check commands for this role; for any other command, run your own wrapper run instead.
 """
     if followup or role == "simplify":
         baseline = (
             "the most recent stage that left wrapper logs for the same starting tree has green evidence (normally the test stage)"
-            if followup else "the previous stage left green evidence for the same starting tree"
+            if followup else "the previous stage left green logs of the applicable check commands for the same starting tree"
         )
         duty = (
             f"- If {baseline}, skip the before-run and cite that log "
@@ -224,13 +247,11 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
         )
     elif role == "triage":
         duty = "- Do not run any test suite. List your read-only checks under `## Tests / Checks`."
-    elif role == "test":
+    else:
         duty = (
             "- In every pass, run the full canonical suite declared in the tracker ground rules through your own wrapper runs "
             "into your own artifact directory. Do not cite earlier evidence."
         )
-    else:
-        duty = "- At the end, run the full applicable suite declared in the tracker ground rules through the wrapper into your own artifact directory."
     commands = applicable_commands(ground_rules, role)
     suite = ("\n- Full applicable suite for this role:\n"
              + "\n".join(f"  - `{command}`" for command in commands)) if commands else ""
@@ -522,7 +543,7 @@ def role_specific_contract(role: str, harness: str = CLAUDE_CODE) -> str:
     return (
         "- Implement the assigned issue scope only. Do not take over review self-fixes unless explicitly instructed after HITL.\n"
         "- Prove your change: add or extend regression tests and verify at least one fails without the change; state that verification in the report.\n"
-        "- Execute the changed path end-to-end; list that execution and the full applicable suite's wrapper logs under `## Tests / Checks`."
+        "- Execute the changed path end-to-end; list that execution and the selected runs' wrapper logs under `## Tests / Checks`."
     )
 
 

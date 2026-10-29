@@ -46,7 +46,7 @@ COUNTER_PROPOSAL_RULE = (
 )
 LEGACY_GROUND_RULES = "- Canonical check commands, run as the baseline suite by every worker:\n  - `python3 check.py`"
 SIMPLIFY_BEFORE_DUTY = (
-    "If the previous stage left green evidence for the same starting tree, "
+    "If the previous stage left green logs of the applicable check commands for the same starting tree, "
     "skip the before-run and cite that log for each applicable check command."
 )
 FOLLOWUP_BEFORE_DUTY = (
@@ -62,6 +62,20 @@ def duties_section(text: str) -> str:
 
 
 class RenderFunction(unittest.TestCase):
+    def test_path_only_evidence_bullets_for_every_harness_and_pass(self):
+        instruction = (
+            "Each `evidence:` or `cited:` bullet must contain only the path after the label, "
+            "with no trailing annotations; put the command and outcome on a separate bullet."
+        )
+        cases = [(role, "") for role in render_prompt.ROLES] + [("implement", FOLLOWUP_ITEMS)]
+        for harness in ("claude-code", "codex", "other-harness"):
+            for role, followup in cases:
+                with self.subTest(harness=harness, role=role, followup=bool(followup)):
+                    prompt = self.render(role, harness) if not followup else render_prompt.render(
+                        role, "ISSUE-001", ISSUE, {}, harness=harness, followup=followup,
+                    )
+                    self.assertEqual(prompt.count(instruction), 1)
+
     def test_issue_body_chooses_fence_and_keeps_following_sections(self):
         from test_parse_report import items_fixture
         markdown = ISSUE + "\n```python\nthree\n```\n````text\nfour\n````\n"
@@ -159,7 +173,8 @@ class RenderFunction(unittest.TestCase):
                             self.assertIn("Do not run any test suite", duties)
                         else:
                             expected, other = "python3 check.py", "python3 targeted.py"
-                            self.assertIn(f"Full applicable suite for this role:\n  - `{expected}`", duties)
+                            label = "Canonical commands for orientation and fallback" if role == "implement" and not followup else "Full applicable suite for this role"
+                            self.assertIn(f"{label}:\n  - `{expected}`", duties)
                             self.assertNotIn(f"`{other}`", duties)
 
     def test_role_test_duties_and_evidence_for_every_harness(self):
@@ -167,14 +182,14 @@ class RenderFunction(unittest.TestCase):
             for role in render_prompt.ROLES:
                 with self.subTest(role=role, harness=harness):
                     text = self.render(role, harness)
-                    for phrase in (
+                    for phrase in () if role == "implement" else (
                         "These role-specific test duties override the embedded README wording",
                         "one after another, never in parallel",
                         "never substitute a different suite",
                         "one wrapper log per applicable check command",
                         "without evidence there is no advance",
                         "- cited: artifacts/<earlier-stage>/check-<hash>.log",
-                        "path relative to the run directory",
+                        "wrapper's reported path unchanged",
                         f"python3 {render_prompt.script_path('run_check.py')} ",
                         "write each single quote inside it as",
                         "--artifact-dir", "--command",
@@ -183,7 +198,12 @@ class RenderFunction(unittest.TestCase):
                     self.assertNotIn("Use the canonical check commands declared in the tracker ground rules as the baseline suite", text)
                     self.assertNotIn("run the baseline suite before and after", text)
                     if role == "implement":
-                        self.assertIn("At the end, run the full applicable suite", text)
+                        self.assertNotIn("Canonical commands for orientation and fallback", text)
+                        self.assertIn("exactly one `- selection:` bullet", text)
+                        self.assertIn("At least one named green own run", text)
+                        self.assertIn("Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged", text)
+                        self.assertNotIn("byte-for-byte", duties_section(text))
+                        self.assertNotIn("never substitute a different suite", duties_section(text))
                         self.assertIn("verify at least one fails without the change", text)
                         self.assertIn("execute the changed path end-to-end", text)
                     elif role == "simplify":
@@ -544,7 +564,7 @@ class RenderCli(unittest.TestCase):
                     text = out.read_text(encoding="utf-8")
                     self.assertIn(f"Worker artifact directory: `{expected}`", text)
                     self.assertIn(
-                        f"python3 {SCRIPT_DIR / 'run_check.py'} --artifact-dir {expected} --command '<declared check command>'",
+                        f"python3 {SCRIPT_DIR / 'run_check.py'} --artifact-dir {expected} --command '<chosen command>'",
                         text,
                     )
 
@@ -557,9 +577,9 @@ class RenderCli(unittest.TestCase):
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(LEGACY_GROUND_RULES, prompt)
         self.assertIn("These role-specific test duties override the embedded README wording", prompt)
-        self.assertIn("At the end, run the full applicable suite", prompt)
+        self.assertIn("Canonical commands for orientation and fallback", prompt)
         self.assertIn("one after another, never in parallel", prompt)
-        self.assertIn("- cited: artifacts/<earlier-stage>/check-<hash>.log", prompt)
+        self.assertIn("- evidence: <path>", prompt)
 
     def test_cli_ignores_targeted_suite_and_keeps_verbatim_rules(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:\n  - `python3 targeted.py`"
@@ -569,7 +589,7 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(rules, prompt)
-        self.assertIn("Full applicable suite for this role:\n  - `python3 check.py`", prompt)
+        self.assertIn("Canonical commands for orientation and fallback:\n  - `python3 check.py`", prompt)
 
     def test_cli_accepts_empty_targeted_declaration(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:"
@@ -579,7 +599,7 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(rules, prompt)
-        self.assertIn("Full applicable suite for this role:\n  - `python3 check.py`", prompt)
+        self.assertIn("Canonical commands for orientation and fallback:\n  - `python3 check.py`", prompt)
 
     def test_cli_refuses_placeholder_canonical_declaration_without_traceback(self):
         rules = ("- Canonical check commands:\n  - `<TODO: canonical test command>`\n"
