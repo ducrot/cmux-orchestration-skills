@@ -228,7 +228,7 @@ class ProposalCli(CliCase):
             self.assertEqual(self.events(), b'')
 
     def test_workflow_scope(self):
-        self.state.update(workflow='grilling', deliverables={'markdown': str(self.repo/'f*'), 'json': str(self.repo/'fx')})
+        self.state.update(workflow='grilling', feature_dir=str(self.repo/'.scratch/2026-10-28-test'), deliverables={'markdown': str(self.repo/'f*'), 'json': str(self.repo/'fx')})
         self.save()
         self.assertNotEqual(self.cli().returncode, 0)
         result = self.cli('--unresolved', 'Q1', files=['fx', 'f*'])
@@ -260,7 +260,7 @@ class ProposalCli(CliCase):
 
 class CommitCli(CliCase):
     def grilling(self, mode='commit'):
-        self.state.update(workflow='grilling', commit_mode=mode,
+        self.state.update(workflow='grilling', feature_dir=str(self.repo/'.scratch/2026-10-28-test'), commit_mode=mode,
                           deliverables={'markdown': str(self.repo/'f*'), 'json': str(self.repo/'fx')})
         self.save()
 

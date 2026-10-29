@@ -89,7 +89,7 @@ Open the target repository in cmux and ask your agent to use the relevant skill.
 
 > Use cmux-planning to plan CSV export for the orders list. Ground the specification in this repository and prepare a local issue tracker for my approval.
 
-> Use cmux-issue-chain to implement ISSUE-001 from .scratch/orders-export. Follow the tracker's acceptance criteria and canonical check commands.
+> Use cmux-issue-chain to implement ISSUE-001 from .scratch/2026-10-28-orders-export. Follow the tracker's acceptance criteria and canonical check commands.
 
 On first use, the orchestrator creates `.scratch/orchestrator/agents.json`, shows the assignments for all three workflows, and asks whether to start or pause for edits. An existing valid schema-v3 file needs no start confirmation. Worker startup checks the configured executables, CLI capabilities, and local authentication.
 
@@ -103,11 +103,28 @@ Give it a task or plan and any constraints already settled. The orchestrator ask
 
 The research ends when the round budget is spent or no relevant open question remains. It produces a Markdown + JSON pair containing assumptions and open decisions. You then review the assumptions and walk through the open decisions; the artifacts are updated with those outcomes. Research is autonomous, while the closing review involves you.
 
+Before a fresh Grilling init, the orchestrator proposes today's local date and a short slug
+and asks for feature-name approval in the same dialog as commit mode. Supplied `--feature`,
+resume, re-init and smoke tests skip name approval. Init leaves the feature folder uncreated;
+finalize writes the timestamped pair to its `grilling/` folder.
+
 [Workflow and artifact details](cmux-grilling/SKILL.md). A separate interactive grilling skill, where you answer every research question, is not bundled here.
 
 ### cmux-planning: approve a specification and tracker
 
 Start with a task, optionally accompanied by a grilling artifact pair that you explicitly revalidate.
+Without grilling input, choose a fresh run, then approve a feature folder name in the same dialog as
+commit mode. The proposal uses today's local date and a short slug: `.scratch/YYYY-MM-DD-<slug>`.
+An explicit `--feature` skips the name question, as do resume, re-init, the unfinished-run path and
+smoke tests. Init freezes the folder and pure tracker slug. Ticket approval derives its publication
+target from that folder without a target-path question. Targets may be absent or contain only a real
+`grilling/` directory (variant B). Other entries, symlinks and initially empty targets are refused.
+Publication moves `grilling/` into staging, removes the empty target, then renames staging atomically.
+Status identifies the grilling location in all four recovery states: grilling-only target plus staging,
+empty target plus staging with grilling, absent target plus staging with grilling, and published tracker
+with grilling. `publish` completes each after checking identities; duplicate grilling locations refuse.
+The commit proposal includes only tracker artifacts. Same-feature re-init preserves interrupted and completed
+publication; a different feature is refused.
 
 1. A fresh author inspects the repository and writes a specification.
 2. A fresh independent reviewer checks it and records what was checked and the outcome. Safe corrections are validated and shown to you.
@@ -155,6 +172,16 @@ Claude model names are provider aliases. These assignments describe the shipped 
 
 Use the installed skill's `scripts/agents_config.py validate` and `show-resolved` commands to inspect configuration. Typed profile, CLI, model, effort, and executable overrides are supported; runtime safety policies remain code-owned. See the [configuration reference](cmux-issue-chain/references/configuration.md) for commands, precedence, profiles, and probes.
 
+Lifecycle `init` writes a self-ignoring `.gitignore` containing `*` and a newline to
+`.scratch/orchestrator/.gitignore` when the resolved runs root is the repository's standard
+`.scratch/orchestrator/runs`. This ignores runs, `.scratch/orchestrator/agents.json`, and all
+other orchestrator internals. A new worker configuration must be added with `git add -f` to
+version it; an already tracked configuration remains tracked. With a custom `--runs-root`,
+the ignore file lives inside that runs root (even if it is named `runs`), and its parent is
+unchanged. Existing ignore files are never overwritten; a deleted file is restored on the
+next initialization. A legacy `.gitignore` inside the standard runs root is left untouched.
+Configuration management commands never change ignore rules.
+
 ### Upgrading an existing configuration
 
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
@@ -169,9 +196,9 @@ Workers run in visible cmux panes. The launch command carries a start prompt ins
 
 Structured reports gate advancement, and Git snapshots support checks for unauthorized changes, including staged changes and commits. Coverage has limits, including ignored files and some untracked content; see the [integrity boundaries](cmux-planning/SKILL.md#ground-rules) for the exact scope. A clean report alone does not establish that a stage is safe to advance.
 
-All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Grilling results live beside the selected tracker or in `.scratch/grilling/`; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
+All three workflows store prompts, reports, events, snapshots, and task artifacts under `.scratch/orchestrator/runs/<run-id>/`. Run state records the workflow and its deliverables. Default run names use `YYYY-MM-DD-HHMM-<skill>-<key>` in local time, with `grill`, `plan`, and `chain` as the skill keys. Issue-chain requires a valid dated tracker folder wherever it lives; its default run name is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-issue-NNN`. Run-state and event timestamps remain UTC. Explicit `--run-id` values are preserved. New runs store `layout_version: 2`. Grilling requires an approved `--feature YYYY-MM-DD-<slug>` folder directly in repository `.scratch/`, freezes its path and local minute at init, and creates `<feature>/grilling/<timestamp>.md` and `.json` only at finalize, beside any tracker or earlier pairs; planning publishes a tracker; issue-chain updates the selected issue. There is no automatic handoff between workflows.
 
-Legacy run layouts remain inspectable read-only. Follow the relevant skill's recovery guidance before continuing an older run.
+Older run layouts remain readable with `status` and refuse continuation with “unsupported legacy layout”. Follow the relevant skill's recovery guidance before continuing an older run.
 
 ## Tokenverbrauch messen
 

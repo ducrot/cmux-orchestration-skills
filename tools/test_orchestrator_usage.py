@@ -57,18 +57,29 @@ class WorkflowDetection(unittest.TestCase):
 
     def test_mixed_session_counts_where_it_touched_a_run_of_the_workflow(self):
         commands = ("S=/x/cmux-planning/scripts; T=/x/cmux-grilling/scripts",
-                    "python3 $S/run_state.py event --run-dir .scratch/orchestrator/runs/plan-demo-1")
+                    "python3 $S/run_state.py event --run-dir .scratch/orchestrator/runs/2026-09-13-1000-plan-demo-1")
         self.assertTrue(ou.is_orchestrator(evidence_for(PLANNING, *commands)))
         self.assertFalse(ou.is_orchestrator(evidence_for(GRILLING, *commands)))
 
-    def test_run_prefix_attributes_runs(self):
-        self.assertTrue(PLANNING.owns_run("plan-demo-2026-09-22-1702"))
-        self.assertTrue(GRILLING.owns_run("grill-demo"))
-        self.assertTrue(CHAIN.owns_run("chain-issue-001"))
-        for run in ("plan-demo", "grill-demo"):
-            self.assertFalse(CHAIN.owns_run(run))
-        self.assertFalse(PLANNING.owns_run("grill-demo"))
-        self.assertFalse(GRILLING.owns_run("chain-issue-001"))
+    def test_date_first_run_names_attribute_exactly_one_workflow_without_state(self):
+        examples = {
+            "2026-10-05-1533-grill-x": "grilling",
+            "2026-10-05-1820-plan-x": "planning",
+            "2026-10-07-0541-chain-x-issue-003": "issue-chain",
+        }
+        with patch.object(ou, "read_run_state", side_effect=AssertionError("state read")):
+            for run, expected in examples.items():
+                with self.subTest(run=run):
+                    self.assertEqual([w.name for w in ou.WORKFLOWS.values() if w.owns_run(run)],
+                                     [expected])
+
+    def test_legacy_smoke_and_malformed_run_names_have_no_workflow(self):
+        for run in ("grill-demo", "plan-demo-2026-09-22-1702", "chain-issue-001",
+                    "chain-issue-001-2026-10-05-1251", "smoke", "",
+                    "2026-10-05-1533-other-x", "2026-10-05-1533-grill-",
+                    "2026-10-05-153-grill-x", "prefix-2026-10-05-1533-plan-x"):
+            with self.subTest(run=run):
+                self.assertFalse(any(w.owns_run(run) for w in ou.WORKFLOWS.values()))
 
     def test_quoted_invocation_is_discussion_not_execution(self):
         command = "grep -n 'python3 cmux-grilling/scripts/launch_wave.py' README.md"
@@ -164,10 +175,50 @@ class ClaudeSessions(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "session.jsonl"
 
+    def test_cli_classifies_transcripts_without_run_directories(self):
+        root = Path(self.temp.name)
+        project = root / "claude" / "project"
+        project.mkdir(parents=True)
+        examples = {
+            "2026-10-05-1533-grill-x": GRILLING,
+            "2026-10-05-1820-plan-x": PLANNING,
+            "2026-10-07-0541-chain-x-issue-003": CHAIN,
+            "grill-demo": GRILLING,
+            "chain-issue-001-2026-10-05-1251": CHAIN,
+            "smoke": CHAIN,
+        }
+        for index, (run, workflow) in enumerate(examples.items()):
+            write_transcript(project / f"session-{index}.jsonl", [
+                f"python3 {workflow.subdir}/scripts/run_state.py init "
+                f"--run-dir .scratch/orchestrator/runs/{run}"])
+        repository = Path(__file__).resolve().parents[1]
+        script = (
+            "import sys; from pathlib import Path; "
+            f"sys.path.insert(0, {str(repository / 'tools')!r}); "
+            "import orchestrator_usage as ou; "
+            f"ou.CLAUDE_PROJECTS = Path({str(root / 'claude')!r}); "
+            f"ou.CODEX_SESSIONS = Path({str(root / 'absent')!r}); "
+            f"ou.SKILL_REPO = Path({str(repository)!r}); "
+            "raise SystemExit(ou.main())"
+        )
+        for workflow in (CHAIN, PLANNING, GRILLING):
+            with self.subTest(workflow=workflow.name):
+                out = root / workflow.name
+                result = subprocess.run(
+                    [sys.executable, "-c", script, "--workflow", workflow.name,
+                     "--registry", str(root / "absent-registry"), "--no-cache", "--out", str(out)],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                with (out / "orchestrator-usage-runs.csv").open() as fh:
+                    rows = list(csv.DictReader(fh))
+                self.assertEqual([r["run_id"] for r in rows],
+                                 [run for run, owner in examples.items()
+                                  if owner is workflow and run.startswith("2026-")])
+
     def test_watcher_then_report_capture_does_not_inflate_wait_count(self):
         write_transcript(self.path, [
-            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/chain-demo",
-            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/chain-demo",
+            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/2026-09-13-1000-chain-demo",
+            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/2026-09-13-1000-chain-demo",
             'python3 $S/run_state.py snapshot --label "report-captured review-1"',
             'python3 $S/run_state.py event --message "launch and capture snapshots agree"',
         ])
@@ -177,8 +228,8 @@ class ClaudeSessions(unittest.TestCase):
 
     def test_watcher_then_quoted_screen_reads_count_as_waits(self):
         write_transcript(self.path, [
-            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/chain-demo",
-            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/chain-demo",
+            "python3 cmux-issue-chain/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/2026-09-13-1000-chain-demo",
+            "python3 $S/await_report.py --run-dir .scratch/orchestrator/runs/2026-09-13-1000-chain-demo",
             'screen="$(cmux read-screen --surface s)"',
             'bash -c "cmux read-screen --surface s"',
             "bash -c 'cmux capture-pane --surface s'",
@@ -190,18 +241,18 @@ class ClaudeSessions(unittest.TestCase):
 
     def test_grilling_session_is_selected_only_for_grilling(self):
         write_transcript(self.path, [
-            "python3 cmux-grilling/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/grill-demo",
+            "python3 cmux-grilling/scripts/run_state.py init --run-dir .scratch/orchestrator/runs/2026-09-13-1000-grill-demo",
         ])
         session = ou.parse_claude(self.path, GRILLING)
         self.assertIsNotNone(session)
-        self.assertEqual(session["run_ids"], ["grill-demo"])
+        self.assertEqual(session["run_ids"], ["2026-09-13-1000-grill-demo"])
         self.assertIsNone(ou.parse_claude(self.path, CHAIN))
         self.assertIsNone(ou.parse_claude(self.path, PLANNING))
 
     def test_worker_session_is_never_an_orchestrator(self):
         write_transcript(
             self.path, ["python3 cmux-grilling/scripts/run_state.py status"],
-            first_user="Your round task is in .scratch/orchestrator/runs/grill-demo/prompts/round-1-web.md.")
+            first_user="Your round task is in .scratch/orchestrator/runs/2026-09-13-1000-grill-demo/prompts/round-1-web.md.")
         self.assertIsNone(ou.parse_claude(self.path, GRILLING))
 
 
@@ -210,7 +261,7 @@ class GrillingFixture(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        run_dir = self.root / ".scratch" / "orchestrator" / "runs" / "grill-demo"
+        run_dir = self.root / ".scratch" / "orchestrator" / "runs" / "2026-09-13-1000-grill-demo"
         (run_dir / "reports").mkdir(parents=True)
         for name in ("round-1-web", "round-1-docs", "round-2-web", "round-2-docs", "notes"):
             (run_dir / "reports" / f"{name}.md").write_text("x", encoding="utf-8")
@@ -226,7 +277,7 @@ class GrillingFixture(unittest.TestCase):
     def call(self, minute, total):
         call = ou.Call(f"2026-09-13T10:0{minute}:00+00:00", total, 0, 0, 0, None)
         call.category = "other-bash"
-        call.run_id = "grill-demo"
+        call.run_id = "2026-09-13-1000-grill-demo"
         return call
 
 
@@ -243,7 +294,7 @@ class RegistryIdentity(GrillingFixture):
     def register(self, *entries):
         self.registry.write_text("\n".join(map(json.dumps, entries)))
 
-    def session(self, minute=1, cwd=None, run="grill-demo"):
+    def session(self, minute=1, cwd=None, run="2026-09-13-1000-grill-demo"):
         call = self.call(minute, 100)
         call.run_id = run
         session = ou.parsed_session("claude", run, "p", str(cwd or self.root), [call], [], [run])
@@ -290,7 +341,7 @@ class RegistryIdentity(GrillingFixture):
 
     def test_time_match_identity_survives_windows_and_aggregation(self):
         self.register(self.entry(), self.entry("two", created="2026-09-13T10:02:00Z"))
-        sessions = [self.session(1), self.session(3, run="grill-second")]
+        sessions = [self.session(1), self.session(3, run="2026-09-13-1000-grill-second")]
         ou.assign_testbed_identity(sessions, self.registry)
         windows = ou.owned_session_windows(sessions, GRILLING)
         self.assertEqual([s["registry_entry_id"] for s in windows], ["one", "two"])
@@ -325,7 +376,7 @@ class RegistryIdentity(GrillingFixture):
         for index, (cwd, minute) in enumerate(zip(cwds, minutes)):
             path = transcripts / f"{index}.jsonl"
             write_transcript(path, ["python3 cmux-grilling/scripts/run_state.py init "
-                                    "--run-dir .scratch/orchestrator/runs/grill-demo"])
+                                    "--run-dir .scratch/orchestrator/runs/2026-09-13-1000-grill-demo"])
             records = [json.loads(line) for line in path.read_text().splitlines()]
             for record in records:
                 record["cwd"] = str(cwd)
@@ -346,7 +397,7 @@ class RegistryIdentity(GrillingFixture):
 
     def test_removed_target_uses_registry_root_without_ancestor_evidence(self):
         target = self.root / "removed"
-        (target / ".scratch/orchestrator/runs/grill-demo").mkdir(parents=True)
+        (target / ".scratch/orchestrator/runs/2026-09-13-1000-grill-demo").mkdir(parents=True)
         shutil.rmtree(target)
         self.register(self.entry(target=target))
         sessions = [self.session(cwd=target), self.session(cwd=target / "subdir")]
@@ -377,7 +428,7 @@ class RegistryIdentity(GrillingFixture):
                                    ("10:04:00", "report-captured test-1")):
                 fh.write("\n" + json.dumps(dict(type="tree.snapshot",
                     time=f"2026-09-13T{clock}Z", message=message)))
-        gap = self.run_dir.with_name("grill-gap")
+        gap = self.run_dir.with_name("2026-09-13-1000-grill-gap")
         gap.mkdir()
         (gap / "state.json").write_text("{}")
         sessions = [self.session(1), self.session(3)]
@@ -385,16 +436,16 @@ class RegistryIdentity(GrillingFixture):
         windows = ou.owned_session_windows(sessions, GRILLING)
         rows = ou.aggregate_runs(windows, GRILLING)
         by_key = {(r["registry_entry_id"], r["run_id"]): r for r in rows}
-        self.assertEqual(set(by_key), {("one", "grill-demo"),
-                                      ("two", "grill-demo"), ("two", "grill-gap")})
-        old, current = by_key["one", "grill-demo"], by_key["two", "grill-demo"]
+        self.assertEqual(set(by_key), {("one", "2026-09-13-1000-grill-demo"),
+                                      ("two", "2026-09-13-1000-grill-demo"), ("two", "2026-09-13-1000-grill-gap")})
+        old, current = by_key["one", "2026-09-13-1000-grill-demo"], by_key["two", "2026-09-13-1000-grill-demo"]
         self.assertEqual((old["calls"], old["tokens_total"], old["coverage"]),
                          (1, 100, "no-run-state"))
         self.assertEqual(old["stage_timings"], [])
         self.assertEqual(current["wall_worker_minutes"], 1.0)
         # An old-only selection must never scan the replacement's gap directory.
         self.assertEqual(len(ou.aggregate_runs(windows[:1], GRILLING)), 1)
-        worker = dict(sessions[0], worker_runs=["grill-demo"])
+        worker = dict(sessions[0], worker_runs=["2026-09-13-1000-grill-demo"])
         ou.add_worker_usage(rows, [worker], GRILLING)
         self.assertEqual(old["worker_tokens"], 100)
         self.assertEqual(current["worker_tokens"], 0)
@@ -407,7 +458,7 @@ class RegistryIdentity(GrillingFixture):
 
         tables = self.cli_incarnation_rows([self.root, self.root / "subdir"], [1, 3])
         self.assertEqual([(r["registry_entry_id"], r["run_id"]) for r in tables["runs"]],
-                         [("one", "grill-demo"), ("two", "grill-demo"), ("two", "grill-gap")])
+                         [("one", "2026-09-13-1000-grill-demo"), ("two", "2026-09-13-1000-grill-demo"), ("two", "2026-09-13-1000-grill-gap")])
         self.assertEqual([r["coverage"] for r in tables["runs"]],
                          ["no-run-state", "orchestrator-session", "missing"])
         self.assertEqual([r["registry_entry_id"] for r in tables["stages"]], ["two"])
@@ -428,7 +479,7 @@ class RegistryIdentity(GrillingFixture):
         for index, (bed, version, scenario, state) in enumerate((
                 ("timer", "1", "money", "abc-dirty"), ("other", "2", "vat", "abc"))):
             target = self.root / str(index)
-            run = f"grill-{index}"
+            run = f"2026-09-13-1000-grill-{index}"
             directory = target / ".scratch/orchestrator/runs" / run
             directory.mkdir(parents=True)
             events = [{"type": "run.init", "time": "2026-09-13T10:00:00Z"},
@@ -504,13 +555,76 @@ class GrillingRounds(GrillingFixture):
         calls = [self.call(0, 100)]
         session = ou.build_session("claude", "s1", "p", str(self.root), calls)
         self.assertEqual(ou.aggregate_runs([session], PLANNING), [])
+        self.assertEqual(ou.aggregate_runs([session]), [])
+        calls[0].run_id = "2026-09-13-1000-chain-demo"
+        session = ou.build_session("claude", "s1", "p", str(self.root), calls)
         chain_rows = ou.aggregate_runs([session])
         self.assertTrue(chain_rows)
         self.assertNotIn("session_start_calls", chain_rows[0])
 
 
 class RunAttribution(GrillingFixture):
-    def events(self, run="grill-demo", **kwargs):
+    def test_chain_summary_excludes_sessions_with_only_foreign_or_legacy_runs(self):
+        chain = "2026-10-07-0541-chain-x-issue-003"
+
+        def session(run, tokens):
+            call = self.call(1, tokens)
+            call.run_id = run
+            result = ou.build_session("claude", run, "p", str(self.root), [call])
+            result.update(skill_commit="test1234", skill_commit_date="2026-10-07",
+                          skill_md_bytes=100)
+            return result
+
+        owner = session(chain, 100)
+        for foreign in ("2026-10-05-1533-grill-x", "2026-10-05-1820-plan-x",
+                        "chain-issue-001-2026-10-05-1251"):
+            with self.subTest(run=foreign):
+                with contextlib.redirect_stdout(io.StringIO()) as expected:
+                    ou.print_summary([owner], [], CHAIN)
+                with contextlib.redirect_stdout(io.StringIO()) as actual:
+                    ou.print_summary([owner, session(foreign, 900)], [], CHAIN)
+                expected_row = next(line for line in expected.getvalue().splitlines()
+                                    if line.startswith("test1234"))
+                actual_row = next(line for line in actual.getvalue().splitlines()
+                                  if line.startswith("test1234"))
+                self.assertEqual(actual_row, expected_row)
+                self.assertEqual(actual_row.split()[3:5], ["1", "1"])
+
+    def test_empty_chain_directory_does_not_create_a_gap_row(self):
+        runs = self.root / ".scratch/orchestrator/runs"
+        empty = runs / "2026-10-07-0541-chain-empty"
+        empty.mkdir()
+        real = runs / "2026-10-07-0541-chain-real"
+        real.mkdir()
+        (real / "events.jsonl").write_text("")
+        session = ou.build_session("claude", "s1", "p", str(self.root), [self.call(1, 10)])
+        rows = ou.aggregate_runs([session], CHAIN)
+        self.assertEqual([row["run_id"] for row in rows], [real.name])
+        self.assertEqual(rows[0]["coverage"], "missing")
+
+    def test_gap_detection_uses_names_even_when_state_claims_another_workflow(self):
+        examples = {
+            "2026-10-05-1533-grill-x": GRILLING,
+            "2026-10-05-1820-plan-x": PLANNING,
+            "2026-10-07-0541-chain-x-issue-003": CHAIN,
+            "grill-demo": None,
+            "chain-issue-001-2026-10-05-1251": None,
+            "smoke": None,
+        }
+        for run in examples:
+            directory = self.root / ".scratch/orchestrator/runs" / run
+            directory.mkdir()
+            (directory / "state.json").write_text(json.dumps({"workflow": "planning"}))
+        session = ou.build_session("claude", "s1", "p", str(self.root), [self.call(1, 10)])
+        for workflow in (CHAIN, PLANNING, GRILLING):
+            with self.subTest(workflow=workflow.name):
+                rows = ou.aggregate_runs([session], workflow)
+                expected = {run for run, owner in examples.items() if owner is workflow}
+                if workflow is GRILLING:
+                    expected.add(self.run_dir.name)
+                self.assertEqual({row["run_id"] for row in rows}, expected)
+
+    def events(self, run="2026-09-13-1000-grill-demo", **kwargs):
         directory = self.root / ".scratch/orchestrator/runs" / run
         directory.mkdir(parents=True, exist_ok=True)
         events = [{"type": "run.init", "time": "2026-09-13T10:01:00Z"},
@@ -540,7 +654,7 @@ class RunAttribution(GrillingFixture):
 
     def test_mentions_do_not_own_and_windows_exclude_unrelated_work(self):
         self.events()
-        sessions = ou.owned_session_windows([self.parsed(["grill-demo"]), self.parsed([], "analysis")], GRILLING)
+        sessions = ou.owned_session_windows([self.parsed(["2026-09-13-1000-grill-demo"]), self.parsed([], "analysis")], GRILLING)
         self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0]["calls"], 4)
         [row] = ou.aggregate_runs(sessions, GRILLING)
@@ -557,10 +671,10 @@ class RunAttribution(GrillingFixture):
 
     def test_multiple_runs_and_open_window(self):
         self.events()
-        second = self.events("plan-second")
+        second = self.events("2026-09-13-1000-plan-second")
         path = second / "events.jsonl"
         path.write_text(path.read_text().replace("10:01", "10:05").replace("10:04", "10:06"))
-        session = self.parsed(["grill-demo", "plan-second"])
+        session = self.parsed(["2026-09-13-1000-grill-demo", "2026-09-13-1000-plan-second"])
         self.assertEqual(ou.owned_session_windows([session], GRILLING)[0]["calls"], 4)
         self.assertEqual(ou.owned_session_windows([session], PLANNING)[0]["calls"], 2)
         path = self.run_dir / "events.jsonl"
@@ -573,9 +687,9 @@ class RunAttribution(GrillingFixture):
         events = [json.loads(l) for l in path.read_text().splitlines()]
         events[1]["message"]["content"][0]["id"] = "init"
         events += [{"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/grill-demo"}]}}]
+            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/2026-09-13-1000-grill-demo"}]}}]
         path.write_text("\n".join(map(json.dumps, events)))
-        self.assertEqual(ou.parse_claude(path, GRILLING)["owned_runs"], ["grill-demo"])
+        self.assertEqual(ou.parse_claude(path, GRILLING)["owned_runs"], ["2026-09-13-1000-grill-demo"])
         self.assertFalse(ou.executed_init("grep 'python3 cmux-grilling/scripts/run_state.py init' log"))
         self.assertEqual(ou.owned_session_windows([self.parsed([])], GRILLING), [])
 
@@ -585,13 +699,13 @@ class RunAttribution(GrillingFixture):
         events = [json.loads(l) for l in path.read_text().splitlines()]
         events[1]["message"]["content"][0]["id"] = "init"
         events += [{"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/plan-demo"}]}}]
+            {"type": "tool_result", "tool_use_id": "init", "content": ".scratch/orchestrator/runs/2026-09-13-1000-plan-demo"}]}}]
         path.write_text("\n".join(map(json.dumps, events)))
-        self.assertEqual(ou.parse_claude(path, PLANNING)["owned_runs"], ["plan-demo"])
+        self.assertEqual(ou.parse_claude(path, PLANNING)["owned_runs"], ["2026-09-13-1000-plan-demo"])
         self.assertFalse(ou.executed_init("python3 cmux-planning/scripts/planning_state.py status"))
 
     def worker(self, harness, workflow, prompt_name):
-        run = {"grilling": "grill-demo", "planning": "plan-demo", "issue-chain": "chain-demo"}[workflow.name]
+        run = {"grilling": "2026-09-13-1000-grill-demo", "planning": "2026-09-13-1000-plan-demo", "issue-chain": "2026-09-13-1000-chain-demo"}[workflow.name]
         prompt = f"Your standing contract is in .scratch/orchestrator/runs/{run}/prompts/{prompt_name}.md."
         path = self.root / f"{harness}.jsonl"
         if harness == "claude":
@@ -630,7 +744,7 @@ class RunAttribution(GrillingFixture):
     def test_worker_totals_and_round_question_denominators(self):
         self.events()
         workers = [self.worker(h, GRILLING, "session-docs") for h in ("claude", "codex")]
-        rows = ou.aggregate_runs(ou.owned_session_windows([self.parsed(["grill-demo"])], GRILLING), GRILLING)
+        rows = ou.aggregate_runs(ou.owned_session_windows([self.parsed(["2026-09-13-1000-grill-demo"])], GRILLING), GRILLING)
         ou.add_worker_usage(rows, workers, GRILLING)
         row = rows[0]
         self.assertEqual(row["harnesses"], "claude")
@@ -652,12 +766,12 @@ class RunAttribution(GrillingFixture):
                 path = self.root / f"{harness}.jsonl"
                 text = path.read_text().replace(
                     "session-docs.md.",
-                    "session-docs.md. Read .scratch/orchestrator/runs/grill-reference/reports/round-1.md "
-                    "and .scratch/orchestrator/runs/plan-reference/events.jsonl for context.")
+                    "session-docs.md. Read .scratch/orchestrator/runs/2026-09-13-1000-grill-reference/reports/round-1.md "
+                    "and .scratch/orchestrator/runs/2026-09-13-1000-plan-reference/events.jsonl for context.")
                 path.write_text(text)
                 parser = ou.parse_claude if harness == "claude" else ou.parse_codex
                 session = parser(path, GRILLING, include_workers=True)
-                self.assertEqual(session["worker_runs"], ["grill-demo"])
+                self.assertEqual(session["worker_runs"], ["2026-09-13-1000-grill-demo"])
 
     def test_codex_worker_prompt_shares_message_with_agents_and_environment(self):
         self.worker("codex", GRILLING, "session-docs")
@@ -668,23 +782,23 @@ class RunAttribution(GrillingFixture):
         path.write_text("\n".join(map(json.dumps, events)))
         self.assertIsNone(ou.parse_codex(path, GRILLING))
         session = ou.parse_codex(path, GRILLING, include_workers=True)
-        self.assertEqual(session["worker_runs"], ["grill-demo"])
+        self.assertEqual(session["worker_runs"], ["2026-09-13-1000-grill-demo"])
         self.assertEqual(ou.owned_session_windows([session], GRILLING), [])
 
     def test_missing_state_window_keeps_calls_until_next_run_mention(self):
         calls = [self.call(i, 10 * (i + 1)) for i in range(7)]
-        for call, run in zip(calls, (None, "grill-missing", None, None,
-                                     "grill-other", None, None)):
+        for call, run in zip(calls, (None, "2026-09-13-1000-grill-missing", None, None,
+                                     "2026-09-13-1000-grill-other", None, None)):
             call.run_id = run
         session = ou.parsed_session("claude", "owner", "p", str(self.root), calls,
-                                    [], ["grill-missing", "grill-other"])
+                                    [], ["2026-09-13-1000-grill-missing", "2026-09-13-1000-grill-other"])
         windows = ou.owned_session_windows([session], GRILLING)
         self.assertEqual(len(windows), 2)
         by_run = {s["run_ids"][0]: s for s in windows}
-        self.assertEqual(by_run["grill-missing"]["calls"], 3)
-        self.assertEqual(by_run["grill-missing"]["tokens_total"], 90)
-        self.assertEqual(by_run["grill-other"]["calls"], 3)
-        self.assertEqual(by_run["grill-other"]["tokens_total"], 180)
+        self.assertEqual(by_run["2026-09-13-1000-grill-missing"]["calls"], 3)
+        self.assertEqual(by_run["2026-09-13-1000-grill-missing"]["tokens_total"], 90)
+        self.assertEqual(by_run["2026-09-13-1000-grill-other"]["calls"], 3)
+        self.assertEqual(by_run["2026-09-13-1000-grill-other"]["tokens_total"], 180)
 
     def test_run_project_without_run_root_uses_cwd_project_name(self):
         with patch.object(ou, "project_root", return_value=None):
@@ -692,13 +806,13 @@ class RunAttribution(GrillingFixture):
 
     def test_start_summary_matches_both_session_id_and_run_id(self):
         self.events()
-        sessions = ou.owned_session_windows([self.parsed(["grill-demo"], "owner123-long")], GRILLING)
+        sessions = ou.owned_session_windows([self.parsed(["2026-09-13-1000-grill-demo"], "owner123-long")], GRILLING)
         rows = ou.aggregate_runs(sessions, GRILLING)
         rows[0]["start_mode"] = "new-start"
         # A different cwd/project must not break the row's explicit owner link.
         owner = dict(sessions[0], cwd="/unrelated/cwd", project="different-project")
         wrong_session = dict(owner, session_id="outsider-long", avg_context_per_call=900)
-        wrong_run = dict(owner, run_ids=["grill-other"], avg_context_per_call=700)
+        wrong_run = dict(owner, run_ids=["2026-09-13-1000-grill-other"], avg_context_per_call=700)
         with contextlib.redirect_stdout(io.StringIO()) as output:
             ou.print_start_summary([owner, wrong_session, wrong_run], rows, GRILLING)
         line = next(line for line in output.getvalue().splitlines() if line.startswith("new-start "))
@@ -714,19 +828,19 @@ class RunAttribution(GrillingFixture):
             {"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "call_id": "init",
              "arguments": json.dumps({"cmd": "python3 cmux-grilling/scripts/run_state.py init --slug demo"})}},
             {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "init",
-             "output": ".scratch/orchestrator/runs/grill-demo"}},
+             "output": ".scratch/orchestrator/runs/2026-09-13-1000-grill-demo"}},
             {"type": "event_msg", "timestamp": "2026-09-13T10:02:00Z",
              "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "total_tokens": 100}}}},
         ]
         path.write_text("\n".join(map(json.dumps, events)))
         self.events()
         session = ou.parse_codex(path, GRILLING)
-        self.assertEqual(session["owned_runs"], ["grill-demo"])
+        self.assertEqual(session["owned_runs"], ["2026-09-13-1000-grill-demo"])
         self.assertEqual(ou.owned_session_windows([session], GRILLING)[0]["tokens_total"], 100)
 
     def test_start_summary_has_separate_modes_and_worker_medians(self):
         self.events()
-        sessions = ou.owned_session_windows([self.parsed(["grill-demo"])], GRILLING)
+        sessions = ou.owned_session_windows([self.parsed(["2026-09-13-1000-grill-demo"])], GRILLING)
         rows = ou.aggregate_runs(sessions, GRILLING)
         ou.add_worker_usage(rows, [], GRILLING)
         rows = [dict(rows[0], start_mode=mode) for mode in ("old-start", "new-start", "mixed")]
@@ -743,7 +857,7 @@ class RunAttribution(GrillingFixture):
         self.events()
         with (self.run_dir / "events.jsonl").open("a") as fh:
             fh.write("\n" + json.dumps({"type": "worker.launch_sent", "data": {"prompt_path": "p"}}))
-        with patch.object(ou, "scan", return_value=[self.parsed(["grill-demo"])]), \
+        with patch.object(ou, "scan", return_value=[self.parsed(["2026-09-13-1000-grill-demo"])]), \
              patch.object(ou, "CLAUDE_PROJECTS", self.root), \
              patch.object(ou, "CODEX_SESSIONS", self.root / "absent"), \
              patch.object(ou, "assign_skill_version"), contextlib.redirect_stdout(io.StringIO()) as output:
@@ -794,7 +908,7 @@ class WallTime(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.run_dir = self.root / ".scratch/orchestrator/runs/chain-issue-001-demo"
+        self.run_dir = self.root / ".scratch/orchestrator/runs/2026-09-13-1000-chain-issue-001-demo"
         self.run_dir.mkdir(parents=True)
 
     def write_events(self, *events):
@@ -847,7 +961,7 @@ class WallTime(unittest.TestCase):
         (tracker / "README.md").write_text(
             f"## Ground rules\n\n- Canonical check commands:\n  - `{command}`\n")
         (self.run_dir / "state.json").write_text(json.dumps({
-            "workflow": "issue-chain", "layout_version": 1,
+            "workflow": "issue-chain", "layout_version": 2,
             "deliverables": {"tracker": str(tracker)},
         }))
         for script, args in (
@@ -865,7 +979,7 @@ class WallTime(unittest.TestCase):
         self.assertEqual(stage["suite_minutes_worker"], 2.0)
 
     def test_real_evidence_event_with_test_runner_in_run_path(self):
-        self.run_dir = self.run_dir.with_name("chain-pytest-demo")
+        self.run_dir = self.run_dir.with_name("2026-09-13-1000-chain-pytest-demo")
         self.run_dir.mkdir()
         self.test_real_evidence_event_counts_zero_orchestrator_suite_runs()
 
@@ -979,7 +1093,7 @@ class WallTime(unittest.TestCase):
             self.snapshot("10:07:00", "report-captured implement-1"),
         )
         call = ou.Call("2026-10-17T10:02:00+00:00", 100, 0, 0, 0, None)
-        call.category, call.run_id = "other-bash", "chain-issue-001-demo"
+        call.category, call.run_id = "other-bash", "2026-09-13-1000-chain-issue-001-demo"
         session = ou.build_session("claude", "s1", "p", str(self.root), [call])
         rows = ou.aggregate_runs([session])
         self.assertEqual(rows[0]["wall_implement_minutes"], 6.0)

@@ -435,7 +435,7 @@ class RenderCli(unittest.TestCase):
         self.repo = root / "repo"
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        issue_dir = self.repo / ".scratch" / "tracker" / "issues"
+        issue_dir = self.repo / ".scratch" / "2026-10-28-tracker" / "issues"
         issue_dir.mkdir(parents=True)
         (issue_dir / "ISSUE-001-prepared.md").write_text(ISSUE, encoding="utf-8")
         bin_dir = root / "bin"
@@ -470,13 +470,13 @@ class RenderCli(unittest.TestCase):
 
     def init(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return self.run_script(
-            RUN_STATE, "init", "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            RUN_STATE, "init", "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
             "--run-id", "render-run", "--runs-root", str(self.runs_root), "--workspace-id", "WORKSPACE", *extra,
         )
 
     def render(self, role: str, pass_num: int = 1) -> subprocess.CompletedProcess[str]:
         return self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
             "--role", role, "--pass", str(pass_num), "--run-dir", str(self.run_dir),
         )
 
@@ -489,13 +489,13 @@ class RenderCli(unittest.TestCase):
 
     def test_cli_delivers_issue_body_with_nested_fences(self):
         markdown = ISSUE + "\n```python\nthree\n```\n````text\nfour\n````\n"
-        (self.repo / ".scratch/tracker/issues/ISSUE-001-prepared.md").write_text(markdown)
+        (self.repo / ".scratch/2026-10-28-tracker/issues/ISSUE-001-prepared.md").write_text(markdown)
         initialized = self.init()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         context = self.repo / "context.md"
         context.write_text("Additional evidence\n")
         rendered = self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
             "--role", "implement", "--pass", "1", "--run-dir", str(self.run_dir),
             "--context-file", str(context))
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -526,7 +526,7 @@ class RenderCli(unittest.TestCase):
                         if custom_paths else ()
                     )
                     rendered = self.run_script(
-                        RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+                        RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
                         "--role", "implement", "--pass", str(pass_num),
                         "--run-dir", str(self.run_dir), *extra,
                     )
@@ -540,7 +540,7 @@ class RenderCli(unittest.TestCase):
                     )
 
     def test_cli_delivers_role_override_with_verbatim_legacy_readme(self):
-        (self.repo / ".scratch/tracker/README.md").write_text(f"# Tracker\n\n## Ground rules\n\n{LEGACY_GROUND_RULES}\n")
+        (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"# Tracker\n\n## Ground rules\n\n{LEGACY_GROUND_RULES}\n")
         initialized = self.init()
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
         rendered = self.render("implement")
@@ -554,7 +554,7 @@ class RenderCli(unittest.TestCase):
 
     def test_cli_delivers_targeted_suite_and_verbatim_rules(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:\n  - `python3 targeted.py`"
-        (self.repo / ".scratch/tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
+        (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
         self.assertEqual(self.init().returncode, 0)
         rendered = self.render("implement")
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
@@ -564,7 +564,7 @@ class RenderCli(unittest.TestCase):
 
     def test_cli_refuses_empty_targeted_declaration_without_traceback(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:"
-        (self.repo / ".scratch/tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
+        (self.repo / ".scratch/2026-10-28-tracker/README.md").write_text(f"## Ground rules\n\n{rules}\n")
         self.assertEqual(self.init().returncode, 0)
         rendered = self.render("implement")
         self.assertNotEqual(rendered.returncode, 0)
@@ -638,7 +638,7 @@ class RenderCli(unittest.TestCase):
                 with self.subTest(harness=harness, scenario=name):
                     current = self.run_dir / "reports" / f"implement-{pass_num}.md"
                     current.write_text(f"## Notes\n- {proposal}\n", encoding="utf-8")
-                    ledger = self.repo / ".scratch" / "tracker" / "decisions.md"
+                    ledger = self.repo / ".scratch" / "2026-10-28-tracker" / "decisions.md"
                     ledger.write_text(
                         f"# Decisions\n{decision}\n"
                         "- Rejected: rename public fields; preserve compatibility.\n"
@@ -653,7 +653,7 @@ class RenderCli(unittest.TestCase):
                     )
                     self.assertEqual(prepared.returncode, 0, prepared.stderr)
                     rendered = self.run_script(
-                        RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+                        RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
                         "--role", "review", "--pass", str(pass_num), "--run-dir", str(self.run_dir),
                         "--context-file", str(prior), "--context-file", str(current),
                     )
@@ -698,7 +698,7 @@ class RenderCli(unittest.TestCase):
         items = self.repo / "followup-items.md"
         items.write_text(FOLLOWUP_ITEMS)
         refused = self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001",
             "--role", "implement", "--pass", "1", "--run-dir", str(self.run_dir),
             "--followup-file", str(items),
         )
@@ -719,7 +719,7 @@ class RenderCli(unittest.TestCase):
         items = self.repo / "followup-items.md"
         items.write_text(FOLLOWUP_ITEMS, encoding="utf-8")
         refused = self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "test",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001", "--role", "test",
             "--pass", "1", "--run-dir", str(self.run_dir), "--followup-file", str(items),
         )
         self.assertNotEqual(refused.returncode, 0)
@@ -735,13 +735,13 @@ class RenderCli(unittest.TestCase):
         )
         self.assertEqual(prepared.returncode, 0, prepared.stderr)
         missing = self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "implement",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001", "--role", "implement",
             "--pass", "2", "--run-dir", str(self.run_dir), "--followup-file", str(self.repo / "absent.md"),
         )
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("follow-up file not found", missing.stderr)
         rendered = self.run_script(
-            RENDER_PROMPT, "--tracker", ".scratch/tracker", "--issue", "ISSUE-001", "--role", "implement",
+            RENDER_PROMPT, "--tracker", ".scratch/2026-10-28-tracker", "--issue", "ISSUE-001", "--role", "implement",
             "--pass", "2", "--run-dir", str(self.run_dir), "--followup-file", str(items),
         )
         self.assertEqual(rendered.returncode, 0, rendered.stderr)

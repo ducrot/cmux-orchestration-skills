@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 import json
 import os
 import shlex
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -83,6 +85,46 @@ def file_contents(root: Path) -> dict[Path, bytes]:
 
 
 class PreparedLaunchWaveCli(unittest.TestCase):
+
+    def test_init_keeps_already_tracked_worker_configuration(self):
+        config = self.config_path
+        # Only this disposable fixture repository's index is changed.
+        subprocess.run(["git", "add", str(config)], cwd=self.repo, check=True)
+        before = config.read_bytes()
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", str(config)], cwd=self.repo, capture_output=True)
+        self.assertEqual(tracked.returncode, 0, tracked.stderr)
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_standard_ignore_cli_preserves_restores_and_covers_all_internals(self):
+        runs = self.runs_root
+        config = self.config_path
+        ignore = runs.parent / ".gitignore"
+        runs.mkdir(parents=True, exist_ok=True)
+        legacy = runs / ".gitignore"
+        legacy.write_bytes(b"legacy rules\n")
+        legacy_before = legacy.stat().st_mtime_ns
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"*\n")
+        run_dir = next(path for path in runs.iterdir() if path.is_dir())
+        for target in (run_dir, config, runs.parent / "other-internal"):
+            checked = subprocess.run(["git", "check-ignore", str(target)], cwd=self.repo, capture_output=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(legacy.read_bytes(), b"legacy rules\n")
+        self.assertEqual(legacy.stat().st_mtime_ns, legacy_before)
+        ignore.write_bytes(b"custom rules\n")
+        before = ignore.stat().st_mtime_ns
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"custom rules\n")
+        self.assertEqual(ignore.stat().st_mtime_ns, before)
+        ignore.unlink()
+        result = self.init_for("ignore-test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ignore.read_bytes(), b"*\n")
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
@@ -162,6 +204,7 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         return self.run_state(
             "init",
             "--task", "Grill this prepared plan",
+            "--feature", "2026-10-28-test",
             "--run-id", run_id,
             "--runs-root", str(self.runs_root),
             "--workspace-id", "WORKSPACE",
@@ -298,24 +341,31 @@ class PreparedLaunchWaveCli(unittest.TestCase):
                 self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
                 self.assertIn("gate=advance", validated.stdout)
 
-    def test_default_identity_and_slug_override(self):
-        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--no-workspace")
+    def test_default_identity_and_feature_slug(self):
+        result = self.run_state("init", "--task", "Task: Static teaser website for cmux Orchestration skills", "--feature", "2026-10-28-chosen", "--no-workspace", env={**self.env(), "TZ": "Pacific/Kiritimati"})
         self.assertEqual(result.returncode, 0, result.stderr)
         run_dir = self.repo / result.stdout.strip()
-        self.assertRegex(run_dir.name, r"^grill-task-static-teaser-website-for-\d{4}-\d{2}-\d{2}-\d{4}$")
+        self.assertRegex(run_dir.name, r"^\d{4}-\d{2}-\d{2}-\d{4}-grill-chosen$")
         state = json.loads((run_dir / "state.json").read_text())
-        self.assertEqual(state["slug"], "task-static-teaser-website-for")
+        self.assertEqual(state["slug"], "chosen")
         self.assertLessEqual(len(state["slug"]), 30)
         self.assertEqual(state["workflow"], "grilling")
-        self.assertEqual(state["layout_version"], 1)
+        self.assertEqual(state["layout_version"], 2)
+        created = datetime.fromisoformat(state["created_at"])
+        self.assertEqual(created.utcoffset(), timedelta(0))
+        self.assertEqual(run_dir.name, created.astimezone(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d-%H%M") + "-grill-chosen")
+        for event in (json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()):
+            self.assertEqual(datetime.fromisoformat(event["time"]).utcoffset(), timedelta(0))
+        self.assertEqual(state["timestamp"], run_dir.name.split("-grill-")[0])
+        self.assertFalse(Path(state["feature_dir"]).exists())
         self.assertEqual(state["deliverables"], {})
-        override = self.init_for("custom", "--slug", "chosen-slug")
+        override = self.init_for("custom", "--feature", "2026-10-28-chosen-slug")
         self.assertEqual(override.returncode, 0, override.stderr)
         self.assertEqual(self.read_state("custom")["slug"], "chosen-slug")
         for slug in ("", "Upper", "a--b", "../x", "x" * 31):
-            invalid = self.init_for("invalid", "--slug", slug)
+            invalid = self.init_for("invalid", "--feature", "2026-10-28-" + slug)
             self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn("--slug", invalid.stderr)
+            self.assertIn("--feature", invalid.stderr)
             self.assertFalse(self.run_dir("invalid").exists())
 
     def test_run_without_max_rounds_is_not_resumed(self):
@@ -340,6 +390,26 @@ class PreparedLaunchWaveCli(unittest.TestCase):
         self.assertIn("--max-rounds must be >= 1", invalid.stderr)
 
     def test_legacy_run_is_inspectable_but_cannot_continue_or_launch(self):
+        self.assertEqual(self.init_for("legacy").returncode, 0)
+        self.cmux_log.unlink()  # Ignore the successful init decoration.
+        run_dir = self.run_dir("legacy")
+        state = self.read_state("legacy")
+        state["layout_version"] = 1
+        (run_dir / "state.json").write_text(json.dumps(state))
+        before = file_contents(run_dir)
+        calls = [self.init_for("legacy"),
+                 self.run_state("event", "--run-dir", str(run_dir), "--type", "test", "--message", "test"),
+                 self.pane("launch", "--run-dir", str(run_dir), "--lane", "web", "--anchor", "ANCHOR")]
+        for result in calls:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported legacy layout", result.stderr)
+        inspected = self.run_state("status", "--run-dir", str(run_dir))
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        self.assertIn("unsupported legacy layout", inspected.stdout)
+        self.assertEqual(before, file_contents(run_dir))
+        self.assertFalse(self.cmux_log.exists())
+
+    def test_run_without_workflow_and_layout_is_inspectable_but_cannot_continue_or_launch(self):
         self.assertEqual(self.init_for("legacy").returncode, 0)
         self.cmux_log.unlink()  # Ignore the successful init decoration.
         run_dir = self.run_dir("legacy")

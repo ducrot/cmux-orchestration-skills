@@ -687,7 +687,7 @@ sha256 {resulting}
         summary = render_summary(result)
         self.assertIn("### 2. ISSUE-002 — Build on the first behavior [HITL]", summary)
         self.assertEqual(summary.count("[HITL]"), 1)
-        tracker = self.root / "mixed"
+        tracker = self.root / "2026-10-28-mixed"
         native = stage_native_tracker(tracker, result, approved_spec=self.spec)
         self.assertEqual(native["ready_frontier"], ["ISSUE-001", "ISSUE-002"])
         for item in result["tickets"]:
@@ -816,7 +816,7 @@ sha256 {resulting}
             stage_native_tracker(staged, result, approved_spec=Path(state["approved_spec"]["path"]))
             issue = next((staged / "issues").glob("ISSUE-001-*.md"))
             original = issue.read_text()
-            target = flow.repo / "trackers" / result["tracker"]["slug"]
+            target = Path(state["feature_dir"])
             # Failing kinds leave the run untouched, so they share one flow; the correct kind approves and runs last.
             for kind, replacement in (
                 ("wrong", "wide_refactor_phase: migrate\n"), ("missing", ""), ("correct", "wide_refactor_phase: expand\n")
@@ -824,7 +824,7 @@ sha256 {resulting}
                 with self.subTest(kind=kind):
                     issue.write_text(original.replace("wide_refactor_phase: expand\n", replacement))
                     staged_bytes = file_contents(staged)
-                    approved = flow.ticket_approval("approve", "Check recovered phase", target=target)
+                    approved = flow.ticket_approval("approve", "Check recovered phase")
                     if kind == "correct":
                         self.assertEqual(approved.returncode, 0, approved.stderr)
                     else:
@@ -875,8 +875,8 @@ sha256 {resulting}
                     self.assertIn("slice_type: vertical\n", original)
                     replacement = "slice_type: prefactor\n" if kind == "wrong" else ""
                     issue.write_text(original.replace("slice_type: vertical\n", replacement))
-                    target = flow.repo / "trackers" / result["tracker"]["slug"]
-                    approved = flow.ticket_approval("approve", "Check recovered slice type", target=target)
+                    target = flow.repo / ".scratch" / "2026-10-27-planned-feature"
+                    approved = flow.ticket_approval("approve", "Check recovered slice type")
                     self.assertNotEqual(approved.returncode, 0)
                     self.assertIn(issue.name, approved.stderr)
                     self.assertIn("slice type differs from approved", approved.stderr)
@@ -902,8 +902,8 @@ sha256 {resulting}
                         return original(data=mixed_proposal(spec) if version == 2 else proposal(spec))
                     with patch.object(flow, "write_tickets_handoff", side_effect=handoff):
                         result = flow.reach_ticket_approval()
-                    target = flow.repo / "trackers" / result["tracker"]["slug"]
-                    approved = flow.ticket_approval("approve", "Approve mixed tracker", target=target)
+                    target = flow.repo / ".scratch" / "2026-10-27-planned-feature"
+                    approved = flow.ticket_approval("approve", "Approve mixed tracker")
                     self.assertEqual(approved.returncode, 0, approved.stderr)
                     state = json.loads((flow.run_dir / "state.json").read_text())
                     staged = Path(state["staged_tracker"]["path"])

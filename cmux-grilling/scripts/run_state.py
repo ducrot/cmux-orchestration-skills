@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date, datetime
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ from agents_config import (
     add_override_options,
     add_probe_options,
     durable_publish,
+    git_root,
     parse_overrides,
     probe_options,
     resolve_config_source,
@@ -41,12 +43,10 @@ from orchestrator_lib import (
     LANE_WAIT_MINUTES,
     LANES,
     append_jsonl,
-    first_line,
     read_json,
     read_run_state,
     read_text,
     run_identifier,
-    slugify,
     utc_now,
     write_json,
 )
@@ -55,11 +55,8 @@ from orchestrator_lib import (
 # Must stay in sync with parse_research_report.py's gate values.
 GATE_DECISIONS = ["advance", "stop", "blocked", "hitl", "pending"]
 
-# Artifacts live next to the tracker's issues/, so a workspace keeps one place for its
-# orchestration output. Without a tracker the run still needs a home.
 GRILLING_DIRNAME = "grilling"
 TRACKER_ROOT = ".scratch"
-NO_TRACKER_OUTPUT_DIR = f"{TRACKER_ROOT}/{GRILLING_DIRNAME}"
 
 # open_decisions schema (SKILL.md, Finalize and Artifact). A decision is a fork the research
 # deliberately cannot close; an assumption is settled. Statuses are exhaustive.
@@ -100,12 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
     task_source = init.add_mutually_exclusive_group(required=True)
     task_source.add_argument("--task", help="Task text: the plan plus its fixed constraints")
     task_source.add_argument("--task-file", help="File containing the task text")
-    init.add_argument("--slug", help="Artifact slug: lowercase words separated by hyphens, at most 30 characters")
-    init.add_argument("--run-id", help="Stable run id. Defaults to grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC)")
+    init.add_argument("--feature", help="Approved YYYY-MM-DD-<slug> folder directly in repository .scratch/")
+    init.add_argument("--run-id", help="Stable run id. Defaults to YYYY-MM-DD-HHMM-grill-<slug> (local time)")
     init.add_argument("--runs-root", default=f"{TRACKER_ROOT}/orchestrator/runs")
     init.add_argument("--max-rounds", type=int, default=4, help="Round budget; each round asks the whole frontier")
-    init.add_argument("--tracker", help=f"Tracker directory, e.g. {TRACKER_ROOT}/<tracker>. Autodetected when omitted")
-    init.add_argument("--output-dir", help="Override where the final artifact pair lands. Default <tracker>/grilling")
     init.add_argument(
         "--config",
         help=(
@@ -142,8 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     complete = subparsers.add_parser("complete", help="Close a run: set current_stage=done")
     complete.add_argument("--run-dir", required=True)
-    complete.add_argument("--markdown", required=True, help="Final Markdown path under output_dir")
-    complete.add_argument("--json", required=True, help="Final JSON path under output_dir")
+    complete.add_argument("--markdown", required=True, help="Frozen <feature>/grilling/<timestamp>.md path")
+    complete.add_argument("--json", required=True, help="Frozen <feature>/grilling/<timestamp>.json path")
     complete.add_argument("--message", default="grilling session complete")
     complete.add_argument("--data", help="Optional JSON object, e.g. artifact paths and stop reason")
 
@@ -176,12 +171,10 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--title", help="Protocol title; defaults to the task")
     render.add_argument("--overwrite", action="store_true", help="Explicitly replace an existing Markdown protocol")
 
-    pending = subparsers.add_parser(
+    subparsers.add_parser(
         "pending-decisions",
-        help="Print pending decisions, assumption reviews and facts of the newest artifact. Resolves its directory like init",
+        help="Print unfinished walkthrough items from the newest artifact across all .scratch/*/grilling/ feature directories",
     )
-    pending.add_argument("--tracker", help="Tracker directory. Autodetected when omitted")
-    pending.add_argument("--output-dir", help="Override the directory to look in")
 
     status = subparsers.add_parser("status", help="Inspect state read-only, including legacy runs")
     status.add_argument("--run-dir", required=True)
@@ -257,10 +250,13 @@ def refuse_runs_root_in_skill(runs_root: Path) -> None:
         )
 
 
-def ensure_runs_root_ignored(runs_root: Path) -> None:
-    """Run state is ephemeral lifecycle data; keep it out of git in every target repo."""
+def ensure_runs_root_ignored(runs_root: Path, repository: Path) -> None:
+    """Ignore all standard orchestrator internals, or only a custom runs root."""
+    runs_root = runs_root.resolve()
+    standard = (repository / ".scratch" / "orchestrator" / "runs").resolve()
+    ignore_root = runs_root.parent if runs_root == standard else runs_root
     runs_root.mkdir(parents=True, exist_ok=True)
-    ignore = runs_root / ".gitignore"
+    ignore = ignore_root / ".gitignore"
     # Keep the is_file guard: a directory here must fail, not leave runs git-visible.
     if not ignore.is_file():
         durable_publish(ignore, b"*\n", mode=0o644, suffix=".tmp", publish=os.replace)
@@ -284,31 +280,25 @@ def resolve_workspace_id(args: argparse.Namespace) -> str | None:
     return workspace_id
 
 
-def detect_tracker(root: Path) -> Path | None:
-    """Autodetect the tracker as a convenience, never as a guess.
-
-    Exactly one `.scratch/*/issues/` is unambiguous. Several are not, and picking one would
-    scatter artifacts across trackers, so that case is a hard stop asking for --tracker.
-    """
-    candidates = sorted(path.parent for path in root.glob(f"{TRACKER_ROOT}/*/issues") if path.is_dir())
-    if len(candidates) > 1:
-        listed = ", ".join(str(path) for path in candidates)
-        raise SystemExit(f"Several trackers found ({listed}); pass --tracker to pick one.")
-    return candidates[0] if candidates else None
-
-
-def resolve_output(args: argparse.Namespace, root: Path = Path(".")) -> tuple[Path | None, Path]:
-    """Return (tracker, output_dir). --output-dir > --tracker > autodetect > no-tracker fallback.
-
-    Grilling a free-standing plan without any tracker must stay possible, hence the fallback.
-    """
-    tracker = Path(args.tracker) if args.tracker else None
-    if args.output_dir:
-        return tracker, Path(args.output_dir)
-    tracker = tracker or detect_tracker(root)
-    if tracker is None:
-        return None, Path(NO_TRACKER_OUTPUT_DIR)
-    return tracker, tracker / GRILLING_DIRNAME
+def checked_feature(repository: Path, value: str) -> tuple[Path, str]:
+    raw = Path(value)
+    if ".." in raw.parts:
+        raise ConfigError("--feature must not contain path traversal")
+    candidate = (repository / ".scratch" / raw if len(raw.parts) == 1
+                 else raw if raw.is_absolute() else repository / raw)
+    feature = candidate.resolve()
+    scratch = repository / ".scratch"
+    if (scratch.resolve() != scratch or feature.parent != scratch
+            or candidate.is_symlink()):
+        raise ConfigError("--feature must be a direct folder in repository .scratch/")
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)", feature.name)
+    if not match or len(match[2]) > 30:
+        raise ConfigError("--feature must be YYYY-MM-DD-<slug>, with a lowercase kebab-case slug of at most 30 characters")
+    try:
+        date.fromisoformat(match[1])
+    except ValueError as error:
+        raise ConfigError("--feature must contain a valid calendar date") from error
+    return feature, match[2]
 
 
 def validate_decision(entry: object) -> list[str]:
@@ -347,11 +337,15 @@ def init_run(args: argparse.Namespace) -> int:
     task_text = task_text.strip()
     if not task_text:
         raise SystemExit("Task text is empty")
-    slug = args.slug if args.slug is not None else slugify(first_line(task_text))
-    if len(slug) > 30 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
-        raise SystemExit("--slug must match [a-z0-9]+(?:-[a-z0-9]+)* and be at most 30 characters")
+    if args.feature is None:
+        raise ConfigError("init requires --feature")
+    repository = git_root(Path.cwd())
+    feature, slug = checked_feature(repository, args.feature)
+    if feature.exists() and not feature.is_dir():
+        raise ConfigError("--feature must name a folder, not a file")
     now = utc_now()
-    # grill-<slug>-<YYYY-MM-DD>-<HHMM> (UTC): readable, sortable, never reused across runs.
+    timestamp = datetime.fromisoformat(now).astimezone().strftime("%Y-%m-%d-%H%M")
+    # YYYY-MM-DD-HHMM-grill-<slug> (local time): readable and chronologically sortable.
     run_id = args.run_id or run_identifier("grill", slug, now)
     runs_root = Path(args.runs_root)
     refuse_runs_root_in_skill(runs_root)
@@ -361,6 +355,8 @@ def init_run(args: argparse.Namespace) -> int:
     # Idempotent: re-running init on an existing run must not clobber its state or crash.
     if (run_dir / "state.json").is_file():
         existing = read_run_state(run_dir)
+        if existing.get("feature_dir") != str(feature):
+            raise ConfigError("re-initialization cannot change the feature folder")
         stored_mode = existing.get("commit_mode", "propose")
         if args.commit_mode is not None and args.commit_mode != stored_mode:
             raise SystemExit(
@@ -374,14 +370,11 @@ def init_run(args: argparse.Namespace) -> int:
                 f"run {run_id} already exists; configuration, typed-override, and live-probe "
                 "inputs require a new grilling run"
             )
-        ensure_runs_root_ignored(runs_root)
+        ensure_runs_root_ignored(runs_root, repository)
         for name in RUN_SUBDIRS:
             (run_dir / name).mkdir(parents=True, exist_ok=True)
         print(run_dir)
         return 0
-    # After the idempotent exit: a re-init must not re-detect, let alone stop on an ambiguity
-    # that appeared after this run already recorded its output directory.
-    tracker, output_dir = resolve_output(args)
     probe_profiles, probe_timeout = probe_options(args)
     source, agents, config_sha256 = resolve_config_source(args.config)
     launch_wave = build_launch_wave(
@@ -400,7 +393,7 @@ def init_run(args: argparse.Namespace) -> int:
         commit_baseline = capture_baseline(Path.cwd())
     except ValueError as error:
         raise SystemExit(f"cannot record the commit baseline: {error}") from error
-    ensure_runs_root_ignored(runs_root)
+    ensure_runs_root_ignored(runs_root, repository)
     run_dir.mkdir(parents=True, exist_ok=True)
     for name in RUN_SUBDIRS:
         (run_dir / name).mkdir(exist_ok=True)
@@ -412,15 +405,15 @@ def init_run(args: argparse.Namespace) -> int:
         "commit_baseline": commit_baseline,
         "working_directory": str(Path.cwd()),
         "commit_mode": args.commit_mode or "propose",
-        "layout_version": 1,
+        "layout_version": 2,
         "deliverables": {},
         "created_at": now,
         "workspace_id": workspace_id,
         "task_file": "task.md",
         "slug": slug,
         "max_rounds": args.max_rounds,
-        "tracker": str(tracker) if tracker else None,
-        "output_dir": str(output_dir),
+        "feature_dir": str(feature),
+        "timestamp": timestamp,
         "lanes": {name: dict(config) for name, config in LANES.items()},
         "configuration_source": str(source),
         "launch_wave": launch_wave_pointer,
@@ -633,10 +626,19 @@ def complete_run(args: argparse.Namespace) -> int:
     data = json.loads(args.data) if args.data else {}
     if not isinstance(data, dict):
         raise SystemExit("--data must be a JSON object")
-    output_dir = Path(state["output_dir"]).resolve()
+    if "feature_dir" not in state or "timestamp" not in state:
+        raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
+    feature = Path(state["feature_dir"])
+    output_dir = feature / GRILLING_DIRNAME
+    if feature.is_symlink() or output_dir.is_symlink():
+        raise SystemExit("the frozen feature folder and its grilling/ directory must not be symlinks")
     deliverables = {"markdown": str(Path(args.markdown).resolve()), "json": str(Path(args.json).resolve())}
-    if any(not Path(path).is_relative_to(output_dir) or Path(path) == output_dir for path in deliverables.values()):
-        raise SystemExit("--markdown and --json must resolve under the run output_dir")
+    expected = {key: str((output_dir / (state["timestamp"] + suffix)).resolve())
+                for key, suffix in (("markdown", ".md"), ("json", ".json"))}
+    if deliverables != expected:
+        raise SystemExit("--markdown and --json must match the frozen feature folder and timestamp pair")
+    if any(not Path(path).is_file() for path in deliverables.values()):
+        raise SystemExit("the frozen artifact pair must exist before complete")
     state["deliverables"] = deliverables
     data["deliverables"] = deliverables
     state["current_stage"] = "done"
@@ -838,20 +840,17 @@ def print_pending_decisions(args: argparse.Namespace) -> int:
 
     Deferred decisions stay separate because they must not be re-asked.
     """
-    _, output_dir = resolve_output(args)
-    artifacts = {path: data for path in output_dir.glob("*.json") if (data := load_artifact(path)) is not None}
-    if not artifacts:
-        print(f"dir={output_dir} artifact=none open=none deferred=none unreviewed_assumptions=none open_facts=none unreviewed_premise_corrections=none")
-        return 0
-    newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name))
+    artifacts = {path: data for path in Path(TRACKER_ROOT).glob(f"*/{GRILLING_DIRNAME}/*.json")
+                 if path.is_file() and (data := load_artifact(path)) is not None}
+    newest = max(artifacts, key=lambda path: (path.stat().st_mtime, path.name), default=None)
 
     def ids(field: str, status: str, *, status_key: str = "status", id_key: str = "id") -> str:
-        items = artifacts[newest].get(field)
+        items = artifacts[newest].get(field) if newest is not None else None
         listed = [str(item[id_key]) for item in (items if isinstance(items, list) else [])
                   if isinstance(item, dict) and item.get(status_key) == status and id_key in item]
         return ",".join(listed) if listed else "none"
 
-    print(f"dir={output_dir} artifact={newest} "
+    print(f"dir={newest.parent if newest is not None else 'none'} artifact={newest or 'none'} "
           f"open={ids('open_decisions', 'open')} deferred={ids('open_decisions', 'deferred')} "
           f"unreviewed_assumptions={ids('assumption_review', 'unreviewed', status_key='outcome', id_key='index')} "
           f"open_facts={ids('open_facts', 'open')} "

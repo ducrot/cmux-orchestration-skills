@@ -372,6 +372,10 @@ def planning_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
     ]
 
 
+def grilling_outcome(state: dict[str, Any], labels: dict[str, str]) -> str:
+    return labels["grilling_outcome"].format(path=display_path(str(Path(state["feature_dir"]) / "grilling")))
+
+
 def grilling_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
     budget = labels["budget_value"].format(count=state["max_rounds"], lanes=", ".join(state["lanes"]))
     return [
@@ -379,7 +383,7 @@ def grilling_lines(state: dict[str, Any], labels: dict[str, str]) -> list[str]:
         f"- {labels['focus']}: {{{{focus}}}}",
         f"- {labels['constraints']}: {{{{constraints}}}}",
         f"- {labels['budget']}: {budget}",
-        f"- {labels['outcome']}: {labels['grilling_outcome'].format(path=state['output_dir'])}",
+        f"- {labels['outcome']}: {grilling_outcome(state, labels)}",
     ]
 
 
@@ -674,7 +678,7 @@ def review_pending(review: tuple[int, int, int | None] | None) -> bool:
 
 
 def grilling_recap(state: dict[str, Any], events: list[dict[str, Any]], labels: dict[str, str]) -> list[str]:
-    lines = [f"- {labels['outcome']}: {{{{outcome}}}}"]
+    lines = [f"- {labels['outcome']}: {grilling_outcome(state, labels)} · {{{{outcome}}}}"]
     deliverables = state.get("deliverables") or {}
     artifact_path = deliverables.get("json")
     artifact = None

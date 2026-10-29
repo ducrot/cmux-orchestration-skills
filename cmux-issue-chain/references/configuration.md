@@ -93,3 +93,12 @@ preflight rules, the launch and probe adapters, and the override parsing and pro
 all workflows share, so a harness is added in that one file; each workflow keeps its own
 sandbox, approval, and network policy.
 
+Lifecycle `init` writes a self-ignoring `.gitignore` containing `*` and a newline to
+`.scratch/orchestrator/.gitignore` when the resolved runs root is the repository's standard
+`.scratch/orchestrator/runs`. This ignores runs, `.scratch/orchestrator/agents.json`, and all
+other orchestrator internals. A new worker configuration must be added with `git add -f` to
+version it; an already tracked configuration remains tracked. With a custom `--runs-root`,
+the ignore file lives inside that runs root (even if it is named `runs`), and its parent is
+unchanged. Existing ignore files are never overwritten; a deleted file is restored on the
+next initialization. A legacy `.gitignore` inside the standard runs root is left untouched.
+Configuration management commands never change ignore rules.

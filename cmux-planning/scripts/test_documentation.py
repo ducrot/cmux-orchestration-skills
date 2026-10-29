@@ -213,10 +213,37 @@ class TicketApprovalQuizDocumentation(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.approval)
 
+    def test_feature_name_dialog_and_derived_publication_are_documented(self):
+        guide = normalized(PLANNING)
+        for phrase in ("same dialog as the commit-mode question", "after the human chooses a fresh run",
+                       "explicit `--feature`", "on resume, re-init", "unfinished-run path",
+                       "smoke tests", "do not ask for a target path"):
+            self.assertIn(phrase, guide)
+        self.assertNotIn("ask for the target path", guide)
+        self.assertNotIn("--target <", guide)
+        self.assertNotIn("init --slug", guide)
+        for name in ("initialization-details.md", "ticket-publication-recovery.md"):
+            text = normalized(PLANNING.parent / "references" / name)
+            self.assertIn("feature", text)
+            self.assertIn("yyyy-mm-dd-<slug>", text)
+        readme = normalized(PLANNING.parent.parent / "README.md")
+        self.assertIn("same dialog as commit mode", readme)
+        self.assertIn("without a target-path question", readme)
+
+    def test_grilling_feature_inheritance_is_documented(self):
+        guide = normalized(PLANNING)
+        self.assertIn("with grilling input, ask no name question", guide)
+        self.assertIn("publish the tracker in that feature folder", guide)
+        reference = normalized(PLANNING.parent / "references/grilling-revalidation.md")
+        for phrase in ("ask no feature-name question", "inherits that feature folder and its pure slug",
+                       "tracker is published in the same feature folder", "before any writes",
+                       "json format and pair validation are unchanged"):
+            self.assertIn(phrase, reference)
+
     def test_quiz_answers_route_to_approval_ticket_revision_or_spec_revision(self):
         for phrase in (
-            "only when all three answers are positive (fits, correct, no change), ask for the target path",
-            "--decision approve --reason <human-reason> --target <repo-relative-or-absolute-target>",
+            "only when all three answers are positive (fits, correct, no change), approve using the frozen feature folder",
+            "--decision approve --reason <human-reason>",
             "if any answer differs, ask a concrete follow-up",
             "--decision revise --reason <concrete-change>",
             "fresh ticket pass, a new review, and a new quiz",
@@ -646,16 +673,21 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         self.assertEqual(parsers, [parsers[0]] * 2)
         self.assertEqual(sources, [sources[0]] * 3)
 
-    def test_shared_root_and_legacy_documentation(self):
+    def test_shared_root_and_local_run_name_documentation(self):
         if not README.is_file():
             self.skipTest("repository README is absent")
-        for guide in (README, PLANNING):
+        self.assertIn("YYYY-MM-DD-HHMM-<skill>-<key>", documentation(README))
+        for skill, key in (("grilling", "grill"), ("planning", "plan"), ("issue-chain", "chain")):
+            guide = REPOSITORY / f"cmux-{skill}" / "SKILL.md"
             text = documentation(guide)
-            self.assertIn(".scratch/orchestrator/runs/<run-id>/", text)
-            self.assertIn("deliverables", text)
-            for line in text.splitlines():
-                if "planning-runs" in line:
-                    self.assertIn("legacy", line.lower())
+            self.assertIn(f"YYYY-MM-DD-HHMM-{key}-", text)
+            self.assertIn("local time", text)
+            for path in (guide, *(guide.parent / "references").glob("*.md")):
+                current = path.read_text()
+                self.assertNotIn("planning-runs/", current, path)
+                self.assertNotRegex(current, r"(?:plan|grill|chain)-[^`\n]*<YYYY-MM-DD>-<HHMM>", path)
+                self.assertNotIn("layout_version: 1", current, path)
+            self.assertNotIn("<ISSUE-ID>-<YYYY-MM-DD>-<HHMM>", text)
 
     def test_every_shipped_guide_requires_a_coordinated_schema_v3_upgrade(self):
         if not README.is_file():

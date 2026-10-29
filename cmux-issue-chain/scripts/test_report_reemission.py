@@ -23,7 +23,7 @@ class ReportReemission(unittest.TestCase):
         self.run = Path(temporary.name)
         (self.run / "state.json").write_text(json.dumps({
             "workflow": "grilling" if GRILLING else "issue-chain",
-            "layout_version": 1, "max_rounds": 4,
+            "layout_version": 2, "max_rounds": 4,
         }))
         self.module = importlib.import_module("await_reports" if GRILLING else "await_report")
         self.identity = {"round": 1, "lane": "web"} if GRILLING else {"role": "review", "pass": 1}

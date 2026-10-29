@@ -45,38 +45,37 @@ REGISTRY_KEYS = {"testbed": "testbed", "testbed_version": "version", "scenario":
 IDENTITY_FIELDS = tuple(REGISTRY_KEYS)
 REGISTRY_CONTEXT = ("_registry_target", "_registry_current")
 ATTRIBUTION_FIELDS = ("skill_commit", "skill_commit_date", "skill_md_bytes", *IDENTITY_FIELDS)
-CACHE_VERSION = 15
+CACHE_VERSION = 16
 
 
 class Workflow:
     """What identifies one workflow's orchestrator: its skill directory, the scripts
     only that skill ships (executing one identifies the workflow even when the path
-    came from a shell variable), and the prefix of its run ids."""
+    came from a shell variable), and the workflow token in its date-first run ids."""
 
     def __init__(self, name: str, subdir: str, only_scripts: tuple[str, ...],
-                 run_prefix: str | None, roles: tuple[str, ...] = ()):
+                 run_token: str, roles: tuple[str, ...] = ()):
         self.name = name
         self.subdir = subdir
         self.only_scripts = only_scripts
-        self.run_prefix = run_prefix
+        self.run_token = run_token
         self.roles = roles
         self.only_re = re.compile(r"(?:" + "|".join(only_scripts) + r")\.py")
+        self.run_re = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-" + re.escape(run_token)
+                                 + r"-[A-Za-z0-9][A-Za-z0-9._-]*")
 
     def owns_run(self, run_id: str) -> bool:
-        if self.run_prefix:
-            return run_id.startswith(self.run_prefix)
-        return not run_id.startswith(tuple(p for w in WORKFLOWS.values()
-                                           if (p := w.run_prefix)))
+        return bool(self.run_re.fullmatch(run_id))
 
 
 WORKFLOWS = {w.name: w for w in (
-    Workflow("issue-chain", "cmux-issue-chain", ("adopt_tracker", "issue_state"), None,
+    Workflow("issue-chain", "cmux-issue-chain", ("adopt_tracker", "issue_state"), "chain",
              ("implement", "simplify", "review", "test", "triage")),
     Workflow("planning", "cmux-planning",
              ("planning_state", "stage_snapshot", "tree_integrity", "spec_contract",
               "tracker_contract", "artifact_manifest", "grilling_input", "planning_recovery",
-              "planning_diversity"), "plan-", ("spec", "spec-review", "tickets", "tickets-review")),
-    Workflow("grilling", "cmux-grilling", ("launch_wave", "parse_research_report"), "grill-"),
+              "planning_diversity"), "plan", ("spec", "spec-review", "tickets", "tickets-review")),
+    Workflow("grilling", "cmux-grilling", ("launch_wave", "parse_research_report"), "grill"),
 )}
 
 # Names more than one skill ships - an execution through a variable is ambiguous.
@@ -1250,7 +1249,6 @@ def median(values):
 
 
 def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-chain"]) -> list[dict]:
-    chain = workflow.name == "issue-chain"
     runs: dict[tuple[str, str], dict] = {}
     # Legacy sessions can drive a run from another checkout. Registry-matched
     # sessions always use their own target instead of this shared lookup.
@@ -1309,16 +1307,10 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
             continue
         scanned.add((scope, root))
         for run_dir in sorted((root / ".scratch" / "orchestrator" / "runs").glob("*")):
-            if not run_dir.is_dir():
+            if not workflow.owns_run(run_dir.name) or not run_dir.is_dir():
                 continue
-            if chain:
-                if read_run_state(run_dir)["workflow"] not in ("issue-chain", ""):
-                    continue
-                if run_dir.name.startswith(("grill-", "plan-")):
-                    continue
-            elif not workflow.owns_run(run_dir.name) or not (
-                    (run_dir / "events.jsonl").is_file() or (run_dir / "state.json").is_file()):
-                continue  # another workflow's run, or a stray directory from a truncated id
+            if not ((run_dir / "events.jsonl").is_file() or (run_dir / "state.json").is_file()):
+                continue  # a stray directory from a truncated id
             key = (scope, run_dir.name)
             if key not in runs:
                 runs[key] = {"run_id": run_dir.name, "project": project, "harnesses": set(),
@@ -1343,7 +1335,7 @@ def aggregate_runs(sessions: list[dict], workflow: Workflow = WORKFLOWS["issue-c
 
     rows = []
     for (_, run_id), run in sorted(runs.items()):
-        if not chain and not workflow.owns_run(run_id):
+        if not workflow.owns_run(run_id):
             continue  # a sibling workflow's run the session also touched
         state = empty_run_state()
         have_state = False
@@ -1532,8 +1524,7 @@ def print_wall_time(runs: list[dict], workflow: Workflow) -> None:
     """Wall-time medians per skill commit over the runs with at least one timed stage.
     Unlike the token columns these do not depend on the harness."""
     timed = [r for r in runs if r.get("stage_timings")
-             and (r["workflow"] in ("issue-chain", "") if workflow.name == "issue-chain"
-                  else workflow.owns_run(r["run_id"]))]
+             and workflow.owns_run(r["run_id"])]
     if not timed:
         return
     fields = [("total", "wall_clock_minutes"), ("worker", "wall_worker_minutes"),
@@ -1578,13 +1569,11 @@ def print_summary(sessions: list[dict], runs: list[dict],
             print(f"{state} {count} {', '.join(commits)}")
     # Sessions that never touched a run directory are skill development or smoke
     # tests; they would distort the per-commit medians.
-    scored = [s for s in sessions if s["run_ids"]]
-    if workflow.name != "issue-chain":
-        # A skill-development session can drive several workflows; it counts where it
-        # touched a run of this one, and only with those runs.
-        scored = [dict(s, run_ids=[r for r in s["run_ids"] if workflow.owns_run(r)])
-                  for s in scored]
-        scored = [s for s in scored if s["run_ids"]]
+    # A skill-development session can drive several workflows; it counts where it
+    # touched a run of this one, and only with those runs.
+    scored = [dict(s, run_ids=[r for r in s["run_ids"] if workflow.owns_run(r)])
+              for s in sessions]
+    scored = [s for s in scored if s["run_ids"]]
     header = (f"{'commit':<10}{'date':<12}{'skill_md':>9}{'n':>4}{'runs':>6}"
               f"{'start_ctx':>11}{'calls/stg':>11}{'ctx/call':>10}{'tok/stage':>12}{'wait%':>7}{'pane%':>7}")
     print()
@@ -1615,8 +1604,7 @@ def print_summary(sessions: list[dict], runs: list[dict],
         for run in runs:
             if run["calls_per_stage"] != "" and run["skill_commit"] \
                     and run["harnesses"] == harness \
-                    and (run["workflow"] in ("issue-chain", "") if workflow.name == "issue-chain"
-                         else workflow.owns_run(run["run_id"])):
+                    and workflow.owns_run(run["run_id"]):
                 per_run_stage.setdefault(run["skill_commit"], []).append(run)
 
         print()
@@ -1651,10 +1639,7 @@ def print_summary(sessions: list[dict], runs: list[dict],
     print(f"sessions: {len(sessions)}  "
           f"(claude {sum(1 for s in sessions if s['harness'] == 'claude')}, "
           f"codex {sum(1 for s in sessions if s['harness'] == 'codex')})")
-    print(f"medians above cover {len(scored)} sessions attached to a run; "
-          f"{len(sessions) - len(scored)} run-less sessions are in the CSV only"
-          if workflow.name == "issue-chain" else
-          f"medians above cover {len(scored)} sessions attached to a {workflow.name} run; "
+    print(f"medians above cover {len(scored)} sessions attached to a {workflow.name} run; "
           f"{len(sessions) - len(scored)} other sessions are in the CSV only")
     staged = [r for r in runs if r["calls_per_stage"] != "" and r["skill_commit"]]
     mixed = [r for r in staged if "+" in r["harnesses"]]

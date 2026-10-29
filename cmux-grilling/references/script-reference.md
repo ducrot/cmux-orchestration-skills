@@ -1,3 +1,12 @@
+Init requires an approved `--feature YYYY-MM-DD-<slug>` folder name or path directly in
+repository `.scratch/`. Validate the calendar date and lowercase kebab-case slug (at most 30
+characters) before any write. Propose today's local date and a short slug and ask for name
+approval in the same dialog as commit mode; skip name approval for supplied `--feature`,
+resume, re-init and smoke tests. Init stores `feature_dir` and the local `timestamp`
+(`YYYY-MM-DD-HHMM`, same instant as the run name) without creating the feature folder.
+Finalize creates `<feature_dir>/grilling/` and writes `<timestamp>.md` and `<timestamp>.json`
+beside any existing tracker and earlier pairs. Complete accepts exactly those existing paths.
+
 Validate both halves of the artifact pair at finalize, record one outcome during the walkthrough, and
 check for an unfinished walkthrough at session start (see Resuming an unfinished walkthrough):
 
@@ -8,6 +17,13 @@ python3 scripts/run_state.py assumption-review --run-dir <run-dir> --artifact <a
 python3 scripts/run_state.py transcribe-artifact --artifact <artifact.json>
 python3 scripts/run_state.py pending-decisions
 ```
+
+`pending-decisions` searches all `.scratch/*/grilling/` feature directories without folder options. It reports the
+newest artifact by modification time, then filename, in one line: `dir` names that artifact's
+Grilling directory, followed by the artifact path and open/deferred decision ids, unreviewed
+assumption indexes, open fact ids and unreviewed premise-correction indexes.
+Without any artifact the line reads `dir=none artifact=none`
+with every list `none`.
 
 `decision --status decided --decision` requires an exact option label from the JSON
 (no `(Empfohlen)` suffix) or the explicit `[custom] <non-empty choice>` mark. Unknown text is refused with the known labels and mark;
@@ -112,7 +128,7 @@ Then:
 python3 scripts/run_state.py event --run-dir <run-dir> --type grill.question --message "round 1 Q1" --data '{"round":1,"id":"Q1","question":"...","depends_on":[]}'
 python3 scripts/run_state.py snapshot --run-dir <run-dir> --label "reports-captured round-1"
 python3 scripts/run_state.py gate --run-dir <run-dir> --stage round-1-web --decision advance --reason "well-formed ANSWERED, sources cited"
-python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <output-dir>/<slug>.md --json <output-dir>/<slug>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
+python3 scripts/run_state.py complete --run-dir <run-dir> --markdown <feature_dir>/grilling/<timestamp>.md --json <feature_dir>/grilling/<timestamp>.json --message "grilling complete" --data '{"stop_reason":"griller-done"}'
 ```
 
 Control lane panes with `pane_ctl.py` (verbs and rules in CMUX Control): `workspace` prints

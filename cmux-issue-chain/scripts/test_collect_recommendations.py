@@ -23,7 +23,7 @@ class CollectorCli(unittest.TestCase):
         (self.repo / ".gitignore").write_text("run/\n")
         self.run = self.repo / "run"
         (self.run / "reports").mkdir(parents=True)
-        (self.run / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 1,
+        (self.run / "state.json").write_text(json.dumps({"workflow": "issue-chain", "layout_version": 2,
             "run_id": "test-run", "issue": {"id": "ISSUE-001"}}))
 
     def cli(self, pass_num=1, env=None):

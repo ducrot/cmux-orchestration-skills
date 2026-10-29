@@ -18,3 +18,9 @@ deadlines (8). `test_round_context.py` verifies the dependency projection and UT
 `references/sample-research-report.md` remains the clean-report fixture for live pilots.
 Live usage comparison is a separate human-assisted rollout task.
 
+The init regression uses a non-UTC test timezone and checks the local-time name
+`YYYY-MM-DD-HHMM-grill-<slug>`, UTC state and event timestamps, and layout version 2.
+
+Supply `--feature YYYY-MM-DD-smoke` with a valid calendar date when initializing a smoke run;
+smoke tests skip feature-name approval. Finalize alone creates its `grilling/<timestamp>.md`
+and `.json` pair using the local minute frozen at init.

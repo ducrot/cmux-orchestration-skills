@@ -5,6 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import run_briefing
@@ -12,6 +13,33 @@ import run_state
 
 
 class BoardPublicationTests(unittest.TestCase):
+    def test_init_board_uses_the_created_run_directory(self):
+        for explicit in (None, "chosen-run"):
+            with self.subTest(explicit=explicit), tempfile.TemporaryDirectory() as directory:
+                args = run_state.build_parser().parse_args([
+                    "init", "--tracker", "/elsewhere/2024-02-29-orders-export",
+                    "--issue", "ISSUE-001", "--runs-root", directory,
+                    *(["--run-id", explicit] if explicit else []),
+                ])
+                tracker = Path(args.tracker)
+                issue = SimpleNamespace(id="ISSUE-001", type="HITL", path=str(tracker / "issues/ISSUE-001.md"),
+                                        to_dict=lambda: {"id": "ISSUE-001", "type": "HITL"})
+                with patch.object(run_state, "load_issues", return_value={"ISSUE-001": issue}), \
+                        patch.object(run_state, "resolve_workspace_id", return_value=None), \
+                        patch.object(run_state, "capture_baseline", return_value={}), \
+                        patch.object(run_state, "blocker_status", return_value={}), \
+                        patch.object(run_state, "issue_ready", return_value=False), \
+                        patch.object(run_briefing, "publish_board") as publish, \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(run_state.run_command(args), 0)
+                run_dir = Path(output.getvalue().strip())
+                self.assertTrue((run_dir / "state.json").is_file())
+                publish.assert_called_once_with(run_dir, args.cmux_cmd)
+                if explicit:
+                    self.assertEqual(run_dir.name, explicit)
+                else:
+                    self.assertTrue(run_dir.name.endswith("-chain-orders-export-issue-001"))
+
     def test_unreadable_initial_snapshot_preserves_command(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

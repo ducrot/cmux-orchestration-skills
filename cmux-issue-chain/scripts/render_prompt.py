@@ -531,6 +531,8 @@ def review_contract_lines(harness: str) -> str:
         head = (
             "- Run `/code-review medium --fix` in Claude Code against the current working diff.\n"
             "- Apply safe fixes produced by `/code-review --fix` when they stay inside the current issue scope.\n"
+            "- Summarize the `/code-review` result in the report; do not copy its raw output or read harness "
+            "task-output files outside the repository.\n"
         )
     else:
         head = (

@@ -43,8 +43,8 @@ Read when `compare-defaults` reports `ask: true`: [references/default-assignment
 Ask the assignment question in the same `AskUserQuestion` call as the commit-mode question, as its
 last question; alone when the commit mode is already named. A kept answer travels with the
 next-run prompt like the commit mode, so a chain asks once at its first issue and again only when
-the listed differences change. Init records the digest as `kept_assignments` and refuses a
-malformed or contradictory one.
+the listed differences change. Init reads the digest from `--invocation` only (there is no direct
+init flag), records it as `kept_assignments`, and refuses a malformed or contradictory one.
 
 ## Worker Profile Configuration
 
@@ -806,6 +806,11 @@ Read when the watcher exits 9 or sending any re-delivery or follow-up text: [ref
 
 Do not use hidden subagents as worker substitutes during a live run. If CMUX cannot launch the visible worker, stop and report the CMUX failure. This rule covers the workers themselves; the internal subagents a worker spawns inside its own TUI (e.g. `/code-review` review agents) are part of that worker, not substitutes for it.
 
+`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
+`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
+gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
+`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
+
 ## Event Vocabulary
 
 `commit.proposed` is written only by `run_commit.py propose`.
@@ -846,14 +851,14 @@ with the parsed report's gate. It never executes the worker check commands.
 
 The scripts are deterministic helpers. They live canonically at `scripts/`
 (`~/.claude/skills/cmux-issue-chain` is a symlink to the same directory). Run them from the repo root.
-`--tracker` is always required and points at the local tracker directory (e.g. `.scratch/<tracker>`).
+`--tracker` is always required and points at the local tracker directory (e.g. `.scratch/YYYY-MM-DD-<tracker-slug>`).
 
 Inspect issue state and blockers:
 
 ```bash
-python3 scripts/issue_state.py list --tracker .scratch/<tracker>
-python3 scripts/issue_state.py ready --tracker .scratch/<tracker>
-python3 scripts/issue_state.py show --tracker .scratch/<tracker> --issue ISSUE-001
+python3 scripts/issue_state.py list --tracker .scratch/YYYY-MM-DD-<tracker-slug>
+python3 scripts/issue_state.py ready --tracker .scratch/YYYY-MM-DD-<tracker-slug>
+python3 scripts/issue_state.py show --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001
 ```
 
 Issue files are `ISSUE-NNN-<slug>.md` or `NN-<slug>.md` — the latter is what `to-tickets` writes, and its
@@ -868,13 +873,24 @@ and `render_prompt.py` refuse malformed trackers too.
 
 Read when a to-tickets tracker needs frontmatter adoption: [references/tracker-adoption.md](references/tracker-adoption.md).
 
-Create and append run-state. The default run id is `<ISSUE-ID>-<YYYY-MM-DD>-<HHMM>` (UTC) — issue first
-so runs group per issue, timestamped so re-runs never reuse a stale run directory (a leftover report from
-an earlier attempt would satisfy the watcher instantly). `init` pins the run's cmux workspace
+Before adopting an undated tracker, propose a `YYYY-MM-DD-<slug>` basename and ask the human to
+approve or replace it, like the commit-mode question, before any rename. Pass the approved name as
+`adopt_tracker.py --feature <name>`; dry-run first, then adopt. A dated tracker keeps its name and
+needs no name question, including for later ticket batches. After a rename, use the dated tracker
+for `init` and replace the old tracker path in `--invocation` with the dated path, preserving the rest
+of the prompt and chosen options. This adoption exception to verbatim invocation keeps next-run
+prompts pointed at the renamed folder.
+
+`init` requires a tracker folder with a valid calendar-date prefix `YYYY-MM-DD-` and a nonempty tracker slug. The folder may live anywhere. Invalid or undated names are rejected before any writes or board publication, including with an explicit `--run-id`. Issue listing, status, and prompt rendering remain available for undated trackers.
+
+Create and append run-state. The default run id is `YYYY-MM-DD-HHMM-chain-<tracker-slug>-<issue>` in local time, with the issue key lowercased
+(for example `issue-001`); run-state and event timestamps remain UTC, and explicit `--run-id` values are
+preserved. New runs use `layout_version: 2`; `status` reads older layouts, while continuation refuses them
+with “unsupported legacy layout”. Runs sort chronologically by name; an existing directory is reused only
+through the existing-run checks. `init` pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out for
-offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs root, so run state
-never reaches git in any target repo. For an AFK issue, initialization requires the configuration
-checkpoint above to be complete, then preflights every role and prepares `implement-1`; a missing or
+offline runs outside cmux) and installs the lifecycle ignore rules described above. For an AFK issue,
+initialization requires the configuration checkpoint above to be complete, then preflights every role and prepares `implement-1`; a missing or
 invalid configuration and any preflight failure happen before a launchable state or stage snapshot is
 written. HITL issues get no configuration source and no snapshot, so `prepare` stays unavailable on
 them, and re-running `init` on an existing run re-prepares nothing — it refuses `--config` and typed
@@ -884,8 +900,8 @@ on resume: a re-init refuses a value that differs from the recorded one, and onl
 recorded prompt adopts it (`run.invocation`):
 
 ```bash
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
-python3 scripts/run_state.py init --tracker .scratch/<tracker> --issue ISSUE-001 --probe-profiles
+python3 scripts/run_state.py init --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --invocation "<human prompt, verbatim>"
+python3 scripts/run_state.py init --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --probe-profiles
 python3 scripts/run_state.py event --run-dir .scratch/orchestrator/runs/<run-id> --type worker.started --message "assignment visibly working on exception path" --data '{"role":"review","pass":1,"surface_id":"<surface-id>","launch_id":"<launch-id>","evidence":"screen"}'
 ```
 
@@ -911,7 +927,8 @@ contents stay invisible rather than failing capture. Then:
 python3 scripts/run_state.py snapshot --run-dir .scratch/orchestrator/runs/<run-id> --label "report-captured review-1" --data '{"role":"review","pass":1}'
 ```
 
-Record a gate decision. `--next-stage` moves `current_stage` forward on `advance`:
+Record a gate decision. `--next-stage` moves `current_stage` forward on `advance`, and back to
+`implement` on the `stop` that records a human-authorized corrective pass (`resume-hitl.md`):
 
 ```bash
 python3 scripts/run_state.py gate --run-dir .scratch/orchestrator/runs/<run-id> --stage simplify --decision advance --reason "no findings, evidence check passed" --next-stage review
@@ -942,9 +959,9 @@ current pass with `--context-file` (repeatable), plus relevant prior-pass decisi
 approval records for later reviewers, per the context-files rule in CMUX Control:
 
 ```bash
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/<run-id>
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 1 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md
-python3 scripts/render_prompt.py --tracker .scratch/<tracker> --issue ISSUE-001 --role review --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/review-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-2.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-2.md
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role implement --pass 1 --run-dir .scratch/orchestrator/runs/<run-id>
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role review --pass 1 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md
+python3 scripts/render_prompt.py --tracker .scratch/YYYY-MM-DD-<tracker-slug> --issue ISSUE-001 --role review --pass 2 --run-dir .scratch/orchestrator/runs/<run-id> --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/review-1.md --context-file .scratch/orchestrator/runs/<run-id>/reports/implement-2.md --context-file .scratch/orchestrator/runs/<run-id>/reports/simplify-2.md
 ```
 
 The pass-2 example assumes the pass-1 implement, simplify, and review reports carry protected decisions

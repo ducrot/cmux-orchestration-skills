@@ -1,6 +1,6 @@
 ---
 name: cmux-grilling
-description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four fresh research lanes per round (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair under the tracker's grilling directory, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
+description: Coordinate a gated autonomous CMUX grilling session that stress-tests a plan or task through visible research worker panes. Use when an orchestrating agent should grill a plan without user answers - rounds of decision-level questions (the whole frontier per round, no per-round question cap), four fresh research lanes per round (Claude codebase, Codex second-opinion codebase, docs, web), gate-parsed research reports, synthesis with confidence and sources, defined assumptions and open decisions written as a Markdown+JSON pair as <timestamp>.md and <timestamp>.json in the feature folder's grilling directory; feature-name approval shares the commit mode dialog, assumptions review, a decision walkthrough with the human, run-state logging, and cmux worker-pane workflows. For interactive grilling where the user answers the questions, use the grilling skill instead.
 ---
 
 # CMUX Grilling
@@ -47,13 +47,6 @@ Read when preparing workers for the first time, upgrading harnesses or snapshots
 > **Coordinated upgrade required:** Upgrade `cmux-planning`, `cmux-grilling`, and `cmux-issue-chain` together before any shared configuration is migrated to schema v3. Older separately installed sibling skills cannot read the migrated schema-v3 shared configuration.
 
 Read when resolving the configuration path before init, creating or migrating configuration, or inspecting profiles: [references/configuration.md](references/configuration.md).
-
-`run_state.py init` requires an existing configuration at the default or explicit path; it never
-creates one. After the first-use checkpoint, it resolves and preflights all four lanes as one
-cohort. It publishes run state only after every lane passes and records one immutable launch-wave
-snapshot. Preparation resolves each unique assigned executable, captures its version, checks
-required help capabilities and local authentication status, and records provider entitlement as
-`unverified` by default. This local preflight is mandatory.
 
 Initialization accepts repeatable typed overrides in `LANE=VALUE` form: `--profile`,
 `--harness`, `--model`, `--effort`, and `--executable`. File assignment resolves first,
@@ -104,7 +97,7 @@ matters and attacks the open decisions behind them instead.
 - The orchestrator never edits product code and never performs the research itself. It may
   write lifecycle state only: `.scratch/orchestrator/runs/<run-id>/`, run logs, prompts,
   gate decisions, snapshots, synthesis files, and the final artifact pair in the output
-  directory (`<tracker>/grilling/` by default, see Artifact Location).
+  directory (`<feature_dir>/grilling/`, see Artifact Location).
 - Research lanes are strictly read-only towards the repository: no file edits, no
   state-changing commands. A lane may write exactly two files per round: its named draft
   path and its report handoff path. Drafts default to
@@ -347,18 +340,22 @@ Read when arming or re-arming a round watcher, waiting for lane reports, or inte
 
 ## Artifact Location
 
-The artifact pair lands next to the tracker it belongs to. `run_state.py init` resolves the
-location once and records it in `state.json` as `output_dir` (with the `tracker` it came
-from); every later step of the run reads it from there. `pending-decisions` — which runs
-before `init` — resolves by the same table. First match wins:
+Fresh `init` requires `--feature YYYY-MM-DD-<slug>` directly in repository `.scratch/`:
+a name or path with a valid date and lowercase kebab-case slug (at most 30 characters).
+State freezes absolute `feature_dir` and local `timestamp` (`YYYY-MM-DD-HHMM`, same instant
+as the run name); the slug is the run key. Re-init cannot change the feature.
 
-| Input                            | Output directory        |
-|----------------------------------|-------------------------|
-| `--output-dir <path>`            | `<path>`, verbatim      |
-| `--tracker .scratch/<tracker>`   | `.scratch/<tracker>/grilling/` |
-| nothing, exactly one `.scratch/*/issues/` | that tracker's `grilling/` |
-| nothing, several such trackers   | hard stop — ask the human which tracker, pass `--tracker` |
-| nothing, no tracker at all       | `.scratch/grilling/`    |
+Without `--feature`, propose today's local date and a short slug; ask for name approval
+in the same dialog as commit mode. Skip name approval for supplied `--feature`, resume,
+re-init and smoke tests. A supplied commit mode skips only its own question.
+
+Init never creates the feature folder. Finalize creates `<feature_dir>/grilling/` and writes
+`<timestamp>.md` and `<timestamp>.json`; an existing feature keeps its tracker and earlier
+pairs. Briefing/recap name this directory; the next-run prompt names the dated pair.
+`complete` accepts exactly these existing paths.
+
+Before `init`, `pending-decisions` searches all `.scratch/*/grilling/` feature directories.
+It takes no folder options; see [script reference](references/script-reference.md) for selection and output.
 
 ## Finalize and Artifact
 
@@ -376,14 +373,12 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
    research. Record `grill.assumptions` with the count.
 2. Distill the **open decisions** in the same step (see Open Decisions below). Record
    `grill.open_decisions` with the count.
-3. Write only the JSON half to the output directory from `state.json`:
-   `<output-dir>/<slug>-<timestamp>.json`, assembled from `synthesis/round-*.json`.
+3. Write only the JSON half to `<feature_dir>/grilling/<timestamp>.json` (frozen in `state.json`;
+   create `grilling/` at finalize), assembled from `synthesis/round-*.json`.
    Then run `run_state.py render-artifact --run-dir <run-dir> --artifact <artifact.json>`
    (optional `--title <title>`; defaults to the task). It writes `markdownPath` in the established
-   protocol format: header (generation time from the run, question count, stop reason), `## Aufgabe`,
-   `## Q&A` with `### Runde <N>`, question, Antwort, Confidence, Quellen, Reasoning and collapsible
-   lane findings, deferred questions with reasons, `## Definierte Annahmen`, `## Prämissen-Korrekturen`,
-   `## Offene Fakten`, and `## Entscheidungen` with German fields and recorded Ausgang.
+   protocol format: header, `## Aufgabe`, `## Q&A` with `### Runde <N>` and lane findings,
+   `## Definierte Annahmen`, `## Prämissen-Korrekturen`, `## Offene Fakten`, `## Entscheidungen`.
    Free text is quoted so task headings cannot open protocol sections. Invalid JSON is refused
    before writing, and the written pair is validated. Existing Markdown requires explicit
    `--overwrite`; never replace recorded human edits silently.
@@ -405,8 +400,8 @@ When the loop ends cleanly (`max-rounds` or `griller-done`):
      "premise_correction_review": [],
      "open_facts": [{"id": "F1", "question": "…", "why_needed": "…", "status": "open", "answer": "", "answered_at": ""}],
      "open_decisions": ["... see Open Decisions ..."],
-     "markdownPath": "<output-dir>/<slug>-<timestamp>.md",
-     "jsonPath": "<output-dir>/<slug>-<timestamp>.json"
+     "markdownPath": "<feature_dir>/grilling/<timestamp>.md",
+     "jsonPath": "<feature_dir>/grilling/<timestamp>.json"
    }
    ```
 
@@ -689,6 +684,11 @@ retries with `close-surface --force`, but only for the round's recorded lane sur
 While a round is in flight, the four reports belong to the lanes: do not edit anything under
 `reports/` yourself, and compare snapshot fingerprints before any `report.integrity` claim.
 
+`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
+`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
+gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
+`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
+
 ## Event Vocabulary
 
 `commit.proposed` and `commit.followup_proposed` are written only by `run_commit.py propose`.
@@ -703,21 +703,19 @@ Read when writing any event with `run_state.py event` (including drift records) 
 
 The scripts are deterministic helpers. Run them from the repo root.
 
-Create a run (idempotent; prints the run directory). After the configuration checkpoint above,
+Create a run (idempotent; prints its directory). Defaults use
+`YYYY-MM-DD-HHMM-grill-<slug>` in local time; timestamps stay UTC. Explicit `--run-id` wins.
+Runs use `layout_version: 2`; `status` reads old layouts, while continuation refuses them
+with “unsupported legacy layout”. After the configuration checkpoint above,
 `init` loads the existing worker configuration, validates and preflights all four lanes together,
 writes one immutable launch wave, and pins the run's cmux workspace
 (`--workspace-id` > `CMUX_WORKSPACE_ID` > hard error; `--no-workspace` is the explicit opt-out
-for offline runs outside cmux) and drops a self-ignoring `.gitignore` (`*`) into the runs
-root, so run state never reaches git in any target repo:
+for offline runs outside cmux) and installs the lifecycle ignore rules described above:
 
 ```bash
-python3 scripts/run_state.py init --task "Plan plus fixed constraints" --max-rounds 4
-python3 scripts/run_state.py init --task-file path/to/task.md --tracker .scratch/<tracker>
-python3 scripts/run_state.py init --task-file path/to/task.md --config path/to/agents.json
-python3 scripts/run_state.py init --task-file path/to/task.md --probe-profiles --probe-timeout 180
+python3 scripts/run_state.py init --feature YYYY-MM-DD-<slug> --task "Plan plus fixed constraints" --max-rounds 4
+python3 scripts/run_state.py init --feature YYYY-MM-DD-<slug> --task-file path/to/task.md --config path/to/agents.json
 ```
-
-`init` also resolves the artifact location; the precedence is in Artifact Location.
 
 Read when using artifact, rendering, parsing, snapshot, gate, completion, or regression-test CLI examples: [references/script-reference.md](references/script-reference.md).
 

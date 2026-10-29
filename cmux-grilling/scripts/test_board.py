@@ -44,7 +44,7 @@ class Board(unittest.TestCase):
         self.cmux.write_text(self.cmux.read_text().replace('args = sys.argv[1:]', 'if os.environ.get("BOARD_FAIL") == "1": sys.exit(7)\nargs = sys.argv[1:]'))
         for fail in (False, True):
             run_id = 'board-' + str(fail)
-            self.command('init', '--task', 'Board', '--run-id', run_id, '--runs-root', str(self.runs_root), '--workspace-id', 'WORKSPACE', fail=fail)
+            self.command('init', '--task', 'Board', '--feature', '2026-10-28-test', '--run-id', run_id, '--runs-root', str(self.runs_root), '--workspace-id', 'WORKSPACE', fail=fail)
             directory = self.runs_root / run_id
             if not fail:
                 self.assert_board('running', 'Round 1/4', 0)
@@ -62,12 +62,12 @@ class Board(unittest.TestCase):
             gate('finalize')
             if not fail: self.assert_board('waiting', 'Round 2/4', 1)
             state = json.loads((directory / 'state.json').read_text())
-            output = self.repo / state['output_dir']
+            output = Path(state['feature_dir']) / 'grilling'
             output.mkdir(parents=True, exist_ok=True)
-            artifact = output / (run_id + '.json')
+            artifact = output / (state['timestamp'] + '.json')
             entry = dict(id='D1', question='Which?', why_open='product', context='context', evidence=['source'], options=[dict(label='a', implication='a'), dict(label='b', implication='b')], recommendation='a', rationale='r', status='open')
             artifact.write_text(json.dumps({'open_decisions': [entry]}))
-            markdown = output / (run_id + '.md')
+            markdown = output / (state['timestamp'] + '.md')
             markdown.write_text('Result')
             self.command('complete', '--run-dir', str(directory), '--markdown', str(markdown), '--json', str(artifact), fail=fail)
             if not fail: self.assert_board('waiting', 'Round 2/4', 1, '1 open decisions')
@@ -75,7 +75,7 @@ class Board(unittest.TestCase):
             if not fail: self.assert_board('waiting', 'Round 2/4', 1, '0 open decisions')
             self.assertEqual(json.loads(artifact.read_text())['open_decisions'][0]['status'], 'decided')
             self.assertIn('grill.decision_recorded', (directory / 'events.jsonl').read_text())
-            for command, extra in [('status', ['--run-dir', str(directory)]), ('pending-decisions', ['--output-dir', str(output)]), ('validate-artifact', ['--artifact', str(artifact)]), ('event', ['--run-dir', str(directory), '--type', 'grill.assumptions_triaged', '--message', 'reviewed'])]:
+            for command, extra in [('status', ['--run-dir', str(directory)]), ('pending-decisions', []), ('validate-artifact', ['--artifact', str(artifact)]), ('event', ['--run-dir', str(directory), '--type', 'grill.assumptions_triaged', '--message', 'reviewed'])]:
                 self.command(command, *extra)
                 self.assertEqual(self.cmux_calls(), [])
             recap = directory / 'recap.md'
