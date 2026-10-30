@@ -723,7 +723,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
                     "no write bit",
                     "hard link",
                     "symlink",
-                    "claude-fable-high",
+                    "claude-opus-high",
                     "profile name",
                     "harness",
                     "model",

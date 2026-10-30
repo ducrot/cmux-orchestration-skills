@@ -231,8 +231,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "web": "claude-sonnet-medium",
         },
         "planning": {
-            "spec": "claude-fable-high",
-            "tickets": "claude-fable-high",
+            "spec": "claude-opus-high",
+            "tickets": "claude-opus-high",
             "reviewer": "codex-astra-high",
         },
     },
@@ -856,7 +856,7 @@ class MigrationPreview:
             f"Validated schema-v{SCHEMA_VERSION} candidate SHA-256: {self.digest}",
         ]
         rebuilt_planning = self.source_version < WORKFLOW_SCHEMA_VERSION["planning"]
-        if rebuilt_planning and preferred not in self.candidate["profiles"]:
+        if rebuilt_planning and proposed != preferred:
             profile = self.candidate["profiles"][proposed]
             lines.extend(
                 [

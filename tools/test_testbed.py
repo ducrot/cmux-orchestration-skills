@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ZeiterfassungRelease(unittest.TestCase):
     def test_version_and_shipped_worker_fixture(self):
         bed = ROOT / 'testbeds/zeiterfassung'
-        self.assertEqual((bed / 'VERSION').read_bytes(), b'1.0.0\n')
+        self.assertEqual((bed / 'VERSION').read_bytes(), b'1.1.0\n')
         fixture = bed / 'agents.json'
         with tempfile.TemporaryDirectory() as directory:
             default = Path(directory) / 'agents.json'
@@ -114,7 +114,7 @@ class CreateTestbed(unittest.TestCase):
                 target = self.base / scenario.name
                 result = self.create(target, scenario=scenario.name, bed='zeiterfassung')
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('Version: 1.0.0\n', result.stdout)
+                self.assertIn('Version: 1.1.0\n', result.stdout)
                 self.assertEqual((target / 'docs/plan.md').read_bytes(),
                                  (scenario / 'plan.md').read_bytes())
                 fixture = target / '.scratch/orchestrator/agents.json'

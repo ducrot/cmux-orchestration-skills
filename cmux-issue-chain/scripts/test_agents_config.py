@@ -225,8 +225,8 @@ class AgentsConfigCli(unittest.TestCase):
                     "web": "claude-sonnet-medium",
                 },
                 "planning": {
-                    "spec": "claude-fable-high",
-                    "tickets": "claude-fable-high",
+                    "spec": "claude-opus-high",
+                    "tickets": "claude-opus-high",
                     "reviewer": "codex-astra-high",
                 },
             },
@@ -640,8 +640,8 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(
             migrated["workflows"]["planning"],
             {
-                "spec": "claude-fable-high",
-                "tickets": "claude-fable-high",
+                "spec": "claude-opus-high",
+                "tickets": "claude-opus-high",
                 "reviewer": "codex-astra-high",
             },
         )
@@ -716,7 +716,7 @@ class AgentsConfigCli(unittest.TestCase):
 
         self.assertNotEqual(preview.returncode, 0)
         output = preview.stdout + preview.stderr
-        self.assertIn("claude-fable-high", output)
+        self.assertIn("claude-opus-high", output)
         self.assertIn("unavailable", output.lower())
         for fragment in ("claude-opus-medium", "claude-code", "opus", "medium"):
             self.assertIn(fragment, output)
@@ -939,6 +939,8 @@ class AgentsConfigCli(unittest.TestCase):
         for worker in ("simplify", "review"):
             bare["workflows"]["issue-chain"][worker] = "claude-opus-medium"
         bare["workflows"]["grilling"]["codebase"] = "claude-opus-medium"
+        bare["workflows"]["planning"]["spec"] = "claude-fable-high"
+        bare["workflows"]["planning"]["tickets"] = "claude-fable-high"
         del bare["profiles"]["claude-opus-high"]
         bare_path = self.write_config(bare, "v2-bare.json")
         self.assertEqual(self.run_cli("migrate", "--accept", "--config", str(bare_path), cwd=self.tmp).returncode, 0)
@@ -1039,7 +1041,7 @@ class AgentsConfigCli(unittest.TestCase):
         data["workflows"]["planning"]["reviewer"] = "pi-glm-high"
         path.write_text(json.dumps(data), encoding="utf-8")
         digest = json.loads(self.compare(path).stdout)["comparison_sha256"]
-        data["workflows"]["planning"]["spec"] = "claude-opus-high"
+        data["workflows"]["planning"]["spec"] = "claude-fable-high"
         path.write_text(json.dumps(data), encoding="utf-8")
         changed = path.read_bytes()
 
@@ -1069,7 +1071,7 @@ class AgentsConfigCli(unittest.TestCase):
         self.assertEqual(same["differences_sha256"], kept)
         self.assertNotEqual(same["comparison_sha256"], first["comparison_sha256"])
 
-        data["workflows"]["planning"]["spec"] = "claude-opus-high"
+        data["workflows"]["planning"]["spec"] = "claude-fable-high"
         path.write_text(json.dumps(data), encoding="utf-8")
         changed = json.loads(self.compare(path, "--kept", kept).stdout)
         self.assertTrue(changed["ask"])

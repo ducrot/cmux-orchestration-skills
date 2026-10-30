@@ -114,8 +114,8 @@
     },
     "planning": {
       "reviewer": "codex-astra-high",
-      "spec": "claude-fable-high",
-      "tickets": "claude-fable-high"
+      "spec": "claude-opus-high",
+      "tickets": "claude-opus-high"
     }
   }
 }
