@@ -156,8 +156,12 @@ class PlanningBoard(unittest.TestCase):
         self.assertEqual(run_briefing.PLANNING_PASS_KEYS, planning_recovery.PASS_KEYS)
         self.assertEqual(run_briefing.PLANNING_PENDING_STATUSES, planning_diversity.PENDING_STATUSES)
         text = (Path(__file__).parents[1] / "SKILL.md").read_text()
-        for phrase in ("Exits 7 and 8 publish `hitl`", "recorded extension or relaunch decision returns the card to `running`", "publish the board automatically at transitions", "stderr note and never a stop", "`--no-status` suppresses pill and board", "`--clear-status` clears both pill and board"):
+        for phrase in ("Exits 7 and 8 publish `hitl`", "recorded extension or relaunch decision returns the card to `running`", "publish the board automatically at transitions", "`--no-status` suppresses pill and board", "`--clear-status` clears both pill and board"):
             self.assertIn(phrase, text)
+        failed_board = "A failed board update is a stderr note and never a stop."
+        reference = Path(__file__).parents[1] / "references/stage-run-details.md"
+        self.assertIn(failed_board, " ".join(reference.read_text().split()))
+        self.assertNotIn(failed_board, " ".join(text.split()))
 
     def test_every_transition_preserves_results_on_cmux_failure(self):
         with tempfile.TemporaryDirectory() as directory:

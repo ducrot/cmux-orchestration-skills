@@ -109,9 +109,6 @@ Read when diagnosing an integrity violation, a failed tree capture, a manifest q
   directory move into the target repository and never invokes `cmux-issue-chain` or
   `adopt_tracker.py` at runtime.
 
-Read [references/spec-contract.md](references/spec-contract.md) when judging author or review
-handoffs.
-
 ## First-use configuration checkpoint
 
 Read when preparing workers for the first time, upgrading harnesses or snapshots, or diagnosing trust preflight refusal: [references/preparation-upgrades.md](references/preparation-upgrades.md).
@@ -188,9 +185,9 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 - `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
   the sidebar pill `cmux-planning-run` (`Planning · <slug>`) in the pinned workspace. A failed pill is
   a stderr note, not a stop. Relay the printed briefing verbatim as its own message, without preamble.
-- The scripts publish the board automatically at transitions in the pinned workspace. A failed board
-  update is a stderr note and never a stop. `--no-status` suppresses pill and board on
-  `run_briefing.py`; `planning_state.py` publishes whenever a workspace is pinned (`--no-workspace` avoids it).
+- The scripts publish the board automatically at transitions in the pinned workspace.
+  `--no-status` suppresses pill and board on `run_briefing.py`; `planning_state.py` publishes
+  whenever a workspace is pinned (`--no-workspace` avoids it).
 - On resume, run `show` again after `context` and status. `briefing.md` is orchestrator text, not a
   worker artifact: the artifact audit skips it and no prompt attaches it.
 
@@ -209,18 +206,7 @@ distinct from `worker.started`; observe again before recovery input.
 
 ## Run one stage
 
-For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the current pass from `state.json`:
-
-```bash
-python3 scripts/render_prompt.py --run-dir <run-dir> --stage <stage> --pass <n>
-python3 scripts/tree_integrity.py baseline --run-dir <run-dir> --stage <stage> --pass <n>
-python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n> \
-  --anchor <caller-surface>
-python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
-python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
-```
+Read when running or watching a stage pass, including judging its handoff, or when a board update fails at any transition: [references/stage-run-details.md](references/stage-run-details.md).
 
 The baseline makes the prepared snapshot launchable. `pane_ctl.py launch` prints JSON whose
 `surface_id` is the new pane's stable UUID; copy that exact value into every later pane command for
@@ -273,13 +259,6 @@ An explicit `--deadline-reason` requires that recorded approval and must match i
 The recommended `--extension 1` consumes that recorded approval and persists one extension
 using `--deadline-minutes` (or the stage minimum when omitted); rejoining it cannot renew it.
 
-| Exit | Meaning |
-| --- | --- |
-| 0 | Report captured; validate and gate it. |
-| 7 | Pane dead; stop at the existing HITL recovery boundary. |
-| 8 | Report deadline; use the existing human-approved extension rules. |
-| 9 | Assignment not started; inspect the exception path below. |
-
 Exits 7 and 8 publish `hitl` on the sidebar board. The recorded extension or relaunch decision returns the card to `running`.
 
 Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).
@@ -292,9 +271,8 @@ Event vocabulary: `worker.starting` and `worker.launch_sent` bind launch time an
 Use the prompt and handoff paths recorded under the current attempt in `state.json`; do not construct
 them from stage/pass alone. The watcher accepts a report only after observing identical non-empty bytes
 twice that also pass the stage's report contract; a contract-failing report is captured only once it
-has stayed unchanged for `--invalid-settle-seconds` (default 300) or the deadline is reached. Workers
-self-validate in `report-draft.md` beside their started marker and write the handoff report once,
-last. The watcher records that exact identity in the manifest before emitting its captured-report event, and the
+has stayed unchanged for `--invalid-settle-seconds` (default 300) or the deadline is reached. The watcher
+records that exact identity in the manifest before emitting its captured-report event, and the
 gate repeats a stable capture when invoked directly. A missing, truncated, replaced, or changed
 finalized artifact records `artifact.integrity_violation`, closes the attempt, and gates HITL before
 the artifact can be parsed or launched.

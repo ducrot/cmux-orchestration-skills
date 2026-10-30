@@ -17,6 +17,7 @@ NOTICE_MARKER = "> **Coordinated upgrade required:**"
 GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
 PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
 INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
+STAGE_RUN = PLANNING.parent / "references/stage-run-details.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -1120,19 +1121,79 @@ class PlanningOperatorDocumentation(unittest.TestCase):
 
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)
-        procedure = text.split("## run one stage", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+        stage_run = normalized(STAGE_RUN)
+        procedure = stage_run.split("```bash", 1)[1].split("```", 1)[0]
         commands = ("render_prompt.py", "tree_integrity.py baseline", "pane_ctl.py launch",
                     "pane_ctl.py start-agent", "await_report.py")
         positions = [procedure.index(command) for command in commands]
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("pane_ctl.py deliver", procedure)
         self.assertNotIn("pane_ctl.py observe", procedure)
-        for phrase in ("| 9 | assignment not started", "after exit 9, take one `observe` and `assess`",
+        self.assertIn("| 9 | assignment not started; inspect the exception path below. |", stage_run)
+        for phrase in ("after exit 9, take one `observe` and `assess`",
                        "then re-arm without re-delivery", "one readiness-gated `deliver --prompt`",
                        '`evidence: "screen"`', "exception-path and follow-up only",
                        "`--extension 0`", "interrupted launch or delivery input stops at hitl",
                        "report deadline counts from the persisted first arm", "never immutable manifest artifacts"):
             self.assertIn(phrase, text)
+
+    def test_stage_run_route_and_moved_rules(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "stage-run-details.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("running or watching a stage pass", routes[0].group())
+        self.assertIn("judging its handoff", routes[0].group())
+        self.assertIn("a board update fails at any transition", routes[0].group())
+        self.assertTrue(raw[:routes[0].start()].endswith("## Run one stage\n\n"))
+        reference = documentation(STAGE_RUN)
+        flat = " ".join(reference.split())
+        moved = (
+            'For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the current pass from `state.json`:',
+            '| Exit | Meaning | | --- | --- | '
+            '| 0 | Report captured; validate and gate it. | '
+            '| 7 | Pane dead; stop at the existing HITL recovery boundary. | '
+            '| 8 | Report deadline; use the existing human-approved extension rules. | '
+            '| 9 | Assignment not started; inspect the exception path below. |',
+            'Workers self-validate in `report-draft.md` beside their started marker and write the handoff report once, last.',
+            'Read [references/spec-contract.md](spec-contract.md) when judging author or review handoffs.',
+            'A failed board update is a stderr note and never a stop.',
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, flat)
+                self.assertNotIn(rule, entry)
+        self.assertNotIn('when judging author or review handoffs', entry)
+        for row in reference.splitlines():
+            if re.match(r'^\| [0789] \|', row):
+                self.assertNotIn(row, entry)
+        procedure = reference.split("```bash\n", 1)[1].split("```", 1)[0]
+        self.assertEqual(procedure, (
+            'python3 scripts/render_prompt.py --run-dir <run-dir> --stage <stage> --pass <n>\n'
+            'python3 scripts/tree_integrity.py baseline --run-dir <run-dir> --stage <stage> --pass <n>\n'
+            'python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --anchor <caller-surface>\n'
+            'python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --surface <launch-surface-id>\n'
+            'python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --surface <launch-surface-id>\n'
+        ))
+        self.assertNotIn(procedure, raw)
+        self.assertIn('startup-recovery', reference.split('| Exit |', 1)[0])
+        for target in re.findall(r'\]\(([^)]+)\)', reference):
+            self.assertTrue((STAGE_RUN.parent / target).is_file(), target)
+        headings = re.findall(r"^#+ (.+)$", reference, re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        for kept in (
+            'Exits 7 and 8 publish `hitl` on the sidebar board. The recorded extension or relaunch decision returns the card to `running`.',
+            'Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).',
+        ):
+            self.assertIn(kept, raw)
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
         summary = " ".join(documentation(INTEGRITY).split())
