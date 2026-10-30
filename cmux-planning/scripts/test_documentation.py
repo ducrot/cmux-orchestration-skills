@@ -16,6 +16,7 @@ NOTICE_MARKER = "> **Coordinated upgrade required:**"
 # Discovered, so a fourth skill cannot ship without the notice while this test still passes.
 GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
 PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
+INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -357,7 +358,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         for phrase in ('whole before/after `staged_diff` independently of the allowed-write list',
                        'any difference gates `integrity-violation`',
                        'unchanged pre-staged human baseline remain allowed'):
-            self.assertIn(phrase, normalized(PLANNING))
+            self.assertIn(phrase, normalized(INTEGRITY))
 
     def test_sibling_guides_gate_head_changes_at_every_delivery_boundary(self):
         if len(SIBLINGS) != 3:
@@ -964,11 +965,158 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertNotIn("quotes only the chosen option's label", text)
         self.assertNotIn("never option descriptions", text)
 
+    def test_ground_rules_keep_exact_approved_bullets(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        ground = raw.split("## Ground rules\n", 1)[1].split("\n## ", 1)[0]
+        bullets = [" ".join(bullet.split()) for bullet in
+                   re.findall(r"^- (.*(?:\n[ \t]+\S.*)*)", ground, re.MULTILINE)]
+        expected = (
+            (
+                'The orchestrator never changes a tracker after publication.'
+            ),
+            (
+                'Every option offered at a gate, including the recommended one, stays within the planning '
+                'contract and states its consequences for validation and digests.'
+            ),
+            (
+                'Relaunch and revise reasons quote the chosen option verbatim as the human saw it, label '
+                "and description, followed by the human's free text, with no orchestrator additions; "
+                'reviewer findings arrive only as the attached review report.'
+            ),
+            (
+                "Before asking about a `blocked` verdict, show the gate command's output in the chat, then "
+                "ask. If your recommendation differs from the reviewer's, say so in one sentence; you are "
+                'not obliged to follow the reviewer.'
+            ),
+            (
+                'Only final spec and ticket approval questions carry no recommendation; blocker questions '
+                'may carry a recommendation.'
+            ),
+            (
+                'Label every option the orchestrator drafted itself, rather than taking it from a report or '
+                'the human, as drafted by the orchestrator.'
+            ),
+            (
+                'An extension option states how the worker continues: only more time, or a new delivery of '
+                'the full stage prompt.'
+            ),
+            (
+                "Only after successful completion, the orchestrator's new Git writes through `run_commit.py "
+                'commit` are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and '
+                'compare-and-swap `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must '
+                'never change the Git index or HEAD.'
+            ),
+            (
+                '`cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by '
+                '`markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with '
+                'the human before preparing a worker. Structural validation proves integrity, not '
+                'freshness.'
+            ),
+            (
+                'Workers synthesize supplied context and inspect the repository. They do not interview the '
+                'user; they put missing information under `Open Decisions`.'
+            ),
+            (
+                'The spec author may write only its draft and report. The tickets author may write only its '
+                'JSON proposal, deterministic numbered summary, and report. A reviewer may write only its '
+                'report and, for `pass_with_fixes`, its complete corrected candidate.'
+            ),
+            (
+                "Questions and walkthroughs use the user's language; inputs keep their original language. "
+                'Spec and ticket content follow the chosen language (`artifact_language`). Headings, '
+                'markers, JSON keys, reports, state, events, and prompts stay English; preserve literal '
+                'product copy. Field-level rules, including English `technical_layers` and fixed labels: '
+                '[references/spec-contract.md](references/spec-contract.md).'
+            ),
+            (
+                'Each ticket is a narrow but complete vertical slice. Never default to '
+                'frontend/backend/database/test tickets, never persist token counts or estimates, and '
+                'evaluate merge opportunities as explicitly as split points. Standalone prefactors '
+                '(`slice_type: prefactor`) come first and block the slices they prepare. Blocking edges '
+                'must be genuine and every blocker has a smaller ticket ID.'
+            ),
+            (
+                'Only a passing reviewed ticket candidate may be staged. Publication is a collision-checked '
+                'atomic directory move into the target repository and never invokes `cmux-issue-chain` or '
+                '`adopt_tracker.py` at runtime.'
+            ),
+            (
+                'Any unauthorized Git-visible delta gates HITL regardless of report; never silently revert '
+                'it.'
+            ),
+        )
+        for bullet in expected:
+            with self.subTest(bullet=bullet):
+                self.assertEqual(bullets.count(bullet), 1)
+
+    def test_integrity_reference_route_and_entrypoint_exclusions(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        flat = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "integrity-boundaries.md"]
+        self.assertEqual(len(routes), 1)
+        for condition in ("integrity violation", "failed tree capture", "manifest question", "retry attempt",
+                          "in-flight run after an upgrade", "what the integrity boundary covers"):
+            self.assertIn(condition, routes[0].group())
+        self.assertTrue(raw[:routes[0].start()].endswith("never silently revert it.\n\n"))
+        headings = re.findall(r"^#+ (.+)$", documentation(INTEGRITY), re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        self.assertIn(
+            "Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and "
+            "integrity violations as evidence for human resolution. Never infer approval from prose, "
+            "edit product code from the planning orchestrator, silently repair the working tree, or "
+            "claim coverage beyond the Ground rules integrity boundary.", flat)
+
+    def test_integrity_reference_preserves_moved_rules(self):
+        expected = (
+            'Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, '
+            'staged changes, untracked paths and their content (regular files up to the 8 MiB size cap '
+            'and symlink target bytes), and HEAD movement. It does not cover ignored product files or '
+            'skipped untracked content (files above the size cap or unsupported types), or contents of '
+            'unreadable untracked directories omitted by Git with a warning. Separately, every trusted '
+            "file in the Git-ignored run directory is finalized in `state.json`'s artifact manifest "
+            'with its canonical run-relative path, kind, stage, pass, attempt, byte size, SHA-256, '
+            'producer event, and immutable status. A baseline arms one pass and is never recaptured '
+            'against different product-tree bytes, so a relaunch cannot adopt an unauthorized delta as '
+            'its new "before". Before each launch, capture complete Git status, tracked and staged '
+            'diffs; after the report, compare paths and diff content. `compare_tree` compares the whole '
+            'before/after `staged_diff` independently of the allowed-write list. Any difference gates '
+            '`integrity-violation`, including staging an allowed artifact in a non-ignored custom run '
+            'root. Ordinary permitted artifact content writes and an unchanged pre-staged human '
+            'baseline remain allowed. An unreadable or vanished untracked path fails capture with a '
+            'diagnostic naming it instead of being skipped; restore access or remove the path and '
+            'retry. Git only warns about an unreadable untracked directory, so its contents stay '
+            'invisible rather than failing capture. Every worker emission has an immutable attempt '
+            'identity. The first attempt retains the concise stage/pass filenames; every later '
+            'same-pass attempt uses an `-attempt-N` suffix for its prompt, report, draft/proposal, '
+            'optional corrected candidate, stage snapshot, and tree snapshots. Preparing a retry closes '
+            'the earlier attempt and never reuses, deletes, or silently re-baselines its paths. '
+            'In-flight runs with pre-change untracked baselines must restart after upgrading; never '
+            'migrate those baselines or bypass seals.'
+        )
+        body = documentation(INTEGRITY).split("\n\n", 1)[1]
+        self.assertEqual(" ".join(body.split()), expected)
+        entry = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        for sentence in re.split(r"(?<=\.) ", expected):
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(sentence, entry)
+
     def test_entrypoint_states_integrity_boundary_once(self):
-        text = " ".join(PLANNING.read_text(encoding="utf-8").split())
-        for phrase in ("skipped untracked content", "8 MiB", "artifact manifest",
+        sources = [PLANNING, *sorted((PLANNING.parent / "references").glob("*.md"))]
+        texts = {path: " ".join(path.read_text(encoding="utf-8").split()) for path in sources}
+        for phrase in ("8 MiB", "artifact manifest",
+                       "The product-tree detector covers tracked changes, staged changes",
+                       "regular files up to the 8 MiB size cap and symlink target bytes",
+                       "It does not cover ignored product files or skipped untracked content",
+                       "contents of unreadable untracked directories omitted by Git with a warning",
                        "never recaptured against different product-tree bytes"):
-            self.assertEqual(text.count(phrase), 1, phrase)
+            with self.subTest(phrase=phrase):
+                self.assertEqual(texts[INTEGRITY].count(phrase), 1)
+                self.assertEqual(sum(text.count(phrase) for text in texts.values()), 1)
 
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)
@@ -987,12 +1135,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             self.assertIn(phrase, text)
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
-        text = documentation(PLANNING)
-        start = "- Two explicit integrity boundaries apply."
-        end = "\n- Every worker emission"
-        self.assertIn(start, text)
-        self.assertIn(end, text)
-        summary = " ".join(text.split(start, 1)[1].split(end, 1)[0].split())
+        summary = " ".join(documentation(INTEGRITY).split())
         self.assertIn(
             "The product-tree detector covers tracked changes, staged changes, untracked paths "
             "and their content (regular files up to the 8 MiB size cap and symlink target bytes), "
@@ -1007,7 +1150,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         )
 
     def test_run_artifact_and_product_tree_integrity_boundaries_are_documented(self):
-        text = normalized(PLANNING)
+        text = normalized(INTEGRITY)
         for required in (
             "two explicit integrity boundaries",
             "ignored product files",
@@ -1019,13 +1162,16 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "sha-256",
             "attempt identity",
             "`-attempt-n` suffix",
+        ):
+            self.assertIn(required, text)
+        for required in (
             "unexpected files",
             "never attached implicitly",
             "before run-state schema 3",
             "human decision to restart",
             "separately reviewed migration procedure",
         ):
-            self.assertIn(required, text)
+            self.assertIn(required, normalized(PLANNING))
 
     def test_model_diversity_confirmation_gate_is_documented(self):
         text = normalized(PLANNING)
@@ -1101,8 +1247,8 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                 self.assertIn("optional `--tracker-slug`", text)
 
     def test_untracked_upgrade_and_visibility_limits_are_documented(self):
-        self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(PLANNING))
-        self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(PLANNING))
+        self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(INTEGRITY))
+        self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(INTEGRITY))
 
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated

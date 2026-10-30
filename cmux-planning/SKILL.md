@@ -93,28 +93,10 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - The spec author may write only its draft and report. The tickets author may write only its JSON
   proposal, deterministic numbered summary, and report. A reviewer may write only its report and,
   for `pass_with_fixes`, its complete corrected candidate.
-- Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, staged
-  changes, untracked paths and their content (regular files up to the 8 MiB size cap and symlink
-  target bytes), and HEAD movement. It does not cover ignored product files or skipped untracked
-  content (files above the size cap or unsupported types), or contents of unreadable untracked
-  directories omitted by Git with a warning. Separately, every trusted file in the Git-ignored run
-  directory is finalized in `state.json`'s artifact manifest with its canonical run-relative path,
-  kind, stage, pass, attempt, byte size, SHA-256, producer event, and immutable status. A baseline
-  arms one pass and is never recaptured against different product-tree bytes, so a relaunch cannot
-  adopt an unauthorized delta as its new "before".
-  Before each launch, capture complete Git status, tracked and staged diffs; after the report,
-  compare paths and diff content. Any unauthorized Git-visible delta gates HITL regardless of report;
-  never silently revert it. `compare_tree` compares the whole before/after `staged_diff` independently
-  of the allowed-write list. Any difference gates `integrity-violation`, including staging an allowed
-  artifact in a non-ignored custom run root. Ordinary permitted artifact content writes and an
-  unchanged pre-staged human baseline remain allowed.
-  An unreadable or vanished untracked path fails capture with a diagnostic naming it instead of
-  being skipped; restore access or remove the path and retry. Git only warns about an unreadable
-  untracked directory, so its contents stay invisible rather than failing capture.
-- Every worker emission has an immutable attempt identity. The first attempt retains the concise
-  stage/pass filenames; every later same-pass attempt uses an `-attempt-N` suffix for its prompt,
-  report, draft/proposal, optional corrected candidate, stage snapshot, and tree snapshots. Preparing
-  a retry closes the earlier attempt and never reuses, deletes, or silently re-baselines its paths.
+- Any unauthorized Git-visible delta gates HITL regardless of report; never silently revert it.
+
+Read when diagnosing an integrity violation, a failed tree capture, a manifest question, a retry attempt, an in-flight run after an upgrade, or what the integrity boundary covers: [references/integrity-boundaries.md](references/integrity-boundaries.md).
+
 - Questions and walkthroughs use the user's language; inputs keep their original language. Spec and ticket
   content follow the chosen language (`artifact_language`). Headings, markers, JSON keys, reports,
   state, events, and prompts stay English; preserve literal product copy. Field-level rules,
@@ -553,9 +535,6 @@ Treat malformed reports, digest drift, dead panes, expired waits, blocked decisi
 violations as evidence for human resolution. Never infer approval from prose, edit product code from
 the planning orchestrator, silently repair the working tree, or claim coverage beyond the Ground rules
 integrity boundary.
-
-In-flight runs with pre-change untracked baselines must restart after upgrading; never migrate
-those baselines or bypass seals.
 
 ## Scripts
 
