@@ -41,15 +41,12 @@ publish the tracker in that feature folder.
 
 ## Artifact language at initialization
 
-In the same `AskUserQuestion` call as the commit mode, as its second question, ask a single-select in the
+In the same `AskUserQuestion` call as the commit mode, ask a single-select in the
 human's language: "Which language should spec and ticket content use?" Offer English first
 and recommended, then the human's language if not English; Other allows free text.
 Use an explicit `--artifact-language` without asking. Same fresh-run checks; never on resume, re-init, exit-3, or smoke tests.
-
-Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters
-(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init
-value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …`
-only with the field, before Commit.
+Order the initialization questions as commit mode, feature name, language, assignments,
+leaving out any skipped question.
 
 ## Default assignments at initialization
 
@@ -82,9 +79,6 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must never change the Git index or
   HEAD.
 
-- Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to
-  `inputs/conversation-brief.md`; record `state.inputs`.
-  Legacy `state.task` / `task.md` works; preserve each input's language.
 - `cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by
   `markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with the
   human before preparing a worker. Structural validation proves integrity, not freshness.
@@ -133,15 +127,13 @@ Ask about starting only for a newly created default (`--accept-config`). Never o
 
 Read when init creates configuration or detects schema v1 or v2: [references/configuration-migration.md](references/configuration-migration.md).
 
-Read when installing planning or setting it up for first use: [references/installation.md](references/installation.md).
-
 ## Initialize
 
 Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one call for commit
 mode, feature name, language and assignments, confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
 for six English headings, human-language content and verbatim quotes; show it fully as its own message,
 then confirm it with one `AskUserQuestion` single-select.
-Require a plan file or brief; grilling is additional. Only brief entries the human stated beat revalidated grilling
+Only brief entries the human stated beat revalidated grilling
 decisions, which beat plan files; entries taken from files keep the rank of their source.
 Other contradictions go to `Open Decisions`.
 
@@ -158,14 +150,11 @@ replace `--feature` with `--grilling-json <result.json>` and optionally the exac
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
-`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
-`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
-gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
-`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
-
 Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
 
 Read when choosing init examples, relative paths, or retry behavior: [references/initialization-details.md](references/initialization-details.md).
+
+Read when handling init inputs, the language flag, installing planning, or setting it up for first use: [references/initialization-details.md](references/initialization-details.md).
 
 ## Run briefing
 

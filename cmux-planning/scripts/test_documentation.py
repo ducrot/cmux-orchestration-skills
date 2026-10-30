@@ -19,6 +19,7 @@ PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
 INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
 STAGE_RUN = PLANNING.parent / "references/stage-run-details.md"
 TICKET_STAGE = PLANNING.parent / "references/ticket-stage-details.md"
+INITIALIZATION = PLANNING.parent / "references/initialization-details.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -892,9 +893,11 @@ class ArtifactLanguageDocumentation(unittest.TestCase):
         language = text.split("## artifact language at initialization", 1)[1].split("## ", 1)[0]
         for phrase in ("askuserquestion", "single-select", "english", "first and recommended",
                        "human's language", "other", "free text", "--artifact-language",
-                       "never on resume", "re-init", "exit-3", "smoke tests", "40 characters",
-                       "immutable", "legacy", "english language name"):
+                       "never on resume", "re-init", "exit-3", "smoke tests"):
             self.assertIn(phrase, language)
+        details = normalized(INITIALIZATION)
+        for phrase in ("40 characters", "immutable", "legacy", "english language name"):
+            self.assertIn(phrase, details)
         for path in (PLANNING, PLANNING.parent / "references" / "spec-contract.md"):
             content = normalized(path)
             for phrase in ("original language", "chosen language", "headings", "markers", "json keys",
@@ -1208,6 +1211,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertIn("gating the tickets author's report", routes[0].group())
         self.assertIn(routes[1].group(), approval)
         self.assertIn("publishing after ticket approval", routes[1].group())
+        self.assertIn('Subject convention: [references/ticket-stage-details.md](references/ticket-stage-details.md).', entry)
         reference = documentation(TICKET_STAGE)
         flat = " ".join(reference.split())
         moved = (
@@ -1241,9 +1245,54 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                       'python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \\\n'
                       '  --decision approve --reason <human-reason>\n```', approval)
 
+    def test_initialization_routes_moved_rules_and_question_order(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        details = " ".join(documentation(INITIALIZATION).split())
+        moved = (
+            "Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to "
+            "`inputs/conversation-brief.md`; record `state.inputs`. "
+            "Legacy `state.task` / `task.md` works; preserve each input's language.",
+            "Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters "
+            "(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init "
+            "value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …` "
+            "only with the field, before Commit.",
+            "Require a plan file or brief; grilling is additional.",
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, details)
+                self.assertNotIn(rule, entry)
+        routes = [route.group().strip() for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "initialization-details.md"]
+        self.assertEqual(routes, [
+            "Read when choosing init examples, relative paths, or retry behavior: "
+            "[references/initialization-details.md](references/initialization-details.md).",
+            "Read when handling init inputs, the language flag, installing planning, or setting it up for first use: "
+            "[references/initialization-details.md](references/initialization-details.md).",
+        ])
+        installation = "Read when installing planning or setting it up for first use: "
+        self.assertNotIn(installation, entry)
+        self.assertIn(installation + "[references/installation.md](installation.md).", details)
+        self.assertTrue((INITIALIZATION.parent / "installation.md").is_file())
+        self.assertNotIn("as its second question", entry)
+        language = entry.split("## Artifact language at initialization", 1)[1].split("## ", 1)[0]
+        self.assertIn("In the same `AskUserQuestion` call as the commit mode, ask a single-select in the "
+                      "human's language:", language)
+        self.assertIn("Order the initialization questions as commit mode, feature name, language, assignments, "
+                      "leaving out any skipped question.", language)
+        defaults = normalized(PLANNING.parent / "references/default-assignments.md")
+        self.assertIn("commit-mode, feature-name and language questions", defaults)
+        self.assertIn("or alone when none of those is asked", defaults)
+        self.assertNotIn("or alone when neither is asked", defaults)
+        self.assertNotIn("`init` writes `*` plus newline", entry)
+        self.assertNotIn("Config CLI never edits ignores.", entry)
+        self.assertNotIn(".gitignore", details)
+        self.assertIn("Read when init creates configuration or detects schema v1 or v2: "
+                      "[references/configuration-migration.md](references/configuration-migration.md).", entry)
+
     def test_initialization_routes_to_authoritative_ticket_target(self):
-        initialization = PLANNING.parent / "references/initialization-details.md"
-        reference = documentation(initialization)
+        reference = documentation(INITIALIZATION)
         flat = " ".join(reference.split())
         self.assertNotIn('publication currently require the target to be absent', flat)
         self.assertNotIn('including refusing an empty folder', flat)
@@ -1253,7 +1302,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                       'interrupted or completed publication, without changing target or staging.', flat)
         links = re.findall(r'\[references/ticket-stage-details\.md\]\(([^)]+)\)', reference)
         self.assertEqual(len(links), 1)
-        self.assertEqual((initialization.parent / links[0]).resolve(), TICKET_STAGE.resolve())
+        self.assertEqual((INITIALIZATION.parent / links[0]).resolve(), TICKET_STAGE.resolve())
         self.assertTrue(TICKET_STAGE.is_file())
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
@@ -1396,7 +1445,6 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
         normalized_guide = " ".join(guide.split())
         for required in (
-            "## Prerequisites and installation",
             "planning.reviewer",
             "--grilling-json",
             "explicit human",
@@ -1408,7 +1456,6 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "digest-bound",
             "already moved but not recorded",
             "symlink target bytes",
-            "contact no model provider",
             "cmux-issue-chain",
             "`configuration_created_and_accepted`",
             "`configuration_created_or_migrated_and_accepted`",
@@ -1416,6 +1463,9 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "conflicting values are rejected",
         ):
             self.assertIn(required, normalized_guide)
+        installation = " ".join(documentation(PLANNING.parent / "references/installation.md").split())
+        for required in ("## Prerequisites and installation", "contact no model provider"):
+            self.assertIn(required, installation)
         self.assertIn("They form an optional progression, not a mandatory pipeline", readme)
         self.assertIn("No workflow automatically invokes another", readme)
         self.assertNotIn("first vertical slice currently ends", readme)

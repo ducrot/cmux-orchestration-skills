@@ -1,4 +1,17 @@
-# Initialization examples and retry behavior
+# Initialization inputs, setup, examples and retry behavior
+
+Require a plan file or brief; grilling is additional.
+
+Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to
+`inputs/conversation-brief.md`; record `state.inputs`.
+Legacy `state.task` / `task.md` works; preserve each input's language.
+
+Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters
+(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init
+value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …`
+only with the field, before Commit.
+
+Read when installing planning or setting it up for first use: [references/installation.md](installation.md).
 
 Concrete direct-task and optional grilling-pair starts are:
 
