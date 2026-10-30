@@ -454,6 +454,14 @@ sha256 {self.spec_digest}
             capture_output=True, text=True, timeout=30,
         )
 
+    def test_proposal_rejects_todo_canonical_command(self):
+        data = proposal(self.spec)
+        data["tracker"]["canonical_check_commands"] = [
+            "python3 -m unittest discover -s tests", "<TODO: lint command>",
+        ]
+        with self.assertRaisesRegex(ContractError, "<TODO placeholder"):
+            self.write_proposal(data)
+
     def proposal_cli(self, *args: str) -> subprocess.CompletedProcess:
         return self.contract_cli(
             "proposal", str(self.proposal_path), "--spec", str(self.spec),
@@ -947,6 +955,7 @@ sha256 {resulting}
             readme,
         )
         self.assertNotIn("run as the baseline suite", readme)
+        self.assertNotIn("Targeted check commands", readme)
 
     def check_native_readme(self, tracker: Path, command_rules: str) -> subprocess.CompletedProcess:
         (tracker / "README.md").write_text(
@@ -974,6 +983,7 @@ sha256 {resulting}
         stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
         for commands, extra in (
             ("", ""),
+            ("  - ``\n", ""),
             ("  - `   `\n", ""),
             ("  - `<TODO: canonical test command>`\n", ""),
             ("", "- Targeted check commands for implement, simplify, and review:\n  - `python3 -m unittest tests.test_cli`\n"),
@@ -982,7 +992,22 @@ sha256 {resulting}
             with self.subTest(commands=commands, extra=extra):
                 checked = self.check_native_readme(tracker, f"- Canonical check commands:\n{commands}{extra}")
                 self.assertNotEqual(checked.returncode, 0)
-                self.assertIn("no runnable canonical check command", checked.stderr)
+                self.assertIn("canonical check command", checked.stderr)
+
+    def test_native_readme_rejects_mixed_valid_and_invalid_canonical_commands(self):
+        tracker = self.root / "planned-feature"
+        stage_native_tracker(tracker, self.write_proposal(), approved_spec=self.spec)
+        runnable = "  - `python3 -m unittest discover -s tests`\n"
+        for invalid in ("", "   ", "\t", "<TODO: canonical test command>"):
+            for invalid_first in (False, True):
+                with self.subTest(invalid=invalid, invalid_first=invalid_first):
+                    invalid_entry = f"  - `{invalid}`\n"
+                    commands = invalid_entry + runnable if invalid_first else runnable + invalid_entry
+                    checked = self.check_native_readme(
+                        tracker, f"- Canonical check commands:\n{commands}"
+                    )
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertIn("empty, whitespace-only, or <TODO placeholder", checked.stderr)
 
     def test_native_validation_rejects_partial_issue_set_and_changed_spec(self):
         result = self.write_proposal()

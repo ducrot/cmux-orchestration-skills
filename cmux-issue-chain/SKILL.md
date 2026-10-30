@@ -144,9 +144,11 @@ For an AFK issue, use this lifecycle unless the user requests a narrower run:
 Run simplify/refactor after every implementation pass. Start the simplify, reviewer, and final tester workers fresh for each pass.
 
 There is deliberately no test worker between simplify and review: the simplify after-run is verified
-evidence, and review cites or runs the applicable suite. Review covers the full working diff, including
+evidence, and review cites or runs tests following the [test selection and evidence policy](references/test-evidence.md). Review covers the full working diff, including
 simplify changes. The final test after review remains independent and always runs the full canonical
 suite on the final tree; reviewers must not accept their own fixes.
+
+Simplify and marked follow-up implement follow the shared [before/after selection rules](references/test-evidence.md#simplify-and-marked-follow-up-implement).
 
 Simplify is an editing role, not a passive reviewer. If the simplify pass proposes behavior-preserving cleanup within the current issue scope, the simplify worker may apply it and must report changed files plus the checks used to confirm behavior preservation.
 
@@ -169,7 +171,7 @@ same way. Earlier-stage decisions include every item under `## Not Applied` and 
 kept choice explained under `## Change Summary` or `## Notes`. Unless explicitly superseded by recorded
 human approval, the review worker never reverts one. If the fix pass reverted such an item without that
 approval — `/code-review --fix` briefs its internal agents from the diff alone and does not see the
-`## Not Applied` list — the worker restores it before its own after-run of the applicable suite.
+`## Not Applied` list — the worker restores it before its own after-run of the selected checks.
 
 How the proposal is reported depends on its reason. A quality-only reason (reuse, simplification,
 efficiency, altitude, style) is never a finding: the earlier decision stands, and the proposal goes under
@@ -286,28 +288,18 @@ The product-code boundary holds: inspect, never edit.
 
 ## Canonical Check Commands
 
-The tracker README's ground-rules section declares canonical check commands — at minimum the test
-suite, optionally lint — as exact runnable commands. `render_prompt.py` embeds these rules and the
-role's applicable suite. Workers must use those commands byte-for-byte through `run_check.py`, one
-wrapper log per command, instead of guessing their own suite.
+The tracker README's ground-rules section declares canonical check commands as exact runnable
+commands. The authoritative [test selection and evidence policy](references/test-evidence.md) defines
+diff-based selection and four guardrails for editing and review roles, all report labels and path forms,
+the check of named evidence, the other roles' duties, and the unchanged full canonical final test.
+`render_prompt.py` carries the applicable policy into every harness. See the
+[worker report contract](references/worker-report-contract.md) for the report structure.
 
-An optional ground-rules entry `Targeted check commands for implement, simplify, and review:` followed
-by indented command bullets opts those three roles into a targeted suite. Without it they use the
-canonical suite. The test worker always runs the full canonical suite. An empty or placeholder targeted
-entry is an error, not a fallback. Triage has no suite duty.
-
-Regular implement passes prove a failing regression and run their own applicable suite after the change.
-Simplify and marked follow-up implement passes may cite matching green before-evidence, but must run
-their own suite after the pass, even for a no-op. An unchanged review may cite matching green evidence
-or run its own suite; a review that changes the tree must run its own after-suite. A test worker runs
-its own full canonical suite. Citations must match the applicable command and starting tree; see the
-worker report contract for their exact form.
-
-Workers run suites one after another, never in parallel. The orchestrator runs no suite; it validates
-evidence rather than rerunning the worker's checks.
+The orchestrator runs no suite; it validates worker evidence. Canonical declarations remain required.
+An empty or placeholder canonical entry invalidates the entire command list; it is not skipped.
 
 Verify the declaration during run preflight, together with the branch check: if the ground rules declare
-no runnable check commands, record a `hitl` gate instead of starting the chain — the human adds the
+no runnable canonical check commands, record a `hitl` gate instead of starting the chain — the human adds the
 commands to the tracker README once, and every later run inherits them.
 
 ## Worker Wait Policy
@@ -830,13 +822,15 @@ a non-zero exit. Board failures never change command results.
 `run_state.py publish-triage --run-dir <run-dir> --pass <1|2>` publishes a passing triage report;
 `parse_report.py --items-file <path> <report>` validates the verdicts.
 
-Workers run each declared command through the wrapper from the repository root; the log records the
+Workers run each check command through the wrapper from the repository root; the log records the
 exact command, exit code, duration, repository, HEAD, and before/after tree fingerprints. Repeat runs
-create new logs rather than overwriting earlier evidence. The rendered prompt gives workers the
+create new logs rather than overwriting earlier evidence. After each completed command, including a
+non-zero exit, the wrapper reports the absolute written log path, repeat suffix included, on its own
+stderr; stdout and the exit code stay the command's own. The rendered prompt gives workers the
 installed wrapper path; the form is:
 
 ```bash
-python3 scripts/run_check.py --artifact-dir <run-dir>/artifacts/<role>-<pass> --command '<declared check command>'
+python3 scripts/run_check.py --artifact-dir <run-dir>/artifacts/<role>-<pass> --command '<check command>'
 ```
 
 After capturing the report and tree, the orchestrator checks evidence before the gate:

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -52,9 +54,16 @@ class EvidenceCli(unittest.TestCase):
                               text=True, timeout=30)
 
     def wrap(self, command=None, stage="implement", pass_num=1, cwd=None):
-        return self.cli("run_check.py", "--artifact-dir",
-                        self.run_dir / "artifacts" / f"{stage}-{pass_num}",
-                        "--command", command or self.command, cwd=cwd)
+        result = self.cli("run_check.py", "--artifact-dir",
+                          self.run_dir / "artifacts" / f"{stage}-{pass_num}",
+                          "--command", command or self.command, cwd=cwd)
+        # Fixtures explicitly report each selected own run, as real workers must.
+        if stage in ("implement", "review", "simplify"):
+            path = re.search(r"^run_check: log written to (.+)$", result.stderr, re.MULTILINE)
+            self.assertIsNotNone(path, result.stderr)
+            self.report.write_text(self.report.read_text().replace(
+                "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {path[1]}\n"))
+        return result
 
     BASELINE_STAGES = (("simplify", 1), ("implement", 2))
 
@@ -75,6 +84,177 @@ class EvidenceCli(unittest.TestCase):
 
     def log_path(self):
         return next((self.run_dir / "artifacts/implement-1").glob("*.log"))
+
+    def select(self, paths):
+        self.report_text()
+        self.report.write_text(self.report.read_text().replace(
+            "- `example`: passed", "\n".join(f"- evidence: {path}" for path in paths)))
+
+    def test_selected_comparison_free_commands_and_missing_second_before(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.report_text()
+                self.file.write_text("base\n")
+                if stage == "implement":
+                    self.prepared(True, stage, number)
+                self.capture(stage, number, prefix="launched")
+                self.wrap("true", "test")
+                cited = sorted((self.run_dir / "artifacts/test-1").glob("*.log"))[-1]
+                self.wrap("printf targeted", stage, number)
+                before = list((self.run_dir / f"artifacts/{stage}-{number}").glob("*.log"))
+                # Keep the own targeted before-run unlisted initially.
+                self.select([])
+                self.cite([cited])
+                self.file.write_text(f"after {stage}\n")
+                self.wrap("true", stage, number)
+                self.wrap("printf targeted", stage, number)
+                self.capture(stage, number)
+                checked = self.check(stage, number)
+                self.assertIn("missing: printf targeted phase=before source=own", checked.stdout)
+                self.assertEqual(checked.returncode, 3)
+                self.report.write_text(self.report.read_text().replace(
+                    "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {before[-1]}\n"))
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.phase_results("after")},
+                                 {"true", "printf targeted"})
+
+    def test_comparison_cited_command_cannot_use_green_own_before(self):
+        for stage, number in self.BASELINE_STAGES:
+            with self.subTest(stage=stage):
+                self.select([])
+                self.file.write_text("stale citation\n")
+                wrapped = self.wrap("true", "test")
+                cited = Path(re.search(r"log written to (.+)", wrapped.stderr)[1])
+                self.file.write_text("launch\n")
+                if stage == "implement":
+                    self.prepared(True, stage, number)
+                self.capture(stage, number, prefix="launched")
+                self.wrap("true", stage, number)
+                self.file.write_text("capture\n")
+                self.wrap("true", stage, number)
+                self.capture(stage, number)
+                self.assertEqual(self.check(stage, number).returncode, 0)
+                self.report.write_text(self.report.read_text().replace(
+                    "## Tests / Checks\n", f"## Tests / Checks\n- cited: {cited}\n"))
+                checked = self.check(stage, number)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                self.assertIn("stale: true differed=fingerprint phase=before source=cited",
+                              checked.stdout)
+
+    def test_regular_implement_selects_free_command_and_gate_advances(self):
+        self.wrap("true")
+        self.select([self.log_path()])
+        self.capture()
+        checked = self.check()
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertEqual(self.event()["data"]["results"][0]["command"], "true")
+        gated = self.cli("run_state.py", "gate", "--run-dir", self.run_dir,
+                         "--stage", "implement", "--decision", "advance",
+                         "--reason", "selected evidence", "--next-stage", "simplify")
+        self.assertEqual(gated.returncode, 0, gated.stderr)
+
+    def test_regular_requires_named_evidence_and_ignores_unlisted_red(self):
+        self.wrap("false")
+        red = self.log_path()
+        before = set(red.parent.glob("*.log"))
+        self.wrap("true")
+        green, = set(red.parent.glob("*.log")) - before
+        self.capture()
+        self.select([])
+        self.assertEqual(self.check().returncode, 3)
+        self.select([green])
+        self.assertEqual(self.check().returncode, 0)
+        data = self.event()["data"]
+        self.assertEqual([log["path"] for log in data["unlisted_logs"]], [str(red.resolve())])
+        self.assertEqual(data["checked_logs"][0]["verdict"], "pass")
+
+    def test_named_paths_normalize_and_stay_in_own_stage(self):
+        self.wrap("true")
+        path = self.log_path()
+        self.capture()
+        for form in (str(path), str(path.relative_to(self.run_dir)),
+                     f"unused/../{path.relative_to(self.run_dir)}", f"`{path}`"):
+            self.select([form])
+            self.assertEqual(self.check().returncode, 0, form)
+        outside = self.run_dir / "artifacts/review-1/check-copy.log"
+        outside.parent.mkdir()
+        outside.write_bytes(path.read_bytes())
+        external = self.root / "external.log"
+        external.write_bytes(path.read_bytes())
+        for bad in (outside, external, self.run_dir / "artifacts/implement-1/missing.log", ".", "./"):
+            self.select([bad])
+            self.assertEqual(self.check().returncode, 3)
+        link = path.parent / "check-link.log"
+        link.symlink_to(outside)
+        self.select([link])
+        self.assertEqual(self.check().returncode, 3)
+
+    def test_cited_paths_accept_wrapper_and_run_relative_forms(self):
+        self.green()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        paths = sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
+        for form in (lambda path: str(path),
+                     lambda path: f"unused/../{path.relative_to(self.run_dir)}",
+                     lambda path: str(path.relative_to(self.run_dir))):
+            self.report_text()
+            self.report.write_text(self.report.read_text().replace(
+                "- `example`: passed", "\n".join(f"- cited: {form(path)}" for path in paths)))
+            checked = self.check("review")
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+    def test_repository_relative_evidence_and_citations_fail_with_path_hint(self):
+        nested_run = self.repo / ".scratch/orchestrator/runs/example"
+        nested_run.parent.mkdir(parents=True)
+        self.run_dir.rename(nested_run)
+        self.run_dir = nested_run
+        # Match real runs: orchestration artifacts must not change the tree identity.
+        with (self.repo / ".git/info/exclude").open("a") as exclude:
+            exclude.write("\n.scratch/\n")
+        self.wrap("true")
+        path = self.log_path().relative_to(self.repo)
+        self.capture()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        for label, stage in (("evidence", "implement"), ("cited", "review")):
+            with self.subTest(label=label):
+                self.report_text()
+                self.report.write_text(self.report.read_text().replace(
+                    "- `example`: passed", f"- {label}: {path}"))
+                checked = self.check(stage)
+                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
+                data = self.event()["data"]
+                self.assertEqual(data["verdict"], "fail")
+                self.assertEqual(data["results"][0]["verdict"], "missing")
+                invalid, = data["invalid_logs"]
+                self.assertEqual(invalid["path"], str(path))
+                hint = "evidence paths must be absolute or relative to the run directory"
+                self.assertIn(hint, invalid["error"])
+                self.assertIn(hint, checked.stdout)
+
+    def test_named_repeat_rescues_red_and_stale_for_same_command(self):
+        self.wrap("true")
+        stale = self.log_path()
+        self.file.write_text("changed\n")
+        self.wrap("true")
+        paths = sorted(stale.parent.glob("*.log"))
+        fresh = next(path for path in paths if path != stale)
+        self.capture()
+        self.select([stale])
+        self.assertIn("stale: true", self.check().stdout)
+        payload = fresh.read_text()
+        fresh.write_text(payload.replace("exit_code: 0", "exit_code: 7"))
+        self.select([fresh])
+        self.assertIn("red: true", self.check().stdout)
+        fresh.write_text(payload)
+        self.select(paths)
+        self.assertEqual(self.check().returncode, 0)
+        self.assertEqual({log["verdict"] for log in self.event()["data"]["checked_logs"]},
+                         {"stale", "pass"})
+        fresh.write_text("unreadable header\n")
+        self.select([fresh])
+        self.assertIn("missing:", self.check().stdout)
 
     def test_gate_accepts_the_real_evidence_check_event(self):
         self.green()
@@ -128,9 +308,10 @@ class EvidenceCli(unittest.TestCase):
     def phase_results(self, phase):
         return [item for item in self.event()["data"]["results"] if item["phase"] == phase]
 
-    def assert_citations_rejected(self, reason):
+    def assert_citations_rejected(self, reason, commands=None):
         rejected = self.phase_results("citation")
-        self.assertEqual({item["command"] for item in rejected}, set(self.commands))
+        self.assertTrue(rejected)
+        self.assertEqual({item["command"] for item in rejected}, commands or set(self.commands))
         self.assertTrue(all(item["verdict"] == "missing" and item["cited"] for item in rejected))
         self.assertEqual({item["error"] for item in rejected}, {reason})
 
@@ -153,7 +334,8 @@ class EvidenceCli(unittest.TestCase):
     def cite(self, paths=None):
         paths = paths or sorted((self.run_dir / "artifacts/implement-1").glob("*.log"))
         bullets = "\n".join(f"- cited: {path.relative_to(self.run_dir)}" for path in paths)
-        self.report.write_text(self.report.read_text().replace("- `example`: passed", bullets))
+        text = re.sub(r"^- evidence: .*artifacts/implement-[^\n]*\n", "", self.report.read_text(), flags=re.MULTILINE)
+        self.report.write_text(text.replace("## Tests / Checks\n", "## Tests / Checks\n" + bullets + "\n"))
 
     def test_corrective_pass_after_red_test_owes_only_after_evidence(self):
         self.assertNotEqual(self.wrap("false", "test").returncode, 0)
@@ -168,7 +350,7 @@ class EvidenceCli(unittest.TestCase):
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertEqual({item["phase"] for item in self.event()["data"]["results"]}, {"after"})
 
-    def test_targeted_commands_for_each_stage_through_real_clis(self):
+    def test_targeted_commands_are_ignored_for_each_stage_through_real_clis(self):
         canonical = self.commands[:]
         targeted = ["printf 'targeted one\\n'", "printf 'targeted two\\n'"]
         self.rules(targeted=targeted)
@@ -176,24 +358,49 @@ class EvidenceCli(unittest.TestCase):
                                         ("simplify", 1, False), ("review", 1, False),
                                         ("test", 1, False)):
             with self.subTest(stage=stage, followup=followup):
-                expected, wrong = (canonical, targeted) if stage == "test" else (targeted, canonical)
-                self.commands = wrong
+                self.report_text()
+                self.commands = targeted
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
-                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
-                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
-                self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
-                self.commands = expected
+                regular = stage != "test"
+                self.assertEqual(checked.returncode, 0 if regular else 3, checked.stdout + checked.stderr)
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]},
+                                 set(targeted if regular else canonical))
+                if not regular:
+                    self.assertTrue(all(item["verdict"] == "missing" for item in self.event()["data"]["results"]))
+                self.commands = canonical
+                self.report_text()
                 self.green(stage, number, followup)
                 checked = self.check(stage, number)
                 self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
-                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(expected))
+                self.assertEqual({item["command"] for item in self.event()["data"]["results"]}, set(canonical))
+                baseline_results = self.event()["data"]["results"]
+                for entry in (None, [], ["<TODO: choose check>"]):
+                    self.rules(commands=canonical, targeted=entry)
+                    checked = self.check(stage, number)
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                    self.assertEqual(self.event()["data"]["results"], baseline_results)
+                self.rules(commands=canonical, targeted=targeted)
 
     def test_targeted_triage_still_exempt_without_capture_or_logs(self):
         self.rules(targeted=["false"])
         checked = self.check("triage")
         self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
         self.assertIn("verdict=exempt", checked.stdout)
+
+    def test_targeted_entry_cannot_replace_executable_canonical_commands(self):
+        for declaration in ("", "- Canonical check commands:\n",
+                            "- Canonical check commands:\n  - `<TODO: choose check>`\n",
+                            "- Canonical check commands:\n  - `   `\n"):
+            (self.tracker / "README.md").write_text(
+                "## Ground rules\n\n" + declaration
+                + "- Targeted check commands for implement, simplify, and review:\n  - `true`\n")
+            for stage in ("implement", "simplify", "review", "test"):
+                with self.subTest(declaration=declaration, stage=stage):
+                    checked = self.check(stage)
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertIn("canonical check commands", checked.stderr)
+            self.assertEqual(self.check("triage").returncode, 0)
 
     def test_before_evidence_follows_marker_not_pass_number(self):
         self.prepared(True, pass_num=1)
@@ -217,6 +424,53 @@ class EvidenceCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(all(log["cited"] for log in self.event()["data"]["checked_logs"]))
         self.assertTrue(all(item["cited"] for item in self.event()["data"]["results"]))
+
+    def test_review_selects_free_command_own_or_cited(self):
+        self.wrap("true")
+        source = self.log_path()
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        self.report_text()
+        self.cite([source])
+        checked = self.check("review")
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        log, = self.event()["data"]["checked_logs"]
+        self.assertEqual(log["path"], str(source.resolve()))
+        self.assertEqual(log["command"], "true")
+        self.assertTrue(log["cited"])
+
+        self.file.write_text("review fix\n")
+        self.wrap("true", "review")
+        own, = (self.run_dir / "artifacts/review-1").glob("*.log")
+        self.capture("review")
+        self.select([own])
+        self.assertEqual(self.check("review").returncode, 0)
+        self.cite([source])
+        self.assertEqual(self.check("review").returncode, 3)
+        self.assertIn("review changed the tree; own logs required",
+                      str(self.event()["data"]["results"]))
+
+    def test_changed_review_named_evidence_failures(self):
+        self.capture("review", prefix="launched")
+        self.wrap("true", "review")
+        own, = (self.run_dir / "artifacts/review-1").glob("*.log")
+        self.file.write_text("review fix\n")
+        self.capture("review")
+        self.select([own])
+        self.assertIn("stale: true", self.check("review").stdout)
+        self.wrap("false", "review")
+        red = next(path for path in own.parent.glob("*.log") if path != own)
+        self.select([red])
+        self.assertIn("red: false", self.check("review").stdout)
+        self.wrap("true")
+        for paths in ([], [own.parent / "missing.log"], [self.log_path()]):
+            self.select(paths)
+            self.assertEqual(self.check("review").returncode, 3)
+        self.wrap("true", "review")
+        fresh = next(path for path in own.parent.glob("*.log") if path not in (own, red))
+        self.select([fresh])
+        self.assertEqual(self.check("review").returncode, 0)
+        self.assertEqual(len(self.event()["data"]["unlisted_logs"]), 2)
 
     def test_review_stale_citations_and_changed_review_rejects_citations(self):
         for movement in ("tree", "HEAD"):
@@ -265,7 +519,7 @@ class EvidenceCli(unittest.TestCase):
                 self.cite()
                 result = self.check("review", pass_num)
                 self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
-                self.assert_citations_rejected("review changed the tree; own logs required")
+                self.assert_citations_rejected("review changed the tree; own logs required", {"<citation>"})
                 self.assertTrue(all(item["verdict"] == "pass" for item in self.phase_results("after")))
 
     def test_test_stage_rejects_citations_even_with_own_logs(self):
@@ -320,6 +574,7 @@ class EvidenceCli(unittest.TestCase):
     def test_own_before_and_after_and_missing_before(self):
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                self.report_text()
                 if stage == "implement":
                     self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")
@@ -341,8 +596,10 @@ class EvidenceCli(unittest.TestCase):
                 self.assertEqual(self.check(stage, number).returncode, 0)
 
     def test_noop_own_before_requires_distinct_after(self):
+        self.commands = ["true", "printf free"]
         for stage, number in self.BASELINE_STAGES:
             with self.subTest(stage=stage):
+                self.report_text()
                 if stage == "implement":
                     self.prepared(True, stage, number)
                 self.capture(stage, number, prefix="launched")
@@ -410,11 +667,10 @@ class EvidenceCli(unittest.TestCase):
         result = self.check("review")
         self.assertEqual(result.returncode, 3)
         self.assertIn("red: exit 7 exit_code=7 phase=after source=cited", result.stdout)
-        self.assertIn(f"missing: {self.command} phase=after source=own", result.stdout)
         self.assertEqual([(item["verdict"], item["cited"]) for item in self.event()["data"]["results"]],
-                         [("red", True), ("missing", False)])
+                         [("red", True)])
 
-    def test_unchanged_review_missing_source_with_partial_or_broken_citations(self):
+    def test_unchanged_review_cited_pass_stale_or_broken(self):
         for number, baseline in enumerate(("pass", "stale", "broken"), start=1):
             with self.subTest(baseline=baseline):
                 self.report_text()
@@ -432,26 +688,17 @@ class EvidenceCli(unittest.TestCase):
                 self.capture("review", number)
                 self.cite([path])
                 checked = self.check("review", number)
-                self.assertEqual(checked.returncode, 3, checked.stdout + checked.stderr)
-                self.assertIn(f"missing: {self.commands[1]} phase=after source=own", checked.stdout)
-                self.assertEqual(self.event()["type"], "orchestrator.verified")
-                after = {item["command"]: item for item in self.phase_results("after")}
-                self.assertEqual(after[self.commands[1]]["verdict"], "missing")
-                self.assertIs(after[self.commands[1]]["cited"], False)
-                broken = baseline == "broken"
-                verdict, source = ("missing", "own") if broken else (baseline, "cited")
-                detail = " differed=fingerprint" if baseline == "stale" else ""
-                self.assertEqual(after[self.command]["verdict"], verdict)
-                self.assertIs(after[self.command]["cited"], not broken)
-                self.assertIn(
-                    f"{verdict}: {self.command}{detail} phase=after source={source}", checked.stdout)
-                if broken:
-                    citations = self.phase_results("citation")
-                    self.assertEqual({item["command"] for item in citations}, set(self.commands))
-                    self.assertTrue(all(item["verdict"] == "missing" and item["cited"]
-                                        for item in citations))
-                    self.assertTrue(all(item["citation"] == str(path.relative_to(self.run_dir))
-                                        for item in citations))
+                self.assertEqual(checked.returncode, 0 if baseline == "pass" else 3,
+                                 checked.stdout + checked.stderr)
+                data = self.event()["data"]
+                if baseline == "broken":
+                    self.assertTrue(data["invalid_logs"][0]["cited"])
+                    self.assertEqual(data["results"][0]["verdict"], "missing")
+                else:
+                    result, = data["results"]
+                    self.assertEqual(result["command"], self.command)
+                    self.assertEqual(result["verdict"], baseline)
+                    self.assertTrue(result["cited"])
 
     def test_missing_launch_fails_closed_for_roles_using_baselines(self):
         for stage, number in (("review", 1), ("simplify", 1), ("implement", 2)):
@@ -477,6 +724,7 @@ class EvidenceCli(unittest.TestCase):
         self.green()
         self.capture("review", prefix="launched")
         self.capture("review")
+        self.report_text()
         bullets = "\n".join(f"- cited: `{path.relative_to(self.run_dir)}`"
                              for path in sorted((self.run_dir / "artifacts/implement-1").glob("*.log")))
         self.report.write_text(self.report.read_text().replace("- `example`: passed", bullets))
@@ -582,6 +830,8 @@ class EvidenceCli(unittest.TestCase):
         self.state["deliverables"]["tracker"] = "../tracker"
         (self.run_dir / "state.json").write_text(json.dumps(self.state))
         self.green()
+        (self.run_dir / "reports").mkdir(exist_ok=True)
+        (self.run_dir / "reports/implement-1.md").write_text(self.report.read_text())
         self.assertEqual(self.check(report=False).returncode, 0)
 
     def test_missing_own_log_and_nonzero_log(self):
@@ -589,11 +839,14 @@ class EvidenceCli(unittest.TestCase):
         self.assertEqual(self.wrap("exit 7").returncode, 7)
         # Another stage's log never satisfies the stage being checked.
         self.wrap(stage="review")
+        other = next((self.run_dir / "artifacts/review-1").glob("*.log"))
+        self.report.write_text(self.report.read_text().replace(
+            "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {other}\n"))
         self.capture()
         result = self.check()
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("red: exit 7 exit_code=7", result.stdout)
-        self.assertIn(f"missing: {self.command}", result.stdout)
+        self.assertIn("missing:", result.stdout)
 
     def test_fingerprint_stale_and_passing_repeat_supersedes_before_run(self):
         self.green()
@@ -639,7 +892,9 @@ class EvidenceCli(unittest.TestCase):
     def test_each_stage_and_followup_pass_uses_its_own_capture_and_logs(self):
         for stage in ("implement", "simplify", "review", "test"):
             with self.subTest(stage=stage):
+                self.report_text()
                 self.green(stage, 1)
+                self.report_text()
                 self.file.write_text(f"{stage} pass 2\n")
                 self.green(stage, 2, followup=stage == "implement")
                 self.assertEqual(self.check(stage, 2).returncode, 0)
@@ -677,7 +932,7 @@ class EvidenceCli(unittest.TestCase):
         self.capture()
         result = self.check()
         self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertIn(f"missing: {self.command}", result.stdout)
+        self.assertIn("missing:", result.stdout)
         self.assertIn("invalid log:", result.stdout)
 
     def test_missing_capture_or_canonical_commands_fails_closed(self):
@@ -703,14 +958,30 @@ class EvidenceCli(unittest.TestCase):
                 path.write_bytes(original.replace(before, after, 1))
                 result = self.check()
                 self.assertEqual(result.returncode, 3, result.stderr)
-                self.assertIn(f"missing: {self.command}", result.stdout)
+                self.assertIn("missing:", result.stdout)
 
-    def test_requires_repository_root(self):
+    def test_named_paths_work_from_repository_subdirectory(self):
         nested = self.repo / "nested"
         nested.mkdir()
-        result = self.check(cwd=nested)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("repository root", result.stderr)
+        self.wrap("true")
+        self.capture()
+        path = self.log_path()
+        for form in (path, path.relative_to(self.run_dir)):
+            self.select([form])
+            result = self.check(cwd=nested)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.capture("review", prefix="launched")
+        self.capture("review")
+        for form in (path, path.relative_to(self.run_dir)):
+            self.report_text()
+            self.report.write_text(self.report.read_text().replace(
+                "## Tests / Checks\n", f"## Tests / Checks\n- cited: {form}\n"))
+            result = self.check("review", cwd=nested)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        relative = ["--run-dir", os.path.relpath(self.run_dir, self.repo), "--stage", "review",
+                    "--pass", 1, "--report", self.report]
+        result = self.cli("check_evidence.py", *relative, cwd=nested)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

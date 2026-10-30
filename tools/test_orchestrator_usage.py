@@ -964,6 +964,12 @@ class WallTime(unittest.TestCase):
             "workflow": "issue-chain", "layout_version": 2,
             "deliverables": {"tracker": str(tracker)},
         }))
+        log, = (self.run_dir / "artifacts" / "implement-1").glob("check-*.log")
+        reports = self.run_dir / "reports"
+        reports.mkdir()
+        (reports / "implement-1.md").write_text(
+            f"## Tests / Checks\n- `{command}`: PASS\n"
+            f"- evidence: {log.relative_to(self.run_dir)}\n", encoding="utf-8")
         for script, args in (
             ("run_state.py", ["snapshot", "--run-dir", str(self.run_dir),
                               "--label", "report-captured implement-1"]),
