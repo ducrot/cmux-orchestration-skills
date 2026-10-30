@@ -1,5 +1,13 @@
 # Zeiterfassung changelog
 
+## 1.1.0 — 2026-10-30
+
+- Worker fixture regenerated from the shipped defaults: `planning.spec` and
+  `planning.tickets` now use `claude-opus-high` instead of `claude-fable-high`.
+  Project and scenarios are unchanged.
+- Baseline for this version: pending. Results from 1.0.0 used Fable planning
+  authors and are not directly comparable.
+
 ## 1.0.0 — 2026-10-25
 
 - Initial PHP/SQLite time-tracking project: customers, projects and rate periods,

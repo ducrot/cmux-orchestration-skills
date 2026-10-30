@@ -162,7 +162,7 @@ The shared configuration lives at `.scratch/orchestrator/agents.json`. These are
 | Grilling | Second repository opinion | GPT-6.1 Sol / high |
 | Grilling | Official documentation | GPT-6.1 Sol / medium |
 | Grilling | Web research | Claude Sonnet / medium |
-| Planning | Specification and ticket authors | Claude Fable / high |
+| Planning | Specification and ticket authors | Claude Opus / high |
 | Planning | Reviewer | GPT-6 Astra / high |
 | Issue-chain | Implementer | GPT-6.1 Sol / medium |
 | Issue-chain | Simplifier, reviewer, and triage | Claude Opus / medium |

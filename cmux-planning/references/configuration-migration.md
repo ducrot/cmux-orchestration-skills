@@ -9,7 +9,7 @@ stdout empty and emits one complete actionable guidance block on stderr, includi
 and exact preview and acceptance commands once each.
 On confirmation, invoke its displayed `agents_config.py migrate --accept` command including its digest
 argument, then rerun planning
-initialization; `--accept-config` never authorizes schema migration. When `claude-fable-high` is absent,
+initialization; `--accept-config` never authorizes schema migration. When `claude-opus-high` is absent,
 the preview identifies it as unavailable and displays the lexicographically first compatible fallback's
 profile name, harness, model, and effort without inferring relative quality. Migration preserves existing
 profiles and assignments, assigns a missing `issue-chain.triage` to `claude-opus-high`, and leaves

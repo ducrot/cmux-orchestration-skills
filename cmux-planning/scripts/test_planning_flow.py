@@ -1961,7 +1961,7 @@ sha256 {resulting_digest or digest}
         self.assertEqual(
             author_snapshot["selected_worker"]["argv"],
             [
-                "claude", "--model", "fable", "--effort", "high",
+                "claude", "--model", "opus", "--effort", "high",
                 "--permission-mode", "auto",
             ],
         )
@@ -2538,7 +2538,7 @@ sha256 {resulting_digest or digest}
     def test_refusing_a_changed_diverse_resolution_records_it_without_preparing(self):
         self.assign_planning_profile("spec", "codex-astra-medium")
         self.assertEqual(self.init_direct().returncode, 2)
-        self.assign_planning_profile("spec", "claude-fable-high")
+        self.assign_planning_profile("spec", "claude-opus-high")
 
         refused = self.decide_diversity("refuse", "Do not launch before an independent check")
 
@@ -2732,7 +2732,7 @@ sha256 {resulting_digest or digest}
             "--run-dir",
             str(self.run_dir),
             "--profile",
-            "reviewer=claude-fable-high",
+            "reviewer=claude-opus-high",
         )
 
         self.assertEqual(accepted.returncode, 2, accepted.stdout + accepted.stderr)
@@ -2741,7 +2741,7 @@ sha256 {resulting_digest or digest}
         self.assertIsNone(payload["prepared"])
         warning = payload["diversity_warning"]
         self.assertEqual(warning["author"]["role"], "planning.spec")
-        self.assertEqual(warning["reviewer"]["profile"], "claude-fable-high")
+        self.assertEqual(warning["reviewer"]["profile"], "claude-opus-high")
         # The author already ran, so the guidance names the assignment still worth changing.
         self.assertEqual(warning["assignment_path"], "workflows.planning.reviewer")
         state = json.loads((self.run_dir / "state.json").read_text(encoding="utf-8"))
@@ -2759,7 +2759,7 @@ sha256 {resulting_digest or digest}
         snapshot = json.loads(
             (self.run_dir / state["prepared_stage"]["path"]).read_text(encoding="utf-8")
         )
-        self.assertEqual(snapshot["selected_worker"]["profile"], "claude-fable-high")
+        self.assertEqual(snapshot["selected_worker"]["profile"], "claude-opus-high")
 
     def test_changed_collision_resolution_invalidates_confirmation_and_asks_again(self):
         self.assign_planning_profile("spec", "codex-astra-medium")

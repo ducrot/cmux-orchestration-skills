@@ -142,7 +142,7 @@ shimmer, and spinner, so the screen that readiness checks read stays stable. The
 exception-path `deliver` submits text with a single Enter.
 
 All three skills vendor `scripts/agents_config.py` schema-v3 CLI, requiring `planning.spec`,
-`planning.tickets`, and `planning.reviewer`. Authors default to `claude-fable-high`, reviewer to
+`planning.tickets`, and `planning.reviewer`. Authors default to `claude-opus-high`, reviewer to
 `codex-astra-high`. All roles accept Claude Code, Codex or Pi; model diversity, not a fixed reviewer
 harness, enforces independence. Pi requires a provider-qualified model (`provider/id`, e.g.
 `openrouter/z-ai/glm-5.3`): preflight is model-scoped because Pi lacks provider-wide auth status.

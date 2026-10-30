@@ -27,7 +27,7 @@ protocol. Never offer profile overrides the human did not ask for.
 
 1. If the file already exists at schema v1 or v2, run `agents_config.py migrate` without `--accept`.
    Present its coordinated-upgrade warning and complete validated preview in the human's language,
-   including every resolved workflow assignment. When `claude-fable-high` is unavailable, call out
+   including every resolved workflow assignment. When `claude-opus-high` is unavailable, call out
    the displayed fallback profile name, harness, model, and effort without inferring relative quality.
    Also call out every added required assignment the preview names, such as `issue-chain.triage`.
    Ask whether to accept exactly that proposal. On refusal or interruption, make no further tool call.
