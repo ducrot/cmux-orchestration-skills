@@ -362,10 +362,7 @@ Authors receive only the immutable approved spec, task, repository identity, tra
 vertical-slice policy, native proposal schema, revision feedback, and exact handoff paths. Its JSON
 proposal is authoritative; `tracker_contract.py render-summary` renders its exact numbered summary.
 
-Gate a clean report with `accept-author` as above. It validates approved-spec identity, proposal structure, summary equality, ticket count, ready
-frontier, genuine blockers, cycles, qualitative sizing, merge/split rationale, and wide-refactor
-sequences, then prepares a fresh immutable `tickets-review` snapshot. Run that stage in a new visible
-pane; gate its report with `accept-review` as above.
+Read when gating the tickets author's report: [references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 The tickets reviewer returns `pass`, `pass_with_fixes`, or `blocked`. Safe fixes may correct only
 established intent and lead directly to human approval after deterministic validation. A substantive
@@ -412,20 +409,16 @@ Spec approval keeps its existing flow without a fixed quiz.
 
 Approval freezes the exact reviewed proposal digest, stages `README.md`, `spec.md`, `map.md`,
 `decisions.md`, and every native issue file under the run directory, and validates the complete staged
-tracker with this skill's standalone native contract. The target must be absent or contain only a real
-`grilling/` directory (variant B); its basename must
-equal the dated feature name `YYYY-MM-DD-<slug>`; `tracker.slug` remains the pure slug:
+tracker with this skill's standalone native contract.
+
+Approve the reviewed tickets:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
   --decision approve --reason <human-reason>
 ```
 
-Publish on one filesystem; variant B moves `grilling/` first:
-
-```bash
-python3 scripts/planning_state.py publish --run-dir <run-dir>
-```
+Read when publishing after ticket approval: [references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 Publication refuses path escape, collisions, changed identities or staging, malformed issues, duplicate
 IDs, unknown blockers, cycles, and second publication. Validation failure preserves the target.
@@ -439,8 +432,8 @@ After successful `publish`, record a proposal with `run_commit.py propose` for t
 repository-relative literal leaves from `git status --porcelain=v1 -z --untracked-files=all`, limited to
 `published_tracker.artifacts` under `published_tracker.path`; exclude `grilling/` and expanded globs.
 Pass each leaf with `--file`, and
-exclude unrelated changes from the proposal while listing them with `--ride-along`. Use an English
-one-line subject explaining what changed and why, an optional body, and no trailers.
+exclude unrelated changes from the proposal while listing them with `--ride-along`. Subject convention:
+[references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 ```bash
 python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Publish approved implementation tracker" --file <tracker>/README.md --file <tracker>/spec.md --file <tracker>/map.md --file <tracker>/decisions.md --file <tracker>/issues/<file>

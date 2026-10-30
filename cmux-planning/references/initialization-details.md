@@ -48,7 +48,7 @@ The feature folder lives directly in repository `.scratch/`. `--feature` accepts
 repository-relative path, or absolute path. Its prefix must be a valid calendar date; the slug is
 lowercase kebab-case, at most 30 characters. The folder and pure slug are frozen as `feature_dir`
 and `tracker_slug`. There is no `--slug` option. Init does not create the feature folder; a fresh
-run refuses an existing folder unless it contains exactly the `grilling/` directory. Ticket approval
-and publication currently require the target to be absent, including refusing an empty folder.
+run refuses an existing folder unless it contains exactly the `grilling/` directory.
+For the ticket approval and publication target rule, see [references/ticket-stage-details.md](ticket-stage-details.md).
 Re-init with a different feature folder is refused, while the same folder remains idempotent after
 interrupted or completed publication, without changing target or staging.

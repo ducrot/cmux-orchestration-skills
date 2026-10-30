@@ -18,6 +18,7 @@ GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
 PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
 INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
 STAGE_RUN = PLANNING.parent / "references/stage-run-details.md"
+TICKET_STAGE = PLANNING.parent / "references/ticket-stage-details.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -1194,6 +1195,66 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             'Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).',
         ):
             self.assertIn(kept, raw)
+
+    def test_ticket_stage_routes_and_moved_rules(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "ticket-stage-details.md"]
+        self.assertEqual(len(routes), 2)
+        author = raw.split("## Ticket author and independent review\n", 1)[1].split("\n## ", 1)[0]
+        approval = raw.split("## Ticket approval, staging, and publication\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(routes[0].group(), author)
+        self.assertIn("gating the tickets author's report", routes[0].group())
+        self.assertIn(routes[1].group(), approval)
+        self.assertIn("publishing after ticket approval", routes[1].group())
+        reference = documentation(TICKET_STAGE)
+        flat = " ".join(reference.split())
+        moved = (
+            'Gate a clean report with `accept-author` as above. It validates approved-spec identity, '
+            'proposal structure, summary equality, ticket count, ready frontier, genuine blockers, cycles, '
+            'qualitative sizing, merge/split rationale, and wide-refactor sequences, then prepares a fresh '
+            'immutable `tickets-review` snapshot. Run that stage in a new visible pane; '
+            'gate its report with `accept-review` as above.',
+            'The target must be absent or contain only a real `grilling/` directory (variant B); '
+            'its basename must equal the dated feature name `YYYY-MM-DD-<slug>`; '
+            '`tracker.slug` remains the pure slug.',
+            'Publish on one filesystem; variant B moves `grilling/` first:',
+            'python3 scripts/planning_state.py publish --run-dir <run-dir>',
+            'Use an English one-line subject explaining what changed and why, an optional body, and no trailers.',
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, flat)
+                self.assertNotIn(rule.rstrip('.:'), entry)
+        self.assertIn('See the Gate the author and reviewer section in the entry point', reference)
+        self.assertIn('## Gate the author and reviewer\n', raw)
+        positions = [flat.index(rule) for rule in moved]
+        self.assertEqual(positions, sorted(positions))
+        headings = re.findall(r"^#+ (.+)$", reference, re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        self.assertIn('Approve the reviewed tickets:\n\n```bash\n'
+                      'python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \\\n'
+                      '  --decision approve --reason <human-reason>\n```', approval)
+
+    def test_initialization_routes_to_authoritative_ticket_target(self):
+        initialization = PLANNING.parent / "references/initialization-details.md"
+        reference = documentation(initialization)
+        flat = " ".join(reference.split())
+        self.assertNotIn('publication currently require the target to be absent', flat)
+        self.assertNotIn('including refusing an empty folder', flat)
+        self.assertIn('There is no `--slug` option. Init does not create the feature folder; a fresh '
+                      'run refuses an existing folder unless it contains exactly the `grilling/` directory.', flat)
+        self.assertIn('Re-init with a different feature folder is refused, while the same folder remains idempotent after '
+                      'interrupted or completed publication, without changing target or staging.', flat)
+        links = re.findall(r'\[references/ticket-stage-details\.md\]\(([^)]+)\)', reference)
+        self.assertEqual(len(links), 1)
+        self.assertEqual((initialization.parent / links[0]).resolve(), TICKET_STAGE.resolve())
+        self.assertTrue(TICKET_STAGE.is_file())
 
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
         summary = " ".join(documentation(INTEGRITY).split())
