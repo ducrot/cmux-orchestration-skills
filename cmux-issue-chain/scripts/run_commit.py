@@ -411,6 +411,8 @@ def main():
     args = parser.parse_args()
     try:
         run_dir = Path(args.run_dir)
+        if read_json(run_dir / "state.json").get("layout_version") != 2:
+            raise ValueError(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
         if args.command == "commit":
             commit_context(run_dir)  # Refusals must not even create the lock file.
         with (run_dir / "commit.lock").open("a") as lock:

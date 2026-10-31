@@ -2,6 +2,7 @@
 """Real-Git CLI regression coverage for the proposal transaction."""
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ class CliCase(unittest.TestCase):
         self.git('commit', '-qm', 'Initial')
         self.run = self.root / 'run'
         self.run.mkdir()
-        self.state = dict(run_id='test', workflow='issue-chain', current_stage='done',
+        self.state = dict(run_id='test', layout_version=2, workflow='issue-chain', current_stage='done',
                           working_directory=str(self.repo), commit_mode='commit', chain=['implement'],
                           commit_baseline=capture_baseline(self.repo))
         self.save()
@@ -69,6 +70,89 @@ class CliCase(unittest.TestCase):
         result = self.cli(**kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def commit(self, success=True):
+        result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def git_state(self):
+        return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
+
+
+class LegacyLayoutCli(CliCase):
+    WORKFLOW = SCRIPT.parents[1].name.removeprefix('cmux-')
+
+    def configure(self):
+        self.state.update(layout_version=2, workflow=self.WORKFLOW, configuration_created_and_accepted=False,
+                          current_stage='complete' if self.WORKFLOW == 'planning' else 'done',
+                          repository=str(self.repo), published_tracker={'path': str(self.repo / 'd')},
+                          deliverables={'markdown': str(self.repo / 'f*'), 'json': str(self.repo / 'fx')})
+        self.save()
+        return {'planning': ['d/file'], 'grilling': ['f*', 'fx']}.get(self.WORKFLOW, ['f*'])
+
+    def old_layout(self, layout, missing_workflow):
+        if layout is None:
+            self.state.pop('layout_version')
+        else:
+            self.state['layout_version'] = layout
+        if missing_workflow:
+            self.state.pop('workflow')
+        self.save()
+
+    def snapshot(self):
+        return {str(path.relative_to(self.run)): path.read_bytes() if path.is_file() else None
+                for path in self.run.rglob('*')}
+
+    def refuse(self, command, files):
+        before = self.snapshot()
+        git_before = self.git_state()
+        result = self.cli(files=files) if command == 'propose' else self.commit(success=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stderr,
+                         f'unsupported legacy layout in {self.run}; inspect read-only and restart the run\n')
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.run / 'commit.lock').exists())
+        self.assertEqual(self.git_state(), git_before)
+
+    def inspect(self):
+        planning = self.WORKFLOW == 'planning'
+        script = SCRIPT.with_name('planning_state.py' if planning else 'run_state.py')
+        before = self.snapshot()
+        for command in (('status', 'context') if planning else ('status',)):
+            result = subprocess.run([sys.executable, str(script), command, '--run-dir', str(self.run)],
+                                    cwd=self.root, env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsInstance(json.loads(result.stdout), dict)
+            self.assertEqual(self.snapshot(), before)
+
+    def assert_old_layouts_refused(self, prepare=lambda files: None):
+        for layout, missing_workflow in itertools.product((1, None, 3), (False, True)):
+            with self.subTest(layout=layout, missing_workflow=missing_workflow):
+                files = self.configure()
+                prepare(files)
+                self.old_layout(layout, missing_workflow)
+                for command in ('propose', 'commit'):
+                    with self.subTest(command=command):
+                        self.refuse(command, files)
+                self.inspect()
+
+    def record_proposal(self, files):
+        (self.run / 'events.jsonl').unlink(missing_ok=True)
+        for path in files:
+            (self.repo / path).write_text('changed')
+        self.ok(files=files)
+        (self.run / 'commit.lock').unlink()
+
+    def test_legacy_boundary_refuses_without_any_run_or_git_writes(self):
+        self.assert_old_layouts_refused()
+
+    def test_legacy_commit_refuses_previously_recorded_proposal(self):
+        self.assert_old_layouts_refused(self.record_proposal)
 
 
 class ProposalCli(CliCase):
@@ -391,15 +475,6 @@ class CommitCli(CliCase):
                 self.dirty('d/file', content=workflow)
                 self.assertEqual(self.ok(files=['d/file']), first)
                 self.assertEqual(self.events(), before)
-
-    def commit(self, success=True):
-        result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
-                                cwd=self.root, env=self.env, capture_output=True, text=True)
-        if success:
-            self.assertEqual(result.returncode, 0, result.stderr)
-            return json.loads(result.stdout)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        return result
 
     def dirty(self, path='f*', content='changed'):
         (self.repo / path).write_text(content)
@@ -781,9 +856,6 @@ class CommitCli(CliCase):
         self.assertEqual(self.last()['type'], 'commit.attempted')
         self.env['PATH'] = os.environ['PATH']
         return proposal, self.last()['data']
-
-    def git_state(self):
-        return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
 
     def recover_without_git_write(self):
         before = self.git_state()
