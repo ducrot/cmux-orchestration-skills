@@ -1536,6 +1536,12 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                     "candidate digest and exact preview and acceptance commands once each", text
                 )
 
+    @unittest.skipUnless(README.is_file(), "repository README absent in independent installation")
+    def test_readme_integrity_link_reaches_owning_reference(self):
+        link = INTEGRITY.relative_to(REPOSITORY).as_posix()
+        self.assertIn(f"[integrity boundaries]({link})", README.read_text(encoding="utf-8"))
+        self.assertTrue(INTEGRITY.is_file(), link)
+
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")
