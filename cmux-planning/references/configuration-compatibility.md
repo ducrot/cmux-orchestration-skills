@@ -17,6 +17,6 @@ before run-state schema 3 / artifact-manifest version 1 remains inspectable thro
 human decision to restart or to use a separately reviewed migration procedure. No automatic migration
 or digest baseline is inferred from files already present in such a run.
 
-Older layouts permit `status` only; continuation refuses “unsupported legacy layout”.
-Restart after inspection.
+Older layouts (`layout_version` missing or below 2) permit only `status` and `context`; continuation
+refuses “unsupported legacy layout”. Restart after inspection.
 

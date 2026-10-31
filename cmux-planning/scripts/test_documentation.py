@@ -1412,11 +1412,12 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertIn("`resume --decision extend` watcher extension. " + extension, recovery)
         self.assertNotIn("For the one extension,", entry)
         old_layout = (
-            'Older layouts permit `status` only; continuation refuses “unsupported legacy layout”. '
+            'Older layouts (`layout_version` missing or below 2) permit only `status` and `context`; '
+            'continuation refuses “unsupported legacy layout”. '
             'Restart after inspection.'
         )
         self.assertIn(old_layout, " ".join(documentation(CONFIGURATION_COMPATIBILITY).split()))
-        self.assertNotIn("Older layouts permit", entry)
+        self.assertNotIn("Older layouts", entry)
         self.assertIn(
             'Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the '
             'current launch IDs and stage/pass or round. Every invocation computes the remaining time; '
