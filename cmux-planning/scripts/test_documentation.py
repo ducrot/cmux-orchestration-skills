@@ -93,6 +93,37 @@ class OnDemandDocumentation(unittest.TestCase):
                     self.assertEqual(target.resolve().parent, (guide.parent / "references").resolve())
                     self.assertTrue(target.read_text(encoding="utf-8").strip(), target)
 
+    def test_planning_references_are_reachable_within_two_pointer_hops(self):
+        links = re.compile(r"\[[^\]\n]+\]\(([^)\s]+)\)")
+        references = {path.resolve() for path in (PLANNING.parent / "references").rglob("*.md")}
+        reached = set()
+        frontier = {PLANNING.resolve()}
+        for _ in range(2):
+            following = set()
+            for source in frontier:
+                for link in links.findall(source.read_text(encoding="utf-8")):
+                    target = link.split("#", 1)[0]
+                    resolved = (source.parent / target).resolve()
+                    if resolved in references:
+                        following.add(resolved)
+                    elif "references" in Path(target).parts:
+                        self.fail(f"Unresolved reference in {source}: {link}")
+            reached |= following
+            frontier = following
+        self.assertEqual(references - reached, set(), "references need a route within two hops")
+
+    def test_planning_omits_the_five_removed_statements(self):
+        raw = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        for statement in (
+            "Neither is invoked here; all three workflows work independently.",
+            "Run `tickets` as in Run one stage.",
+            "Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.",
+            "Finalized identities are never rewritten or adopted as a fresh baseline.",
+            "Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing and recap generation.",
+        ):
+            with self.subTest(statement=statement):
+                self.assertNotIn(statement, raw)
+
     def test_normal_run_stays_in_entrypoints(self):
         for guide in SIBLINGS:
             text = guide.read_text(encoding="utf-8").lower()
@@ -625,11 +656,13 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             vocabulary = text.split("## event vocabulary", 1)[1]
             for event in ("commit.attempted", "commit.created", "commit.skipped", "commit.failed"):
                 self.assertIn(event, vocabulary, skill)
-            for phrase in ("run_commit.py commit", "hitl always proposes", "commit.attempted",
+            for phrase in ("run_commit.py commit", "commit.attempted",
                            "commit.created", "commit.skipped", "commit.failed", "never `--no-verify`",
                            "literal leaf `git add`", "git reset -q --", "git update-ref head <p> <c>",
                            "never re-propose a changed draft"):
                 self.assertIn(phrase, text, skill)
+            if skill != "cmux-planning":
+                self.assertIn("hitl always proposes", text, skill)
 
     def test_every_guide_briefs_the_human_before_the_first_worker(self):
         for guide in SIBLINGS:

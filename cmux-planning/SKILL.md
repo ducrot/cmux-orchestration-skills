@@ -9,7 +9,7 @@ Turn persisted inputs into a specification, then a native issue tracker, each in
 and explicitly approved. The orchestrator coordinates without authoring artifacts or editing product code;
 each author and reviewer gets a fresh, visibly labeled CMUX pane.
 Optional upstream `cmux-grilling` stress-tests uncertain decisions; downstream `cmux-issue-chain`
-executes published trackers. Neither is invoked here; all three workflows work independently.
+executes published trackers.
 
 `scripts/…` and `references/…` name files in this skill's directory. Run every command from the
 target repository root, never `cd` into the skill directory: call `python3 <skill-dir>/scripts/…`.
@@ -342,7 +342,6 @@ stales approval and blocks continuation.
 
 ## Ticket author and independent review
 
-Run `tickets` as in Run one stage.
 Authors receive only the immutable approved spec, task, repository identity, tracker ground rules,
 vertical-slice policy, native proposal schema, revision feedback, and exact handoff paths. Its JSON
 proposal is authoritative; `tracker_contract.py render-summary` renders its exact numbered summary.
@@ -429,7 +428,6 @@ The helper records the replay-safe proposal, including ignored and pre-run dirty
 In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
 Use a background or long-timeout invocation with enough time for the repository's commit hooks;
 a killed call leaves a `commit.attempted` without an outcome.
-Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.
 Never commit after `hitl`, `blocked`, or `stop`. In propose mode, show the recorded proposal.
 The orchestrator commits in commit mode; the human commits otherwise. Push, PR, and CI stay with the
 human. Never run `git push` and never `--no-verify`.
@@ -478,7 +476,6 @@ Runs live in `.scratch/orchestrator/runs/<run-id>/`. `inputs/` (legacy `task.md`
 `attempt_history` closes earlier emissions without deletion; `artifact_audit` lists stale identities
 and unexpected files. Draft/report/candidate-like names confer no trust. Absolute paths, traversal,
 symlink escape, role-location or kind substitution, digest or byte-size drift fail before consumption.
-Finalized identities are never rewritten or adopted as a fresh baseline.
 
 Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and integrity
 violations as evidence for human resolution. Never infer approval from prose, edit product code from
@@ -487,7 +484,6 @@ integrity boundary.
 
 ## Scripts
 
-Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing and recap generation.
 `run_commit.py propose` owns `commit.proposed` (see Event Vocabulary).
 
 ## Event Vocabulary
