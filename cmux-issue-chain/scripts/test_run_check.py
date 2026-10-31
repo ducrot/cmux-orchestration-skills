@@ -203,5 +203,92 @@ class RunCheckCli(unittest.TestCase):
         self.assertNotEqual(fields["fingerprint_before"], fields["fingerprint_after"])
 
 
+class CanonicalSuiteGuard(unittest.TestCase):
+    """Editing roles leave canonical suites to the final test unless they name a reason."""
+
+    git = test_snapshot.SnapshotCli.git
+
+    def setUp(self):
+        test_snapshot.SnapshotCli.setUp(self)
+        (self.repo / ".git" / "info" / "exclude").write_text(".scratch/\n")
+        scratch = self.repo / ".scratch"
+        self.marker = self.root / "ran"
+        self.canonical = f"touch {shlex.quote(str(self.marker))}"
+        self.tracker = scratch / "2026-10-31-tracker"
+        self.tracker.mkdir(parents=True)
+        (self.tracker / "README.md").write_text(
+            f"# Tracker\n\n## Ground rules\n\n- Canonical check commands:\n  - `{self.canonical}`\n")
+        self.guarded_run = scratch / "orchestrator" / "runs" / "chain"
+        self.guarded_run.mkdir(parents=True)
+        (self.guarded_run / "state.json").write_text(json.dumps({
+            "workflow": "issue-chain", "layout_version": 2,
+            "deliverables": {"tracker": str(self.tracker)}}))
+
+    def wrap(self, stage, command, *extra):
+        return subprocess.run(
+            [sys.executable, str(WRAPPER), "--artifact-dir",
+             str(self.guarded_run / "artifacts" / stage), "--command", command, *extra],
+            cwd=self.repo, env=self.env, capture_output=True, text=True,
+        )
+
+    def test_editing_roles_are_refused_before_the_suite_starts(self):
+        for stage in ("implement-1", "simplify-1", "review-1", "implement-2"):
+            with self.subTest(stage=stage):
+                result = self.wrap(stage, self.canonical)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("--full-suite-reason", result.stderr)
+                self.assertFalse(self.marker.exists())
+                self.assertFalse((self.guarded_run / "artifacts" / stage).exists())
+
+    def test_named_reason_runs_the_suite_and_writes_normal_evidence(self):
+        result = self.wrap("implement-1", self.canonical,
+                           "--full-suite-reason", "Changed the shared state reader.")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+        log = result.stderr.removeprefix("run_check: log written to ").strip()
+        self.assertEqual(Path(f"{log}.reason").read_text(), "Changed the shared state reader.\n")
+
+    def test_blank_reason_is_refused(self):
+        result = self.wrap("review-1", self.canonical, "--full-suite-reason", "   ")
+        self.assertEqual(result.returncode, 64)
+        self.assertFalse(self.marker.exists())
+
+    def test_selected_commands_need_no_reason(self):
+        result = self.wrap("implement-1", f"{self.canonical} -c")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+
+    def test_final_test_runs_canonical_commands_without_reason(self):
+        result = self.wrap("test-1", self.canonical)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+
+    def test_relative_tracker_path_from_a_nested_directory_is_still_guarded(self):
+        state = json.loads((self.guarded_run / "state.json").read_text())
+        state["deliverables"]["tracker"] = ".scratch/2026-10-31-tracker"
+        (self.guarded_run / "state.json").write_text(json.dumps(state))
+        nested = self.repo / "nested"
+        nested.mkdir(exist_ok=True)
+        result = subprocess.run(
+            [sys.executable, str(WRAPPER), "--artifact-dir",
+             str(self.guarded_run / "artifacts" / "implement-1"), "--command", self.canonical],
+            cwd=nested, env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 64)
+
+    def test_unreadable_declarations_do_not_block_checks(self):
+        (self.tracker / "README.md").unlink()
+        result = self.wrap("implement-1", self.canonical)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for state in ("", json.dumps({"workflow": "issue-chain", "layout_version": 1})):
+            with self.subTest(state=state):
+                (self.guarded_run / "state.json").write_text(state)
+                result = self.wrap("implement-1", self.canonical)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        (self.guarded_run / "state.json").unlink()
+        result = self.wrap("implement-1", self.canonical)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
