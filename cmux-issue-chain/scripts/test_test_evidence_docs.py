@@ -29,7 +29,8 @@ class EvidenceDocumentation(unittest.TestCase):
 
     def test_authoritative_policy_and_references(self):
         policy = " ".join((ROOT / "references/test-evidence.md").read_text().split())
-        for phrase in ("analysis of the diff", "orientation and fallback",
+        for phrase in ("analysis of the diff", "Canonical suites belong to the final test",
+                       "--full-suite-reason", "is no reason",
                        "tests of changed modules", "ticket's regression test",
                        "tests of dependent modules", "repository protection tests", "next larger unit",
                        "`- evidence:", "`- cited:", "`- selection:",
@@ -52,8 +53,12 @@ class EvidenceDocumentation(unittest.TestCase):
         for phrase in ("tests of changed modules", "ticket's regression test",
                        "tests of dependent modules", "repository protection tests",
                        "next larger unit", "references/test-evidence.md",
-                       "exactly one `- selection:`", "not gate-checked"):
+                       "exactly one `- selection:`", "not gate-checked",
+                       "short of a canonical suite", "--full-suite-reason",
+                       "satisfied by the final test"):
             self.assertIn(phrase, implement)
+        final_test = render_prompt.test_duties("test", "artifacts/test-1", False, rules)
+        self.assertNotIn("--full-suite-reason", final_test)
         for harness in ("claude-code", "codex", "other-harness"):
             review = render_prompt.render("review", "ISSUE-004", "# Issue", {},
                                           harness=harness, ground_rules=rules)
@@ -61,7 +66,7 @@ class EvidenceDocumentation(unittest.TestCase):
                            "tests of dependent modules", "repository protection tests",
                            "next larger unit", "exactly one `- selection:`",
                            "`- evidence: <path>`", "`- cited: <path>`",
-                           "Canonical commands for orientation and fallback"):
+                           "Canonical commands, reserved for the final test"):
                 self.assertIn(phrase, review)
             self.assertNotIn("byte-for-byte", review)
             self.assertNotIn("never substitute a different suite", review)
@@ -88,5 +93,5 @@ class EvidenceDocumentation(unittest.TestCase):
             duties = render_prompt.test_duties(role, "artifacts/stage", followup,
                                               "- Canonical check commands:\n  - `check`")
             for phrase in ("before the first edit", "distinct green own after-run", "selection:",
-                           "Canonical commands for orientation and fallback"):
+                           "Canonical commands, reserved for the final test"):
                 self.assertIn(phrase, duties)

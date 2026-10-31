@@ -165,7 +165,7 @@ class RenderFunction(unittest.TestCase):
                             self.assertIn("Do not run any test suite", duties)
                         else:
                             expected, other = "python3 check.py", "python3 targeted.py"
-                            label = "Canonical commands for orientation and fallback" if role in ("implement", "simplify", "review") else "Full applicable suite for this role"
+                            label = "Canonical commands, reserved for the final test" if role in ("implement", "simplify", "review") else "Full applicable suite for this role"
                             self.assertIn(f"{label}:\n  - `{expected}`", duties)
                             self.assertNotIn(f"`{other}`", duties)
 
@@ -190,7 +190,7 @@ class RenderFunction(unittest.TestCase):
                     self.assertNotIn("Use the canonical check commands declared in the tracker ground rules as the baseline suite", text)
                     self.assertNotIn("run the baseline suite before and after", text)
                     if role == "implement":
-                        self.assertNotIn("Canonical commands for orientation and fallback", text)
+                        self.assertNotIn("Canonical commands, reserved for the final test", text)
                         self.assertIn("exactly one `- selection:` bullet", text)
                         self.assertIn("At least one named green own run", text)
                         self.assertIn("Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged", text)
@@ -575,7 +575,7 @@ class RenderCli(unittest.TestCase):
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(LEGACY_GROUND_RULES, prompt)
         self.assertIn("These role-specific test duties override the embedded README wording", prompt)
-        self.assertIn("Canonical commands for orientation and fallback", prompt)
+        self.assertIn("Canonical commands, reserved for the final test", prompt)
         self.assertIn("one after another, never in parallel", prompt)
         self.assertIn("- evidence: <path>", prompt)
 
@@ -587,7 +587,7 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(rules, prompt)
-        self.assertIn("Canonical commands for orientation and fallback:\n  - `python3 check.py`", prompt)
+        self.assertIn("Canonical commands, reserved for the final test:\n  - `python3 check.py`", prompt)
 
     def test_cli_accepts_empty_targeted_declaration(self):
         rules = LEGACY_GROUND_RULES + "\n- Targeted check commands for implement, simplify, and review:"
@@ -597,7 +597,7 @@ class RenderCli(unittest.TestCase):
         self.assertEqual(rendered.returncode, 0, rendered.stderr)
         prompt = (self.run_dir / "prompts/implement-1.md").read_text()
         self.assertIn(rules, prompt)
-        self.assertIn("Canonical commands for orientation and fallback:\n  - `python3 check.py`", prompt)
+        self.assertIn("Canonical commands, reserved for the final test:\n  - `python3 check.py`", prompt)
 
     def test_cli_refuses_placeholder_canonical_declaration_without_traceback(self):
         rules = ("- Canonical check commands:\n  - `<TODO: canonical test command>`\n"

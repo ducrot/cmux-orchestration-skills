@@ -290,7 +290,7 @@ The product-code boundary holds: inspect, never edit.
 
 The tracker README's ground-rules section declares canonical check commands as exact runnable
 commands. The authoritative [test selection and evidence policy](references/test-evidence.md) defines
-diff-based selection and four guardrails for editing and review roles, all report labels and path forms,
+diff-based selection, four guardrails and the wrapper's canonical-suite refusal for editing and review roles, all report labels and path forms,
 the check of named evidence, the other roles' duties, and the unchanged full canonical final test.
 `render_prompt.py` carries the applicable policy into every harness. See the
 [worker report contract](references/worker-report-contract.md) for the report structure.
@@ -826,7 +826,8 @@ Workers run each check command through the wrapper from the repository root; the
 exact command, exit code, duration, repository, HEAD, and before/after tree fingerprints. Repeat runs
 create new logs rather than overwriting earlier evidence. After each completed command, including a
 non-zero exit, the wrapper reports the absolute written log path, repeat suffix included, on its own
-stderr; stdout and the exit code stay the command's own. The rendered prompt gives workers the
+stderr; stdout and the exit code stay the command's own. A canonical command refused in an editing
+or review role exits 64 without a log (see the policy). The rendered prompt gives workers the
 installed wrapper path; the form is:
 
 ```bash

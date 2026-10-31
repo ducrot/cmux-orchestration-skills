@@ -216,7 +216,7 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
                 "- For every chosen command, always name a distinct green own after-run of the same command on the capture tree with `evidence:`, even when nothing was applied. Only named runs are checked; at least one command is required; without evidence there is no advance.\n"
             )
             if followup:
-                evidence_duty += "- In a follow-up, citable test evidence covers only canonical commands (normally from the test stage); targeted commands need your own before-runs.\n"
+                evidence_duty += "- In a follow-up, citable test evidence covers only canonical commands (normally from the test stage); targeted commands need your own before-runs. Citing a canonical command obliges a canonical after-run, which needs a full-suite reason, so prefer targeted commands.\n"
         elif role == "review":
             evidence_duty = "- If the review changed anything (launch and capture HEAD or fingerprint differ), name green own runs on the capture tree with `evidence:`; citations are rejected. Otherwise, cite the previous stage's green evidence for the same working tree with `- cited: <path>`, or name own runs. Only named runs are checked; at least one is required; without evidence there is no advance.\n"
         else:
@@ -225,11 +225,12 @@ def test_duties(role: str, artifact_path: str, followup: bool, ground_rules: str
   1. Always run tests of changed modules and the ticket's regression test.
   2. For shared or imported code, also run tests of dependent modules.
   3. Run affected repository protection tests, such as drift or contract tests.
-  4. When uncertain, run the next larger unit.
+  4. When uncertain, run the next larger unit short of a canonical suite.
+- Canonical suites belong to the final test, which always runs them. The wrapper refuses a canonical command in this role unless you add `--full-suite-reason '<reason>'`. Use it only when no smaller selection covers the diff, such as a change to code most of the suite depends on, keep the reason free of apostrophes, and repeat it in your selection bullet. A ticket criterion asking for full suites is satisfied by the final test and is no reason.
 - Run checks one after another, never in parallel. Use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<chosen command>'` from the repository root for every own run.
 - Under `## Tests / Checks`, give each relied-upon run's command and outcome and a separate `- evidence: <path>` bullet for an own run (or `- cited: <path>` where citing is allowed). Copy the path from the wrapper's `run_check: log written to <path>` stderr line unchanged; the wrapper reports an absolute path, and run-directory-relative paths are also accepted.
 {evidence_duty}- Include exactly one `- selection:` bullet naming affected areas, applied guardrails, and why the selection is sufficient. This explanation is for triage and human review, not gate-checked by the evidence check or report parser.
-""" + ("- Canonical commands for orientation and fallback:\n"
+""" + ("- Canonical commands, reserved for the final test:\n"
          + "\n".join(f"  - `{command}`" for command in commands) if commands else "")
     common = TEST_DUTIES_OVERRIDE + PATH_ONLY_BULLETS + f"""- Use the declared check commands in the tracker ground rules; never substitute a different suite. Run suites one after another, never in parallel.
 - For each required own check run, use `python3 {shlex.quote(script_path("run_check.py"))} --artifact-dir {shlex.quote(artifact_path)} --command '<declared check command>'` from the repository root, writing evidence into your own worker artifact directory.

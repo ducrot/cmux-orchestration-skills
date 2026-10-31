@@ -54,9 +54,10 @@ class EvidenceCli(unittest.TestCase):
                               text=True, timeout=30)
 
     def wrap(self, command=None, stage="implement", pass_num=1, cwd=None):
+        reason = () if stage == "test" else ("--full-suite-reason", "evidence fixture")
         result = self.cli("run_check.py", "--artifact-dir",
                           self.run_dir / "artifacts" / f"{stage}-{pass_num}",
-                          "--command", command or self.command, cwd=cwd)
+                          "--command", command or self.command, *reason, cwd=cwd)
         # Fixtures explicitly report each selected own run, as real workers must.
         if stage in ("implement", "review", "simplify"):
             path = re.search(r"^run_check: log written to (.+)$", result.stderr, re.MULTILINE)
@@ -64,6 +65,12 @@ class EvidenceCli(unittest.TestCase):
             self.report.write_text(self.report.read_text().replace(
                 "## Tests / Checks\n", f"## Tests / Checks\n- evidence: {path[1]}\n"))
         return result
+
+    def test_followup_after_run_of_a_cited_canonical_command_needs_a_reason(self):
+        refused = self.cli("run_check.py", "--artifact-dir", self.run_dir / "artifacts" / "implement-2",
+                           "--command", self.command)
+        self.assertEqual(refused.returncode, 64)
+        self.assertEqual(list((self.run_dir / "artifacts").glob("implement-2/check-*")), [])
 
     BASELINE_STAGES = (("simplify", 1), ("implement", 2))
 

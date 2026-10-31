@@ -5,13 +5,21 @@ The rendered worker prompt carries the applicable duties into each harness.
 
 ## Test selection
 
-Select tests by your own analysis of the diff. Canonical commands in the tracker are orientation
-and fallback for regular implement, review, simplify, and marked follow-up implement passes. Apply these four guardrails:
+Select tests by your own analysis of the diff in regular implement, review, simplify, and marked
+follow-up implement passes. Apply these four guardrails:
 
 1. Always run tests of changed modules and the ticket's regression test.
 2. For shared or imported code, also run tests of dependent modules.
 3. Run affected repository protection tests, such as drift or contract tests.
-4. When uncertain, run the next larger unit.
+4. When uncertain, run the next larger unit short of a canonical suite.
+
+Canonical suites belong to the final test, which always runs them. In these roles `run_check.py`
+refuses a command equal to a canonical command with exit code 64 and no log, unless
+`--full-suite-reason '<reason>'` names why no smaller selection covers the diff, such as a change to
+code most of the suite depends on, or a canonical command that is already narrow. The wrapper keeps
+the reason beside the log as `<log>.reason`; the selection bullet repeats it. A ticket criterion
+asking for full suites is satisfied by the final test and is no reason. The wrapper compares the
+exact command, so a reworded suite passes it; running one still contradicts this policy.
 
 Regular implement proves that a regression fails without the change and executes the changed path end-to-end.
 Run checks one after another, never in parallel, through `run_check.py` in your own stage artifact
@@ -86,7 +94,8 @@ available in `unlisted_logs` and cannot satisfy either side.
 
 In a follow-up, citable test evidence covers only canonical commands from the most recent stage
 with green evidence for the same starting tree (normally test). Targeted commands need your own
-before-runs before editing. This is a worker selection duty; the checker accepts freely chosen
+before-runs before editing. Citing a canonical command obliges a canonical after-run, which needs a
+full-suite reason, so prefer targeted commands. This is a worker selection duty; the checker accepts freely chosen
 commands from cited logs and enforces their launch-tree identity.
 
 ## Final test and triage
