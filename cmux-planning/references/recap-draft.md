@@ -7,3 +7,7 @@
   a `Reason:` line (German: `Begründung:`); `recap-show` enforces both. A prompt block follows with
   `/cmux-issue-chain <tracker> <issue-id>`; additions from the planning prompt are not carried over. It
   never overwrites an existing recap.
+
+The published tracker's target is its frozen dated feature folder. That target is immediately
+consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
+separate workflow.

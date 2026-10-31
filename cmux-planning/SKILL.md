@@ -472,9 +472,7 @@ Explicit `--run-id` values are preserved.
 Runs live in `.scratch/orchestrator/runs/<run-id>/`. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
 `state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
-`spec.md`, `map.md`, `decisions.md`, and `issues/` at the frozen dated feature folder. That target is immediately
-consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
-separate workflow.
+`spec.md`, `map.md`, `decisions.md`, and `issues/` at the frozen dated feature folder.
 
 `artifact_manifest` trusts run files; `current_attempt` declares armed-worker writable paths;
 `attempt_history` closes earlier emissions without deletion; `artifact_audit` lists stale identities

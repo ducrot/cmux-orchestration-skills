@@ -1462,6 +1462,26 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "value at its gates. This does not authorize ticket revision after approval.",
         ])
 
+    def test_published_tracker_handoff_lives_in_recap_reference(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        recap = " ".join(documentation(PLANNING.parent / "references/recap-draft.md").split())
+        handoff = (
+            'That target is immediately consumable by `cmux-issue-chain`: inspect its first ready '
+            'issue, then initialize issue execution as a separate workflow.'
+        )
+        self.assertNotIn(handoff, entry)
+        self.assertIn("The published tracker's target is its frozen dated feature folder. " + handoff, recap)
+        self.assertIn(
+            'Approved native trackers contain `README.md`, `spec.md`, `map.md`, `decisions.md`, '
+            'and `issues/` at the frozen dated feature folder.',
+            entry,
+        )
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "recap-draft.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("drafting the run recap or selecting its next issue", routes[0].group())
+
     def test_untracked_upgrade_and_visibility_limits_are_documented(self):
         self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(INTEGRITY))
         self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(INTEGRITY))
