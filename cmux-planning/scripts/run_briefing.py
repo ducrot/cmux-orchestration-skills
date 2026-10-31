@@ -1366,6 +1366,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    run_dir = Path(args.run_dir)
+    state_path = run_dir / "state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if isinstance(state, dict) and state.get("layout_version") != 2:
+            raise SystemExit(f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
     if args.command == "draft":
         return draft(args, BRIEFING_FILE, render_briefing)
     if args.command == "recap-draft":

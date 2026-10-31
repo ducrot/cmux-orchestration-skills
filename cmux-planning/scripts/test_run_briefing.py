@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import subprocess
@@ -25,6 +26,7 @@ sys.exit(int(os.environ.get("FAKE_CMUX_EXIT", "0")))
 '''
 
 ISSUE_STATE = {
+    "layout_version": 2,
     "run_id": "chain-issue-003-2026-09-23-2007",
     "workflow": "issue-chain",
     "workspace_id": "WS-UUID",
@@ -40,6 +42,7 @@ ISSUE_STATE = {
     "triage_mode": "autonomous",
 }
 PLANNING_STATE = {
+    "layout_version": 2,
     "run_id": "plan-briefing-2026-09-24-1000",
     "workflow": "planning",
     "workspace_id": None,
@@ -48,6 +51,7 @@ PLANNING_STATE = {
     "grilling_import": None,
 }
 GRILLING_STATE = {
+    "layout_version": 2,
     "run_id": "grill-briefing-2026-09-24-1000",
     "workflow": "grilling",
     "workspace_id": "WS-UUID",
@@ -84,7 +88,67 @@ class RunDirTestCase(unittest.TestCase):
         )
 
 
+class LegacyLayout(RunDirTestCase):
+    @staticmethod
+    def snapshot(run_dir: Path) -> dict:
+        return {str(p.relative_to(run_dir)): p.read_bytes() for p in run_dir.rglob("*") if p.is_file()}
+
+    def test_commands_refuse_without_mutations_or_sidebar_calls(self):
+        for base, version, no_workflow, command in itertools.product(
+            (ISSUE_STATE, PLANNING_STATE, GRILLING_STATE), (1, None, 3), (False, True),
+            ("draft", "recap-draft", "show", "recap-show"),
+        ):
+            with self.subTest(workflow=base["workflow"], version=version, no_workflow=no_workflow, command=command):
+                state = {**base, "layout_version": version, "workspace_id": "WS-UUID",
+                         "run_id": f"{base['workflow']}-{version}-{no_workflow}-{command}",
+                         "created_at": "2026-10-31T08:00:00+00:00",
+                         "current_stage": run_briefing.DONE_STAGES[base["workflow"]]}
+                if version is None:
+                    state.pop("layout_version")
+                if no_workflow:
+                    state.pop("workflow")
+                run_dir = self.run_dir(state)
+                (run_dir / "events.jsonl").write_text("", encoding="utf-8")
+                args = [command, "--run-dir", str(run_dir)]
+                if command in ("show", "recap-show"):
+                    (run_dir / "briefing.md").write_text("Filled briefing\n", encoding="utf-8")
+                    (run_dir / "recap.md").write_text("Filled recap\n", encoding="utf-8")
+                    args += ["--cmux-cmd", self.cmux]
+                before = self.snapshot(run_dir)
+                result = self.call(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stderr.strip(),
+                                 f"unsupported legacy layout in {run_dir}; inspect read-only and restart the run")
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(before, self.snapshot(run_dir))
+                self.assertFalse(self.log.exists())
+
+    def test_state_that_is_not_an_object_is_not_called_legacy(self):
+        run_dir = self.run_dir(ISSUE_STATE)
+        (run_dir / "state.json").write_text("[]", encoding="utf-8")
+        result = self.call("draft", "--run-dir", str(run_dir))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.strip(), f"{run_dir / 'state.json'} is not a cmux orchestration run state")
+
+
 class BoardProjection(RunDirTestCase):
+    def test_publisher_accepts_states_without_layout_version(self):
+        from unittest.mock import patch
+
+        for base in (ISSUE_STATE, PLANNING_STATE, GRILLING_STATE):
+            with self.subTest(workflow=base["workflow"]):
+                state = {**base, "workspace_id": "WS-UUID", "current_stage": "review"}
+                state.pop("layout_version")
+                run_dir = self.run_dir(state)
+                before = (run_dir / "state.json").read_bytes()
+                with patch.dict(os.environ, FAKE_CMUX_LOG=str(self.log), FAKE_CMUX_EXIT="0"):
+                    run_briefing.publish_board(run_dir, self.cmux)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                self.assertEqual([call[0] for call in calls], ["workspace-action", "set-progress"])
+                self.assertEqual(before, (run_dir / "state.json").read_bytes())
+                self.assertFalse((run_dir / "events.jsonl").exists())
+                self.log.unlink()
+
     def test_issue_transitions_progress_and_sanitization(self):
         state = {**ISSUE_STATE, "current_stage": "review", "prepared_stage": {"stage": "review", "pass": 2},
                  "issue": {**ISSUE_STATE["issue"], "title": "a · b\n  c"}}
