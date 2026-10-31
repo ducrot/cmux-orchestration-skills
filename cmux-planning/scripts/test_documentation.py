@@ -20,6 +20,9 @@ INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
 STAGE_RUN = PLANNING.parent / "references/stage-run-details.md"
 TICKET_STAGE = PLANNING.parent / "references/ticket-stage-details.md"
 INITIALIZATION = PLANNING.parent / "references/initialization-details.md"
+CONFIGURATION_COMPATIBILITY = PLANNING.parent / "references/configuration-compatibility.md"
+STATUS_COMMANDS = PLANNING.parent / "references/status-commands.md"
+STATUS_RECOVERY = PLANNING.parent / "references/status-recovery.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -957,7 +960,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertNotIn("never option descriptions", text)
 
     def test_recovery_reference_describes_verbatim_reasons_and_review_attachments(self):
-        text = " ".join((PLANNING.parent / "references/status-recovery.md").read_text().split())
+        text = " ".join(STATUS_RECOVERY.read_text().split())
         for phrase in ("For relaunch and revise, `--reason` quotes the chosen option verbatim as the human "
                        "saw it, label and description, followed by the human's free text, with no "
                        "orchestrator additions.",
@@ -1338,11 +1341,61 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         for required in (
             "unexpected files",
             "never attached implicitly",
+        ):
+            self.assertIn(required, normalized(PLANNING))
+        for required in (
             "before run-state schema 3",
             "human decision to restart",
             "separately reviewed migration procedure",
         ):
-            self.assertIn(required, normalized(PLANNING))
+            self.assertIn(required, normalized(CONFIGURATION_COMPATIBILITY))
+
+    def test_status_commands_routes_to_configuration_compatibility(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "status-commands.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("resuming a run, recovering context, or inspecting status", routes[0].group())
+        pointer = (
+            "Read when inspecting configuration acceptance fields or opening a legacy run: "
+            "[references/configuration-compatibility.md](configuration-compatibility.md)."
+        )
+        self.assertIn(pointer, documentation(STATUS_COMMANDS))
+        links = re.findall(r'\[references/configuration-compatibility\.md\]\(([^)]+)\)', documentation(STATUS_COMMANDS))
+        self.assertEqual(len(links), 1)
+        self.assertEqual((STATUS_COMMANDS.parent / links[0]).resolve(), CONFIGURATION_COMPATIBILITY.resolve())
+        self.assertTrue(CONFIGURATION_COMPATIBILITY.is_file())
+        self.assertNotIn("configuration-compatibility.md", raw)
+        self.assertNotIn("`configuration_created_and_accepted`", documentation(PLANNING))
+
+    def test_recovery_references_own_extension_and_old_layout_rules(self):
+        entry = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        recovery = " ".join(documentation(STATUS_RECOVERY).split())
+        extension = (
+            'For the one extension, pass `--deadline-minutes <additional-minutes> '
+            '--deadline-reason "<recorded reason>"`; the watcher records the reason and grants '
+            'that duration from the later of the existing deadline and extension arm.'
+        )
+        self.assertIn("`resume --decision extend` watcher extension. " + extension, recovery)
+        self.assertNotIn("For the one extension,", entry)
+        old_layout = (
+            'Older layouts permit `status` only; continuation refuses “unsupported legacy layout”. '
+            'Restart after inspection.'
+        )
+        self.assertIn(old_layout, " ".join(documentation(CONFIGURATION_COMPATIBILITY).split()))
+        self.assertNotIn("Older layouts permit", entry)
+        self.assertIn(
+            'Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the '
+            'current launch IDs and stage/pass or round. Every invocation computes the remaining time; '
+            're-arming, including after a host timeout, never moves either deadline. Initial '
+            '`--deadline-minutes` overrides the minimum for a bounded smoke run. '
+            'Repeating the same extension is idempotent; a second extension is refused. '
+            'The start window is not extended by this flag. A recorded exit-9 recovery '
+            '(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window '
+            'without spending the extension; merely observing, assessing, or re-arming does not. '
+            'New launch IDs also start new windows. Never run two watchers for the same work concurrently.',
+            entry,
+        )
 
     def test_model_diversity_confirmation_gate_is_documented(self):
         text = normalized(PLANNING)
@@ -1457,12 +1510,15 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "already moved but not recorded",
             "symlink target bytes",
             "cmux-issue-chain",
+        ):
+            self.assertIn(required, normalized_guide)
+        for required in (
             "`configuration_created_and_accepted`",
             "`configuration_created_or_migrated_and_accepted`",
             "without rewriting the run merely because it was read",
             "conflicting values are rejected",
         ):
-            self.assertIn(required, normalized_guide)
+            self.assertIn(required, normalized(CONFIGURATION_COMPATIBILITY))
         installation = " ".join(documentation(PLANNING.parent / "references/installation.md").split())
         for required in ("## Prerequisites and installation", "contact no model provider"):
             self.assertIn(required, installation)

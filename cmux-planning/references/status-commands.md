@@ -7,3 +7,5 @@ python3 scripts/planning_state.py resume --run-dir <run-dir>
 python3 scripts/planning_state.py context --run-dir <run-dir>
 ```
 
+Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](configuration-compatibility.md).
+

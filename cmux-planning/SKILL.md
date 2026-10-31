@@ -150,8 +150,6 @@ replace `--feature` with `--grilling-json <result.json>` and optionally the exac
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
-Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
-
 Read when choosing init examples, relative paths, or retry behavior: [references/initialization-details.md](references/initialization-details.md).
 
 Read when handling init inputs, the language flag, installing planning, or setting it up for first use: [references/initialization-details.md](references/initialization-details.md).
@@ -234,10 +232,8 @@ Bash(
 Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
 current launch IDs and stage/pass or round. Every invocation computes the remaining time;
 re-arming, including after a host timeout, never moves either deadline. Initial
-`--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
-pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
-the watcher records the reason and grants that duration from the later of the existing
-deadline and extension arm. Repeating the same extension is idempotent; a second extension
+`--deadline-minutes` overrides the minimum for a bounded smoke run.
+Repeating the same extension is idempotent; a second extension
 is refused. The start window is not extended by this flag. A recorded exit-9 recovery
 (`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
 without spending the extension; merely observing, assessing, or re-arming does not.
@@ -475,8 +471,7 @@ value at its gates. This does not authorize ticket revision after approval.
 Publication records `deliverables.tracker` alongside `published_tracker`. For direct input,
 `feature_dir` freezes the dated folder and `tracker_slug` its pure slug.
 Ids: `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time; events remain UTC.
-Explicit `--run-id` values are preserved. Older layouts permit `status` only; continuation refuses
-“unsupported legacy layout”. Restart after inspection.
+Explicit `--run-id` values are preserved.
 
 Runs live in `.scratch/orchestrator/runs/<run-id>/`. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
