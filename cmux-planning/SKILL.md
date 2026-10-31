@@ -462,7 +462,7 @@ Read when drafting the run recap or selecting its next issue: [references/recap-
 
 Each run records `workflow: planning`, `layout_version: 2`, and an initially empty `deliverables` object.
 
-Publication records `deliverables.tracker` alongside `published_tracker`. For direct input,
+Publication records `deliverables.tracker` alongside `published_tracker`. For every run,
 `feature_dir` freezes the dated folder and `tracker_slug` its pure slug.
 Ids: `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time; events remain UTC.
 Explicit `--run-id` values are preserved.
