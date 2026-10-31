@@ -716,6 +716,7 @@ def markdown_target(target: object) -> Path:
 def render_artifact(args: argparse.Namespace) -> int:
     artifact_path = Path(args.artifact)
     try:
+        read_run_state(Path(args.run_dir))
         artifact = read_json(artifact_path)
         check_artifact_json(artifact, "\n")
         path = markdown_target(markdown_path(artifact, artifact_path))

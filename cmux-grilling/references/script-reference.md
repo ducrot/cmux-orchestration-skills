@@ -158,6 +158,8 @@ python3 cmux-grilling/scripts/run_state.py render-artifact --run-dir <run-dir> -
 ```
 
 `render-artifact` needs only that JSON and the run directory, plus optional `--title <title>`.
+It refuses old-layout runs with `unsupported legacy layout` before writing Markdown;
+`status` remains available for read-only inspection.
 The default title is the task with line breaks collapsed. Generation time is `state.json`'s
 `created_at`. Deferred questions come from each `synthesis/round-<N>.json`'s optional `deferred`
 array, with non-empty `id`, `question` and `reason` strings; they are not artifact `qa` entries.

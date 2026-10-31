@@ -7,6 +7,13 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 
 
 class ArtifactDocumentation(unittest.TestCase):
+    def test_render_artifact_documents_legacy_refusal(self):
+        reference = (SKILL_DIR / 'references/script-reference.md').read_text()
+        rendering = reference.split('### Render the initial artifact protocol', 1)[1].split('\n### ', 1)[0]
+        self.assertIn('refuses old-layout runs', rendering)
+        self.assertIn('unsupported legacy layout', rendering)
+        self.assertIn('before writing Markdown', rendering)
+
     def test_finalize_renders_markdown_from_json(self):
         skill = (SKILL_DIR / "SKILL.md").read_text()
         finalize = skill.split("## Finalize and Artifact", 1)[1].split("## Assumptions Review", 1)[0]
