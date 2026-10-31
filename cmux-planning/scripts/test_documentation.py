@@ -1452,23 +1452,15 @@ class PlanningOperatorDocumentation(unittest.TestCase):
 
     def test_frozen_slug_gates_and_optional_contract_flags_are_documented(self):
         frozen_slug = "`tracker.slug` must equal the frozen `tracker_slug`"
-        for path in (PLANNING, PLANNING.parent / "references/spec-contract.md"):
-            with self.subTest(path=path):
-                paragraphs = [
-                    paragraph
-                    for paragraph in (
-                        " ".join(raw.split()).lower()
-                        for raw in path.read_text(encoding="utf-8").split("\n\n")
-                    )
-                    if frozen_slug in paragraph
-                ]
-                self.assertEqual(len(paragraphs), 1, "expected one frozen-slug paragraph")
-                text = paragraphs[0]
-                self.assertIn(frozen_slug, text)
-                self.assertIn("at author, review, approval, and publication gates", text)
-                for command in ("proposal", "author-report", "review-report"):
-                    self.assertIn(f"`{command}`", text)
-                self.assertIn("optional `--tracker-slug`", text)
+        self.assertNotIn(frozen_slug, " ".join(PLANNING.read_text(encoding="utf-8").split()))
+        contract = (PLANNING.parent / "references/spec-contract.md").read_text(encoding="utf-8")
+        paragraphs = [raw for raw in contract.split("\n\n") if frozen_slug in " ".join(raw.split())]
+        self.assertEqual(paragraphs, [
+            "`tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication\n"
+            "gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept\n"
+            "optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen\n"
+            "value at its gates. This does not authorize ticket revision after approval.",
+        ])
 
     def test_untracked_upgrade_and_visibility_limits_are_documented(self):
         self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(INTEGRITY))

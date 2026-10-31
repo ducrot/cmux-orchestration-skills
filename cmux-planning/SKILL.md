@@ -463,10 +463,6 @@ Read when drafting the run recap or selecting its next issue: [references/recap-
 ## Artifact locations and failure policy
 
 Each run records `workflow: planning`, `layout_version: 2`, and an initially empty `deliverables` object.
-`tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication
-gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept
-optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen
-value at its gates. This does not authorize ticket revision after approval.
 
 Publication records `deliverables.tracker` alongside `published_tracker`. For direct input,
 `feature_dir` freezes the dated folder and `tracker_slug` its pure slug.
