@@ -16,6 +16,13 @@ NOTICE_MARKER = "> **Coordinated upgrade required:**"
 # Discovered, so a fourth skill cannot ship without the notice while this test still passes.
 GUIDES = tuple(sorted(REPOSITORY.glob("cmux-*/SKILL.md")))
 PLANNING = REPOSITORY / "cmux-planning" / "SKILL.md"
+INTEGRITY = PLANNING.parent / "references/integrity-boundaries.md"
+STAGE_RUN = PLANNING.parent / "references/stage-run-details.md"
+TICKET_STAGE = PLANNING.parent / "references/ticket-stage-details.md"
+INITIALIZATION = PLANNING.parent / "references/initialization-details.md"
+CONFIGURATION_COMPATIBILITY = PLANNING.parent / "references/configuration-compatibility.md"
+STATUS_COMMANDS = PLANNING.parent / "references/status-commands.md"
+STATUS_RECOVERY = PLANNING.parent / "references/status-recovery.md"
 # The three skills bound by the shared migration contract. Outside the repository the glob above
 # also matches unrelated cmux-* skills sharing the installation directory.
 SIBLINGS = tuple(
@@ -85,6 +92,37 @@ class OnDemandDocumentation(unittest.TestCase):
                     target = guide.parent / "references" / route.group(1)
                     self.assertEqual(target.resolve().parent, (guide.parent / "references").resolve())
                     self.assertTrue(target.read_text(encoding="utf-8").strip(), target)
+
+    def test_planning_references_are_reachable_within_two_pointer_hops(self):
+        links = re.compile(r"\[[^\]\n]+\]\(([^)\s]+)\)")
+        references = {path.resolve() for path in (PLANNING.parent / "references").rglob("*.md")}
+        reached = set()
+        frontier = {PLANNING.resolve()}
+        for _ in range(2):
+            following = set()
+            for source in frontier:
+                for link in links.findall(source.read_text(encoding="utf-8")):
+                    target = link.split("#", 1)[0]
+                    resolved = (source.parent / target).resolve()
+                    if resolved in references:
+                        following.add(resolved)
+                    elif "references" in Path(target).parts:
+                        self.fail(f"Unresolved reference in {source}: {link}")
+            reached |= following
+            frontier = following
+        self.assertEqual(references - reached, set(), "references need a route within two hops")
+
+    def test_planning_omits_the_five_removed_statements(self):
+        raw = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        for statement in (
+            "Neither is invoked here; all three workflows work independently.",
+            "Run `tickets` as in Run one stage.",
+            "Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.",
+            "Finalized identities are never rewritten or adopted as a fresh baseline.",
+            "Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing and recap generation.",
+        ):
+            with self.subTest(statement=statement):
+                self.assertNotIn(statement, raw)
 
     def test_normal_run_stays_in_entrypoints(self):
         for guide in SIBLINGS:
@@ -357,7 +395,7 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
         for phrase in ('whole before/after `staged_diff` independently of the allowed-write list',
                        'any difference gates `integrity-violation`',
                        'unchanged pre-staged human baseline remain allowed'):
-            self.assertIn(phrase, normalized(PLANNING))
+            self.assertIn(phrase, normalized(INTEGRITY))
 
     def test_sibling_guides_gate_head_changes_at_every_delivery_boundary(self):
         if len(SIBLINGS) != 3:
@@ -618,11 +656,13 @@ class CoordinatedUpgradeDocumentation(unittest.TestCase):
             vocabulary = text.split("## event vocabulary", 1)[1]
             for event in ("commit.attempted", "commit.created", "commit.skipped", "commit.failed"):
                 self.assertIn(event, vocabulary, skill)
-            for phrase in ("run_commit.py commit", "hitl always proposes", "commit.attempted",
+            for phrase in ("run_commit.py commit", "commit.attempted",
                            "commit.created", "commit.skipped", "commit.failed", "never `--no-verify`",
                            "literal leaf `git add`", "git reset -q --", "git update-ref head <p> <c>",
                            "never re-propose a changed draft"):
                 self.assertIn(phrase, text, skill)
+            if skill != "cmux-planning":
+                self.assertIn("hitl always proposes", text, skill)
 
     def test_every_guide_briefs_the_human_before_the_first_worker(self):
         for guide in SIBLINGS:
@@ -889,9 +929,11 @@ class ArtifactLanguageDocumentation(unittest.TestCase):
         language = text.split("## artifact language at initialization", 1)[1].split("## ", 1)[0]
         for phrase in ("askuserquestion", "single-select", "english", "first and recommended",
                        "human's language", "other", "free text", "--artifact-language",
-                       "never on resume", "re-init", "exit-3", "smoke tests", "40 characters",
-                       "immutable", "legacy", "english language name"):
+                       "never on resume", "re-init", "exit-3", "smoke tests"):
             self.assertIn(phrase, language)
+        details = normalized(INITIALIZATION)
+        for phrase in ("40 characters", "immutable", "legacy", "english language name"):
+            self.assertIn(phrase, details)
         for path in (PLANNING, PLANNING.parent / "references" / "spec-contract.md"):
             content = normalized(path)
             for phrase in ("original language", "chosen language", "headings", "markers", "json keys",
@@ -951,7 +993,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertNotIn("never option descriptions", text)
 
     def test_recovery_reference_describes_verbatim_reasons_and_review_attachments(self):
-        text = " ".join((PLANNING.parent / "references/status-recovery.md").read_text().split())
+        text = " ".join(STATUS_RECOVERY.read_text().split())
         for phrase in ("For relaunch and revise, `--reason` quotes the chosen option verbatim as the human "
                        "saw it, label and description, followed by the human's free text, with no "
                        "orchestrator additions.",
@@ -964,35 +1006,343 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         self.assertNotIn("quotes only the chosen option's label", text)
         self.assertNotIn("never option descriptions", text)
 
+    def test_ground_rules_keep_exact_approved_bullets(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        ground = raw.split("## Ground rules\n", 1)[1].split("\n## ", 1)[0]
+        bullets = [" ".join(bullet.split()) for bullet in
+                   re.findall(r"^- (.*(?:\n[ \t]+\S.*)*)", ground, re.MULTILINE)]
+        expected = (
+            (
+                'The orchestrator never changes a tracker after publication.'
+            ),
+            (
+                'Every option offered at a gate, including the recommended one, stays within the planning '
+                'contract and states its consequences for validation and digests.'
+            ),
+            (
+                'Relaunch and revise reasons quote the chosen option verbatim as the human saw it, label '
+                "and description, followed by the human's free text, with no orchestrator additions; "
+                'reviewer findings arrive only as the attached review report.'
+            ),
+            (
+                "Before asking about a `blocked` verdict, show the gate command's output in the chat, then "
+                "ask. If your recommendation differs from the reviewer's, say so in one sentence; you are "
+                'not obliged to follow the reviewer.'
+            ),
+            (
+                'Only final spec and ticket approval questions carry no recommendation; blocker questions '
+                'may carry a recommendation.'
+            ),
+            (
+                'Label every option the orchestrator drafted itself, rather than taking it from a report or '
+                'the human, as drafted by the orchestrator.'
+            ),
+            (
+                'An extension option states how the worker continues: only more time, or a new delivery of '
+                'the full stage prompt.'
+            ),
+            (
+                "Only after successful completion, the orchestrator's new Git writes through `run_commit.py "
+                'commit` are literal leaf `git add`, `git commit`, path-limited `git reset -q --`, and '
+                'compare-and-swap `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must '
+                'never change the Git index or HEAD.'
+            ),
+            (
+                '`cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by '
+                '`markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with '
+                'the human before preparing a worker. Structural validation proves integrity, not '
+                'freshness.'
+            ),
+            (
+                'Workers synthesize supplied context and inspect the repository. They do not interview the '
+                'user; they put missing information under `Open Decisions`.'
+            ),
+            (
+                'The spec author may write only its draft and report. The tickets author may write only its '
+                'JSON proposal, deterministic numbered summary, and report. A reviewer may write only its '
+                'report and, for `pass_with_fixes`, its complete corrected candidate.'
+            ),
+            (
+                "Questions and walkthroughs use the user's language; inputs keep their original language. "
+                'Spec and ticket content follow the chosen language (`artifact_language`). Headings, '
+                'markers, JSON keys, reports, state, events, and prompts stay English; preserve literal '
+                'product copy. Field-level rules, including English `technical_layers` and fixed labels: '
+                '[references/spec-contract.md](references/spec-contract.md).'
+            ),
+            (
+                'Each ticket is a narrow but complete vertical slice. Never default to '
+                'frontend/backend/database/test tickets, never persist token counts or estimates, and '
+                'evaluate merge opportunities as explicitly as split points. Standalone prefactors '
+                '(`slice_type: prefactor`) come first and block the slices they prepare. Blocking edges '
+                'must be genuine and every blocker has a smaller ticket ID.'
+            ),
+            (
+                'Only a passing reviewed ticket candidate may be staged. Publication is a collision-checked '
+                'atomic directory move into the target repository and never invokes `cmux-issue-chain` or '
+                '`adopt_tracker.py` at runtime.'
+            ),
+            (
+                'Any unauthorized Git-visible delta gates HITL regardless of report; never silently revert '
+                'it.'
+            ),
+        )
+        for bullet in expected:
+            with self.subTest(bullet=bullet):
+                self.assertEqual(bullets.count(bullet), 1)
+
+    def test_integrity_reference_route_and_entrypoint_exclusions(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        flat = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "integrity-boundaries.md"]
+        self.assertEqual(len(routes), 1)
+        for condition in ("integrity violation", "failed tree capture", "manifest question", "retry attempt",
+                          "in-flight run after an upgrade", "what the integrity boundary covers"):
+            self.assertIn(condition, routes[0].group())
+        self.assertTrue(raw[:routes[0].start()].endswith("never silently revert it.\n\n"))
+        headings = re.findall(r"^#+ (.+)$", documentation(INTEGRITY), re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        self.assertIn(
+            "Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and "
+            "integrity violations as evidence for human resolution. Never infer approval from prose, "
+            "edit product code from the planning orchestrator, silently repair the working tree, or "
+            "claim coverage beyond the Ground rules integrity boundary.", flat)
+
+    def test_integrity_reference_preserves_moved_rules(self):
+        expected = (
+            'Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, '
+            'staged changes, untracked paths and their content (regular files up to the 8 MiB size cap '
+            'and symlink target bytes), and HEAD movement. It does not cover ignored product files or '
+            'skipped untracked content (files above the size cap or unsupported types), or contents of '
+            'unreadable untracked directories omitted by Git with a warning. Separately, every trusted '
+            "file in the Git-ignored run directory is finalized in `state.json`'s artifact manifest "
+            'with its canonical run-relative path, kind, stage, pass, attempt, byte size, SHA-256, '
+            'producer event, and immutable status. A baseline arms one pass and is never recaptured '
+            'against different product-tree bytes, so a relaunch cannot adopt an unauthorized delta as '
+            'its new "before". Before each launch, capture complete Git status, tracked and staged '
+            'diffs; after the report, compare paths and diff content. `compare_tree` compares the whole '
+            'before/after `staged_diff` independently of the allowed-write list. Any difference gates '
+            '`integrity-violation`, including staging an allowed artifact in a non-ignored custom run '
+            'root. Ordinary permitted artifact content writes and an unchanged pre-staged human '
+            'baseline remain allowed. An unreadable or vanished untracked path fails capture with a '
+            'diagnostic naming it instead of being skipped; restore access or remove the path and '
+            'retry. Git only warns about an unreadable untracked directory, so its contents stay '
+            'invisible rather than failing capture. Every worker emission has an immutable attempt '
+            'identity. The first attempt retains the concise stage/pass filenames; every later '
+            'same-pass attempt uses an `-attempt-N` suffix for its prompt, report, draft/proposal, '
+            'optional corrected candidate, stage snapshot, and tree snapshots. Preparing a retry closes '
+            'the earlier attempt and never reuses, deletes, or silently re-baselines its paths. '
+            'In-flight runs with pre-change untracked baselines must restart after upgrading; never '
+            'migrate those baselines or bypass seals.'
+        )
+        body = documentation(INTEGRITY).split("\n\n", 1)[1]
+        self.assertEqual(" ".join(body.split()), expected)
+        entry = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        for sentence in re.split(r"(?<=\.) ", expected):
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(sentence, entry)
+
     def test_entrypoint_states_integrity_boundary_once(self):
-        text = " ".join(PLANNING.read_text(encoding="utf-8").split())
-        for phrase in ("skipped untracked content", "8 MiB", "artifact manifest",
+        sources = [PLANNING, *sorted((PLANNING.parent / "references").glob("*.md"))]
+        texts = {path: " ".join(path.read_text(encoding="utf-8").split()) for path in sources}
+        for phrase in ("8 MiB", "artifact manifest",
+                       "The product-tree detector covers tracked changes, staged changes",
+                       "regular files up to the 8 MiB size cap and symlink target bytes",
+                       "It does not cover ignored product files or skipped untracked content",
+                       "contents of unreadable untracked directories omitted by Git with a warning",
                        "never recaptured against different product-tree bytes"):
-            self.assertEqual(text.count(phrase), 1, phrase)
+            with self.subTest(phrase=phrase):
+                self.assertEqual(texts[INTEGRITY].count(phrase), 1)
+                self.assertEqual(sum(text.count(phrase) for text in texts.values()), 1)
 
     def test_planning_start_sequence_and_recovery_safety(self):
         text = normalized(PLANNING)
-        procedure = text.split("## run one stage", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+        stage_run = normalized(STAGE_RUN)
+        procedure = stage_run.split("```bash", 1)[1].split("```", 1)[0]
         commands = ("render_prompt.py", "tree_integrity.py baseline", "pane_ctl.py launch",
                     "pane_ctl.py start-agent", "await_report.py")
         positions = [procedure.index(command) for command in commands]
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn("pane_ctl.py deliver", procedure)
         self.assertNotIn("pane_ctl.py observe", procedure)
-        for phrase in ("| 9 | assignment not started", "after exit 9, take one `observe` and `assess`",
+        self.assertIn("| 9 | assignment not started; inspect the exception path below. |", stage_run)
+        for phrase in ("after exit 9, take one `observe` and `assess`",
                        "then re-arm without re-delivery", "one readiness-gated `deliver --prompt`",
                        '`evidence: "screen"`', "exception-path and follow-up only",
                        "`--extension 0`", "interrupted launch or delivery input stops at hitl",
                        "report deadline counts from the persisted first arm", "never immutable manifest artifacts"):
             self.assertIn(phrase, text)
 
+    def test_stage_run_route_and_moved_rules(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "stage-run-details.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("running or watching a stage pass", routes[0].group())
+        self.assertIn("judging its handoff", routes[0].group())
+        self.assertIn("a board update fails at any transition", routes[0].group())
+        self.assertTrue(raw[:routes[0].start()].endswith("## Run one stage\n\n"))
+        reference = documentation(STAGE_RUN)
+        flat = " ".join(reference.split())
+        moved = (
+            'For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the current pass from `state.json`:',
+            '| Exit | Meaning | | --- | --- | '
+            '| 0 | Report captured; validate and gate it. | '
+            '| 7 | Pane dead; stop at the existing HITL recovery boundary. | '
+            '| 8 | Report deadline; use the existing human-approved extension rules. | '
+            '| 9 | Assignment not started; inspect the exception path below. |',
+            'Workers self-validate in `report-draft.md` beside their started marker and write the handoff report once, last.',
+            'Read [references/spec-contract.md](spec-contract.md) when judging author or review handoffs.',
+            'A failed board update is a stderr note and never a stop.',
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, flat)
+                self.assertNotIn(rule, entry)
+        self.assertNotIn('when judging author or review handoffs', entry)
+        for row in reference.splitlines():
+            if re.match(r'^\| [0789] \|', row):
+                self.assertNotIn(row, entry)
+        procedure = reference.split("```bash\n", 1)[1].split("```", 1)[0]
+        self.assertEqual(procedure, (
+            'python3 scripts/render_prompt.py --run-dir <run-dir> --stage <stage> --pass <n>\n'
+            'python3 scripts/tree_integrity.py baseline --run-dir <run-dir> --stage <stage> --pass <n>\n'
+            'python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --anchor <caller-surface>\n'
+            'python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --surface <launch-surface-id>\n'
+            'python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \\\n'
+            '  --surface <launch-surface-id>\n'
+        ))
+        self.assertNotIn(procedure, raw)
+        self.assertIn('startup-recovery', reference.split('| Exit |', 1)[0])
+        for target in re.findall(r'\]\(([^)]+)\)', reference):
+            self.assertTrue((STAGE_RUN.parent / target).is_file(), target)
+        headings = re.findall(r"^#+ (.+)$", reference, re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        for kept in (
+            'Exits 7 and 8 publish `hitl` on the sidebar board. The recorded extension or relaunch decision returns the card to `running`.',
+            'Read when the watcher exits 9 before confirming assignment start: [references/startup-recovery.md](references/startup-recovery.md).',
+        ):
+            self.assertIn(kept, raw)
+
+    def test_ticket_stage_routes_and_moved_rules(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "ticket-stage-details.md"]
+        self.assertEqual(len(routes), 2)
+        author = raw.split("## Ticket author and independent review\n", 1)[1].split("\n## ", 1)[0]
+        approval = raw.split("## Ticket approval, staging, and publication\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(routes[0].group(), author)
+        self.assertIn("gating the tickets author's report", routes[0].group())
+        self.assertIn(routes[1].group(), approval)
+        self.assertIn("publishing after ticket approval", routes[1].group())
+        self.assertIn('Subject convention: [references/ticket-stage-details.md](references/ticket-stage-details.md).', entry)
+        reference = documentation(TICKET_STAGE)
+        flat = " ".join(reference.split())
+        moved = (
+            'Gate a clean report with `accept-author` as above. It validates approved-spec identity, '
+            'proposal structure, summary equality, ticket count, ready frontier, genuine blockers, cycles, '
+            'qualitative sizing, merge/split rationale, and wide-refactor sequences, then prepares a fresh '
+            'immutable `tickets-review` snapshot. Run that stage in a new visible pane; '
+            'gate its report with `accept-review` as above.',
+            'The target must be absent or contain only a real `grilling/` directory (variant B); '
+            'its basename must equal the dated feature name `YYYY-MM-DD-<slug>`; '
+            '`tracker.slug` remains the pure slug.',
+            'Publish on one filesystem; variant B moves `grilling/` first:',
+            'python3 scripts/planning_state.py publish --run-dir <run-dir>',
+            'Use an English one-line subject explaining what changed and why, an optional body, and no trailers.',
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, flat)
+                self.assertNotIn(rule.rstrip('.:'), entry)
+        self.assertIn('See the Gate the author and reviewer section in the entry point', reference)
+        self.assertIn('## Gate the author and reviewer\n', raw)
+        positions = [flat.index(rule) for rule in moved]
+        self.assertEqual(positions, sorted(positions))
+        headings = re.findall(r"^#+ (.+)$", reference, re.MULTILINE)
+        entry_headings = re.findall(r"^#+ (.+)$", raw, re.MULTILINE)
+        self.assertTrue(headings)
+        for heading in headings:
+            self.assertNotIn(heading, entry_headings)
+            self.assertFalse(heading.startswith("Commit"))
+        self.assertIn('Approve the reviewed tickets:\n\n```bash\n'
+                      'python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \\\n'
+                      '  --decision approve --reason <human-reason>\n```', approval)
+
+    def test_initialization_routes_moved_rules_and_question_order(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        details = " ".join(documentation(INITIALIZATION).split())
+        moved = (
+            "Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to "
+            "`inputs/conversation-brief.md`; record `state.inputs`. "
+            "Legacy `state.task` / `task.md` works; preserve each input's language.",
+            "Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters "
+            "(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init "
+            "value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …` "
+            "only with the field, before Commit.",
+            "Require a plan file or brief; grilling is additional.",
+        )
+        for rule in moved:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, details)
+                self.assertNotIn(rule, entry)
+        routes = [route.group().strip() for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "initialization-details.md"]
+        self.assertEqual(routes, [
+            "Read when choosing init examples, relative paths, or retry behavior: "
+            "[references/initialization-details.md](references/initialization-details.md).",
+            "Read when handling init inputs, the language flag, installing planning, or setting it up for first use: "
+            "[references/initialization-details.md](references/initialization-details.md).",
+        ])
+        installation = "Read when installing planning or setting it up for first use: "
+        self.assertNotIn(installation, entry)
+        self.assertIn(installation + "[references/installation.md](installation.md).", details)
+        self.assertTrue((INITIALIZATION.parent / "installation.md").is_file())
+        self.assertNotIn("as its second question", entry)
+        language = entry.split("## Artifact language at initialization", 1)[1].split("## ", 1)[0]
+        self.assertIn("In the same `AskUserQuestion` call as the commit mode, ask a single-select in the "
+                      "human's language:", language)
+        self.assertIn("Order the initialization questions as commit mode, feature name, language, assignments, "
+                      "leaving out any skipped question.", language)
+        defaults = normalized(PLANNING.parent / "references/default-assignments.md")
+        self.assertIn("commit-mode, feature-name and language questions", defaults)
+        self.assertIn("or alone when none of those is asked", defaults)
+        self.assertNotIn("or alone when neither is asked", defaults)
+        self.assertNotIn("`init` writes `*` plus newline", entry)
+        self.assertNotIn("Config CLI never edits ignores.", entry)
+        self.assertNotIn(".gitignore", details)
+        self.assertIn("Read when init creates configuration or detects schema v1 or v2: "
+                      "[references/configuration-migration.md](references/configuration-migration.md).", entry)
+
+    def test_initialization_routes_to_authoritative_ticket_target(self):
+        reference = documentation(INITIALIZATION)
+        flat = " ".join(reference.split())
+        self.assertNotIn('publication currently require the target to be absent', flat)
+        self.assertNotIn('including refusing an empty folder', flat)
+        self.assertIn('There is no `--slug` option. Init does not create the feature folder; a fresh '
+                      'run refuses an existing folder unless it contains exactly the `grilling/` directory.', flat)
+        self.assertIn('Re-init with a different feature folder is refused, while the same folder remains idempotent after '
+                      'interrupted or completed publication, without changing target or staging.', flat)
+        links = re.findall(r'\[references/ticket-stage-details\.md\]\(([^)]+)\)', reference)
+        self.assertEqual(len(links), 1)
+        self.assertEqual((INITIALIZATION.parent / links[0]).resolve(), TICKET_STAGE.resolve())
+        self.assertTrue(TICKET_STAGE.is_file())
+
     def test_short_integrity_summary_preserves_coverage_and_exclusions(self):
-        text = documentation(PLANNING)
-        start = "- Two explicit integrity boundaries apply."
-        end = "\n- Every worker emission"
-        self.assertIn(start, text)
-        self.assertIn(end, text)
-        summary = " ".join(text.split(start, 1)[1].split(end, 1)[0].split())
+        summary = " ".join(documentation(INTEGRITY).split())
         self.assertIn(
             "The product-tree detector covers tracked changes, staged changes, untracked paths "
             "and their content (regular files up to the 8 MiB size cap and symlink target bytes), "
@@ -1007,7 +1357,7 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         )
 
     def test_run_artifact_and_product_tree_integrity_boundaries_are_documented(self):
-        text = normalized(PLANNING)
+        text = normalized(INTEGRITY)
         for required in (
             "two explicit integrity boundaries",
             "ignored product files",
@@ -1019,13 +1369,67 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "sha-256",
             "attempt identity",
             "`-attempt-n` suffix",
+        ):
+            self.assertIn(required, text)
+        for required in (
             "unexpected files",
             "never attached implicitly",
+        ):
+            self.assertIn(required, normalized(PLANNING))
+        for required in (
             "before run-state schema 3",
             "human decision to restart",
             "separately reviewed migration procedure",
         ):
-            self.assertIn(required, text)
+            self.assertIn(required, normalized(CONFIGURATION_COMPATIBILITY))
+
+    def test_status_commands_routes_to_configuration_compatibility(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "status-commands.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("resuming a run, recovering context, or inspecting status", routes[0].group())
+        pointer = (
+            "Read when inspecting configuration acceptance fields or opening a legacy run: "
+            "[references/configuration-compatibility.md](configuration-compatibility.md)."
+        )
+        self.assertIn(pointer, documentation(STATUS_COMMANDS))
+        links = re.findall(r'\[references/configuration-compatibility\.md\]\(([^)]+)\)', documentation(STATUS_COMMANDS))
+        self.assertEqual(len(links), 1)
+        self.assertEqual((STATUS_COMMANDS.parent / links[0]).resolve(), CONFIGURATION_COMPATIBILITY.resolve())
+        self.assertTrue(CONFIGURATION_COMPATIBILITY.is_file())
+        self.assertNotIn("configuration-compatibility.md", raw)
+        self.assertNotIn("`configuration_created_and_accepted`", documentation(PLANNING))
+
+    def test_recovery_references_own_extension_and_old_layout_rules(self):
+        entry = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        recovery = " ".join(documentation(STATUS_RECOVERY).split())
+        extension = (
+            'For the one extension, pass `--deadline-minutes <additional-minutes> '
+            '--deadline-reason "<recorded reason>"`; the watcher records the reason and grants '
+            'that duration from the later of the existing deadline and extension arm.'
+        )
+        self.assertIn("`resume --decision extend` watcher extension. " + extension, recovery)
+        self.assertNotIn("For the one extension,", entry)
+        old_layout = (
+            'Older layouts (`layout_version` missing or below 2) permit only `status` and `context`; '
+            'continuation refuses “unsupported legacy layout”. '
+            'Restart after inspection.'
+        )
+        self.assertIn(old_layout, " ".join(documentation(CONFIGURATION_COMPATIBILITY).split()))
+        self.assertNotIn("Older layouts", entry)
+        self.assertIn(
+            'Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the '
+            'current launch IDs and stage/pass or round. Every invocation computes the remaining time; '
+            're-arming, including after a host timeout, never moves either deadline. Initial '
+            '`--deadline-minutes` overrides the minimum for a bounded smoke run. '
+            'Repeating the same extension is idempotent; a second extension is refused. '
+            'The start window is not extended by this flag. A recorded exit-9 recovery '
+            '(`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window '
+            'without spending the extension; merely observing, assessing, or re-arming does not. '
+            'New launch IDs also start new windows. Never run two watchers for the same work concurrently.',
+            entry,
+        )
 
     def test_model_diversity_confirmation_gate_is_documented(self):
         text = normalized(PLANNING)
@@ -1082,27 +1486,39 @@ class PlanningOperatorDocumentation(unittest.TestCase):
 
     def test_frozen_slug_gates_and_optional_contract_flags_are_documented(self):
         frozen_slug = "`tracker.slug` must equal the frozen `tracker_slug`"
-        for path in (PLANNING, PLANNING.parent / "references/spec-contract.md"):
-            with self.subTest(path=path):
-                paragraphs = [
-                    paragraph
-                    for paragraph in (
-                        " ".join(raw.split()).lower()
-                        for raw in path.read_text(encoding="utf-8").split("\n\n")
-                    )
-                    if frozen_slug in paragraph
-                ]
-                self.assertEqual(len(paragraphs), 1, "expected one frozen-slug paragraph")
-                text = paragraphs[0]
-                self.assertIn(frozen_slug, text)
-                self.assertIn("at author, review, approval, and publication gates", text)
-                for command in ("proposal", "author-report", "review-report"):
-                    self.assertIn(f"`{command}`", text)
-                self.assertIn("optional `--tracker-slug`", text)
+        self.assertNotIn(frozen_slug, " ".join(PLANNING.read_text(encoding="utf-8").split()))
+        contract = (PLANNING.parent / "references/spec-contract.md").read_text(encoding="utf-8")
+        paragraphs = [raw for raw in contract.split("\n\n") if frozen_slug in " ".join(raw.split())]
+        self.assertEqual(paragraphs, [
+            "`tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication\n"
+            "gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept\n"
+            "optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen\n"
+            "value at its gates. This does not authorize ticket revision after approval.",
+        ])
+
+    def test_published_tracker_handoff_lives_in_recap_reference(self):
+        raw = PLANNING.read_text(encoding="utf-8")
+        entry = " ".join(raw.split())
+        recap = " ".join(documentation(PLANNING.parent / "references/recap-draft.md").split())
+        handoff = (
+            'That target is immediately consumable by `cmux-issue-chain`: inspect its first ready '
+            'issue, then initialize issue execution as a separate workflow.'
+        )
+        self.assertNotIn(handoff, entry)
+        self.assertIn("The published tracker's target is its frozen dated feature folder. " + handoff, recap)
+        self.assertIn(
+            'Approved native trackers contain `README.md`, `spec.md`, `map.md`, `decisions.md`, '
+            'and `issues/` at the frozen dated feature folder.',
+            entry,
+        )
+        routes = [route for route in ON_DEMAND.finditer(raw)
+                  if route.group(1) == "recap-draft.md"]
+        self.assertEqual(len(routes), 1)
+        self.assertIn("drafting the run recap or selecting its next issue", routes[0].group())
 
     def test_untracked_upgrade_and_visibility_limits_are_documented(self):
-        self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(PLANNING))
-        self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(PLANNING))
+        self.assertIn("pre-change untracked baselines must restart after upgrading", normalized(INTEGRITY))
+        self.assertIn("git only warns about an unreadable untracked directory, so its contents stay invisible", normalized(INTEGRITY))
 
     def test_migration_guidance_output_stream_contract_is_documented(self):
         # Named siblings rather than the glob, so an independent installation alongside unrelated
@@ -1121,6 +1537,12 @@ class PlanningOperatorDocumentation(unittest.TestCase):
                     "candidate digest and exact preview and acceptance commands once each", text
                 )
 
+    @unittest.skipUnless(README.is_file(), "repository README absent in independent installation")
+    def test_readme_integrity_link_reaches_owning_reference(self):
+        link = INTEGRITY.relative_to(REPOSITORY).as_posix()
+        self.assertIn(f"[integrity boundaries]({link})", README.read_text(encoding="utf-8"))
+        self.assertTrue(INTEGRITY.is_file(), link)
+
     def test_complete_operator_path_and_workflow_boundaries_are_documented(self):
         if not README.is_file():
             self.skipTest("repository README is not present in this independent installation")
@@ -1128,7 +1550,6 @@ class PlanningOperatorDocumentation(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
         normalized_guide = " ".join(guide.split())
         for required in (
-            "## Prerequisites and installation",
             "planning.reviewer",
             "--grilling-json",
             "explicit human",
@@ -1140,14 +1561,19 @@ class PlanningOperatorDocumentation(unittest.TestCase):
             "digest-bound",
             "already moved but not recorded",
             "symlink target bytes",
-            "contact no model provider",
             "cmux-issue-chain",
+        ):
+            self.assertIn(required, normalized_guide)
+        for required in (
             "`configuration_created_and_accepted`",
             "`configuration_created_or_migrated_and_accepted`",
             "without rewriting the run merely because it was read",
             "conflicting values are rejected",
         ):
-            self.assertIn(required, normalized_guide)
+            self.assertIn(required, normalized(CONFIGURATION_COMPATIBILITY))
+        installation = " ".join(documentation(PLANNING.parent / "references/installation.md").split())
+        for required in ("## Prerequisites and installation", "contact no model provider"):
+            self.assertIn(required, installation)
         self.assertIn("They form an optional progression, not a mandatory pipeline", readme)
         self.assertIn("No workflow automatically invokes another", readme)
         self.assertNotIn("first vertical slice currently ends", readme)

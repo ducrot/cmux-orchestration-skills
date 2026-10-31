@@ -9,7 +9,7 @@ Turn persisted inputs into a specification, then a native issue tracker, each in
 and explicitly approved. The orchestrator coordinates without authoring artifacts or editing product code;
 each author and reviewer gets a fresh, visibly labeled CMUX pane.
 Optional upstream `cmux-grilling` stress-tests uncertain decisions; downstream `cmux-issue-chain`
-executes published trackers. Neither is invoked here; all three workflows work independently.
+executes published trackers.
 
 `scripts/…` and `references/…` name files in this skill's directory. Run every command from the
 target repository root, never `cd` into the skill directory: call `python3 <skill-dir>/scripts/…`.
@@ -41,15 +41,12 @@ publish the tracker in that feature folder.
 
 ## Artifact language at initialization
 
-In the same `AskUserQuestion` call as the commit mode, as its second question, ask a single-select in the
+In the same `AskUserQuestion` call as the commit mode, ask a single-select in the
 human's language: "Which language should spec and ticket content use?" Offer English first
 and recommended, then the human's language if not English; Other allows free text.
 Use an explicit `--artifact-language` without asking. Same fresh-run checks; never on resume, re-init, exit-3, or smoke tests.
-
-Pass `init --artifact-language <name>`: a non-empty English language name, at most 40 characters
-(e.g. `German`), default English. Stored as `artifact_language`, immutable; a different re-init
-value is refused. Legacy reads default to English. Briefing adds `Language: …` / `Sprache: …`
-only with the field, before Commit.
+Order the initialization questions as commit mode, feature name, language, assignments,
+leaving out any skipped question.
 
 ## Default assignments at initialization
 
@@ -82,9 +79,6 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
   `git update-ref HEAD <P> <C>` to undo its proven commit. Workers must never change the Git index or
   HEAD.
 
-- Copy plan files unchanged to `inputs/task-files/NN-<basename>` and the confirmed brief to
-  `inputs/conversation-brief.md`; record `state.inputs`.
-  Legacy `state.task` / `task.md` works; preserve each input's language.
 - `cmux-grilling` is optional. When supplied, import its JSON and the Markdown named by
   `markdownPath`, validate and copy their exact bytes, then explicitly revalidate them with the
   human before preparing a worker. Structural validation proves integrity, not freshness.
@@ -93,28 +87,10 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - The spec author may write only its draft and report. The tickets author may write only its JSON
   proposal, deterministic numbered summary, and report. A reviewer may write only its report and,
   for `pass_with_fixes`, its complete corrected candidate.
-- Two explicit integrity boundaries apply. The product-tree detector covers tracked changes, staged
-  changes, untracked paths and their content (regular files up to the 8 MiB size cap and symlink
-  target bytes), and HEAD movement. It does not cover ignored product files or skipped untracked
-  content (files above the size cap or unsupported types), or contents of unreadable untracked
-  directories omitted by Git with a warning. Separately, every trusted file in the Git-ignored run
-  directory is finalized in `state.json`'s artifact manifest with its canonical run-relative path,
-  kind, stage, pass, attempt, byte size, SHA-256, producer event, and immutable status. A baseline
-  arms one pass and is never recaptured against different product-tree bytes, so a relaunch cannot
-  adopt an unauthorized delta as its new "before".
-  Before each launch, capture complete Git status, tracked and staged diffs; after the report,
-  compare paths and diff content. Any unauthorized Git-visible delta gates HITL regardless of report;
-  never silently revert it. `compare_tree` compares the whole before/after `staged_diff` independently
-  of the allowed-write list. Any difference gates `integrity-violation`, including staging an allowed
-  artifact in a non-ignored custom run root. Ordinary permitted artifact content writes and an
-  unchanged pre-staged human baseline remain allowed.
-  An unreadable or vanished untracked path fails capture with a diagnostic naming it instead of
-  being skipped; restore access or remove the path and retry. Git only warns about an unreadable
-  untracked directory, so its contents stay invisible rather than failing capture.
-- Every worker emission has an immutable attempt identity. The first attempt retains the concise
-  stage/pass filenames; every later same-pass attempt uses an `-attempt-N` suffix for its prompt,
-  report, draft/proposal, optional corrected candidate, stage snapshot, and tree snapshots. Preparing
-  a retry closes the earlier attempt and never reuses, deletes, or silently re-baselines its paths.
+- Any unauthorized Git-visible delta gates HITL regardless of report; never silently revert it.
+
+Read when diagnosing an integrity violation, a failed tree capture, a manifest question, a retry attempt, an in-flight run after an upgrade, or what the integrity boundary covers: [references/integrity-boundaries.md](references/integrity-boundaries.md).
+
 - Questions and walkthroughs use the user's language; inputs keep their original language. Spec and ticket
   content follow the chosen language (`artifact_language`). Headings, markers, JSON keys, reports,
   state, events, and prompts stay English; preserve literal product copy. Field-level rules,
@@ -126,9 +102,6 @@ Read when `compare-defaults` reports `matches_defaults: false`: [references/defa
 - Only a passing reviewed ticket candidate may be staged. Publication is a collision-checked atomic
   directory move into the target repository and never invokes `cmux-issue-chain` or
   `adopt_tracker.py` at runtime.
-
-Read [references/spec-contract.md](references/spec-contract.md) when judging author or review
-handoffs.
 
 ## First-use configuration checkpoint
 
@@ -154,15 +127,13 @@ Ask about starting only for a newly created default (`--accept-config`). Never o
 
 Read when init creates configuration or detects schema v1 or v2: [references/configuration-migration.md](references/configuration-migration.md).
 
-Read when installing planning or setting it up for first use: [references/installation.md](references/installation.md).
-
 ## Initialize
 
 Before a fresh init: unfinished-run check (exit 3), `compare-defaults`, one call for commit
 mode, feature name, language and assignments, confirm the conversation brief, then init. Use [references/conversation-brief.md](references/conversation-brief.md)
 for six English headings, human-language content and verbatim quotes; show it fully as its own message,
 then confirm it with one `AskUserQuestion` single-select.
-Require a plan file or brief; grilling is additional. Only brief entries the human stated beat revalidated grilling
+Only brief entries the human stated beat revalidated grilling
 decisions, which beat plan files; entries taken from files keep the rank of their source.
 Other contradictions go to `Open Decisions`.
 
@@ -179,14 +150,9 @@ replace `--feature` with `--grilling-json <result.json>` and optionally the exac
 The JSON's `markdownPath` remains authoritative. Missing, malformed, path-inconsistent,
 repository-mismatched, or ambiguous pairs fail before any launchable state or pane exists.
 
-`init` writes `*` plus newline to `.scratch/orchestrator/.gitignore` for standard
-`.scratch/orchestrator/runs`, ignoring all internals and worker config. A custom `--runs-root`
-gets `.gitignore` inside itself. Existing files stay; init restores deletions. New config needs
-`git add -f`; tracked config stays tracked. Config CLI never edits ignores.
-
-Read when inspecting configuration acceptance fields or opening a legacy run: [references/configuration-compatibility.md](references/configuration-compatibility.md).
-
 Read when choosing init examples, relative paths, or retry behavior: [references/initialization-details.md](references/initialization-details.md).
+
+Read when handling init inputs, the language flag, installing planning, or setting it up for first use: [references/initialization-details.md](references/initialization-details.md).
 
 ## Run briefing
 
@@ -206,9 +172,9 @@ python3 scripts/run_briefing.py show --run-dir <run-dir> --lang <de|en>
 - `show` refuses while a placeholder remains, prints the briefing, records `run.briefing`, and sets
   the sidebar pill `cmux-planning-run` (`Planning · <slug>`) in the pinned workspace. A failed pill is
   a stderr note, not a stop. Relay the printed briefing verbatim as its own message, without preamble.
-- The scripts publish the board automatically at transitions in the pinned workspace. A failed board
-  update is a stderr note and never a stop. `--no-status` suppresses pill and board on
-  `run_briefing.py`; `planning_state.py` publishes whenever a workspace is pinned (`--no-workspace` avoids it).
+- The scripts publish the board automatically at transitions in the pinned workspace.
+  `--no-status` suppresses pill and board on `run_briefing.py`; `planning_state.py` publishes
+  whenever a workspace is pinned (`--no-workspace` avoids it).
 - On resume, run `show` again after `context` and status. `briefing.md` is orchestrator text, not a
   worker artifact: the artifact audit skips it and no prompt attaches it.
 
@@ -227,18 +193,7 @@ distinct from `worker.started`; observe again before recovery input.
 
 ## Run one stage
 
-For `spec`, `spec-review`, `tickets`, or `tickets-review`, use the current pass from `state.json`:
-
-```bash
-python3 scripts/render_prompt.py --run-dir <run-dir> --stage <stage> --pass <n>
-python3 scripts/tree_integrity.py baseline --run-dir <run-dir> --stage <stage> --pass <n>
-python3 scripts/pane_ctl.py launch --run-dir <run-dir> --stage <stage> --pass <n> \
-  --anchor <caller-surface>
-python3 scripts/pane_ctl.py start-agent --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
-python3 scripts/await_report.py --run-dir <run-dir> --stage <stage> --pass <n> \
-  --surface <launch-surface-id>
-```
+Read when running or watching a stage pass, including judging its handoff, or when a board update fails at any transition: [references/stage-run-details.md](references/stage-run-details.md).
 
 The baseline makes the prepared snapshot launchable. `pane_ctl.py launch` prints JSON whose
 `surface_id` is the new pane's stable UUID; copy that exact value into every later pane command for
@@ -277,10 +232,8 @@ Bash(
 Both deadlines are persisted on first arm in a `worker.waiting` event, keyed to the
 current launch IDs and stage/pass or round. Every invocation computes the remaining time;
 re-arming, including after a host timeout, never moves either deadline. Initial
-`--deadline-minutes` overrides the minimum for a bounded smoke run. For the one extension,
-pass `--deadline-minutes <additional-minutes> --deadline-reason "<recorded reason>"`;
-the watcher records the reason and grants that duration from the later of the existing
-deadline and extension arm. Repeating the same extension is idempotent; a second extension
+`--deadline-minutes` overrides the minimum for a bounded smoke run.
+Repeating the same extension is idempotent; a second extension
 is refused. The start window is not extended by this flag. A recorded exit-9 recovery
 (`respond` or screen-confirmed `mark-started`) or `deliver` creates a new first-arm window
 without spending the extension; merely observing, assessing, or re-arming does not.
@@ -290,13 +243,6 @@ Planning keeps its human-approved `resume --decision extend --reason "<reason>"`
 An explicit `--deadline-reason` requires that recorded approval and must match its reason.
 The recommended `--extension 1` consumes that recorded approval and persists one extension
 using `--deadline-minutes` (or the stage minimum when omitted); rejoining it cannot renew it.
-
-| Exit | Meaning |
-| --- | --- |
-| 0 | Report captured; validate and gate it. |
-| 7 | Pane dead; stop at the existing HITL recovery boundary. |
-| 8 | Report deadline; use the existing human-approved extension rules. |
-| 9 | Assignment not started; inspect the exception path below. |
 
 Exits 7 and 8 publish `hitl` on the sidebar board. The recorded extension or relaunch decision returns the card to `running`.
 
@@ -310,9 +256,8 @@ Event vocabulary: `worker.starting` and `worker.launch_sent` bind launch time an
 Use the prompt and handoff paths recorded under the current attempt in `state.json`; do not construct
 them from stage/pass alone. The watcher accepts a report only after observing identical non-empty bytes
 twice that also pass the stage's report contract; a contract-failing report is captured only once it
-has stayed unchanged for `--invalid-settle-seconds` (default 300) or the deadline is reached. Workers
-self-validate in `report-draft.md` beside their started marker and write the handoff report once,
-last. The watcher records that exact identity in the manifest before emitting its captured-report event, and the
+has stayed unchanged for `--invalid-settle-seconds` (default 300) or the deadline is reached. The watcher
+records that exact identity in the manifest before emitting its captured-report event, and the
 gate repeats a stable capture when invoked directly. A missing, truncated, replaced, or changed
 finalized artifact records `artifact.integrity_violation`, closes the attempt, and gates HITL before
 the artifact can be parsed or launched.
@@ -397,15 +342,11 @@ stales approval and blocks continuation.
 
 ## Ticket author and independent review
 
-Run `tickets` as in Run one stage.
 Authors receive only the immutable approved spec, task, repository identity, tracker ground rules,
 vertical-slice policy, native proposal schema, revision feedback, and exact handoff paths. Its JSON
 proposal is authoritative; `tracker_contract.py render-summary` renders its exact numbered summary.
 
-Gate a clean report with `accept-author` as above. It validates approved-spec identity, proposal structure, summary equality, ticket count, ready
-frontier, genuine blockers, cycles, qualitative sizing, merge/split rationale, and wide-refactor
-sequences, then prepares a fresh immutable `tickets-review` snapshot. Run that stage in a new visible
-pane; gate its report with `accept-review` as above.
+Read when gating the tickets author's report: [references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 The tickets reviewer returns `pass`, `pass_with_fixes`, or `blocked`. Safe fixes may correct only
 established intent and lead directly to human approval after deterministic validation. A substantive
@@ -452,20 +393,16 @@ Spec approval keeps its existing flow without a fixed quiz.
 
 Approval freezes the exact reviewed proposal digest, stages `README.md`, `spec.md`, `map.md`,
 `decisions.md`, and every native issue file under the run directory, and validates the complete staged
-tracker with this skill's standalone native contract. The target must be absent or contain only a real
-`grilling/` directory (variant B); its basename must
-equal the dated feature name `YYYY-MM-DD-<slug>`; `tracker.slug` remains the pure slug:
+tracker with this skill's standalone native contract.
+
+Approve the reviewed tickets:
 
 ```bash
 python3 scripts/planning_state.py ticket-approval --run-dir <run-dir> \
   --decision approve --reason <human-reason>
 ```
 
-Publish on one filesystem; variant B moves `grilling/` first:
-
-```bash
-python3 scripts/planning_state.py publish --run-dir <run-dir>
-```
+Read when publishing after ticket approval: [references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 Publication refuses path escape, collisions, changed identities or staging, malformed issues, duplicate
 IDs, unknown blockers, cycles, and second publication. Validation failure preserves the target.
@@ -479,8 +416,8 @@ After successful `publish`, record a proposal with `run_commit.py propose` for t
 repository-relative literal leaves from `git status --porcelain=v1 -z --untracked-files=all`, limited to
 `published_tracker.artifacts` under `published_tracker.path`; exclude `grilling/` and expanded globs.
 Pass each leaf with `--file`, and
-exclude unrelated changes from the proposal while listing them with `--ride-along`. Use an English
-one-line subject explaining what changed and why, an optional body, and no trailers.
+exclude unrelated changes from the proposal while listing them with `--ride-along`. Subject convention:
+[references/ticket-stage-details.md](references/ticket-stage-details.md).
 
 ```bash
 python3 scripts/run_commit.py propose --run-dir <run-dir> --subject "Publish approved implementation tracker" --file <tracker>/README.md --file <tracker>/spec.md --file <tracker>/map.md --file <tracker>/decisions.md --file <tracker>/issues/<file>
@@ -491,7 +428,6 @@ The helper records the replay-safe proposal, including ignored and pre-run dirty
 In commit mode, next run `python3 scripts/run_commit.py commit --run-dir <run-dir>` before the recap.
 Use a background or long-timeout invocation with enough time for the repository's commit hooks;
 a killed call leaves a `commit.attempted` without an outcome.
-Never commit for a HITL issue run (`chain: []`): HITL always proposes, regardless of the stored mode.
 Never commit after `hitl`, `blocked`, or `stop`. In propose mode, show the recorded proposal.
 The orchestrator commits in commit mode; the human commits otherwise. Push, PR, and CI stay with the
 human. Never run `git push` and never `--no-verify`.
@@ -525,41 +461,29 @@ Read when drafting the run recap or selecting its next issue: [references/recap-
 ## Artifact locations and failure policy
 
 Each run records `workflow: planning`, `layout_version: 2`, and an initially empty `deliverables` object.
-`tracker.slug` must equal the frozen `tracker_slug` at author, review, approval, and publication
-gates. The `tracker_contract.py` commands `proposal`, `author-report`, and `review-report` accept
-optional `--tracker-slug` to check this equality outside the run; the orchestrator supplies the frozen
-value at its gates. This does not authorize ticket revision after approval.
 
 Publication records `deliverables.tracker` alongside `published_tracker`. For direct input,
 `feature_dir` freezes the dated folder and `tracker_slug` its pure slug.
 Ids: `YYYY-MM-DD-HHMM-plan-<tracker_slug>` in local time; events remain UTC.
-Explicit `--run-id` values are preserved. Older layouts permit `status` only; continuation refuses
-“unsupported legacy layout”. Restart after inspection.
+Explicit `--run-id` values are preserved.
 
 Runs live in `.scratch/orchestrator/runs/<run-id>/`. `inputs/` (legacy `task.md`),
 `grilling-input.json`, `artifacts/`, `reports/`, `prompts/`, `stage-snapshots/`, `tree-snapshots/`,
 `state.json`, and `events.jsonl` are the recovery record. Approved native trackers contain `README.md`,
-`spec.md`, `map.md`, `decisions.md`, and `issues/` at the frozen dated feature folder. That target is immediately
-consumable by `cmux-issue-chain`: inspect its first ready issue, then initialize issue execution as a
-separate workflow.
+`spec.md`, `map.md`, `decisions.md`, and `issues/` at the frozen dated feature folder.
 
 `artifact_manifest` trusts run files; `current_attempt` declares armed-worker writable paths;
 `attempt_history` closes earlier emissions without deletion; `artifact_audit` lists stale identities
 and unexpected files. Draft/report/candidate-like names confer no trust. Absolute paths, traversal,
 symlink escape, role-location or kind substitution, digest or byte-size drift fail before consumption.
-Finalized identities are never rewritten or adopted as a fresh baseline.
 
 Treat malformed reports, digest drift, dead panes, expired waits, blocked decisions, and integrity
 violations as evidence for human resolution. Never infer approval from prose, edit product code from
 the planning orchestrator, silently repair the working tree, or claim coverage beyond the Ground rules
 integrity boundary.
 
-In-flight runs with pre-change untracked baselines must restart after upgrading; never migrate
-those baselines or bypass seals.
-
 ## Scripts
 
-Use `planning_state.py` for the planning lifecycle and `run_briefing.py` for briefing and recap generation.
 `run_commit.py propose` owns `commit.proposed` (see Event Vocabulary).
 
 ## Event Vocabulary

@@ -6,7 +6,7 @@ differs from the skill defaults. Profile contents are not compared.
 1. Before the question, list every difference in the chat as `workflow.worker: current → default`
    and name every `added_profiles` entry.
 2. Ask one single-select question as the last question of the `AskUserQuestion` call with the
-   commit-mode and language questions, or alone when neither is asked: "Set these worker
+   commit-mode, feature-name and language questions, or alone when none of those is asked: "Set these worker
    assignments to the skill defaults?" / "Sollen diese Worker-Zuweisungen auf die Skill-Defaults
    gesetzt werden?" Offer "Set to defaults" / "Auf Defaults setzen" first and recommended, and
    "Keep local assignments" / "Lokale Zuweisungen behalten" second.

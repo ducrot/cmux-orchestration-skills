@@ -35,9 +35,11 @@ Follow the status command exactly for active work:
   Interrupted launch or delivery input stops at HITL with `read-screen`, never blind input.
 - A non-empty handoff is gated or inspected and never overwritten as an uncertain retry.
 - A first live-pane deadline may receive the run's one human-reasoned `resume --decision extend`
-  watcher extension. Pane death, expiry of that extension, snapshot tampering, an integrity violation,
-  an unknown state shape, or an uncertain handoff stops at HITL. None automatically advances or
-  relaunches.
+  watcher extension. For the one extension, pass `--deadline-minutes <additional-minutes>
+  --deadline-reason "<recorded reason>"`; the watcher records the reason and grants that duration
+  from the later of the existing deadline and extension arm. Pane death, expiry of that extension,
+  snapshot tampering, an integrity violation, an unknown state shape, or an uncertain handoff stops
+  at HITL. None automatically advances or relaunches.
 - At either approval boundary, rerun the corresponding view. It reopens the same reviewed,
   digest-bound candidate and never invokes a worker.
 
