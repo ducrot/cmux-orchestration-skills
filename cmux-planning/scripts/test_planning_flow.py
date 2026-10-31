@@ -91,6 +91,13 @@ def file_contents(root: Path) -> dict[Path, bytes]:
     return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 class PlanningFlow(unittest.TestCase):
     DEFAULT_FEATURE = "2026-10-27-planned-feature"
 
@@ -5766,6 +5773,210 @@ Option?
         status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
         self.assertEqual(status["classification"], "inconsistent")
         self.assertFalse(status["approval"]["spec"]["valid"])
+
+    def interrupted_publication_integrity_recovery_case(self, command, empty_target):
+        self.reach_ticket_approval()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        target = Path(state["feature_dir"])
+        grilling = target / "grilling"
+        grilling.mkdir(parents=True)
+        for name, data in {"one.md": b'# One\n', "one.json": b'{}\n',
+                           "two.md": b'# Two\n', "two.json": b'{"two": 2}\n',
+                           "nested/extra": b'\x00extra\n'}.items():
+            path = grilling / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(data)
+        expected = file_contents(grilling)
+        approved = self.ticket_approval("approve", "Approve recovery tracker")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        staged = self.run_dir.resolve() / "publication-stage"
+        original_rename = os.rename
+
+        def interrupted_rename(source, destination):
+            if Path(source) == staged:
+                raise KeyboardInterrupt("stop before tracker rename")
+            result = original_rename(source, destination)
+            if empty_target and Path(source) == grilling:
+                raise KeyboardInterrupt("stop after grilling rename")
+            return result
+
+        with patch.dict(os.environ, self.env()), patch("planning_state.os.rename", interrupted_rename):
+            with self.assertRaises(KeyboardInterrupt):
+                publish_tracker(self.run_dir)
+        self.assertEqual(target.exists(), empty_target)
+        self.assertEqual(file_contents(staged / "grilling"), expected)
+        state = json.loads(state_path.read_text())
+        self.assertEqual(state["current_stage"], "ready-to-publish")
+        spec = Path(state["approved_spec"]["path"])
+        original_spec = spec.read_bytes()
+        spec.write_bytes(original_spec + b'changed\n')
+        gated = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertNotEqual(gated.returncode, 0)
+        self.assertEqual(json.loads(state_path.read_text())["current_stage"], "integrity-violation")
+        spec.write_bytes(original_spec)
+        recovered = self.cli(STATE, *command, "--run-dir", str(self.run_dir),
+                             "--reason", "Restore interrupted publication")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertFalse(staged.exists())
+        self.assertEqual(file_contents(target / "grilling"), expected)
+        status = self.cli(STATE, "status", "--run-dir", str(self.run_dir))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual(json.loads(status.stdout)["publication"]["grilling_locations"],
+                         [str(target / "grilling")])
+
+    def test_interrupted_publication_integrity_revision_restores_absent_target(self):
+        self.interrupted_publication_integrity_recovery_case(["approval", "--decision", "revise"], False)
+
+    def test_interrupted_publication_integrity_revision_restores_empty_target(self):
+        self.interrupted_publication_integrity_recovery_case(["approval", "--decision", "revise"], True)
+
+    def test_interrupted_publication_integrity_relaunch_restores_absent_target(self):
+        self.interrupted_publication_integrity_recovery_case(["resume", "--decision", "relaunch"], False)
+
+    def test_interrupted_publication_integrity_relaunch_restores_empty_target(self):
+        self.interrupted_publication_integrity_recovery_case(["resume", "--decision", "relaunch"], True)
+
+    def test_discard_commands_restore_grilling_and_refuse_conflicts_before_state_change(self):
+        self.reach_ticket_approval()
+        state_path = self.run_dir / "state.json"
+        initial_state = json.loads(state_path.read_text())
+        backup = self.root / "before-discard"
+        shutil.copytree(self.run_dir, backup)
+        target = Path(initial_state["feature_dir"])
+        staged = self.run_dir / "publication-stage"
+        pairs = {Path("one.json"): b'{}\n', Path("one.md"): b'# One\n',
+                 Path("two.json"): b'{"two": true}\n', Path("two.md"): b'# Two\n',
+                 Path("nested/extra"): b'\x00extra\n'}
+        rename_failure = self.root / "rename-failure.py"
+        rename_failure.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(SCRIPT_DIR)!r})\n"
+            "import planning_state\n"
+            "rename = planning_state.os.rename\n"
+            "def fail(source, target):\n"
+            "    if str(source).endswith('/publication-stage/grilling'):\n"
+            "        raise OSError('injected rename failure')\n"
+            "    return rename(source, target)\n"
+            "planning_state.os.rename = fail\n"
+            "raise SystemExit(planning_state.main())\n"
+        )
+        layouts = ("absent", "empty", "duplicate", "foreign", "symlink", "file",
+                   "rename-absent", "rename-empty")
+        commands = (
+            ("spec-blocked", ["approval", "--decision", "revise"]),
+            ("awaiting-ticket-approval", ["ticket-approval", "--decision", "revise"]),
+            ("tickets-blocked", ["ticket-approval", "--decision", "revise", "--scope", "spec"]),
+            ("spec-blocked", ["resume", "--decision", "relaunch"]),
+            ("tickets-blocked", ["resume", "--decision", "relaunch"]),
+        )
+        for index, (current_stage, command) in enumerate(commands):
+            # Every command shares discard_staging, so one covers each refusal layout.
+            for layout in layouts if index == 0 else layouts[:3]:
+                with self.subTest(command=command, layout=layout):
+                    shutil.rmtree(self.run_dir)
+                    shutil.copytree(backup, self.run_dir)
+                    remove_path(target)
+                    state = dict(initial_state, current_stage=current_stage)
+                    state_path.write_text(json.dumps(state))
+                    (staged / "grilling").mkdir(parents=True)
+                    for name, data in pairs.items():
+                        path = staged / "grilling" / name
+                        path.parent.mkdir(exist_ok=True)
+                        path.write_bytes(data)
+                    (staged / "partial").write_bytes(b'partial tracker')
+                    if layout == "symlink":
+                        target.symlink_to(staged, target_is_directory=True)
+                    elif layout == "file":
+                        target.write_bytes(b'preserve')
+                    elif layout not in {"absent", "rename-absent"}:
+                        target.mkdir()
+                        if layout == "duplicate":
+                            (target / "grilling").mkdir()
+                            (target / "grilling/keep.md").write_bytes(b'keep')
+                        elif layout == "foreign":
+                            (target / ".hidden").write_bytes(b'keep')
+                    args = [*command, "--run-dir", str(self.run_dir), "--reason", "Recover publication"]
+                    before = (file_contents(staged), file_contents(target))
+                    result = self.cli(rename_failure if layout.startswith("rename-") else STATE, *args)
+                    if layout not in {"absent", "empty"}:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        if layout.startswith("rename-"):
+                            self.assertIn("injected rename failure", result.stderr)
+                            self.assertEqual(target.exists(), layout == "rename-empty")
+                        self.assertEqual((file_contents(staged), file_contents(target)), before)
+                        after = json.loads(state_path.read_text())
+                        for value in (after, state):
+                            value["artifact_audit"].pop("checked_at", None)
+                        self.assertEqual(after, state)
+                        if layout in {"duplicate", "foreign"}:
+                            status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+                            self.assertEqual(status["classification"], "inconsistent")
+                        remove_path(target)
+                        result = self.cli(STATE, *args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(staged.exists())
+                    self.assertEqual(file_contents(target / "grilling"), pairs)
+                    status = json.loads(self.cli(STATE, "status", "--run-dir", str(self.run_dir)).stdout)
+                    self.assertEqual(status["publication"]["grilling_locations"], [str(target / "grilling")])
+
+    def test_failed_staging_cleanup_restores_grilling_before_removing_partial_tracker(self):
+        import contextlib
+        import io
+        import planning_state
+
+        self.reach_ticket_approval()
+        state_path = self.run_dir / "state.json"
+        state = json.loads(state_path.read_text())
+        target = Path(state["feature_dir"])
+        (target / "grilling").mkdir(parents=True)
+        for name in ("one.json", "one.md", "two.json", "two.md"):
+            (target / "grilling" / name).write_bytes(name.encode())
+        original = file_contents(target / "grilling")
+
+        def fail(staged, *args, **kwargs):
+            staged.mkdir()
+            (staged / "partial").write_bytes(b'partial')
+            os.rename(target / "grilling", staged / "grilling")
+            target.rmdir()
+            raise ContractError("injected staging failure")
+
+        argv = ["ticket-approval", "--run-dir", str(self.run_dir), "--decision", "approve",
+                "--reason", "Approve tickets"]
+        with patch.dict(os.environ, self.env()), patch.object(planning_state, "stage_native_tracker", side_effect=fail):
+            with contextlib.redirect_stderr(io.StringIO()) as error:
+                with patch.object(sys, "argv", [str(STATE), *argv]):
+                    self.assertEqual(planning_state.main(), 1)
+        self.assertIn("injected staging failure", error.getvalue())
+        self.assertEqual(file_contents(target / "grilling"), original)
+        self.assertFalse((self.run_dir / "publication-stage").exists())
+        self.assertEqual(json.loads(state_path.read_text())["current_stage"], "awaiting-ticket-approval")
+
+    def test_restored_grilling_can_be_published_after_ticket_revision(self):
+        self.reach_ticket_approval()
+        state = json.loads((self.run_dir / "state.json").read_text())
+        target = Path(state["feature_dir"])
+        staged = self.run_dir / "publication-stage"
+        (staged / "grilling").mkdir(parents=True)
+        (staged / "grilling/one.md").write_bytes(b'# One\n')
+        (staged / "grilling/two.md").write_bytes(b'# Two\n')
+        original = file_contents(staged / "grilling")
+        revised = self.ticket_approval("revise", "Clarify tickets")
+        self.assertEqual(revised.returncode, 0, revised.stderr)
+        self.render_and_baseline("tickets", 2)
+        self.write_tickets_handoff(2)
+        accepted = self.cli(STATE, "accept-author", "--run-dir", str(self.run_dir))
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.render_and_baseline("tickets-review", 2)
+        self.write_tickets_review()
+        reviewed = self.cli(STATE, "accept-review", "--run-dir", str(self.run_dir))
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        approved = self.ticket_approval("approve", "Approve restored feature")
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+        published = self.cli(STATE, "publish", "--run-dir", str(self.run_dir))
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.assertEqual(file_contents(target / "grilling"), original)
+        self.assertTrue((target / "README.md").is_file())
 
     def grilling_publication_case(self, interruption):
         self.reach_ticket_approval()

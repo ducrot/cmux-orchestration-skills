@@ -30,3 +30,16 @@ when recovering each interruption. Native validation and `published_tracker.arti
 only required tracker files and issues; build the commit proposal from those leaves, excluding grilling.
 Re-init with the same feature is idempotent even after the move or
 completion; a different feature is refused before target or staging changes.
+
+Discarding publication staging (specification revision, ticket revision, worker relaunch, or failed
+staging cleanup) first restores its complete `grilling/` directory unchanged by rename into the frozen
+feature folder. An absent target is created; an empty target is accepted. Only after restoration is
+the remaining staging removed. The restored grilling-only folder is valid for the next publication.
+Revision state changes are saved after restoration succeeds.
+
+The same publication layout checks refuse duplicate grilling directories, foreign entries, symlinks,
+and non-directory targets before anything moves. A failed rename preserves staging and the prior
+stage; a target created for that attempt is removed again. Inspect `grilling_locations` and the
+`inconsistent` status, resolve the conflict, then repeat the same command. Repeating also finishes
+an interruption before the rename or between the rename and staging removal. Staging without
+grilling is discarded normally; a symlinked staging directory is left alone.

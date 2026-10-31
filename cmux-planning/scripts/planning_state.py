@@ -1851,7 +1851,22 @@ def approval_view(run_dir: Path) -> int:
 
 def discard_staging(run_dir: Path) -> None:
     """A partially staged tracker would otherwise block every later approval forever."""
-    shutil.rmtree(run_dir / "publication-stage", ignore_errors=True)
+    staged = run_dir / "publication-stage"
+    if staged.is_symlink():
+        return
+    if grilling_directory(staged):
+        state = read_planning_state(run_dir / "state.json")
+        target = frozen_feature_target(state, allow_existing=True)
+        layout = target_layout(target, staged_grilling=True)
+        if layout == "absent":
+            target.mkdir()
+        try:
+            os.rename(staged / "grilling", target / "grilling")
+        except OSError:
+            if layout == "absent":
+                target.rmdir()
+            raise
+    shutil.rmtree(staged, ignore_errors=True)
 
 
 def checked_staging_path(run_dir: Path, value: Any) -> Path:
@@ -2026,9 +2041,9 @@ def approval(args: argparse.Namespace) -> int:
         state["tickets_pass"] = old_tickets + 1
         state["tickets_review_pass"] = state.get("tickets_review_pass", old_tickets) + 1
         reset_ticket_state(state)
+    discard_staging(run_dir)
     state["updated_at"] = utc_now()
     write_json(state_path, state)
-    discard_staging(run_dir)
     append_event(
         run_dir,
         "spec.revision_requested",
@@ -2210,9 +2225,9 @@ def ticket_approval(args: argparse.Namespace) -> int:
         state["tree_baseline"] = None
         state["staged_tracker"] = None
         state.pop("resume_context", None)
+        discard_staging(run_dir)
         state["updated_at"] = utc_now()
         write_json(state_path, state)
-        discard_staging(run_dir)
         append_event(
             run_dir,
             event_type,
@@ -2330,13 +2345,13 @@ def ticket_approval(args: argparse.Namespace) -> int:
                 staged, proposal, approved_spec=Path(approved_spec["path"])
             )
         except Exception as error:
-            discard_staging(run_dir)
             append_event(
                 run_dir,
                 "publication.staging_failed",
                 "tracker staging or native validation failed; publication target is unchanged",
                 {"target": str(target), "staged": str(staged), "error": str(error)},
             )
+            discard_staging(run_dir)
             raise
     now = utc_now()
     state = read_planning_state(state_path)
