@@ -84,6 +84,83 @@ class CliCase(unittest.TestCase):
         return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
 
 
+class PlanningGrillingCli(CliCase):
+    def setUp(self):
+        super().setUp()
+        self.state.update(workflow='planning', current_stage='complete', repository=str(self.repo),
+                          published_tracker={'path': str(self.repo / 'd')})
+        self.save()
+        (self.repo / 'd/grilling/nested').mkdir(parents=True)
+        for name in ('pair.md', 'pair.json', 'nested/older.md'):
+            (self.repo / 'd/grilling' / name).write_text(name)
+
+    def refuse(self, files):
+        result = self.cli(files=files)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('--file must exclude published tracker grilling directory', result.stderr)
+        self.assertEqual(self.events(), b'')
+
+    def test_planning_refuses_grilling_files_without_events_then_accepts_correction(self):
+        for name in ('pair.md', 'pair.json', 'nested/older.md'):
+            with self.subTest(name=name):
+                self.refuse(['d/file', 'd/grilling/' + name])
+        result = self.cli('--ride-along', 'd/grilling/pair.md', files=['d/file'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['ride_along'], ['d/grilling/pair.md'])
+        self.assertEqual(len(self.events().splitlines()), 1)
+
+    def test_directory_identity_respects_filesystem_case_sensitivity(self):
+        alternate = self.repo / 'd/GRILLING'
+        if alternate.exists():
+            self.refuse(['d/GRILLING/nested/older.md'])
+        else:
+            alternate.mkdir()
+            (alternate / 'pair.md').write_text('distinct directory')
+            self.assertEqual(self.ok(files=['d/GRILLING/pair.md'])['files'], ['d/GRILLING/pair.md'])
+        (self.repo / 'd/grilling-extra').mkdir()
+        (self.repo / 'd/grilling-extra/pair.md').write_text('separate')
+        self.assertEqual(self.ok(files=['d/grilling-extra/pair.md'])['files'], ['d/grilling-extra/pair.md'])
+
+    def test_refusal_names_every_grilling_file(self):
+        result = self.cli(files=['d/file', 'd/grilling/pair.json', 'd/grilling/pair.md'])
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("['d/grilling/pair.json', 'd/grilling/pair.md']", result.stderr)
+
+    def test_grilling_entry_itself_and_links_to_it_are_refused(self):
+        (self.repo / 'd/alias').symlink_to('grilling')
+        self.refuse(['d/alias'])
+        self.refuse(['d/alias/pair.md'])
+        (self.repo / 'd/sub').mkdir()
+        (self.repo / 'd/sub/alias').symlink_to('../grilling')
+        self.refuse(['d/sub/alias'])
+        self.refuse(['d/sub/alias/pair.md'])
+        shutil.rmtree(self.repo / 'd/grilling')
+        (self.repo / 'd/alias').unlink()
+        (self.repo / 'd/grilling').symlink_to('../fx')
+        self.refuse(['d/grilling'])
+
+    def test_grilling_can_propose_its_recorded_pair(self):
+        self.state.update(workflow='grilling', current_stage='done',
+                          deliverables={key: str(self.repo / path) for key, path in
+                                        [('markdown', 'd/grilling/pair.md'), ('json', 'd/grilling/pair.json')]})
+        self.save()
+        files = ['d/grilling/pair.json', 'd/grilling/pair.md']
+        self.assertEqual(self.ok(files=files)['files'], files)
+
+    def test_recorded_planning_grilling_proposal_replays_and_commits(self):
+        files = ['d/grilling/pair.md']
+        draft = dict(subject='Record proposal', body='', files=files, ride_along=[],
+                     product_files=[], tracker_files=[], unresolved=[])
+        proposal = {key: draft[key] for key in ('subject', 'body', 'files', 'ride_along')}
+        proposal.update(proposal_id=hashlib.sha256(json.dumps(draft, sort_keys=True,
+                         separators=(',', ':')).encode()).hexdigest(), mode='commit', ignored=[], preexisting=[])
+        (self.run / 'events.jsonl').write_text(json.dumps({'type': 'commit.proposed', 'data': proposal}) + '\n')
+        before = self.events()
+        self.assertEqual(self.ok(files=files), proposal)
+        self.assertEqual(self.events(), before)
+        self.assertEqual(self.commit()['files'], files)
+
+
 class LegacyLayoutCli(CliCase):
     WORKFLOW = SCRIPT.parents[1].name.removeprefix('cmux-')
 

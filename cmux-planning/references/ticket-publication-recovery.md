@@ -28,6 +28,9 @@ An empty target is accepted only when this run's canonical staging already holds
 Grilling in both target and staging is `inconsistent` and nothing moves. These checks also apply
 when recovering each interruption. Native validation and `published_tracker.artifacts` enumerate
 only required tracker files and issues; build the commit proposal from those leaves, excluding grilling.
+Planning `run_commit.py propose` refuses `--file` entries inside the published tracker's `grilling/`
+directory, including differently cased spellings that identify the same directory. Use `--ride-along`
+to report these files as excluded changes. Recorded proposals still replay; `commit` has no such check.
 Re-init with the same feature is idempotent even after the move or
 completion; a different feature is refused before target or staging changes.
 

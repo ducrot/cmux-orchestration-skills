@@ -196,6 +196,14 @@ def propose(args, run_dir):
         target = (target if target.is_absolute() else root / target).resolve()
         if not published.get("path") or any(not (root / path).is_relative_to(target) or root / path == target for path in files):
             raise ValueError(f"--file must lie under published_tracker.path: {files!r}")
+        grilling = target / "grilling"
+        excluded = []
+        for path in files:
+            if any(entry == grilling or (grilling.exists() and entry.exists() and entry.samefile(grilling))
+                   for entry in (root / path, *(root / path).parents)):
+                excluded.append(path)
+        if excluded:
+            raise ValueError(f"--file must exclude published tracker grilling directory: {excluded!r}; use --ride-along")
     for path in files:
         validate_leaf(root, path)
     data = {key: draft[key] for key in ("subject", "body", "files", "ride_along", *WORKFLOW_KEYS[workflow])}
