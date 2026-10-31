@@ -51,7 +51,25 @@ class ArtifactDocumentation(unittest.TestCase):
             self.assertIn(phrase, description)
 
     def test_entrypoint_reserves_room_for_remaining_grilling_work(self):
-        self.assertLessEqual((SKILL_DIR / "SKILL.md").stat().st_size, 75894 * .7 - 4000)
+        self.assertLessEqual((SKILL_DIR / "SKILL.md").stat().st_size, 49125)
+
+    def test_commit_mode_introduces_shared_name_choice(self):
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text().split())
+        commit = skill.split("## Commit mode at initialization", 1)[1].split("## Default assignments", 1)[0]
+        for phrase in ("same dialog", "feature-name approval", "Artifact Location",
+                       "human confirms the proposed name or gives another"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, commit)
+
+    def test_artifact_location_owns_name_choice_and_exceptions(self):
+        skill = " ".join((SKILL_DIR / "SKILL.md").read_text().split())
+        location = skill.split("## Artifact Location", 1)[1].split("## Finalize and Artifact", 1)[0]
+        for phrase in ("Without `--feature`", "today's local date", "short slug",
+                       "same dialog as commit mode", "human confirms the proposed name or gives another",
+                       "supplied `--feature`, resume, re-init and smoke tests",
+                       "A supplied commit mode skips only its own question"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, location)
 
     def test_wait_policy_routes_to_complete_watcher_procedure(self):
         text = (SKILL_DIR / "SKILL.md").read_text()

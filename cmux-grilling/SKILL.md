@@ -18,18 +18,20 @@ target repository root, never `cd` into the skill directory: call `python3 <skil
 
 ## Commit mode at initialization
 
-Before a fresh init whose invocation does not already name `--commit-mode`, ask one
+Before fresh init, if the invocation does not already name `--commit-mode`, ask one
 `AskUserQuestion` single-select question in the human's language: "How should this run
 handle its commit?" / "Wie soll dieser Lauf mit seinem Commit umgehen?"
 Offer `propose` first and recommended: "Show proposal only" / "Nur Vorschlag zeigen";
 offer `commit` second: "Commit automatically" / "Automatisch committen".
-Pass the chosen mode to `init --commit-mode commit|propose`. When the invocation already
-names the mode, use it without asking. Never on resume, on re-init, in planning's exit-3
-unfinished-run path, or in smoke tests: reuse the stored choice. For planning, inspect
-existing unfinished runs before asking; ask only after the human chooses a fresh run.
+Pass the mode to `init --commit-mode commit|propose`.
+Never on resume, on re-init, in planning's exit-3 unfinished-run path, or in smoke tests:
+reuse the stored choice. For planning, inspect unfinished runs first; ask only after the
+human chooses a fresh run.
 Omitting the flag at fresh init (including smoke tests) records `commit_mode: propose`.
-Legacy runs without the field read as `propose`; an existing run's mode cannot change.
-The briefing's final fixed line shows `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+Legacy runs without the field use `propose`; an existing run's mode cannot change.
+The briefing ends with `Commit: automatic|proposal` (`automatisch|Vorschlag`).
+Use the same dialog for feature-name approval (Artifact Location): the human confirms the
+proposed name or gives another.
 
 ## Default assignments at initialization
 
@@ -345,9 +347,10 @@ a name or path with a valid date and lowercase kebab-case slug (at most 30 chara
 State freezes absolute `feature_dir` and local `timestamp` (`YYYY-MM-DD-HHMM`, same instant
 as the run name); the slug is the run key. Re-init cannot change the feature.
 
-Without `--feature`, propose today's local date and a short slug; ask for name approval
-in the same dialog as commit mode. Skip name approval for supplied `--feature`, resume,
-re-init and smoke tests. A supplied commit mode skips only its own question.
+Without `--feature`, propose today's local date and a short slug; in the same dialog as
+commit mode, the human confirms the proposed name or gives another. Skip name approval for
+supplied `--feature`, resume, re-init and smoke tests. A supplied commit mode skips only its
+own question.
 
 Init never creates the feature folder. Finalize creates `<feature_dir>/grilling/` and writes
 `<timestamp>.md` and `<timestamp>.json`; an existing feature keeps its tracker and earlier
