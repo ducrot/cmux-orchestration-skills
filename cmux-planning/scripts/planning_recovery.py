@@ -375,7 +375,7 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
     staged = state.get("staged_tracker")
     approved = state.get("approved_tickets")
     published = state.get("published_tracker")
-    target_value = approved.get("target") if isinstance(approved, dict) else None
+    target_value = approved.get("target") if isinstance(approved, dict) else state.get("feature_dir")
     staged_value = staged.get("path") if isinstance(staged, dict) else None
     target = Path(target_value) if isinstance(target_value, str) else None
     canonical_staging = run_dir.resolve() / "publication-stage"
@@ -418,7 +418,7 @@ def publication_status(run_dir: Path, state: dict[str, Any], errors: list[str]) 
             except (ContractError, OSError, TypeError, ValueError, KeyError) as error:
                 phase = "inconsistent"
                 errors.append(f"published tracker is missing or changed: {error}")
-    elif target_exists and not staged_exists and not grilling_only_target:
+    elif isinstance(approved, dict) and target_exists and not staged_exists and not grilling_only_target:
         try:
             validate_publication_tracker(
                 target,

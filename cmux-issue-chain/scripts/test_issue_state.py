@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -178,6 +179,49 @@ class Cli(unittest.TestCase):
             proc = self.run_list(tracker)
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ISSUE-001", proc.stdout)
+
+    def test_frontmatter_refusal_names_working_adoption_for_tracker_name(self):
+        for name in ("tracker", "2026-10-28-tracker"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                tracker = make_tracker(Path(tmp) / "with space" / name, {"01-sample.md": TO_TICKETS_MARKDOWN})
+                proc = self.run_list(tracker)
+                self.assertEqual(proc.returncode, 1, proc.stderr)
+                self.assertIn("without usable frontmatter", proc.stderr)
+                command = self.assert_adoption_dry_run(proc.stderr, tracker)
+                if name == "tracker":
+                    self.assertIn("--feature YYYY-MM-DD-<slug>", command)
+                else:
+                    self.assertNotIn("--feature", command)
+
+    def test_init_refusal_names_working_adoption_for_undated_tracker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = make_tracker(Path(tmp) / "tracker", {"01-sample.md": TO_TICKETS_MARKDOWN})
+            proc = subprocess.run(
+                [sys.executable, str(Path(self.script).with_name("run_state.py")),
+                 "init", "--tracker", str(tracker), "--issue", "ISSUE-001",
+                 "--runs-root", str(Path(tmp) / "runs"), "--no-workspace"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix", proc.stderr)
+            self.assertIn("--feature YYYY-MM-DD-<slug>", self.assert_adoption_dry_run(proc.stderr, tracker))
+            self.assertFalse((Path(tmp) / "runs").exists())
+
+    def assert_adoption_dry_run(self, refusal: str, tracker: Path) -> str:
+        def snapshot():
+            return {path: path.read_bytes() if path.is_file() else None for path in tracker.parent.rglob("*")}
+
+        command = refusal.split("Run ", 1)[1].split(" to adopt", 1)[0]
+        before = snapshot()
+        interpreter, *arguments = shlex.split(command.replace("YYYY-MM-DD-<slug>", "2026-10-31-approved"))
+        self.assertEqual(interpreter, "python3")
+        proc = subprocess.run(
+            [sys.executable, *arguments, "--dry-run"],
+            cwd=Path(self.script).resolve().parent.parent, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(snapshot(), before)
+        return command
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 """Real-Git CLI regression coverage for the proposal transaction."""
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ class CliCase(unittest.TestCase):
         self.git('commit', '-qm', 'Initial')
         self.run = self.root / 'run'
         self.run.mkdir()
-        self.state = dict(run_id='test', workflow='issue-chain', current_stage='done',
+        self.state = dict(run_id='test', layout_version=2, workflow='issue-chain', current_stage='done',
                           working_directory=str(self.repo), commit_mode='commit', chain=['implement'],
                           commit_baseline=capture_baseline(self.repo))
         self.save()
@@ -69,6 +70,166 @@ class CliCase(unittest.TestCase):
         result = self.cli(**kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def commit(self, success=True):
+        result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def git_state(self):
+        return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
+
+
+class PlanningGrillingCli(CliCase):
+    def setUp(self):
+        super().setUp()
+        self.state.update(workflow='planning', current_stage='complete', repository=str(self.repo),
+                          published_tracker={'path': str(self.repo / 'd')})
+        self.save()
+        (self.repo / 'd/grilling/nested').mkdir(parents=True)
+        for name in ('pair.md', 'pair.json', 'nested/older.md'):
+            (self.repo / 'd/grilling' / name).write_text(name)
+
+    def refuse(self, files):
+        result = self.cli(files=files)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('--file must exclude published tracker grilling directory', result.stderr)
+        self.assertEqual(self.events(), b'')
+
+    def test_planning_refuses_grilling_files_without_events_then_accepts_correction(self):
+        for name in ('pair.md', 'pair.json', 'nested/older.md'):
+            with self.subTest(name=name):
+                self.refuse(['d/file', 'd/grilling/' + name])
+        result = self.cli('--ride-along', 'd/grilling/pair.md', files=['d/file'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['ride_along'], ['d/grilling/pair.md'])
+        self.assertEqual(len(self.events().splitlines()), 1)
+
+    def test_directory_identity_respects_filesystem_case_sensitivity(self):
+        alternate = self.repo / 'd/GRILLING'
+        if alternate.exists():
+            self.refuse(['d/GRILLING/nested/older.md'])
+        else:
+            alternate.mkdir()
+            (alternate / 'pair.md').write_text('distinct directory')
+            self.assertEqual(self.ok(files=['d/GRILLING/pair.md'])['files'], ['d/GRILLING/pair.md'])
+        (self.repo / 'd/grilling-extra').mkdir()
+        (self.repo / 'd/grilling-extra/pair.md').write_text('separate')
+        self.assertEqual(self.ok(files=['d/grilling-extra/pair.md'])['files'], ['d/grilling-extra/pair.md'])
+
+    def test_refusal_names_every_grilling_file(self):
+        result = self.cli(files=['d/file', 'd/grilling/pair.json', 'd/grilling/pair.md'])
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("['d/grilling/pair.json', 'd/grilling/pair.md']", result.stderr)
+
+    def test_grilling_entry_itself_and_links_to_it_are_refused(self):
+        (self.repo / 'd/alias').symlink_to('grilling')
+        self.refuse(['d/alias'])
+        self.refuse(['d/alias/pair.md'])
+        (self.repo / 'd/sub').mkdir()
+        (self.repo / 'd/sub/alias').symlink_to('../grilling')
+        self.refuse(['d/sub/alias'])
+        self.refuse(['d/sub/alias/pair.md'])
+        shutil.rmtree(self.repo / 'd/grilling')
+        (self.repo / 'd/alias').unlink()
+        (self.repo / 'd/grilling').symlink_to('../fx')
+        self.refuse(['d/grilling'])
+
+    def test_grilling_can_propose_its_recorded_pair(self):
+        self.state.update(workflow='grilling', current_stage='done',
+                          deliverables={key: str(self.repo / path) for key, path in
+                                        [('markdown', 'd/grilling/pair.md'), ('json', 'd/grilling/pair.json')]})
+        self.save()
+        files = ['d/grilling/pair.json', 'd/grilling/pair.md']
+        self.assertEqual(self.ok(files=files)['files'], files)
+
+    def test_recorded_planning_grilling_proposal_replays_and_commits(self):
+        files = ['d/grilling/pair.md']
+        draft = dict(subject='Record proposal', body='', files=files, ride_along=[],
+                     product_files=[], tracker_files=[], unresolved=[])
+        proposal = {key: draft[key] for key in ('subject', 'body', 'files', 'ride_along')}
+        proposal.update(proposal_id=hashlib.sha256(json.dumps(draft, sort_keys=True,
+                         separators=(',', ':')).encode()).hexdigest(), mode='commit', ignored=[], preexisting=[])
+        (self.run / 'events.jsonl').write_text(json.dumps({'type': 'commit.proposed', 'data': proposal}) + '\n')
+        before = self.events()
+        self.assertEqual(self.ok(files=files), proposal)
+        self.assertEqual(self.events(), before)
+        self.assertEqual(self.commit()['files'], files)
+
+
+class LegacyLayoutCli(CliCase):
+    WORKFLOW = SCRIPT.parents[1].name.removeprefix('cmux-')
+
+    def configure(self):
+        self.state.update(layout_version=2, workflow=self.WORKFLOW, configuration_created_and_accepted=False,
+                          current_stage='complete' if self.WORKFLOW == 'planning' else 'done',
+                          repository=str(self.repo), published_tracker={'path': str(self.repo / 'd')},
+                          deliverables={'markdown': str(self.repo / 'f*'), 'json': str(self.repo / 'fx')})
+        self.save()
+        return {'planning': ['d/file'], 'grilling': ['f*', 'fx']}.get(self.WORKFLOW, ['f*'])
+
+    def old_layout(self, layout, missing_workflow):
+        if layout is None:
+            self.state.pop('layout_version')
+        else:
+            self.state['layout_version'] = layout
+        if missing_workflow:
+            self.state.pop('workflow')
+        self.save()
+
+    def snapshot(self):
+        return {str(path.relative_to(self.run)): path.read_bytes() if path.is_file() else None
+                for path in self.run.rglob('*')}
+
+    def refuse(self, command, files):
+        before = self.snapshot()
+        git_before = self.git_state()
+        result = self.cli(files=files) if command == 'propose' else self.commit(success=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stderr,
+                         f'unsupported legacy layout in {self.run}; inspect read-only and restart the run\n')
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.run / 'commit.lock').exists())
+        self.assertEqual(self.git_state(), git_before)
+
+    def inspect(self):
+        planning = self.WORKFLOW == 'planning'
+        script = SCRIPT.with_name('planning_state.py' if planning else 'run_state.py')
+        before = self.snapshot()
+        for command in (('status', 'context') if planning else ('status',)):
+            result = subprocess.run([sys.executable, str(script), command, '--run-dir', str(self.run)],
+                                    cwd=self.root, env=self.env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsInstance(json.loads(result.stdout), dict)
+            self.assertEqual(self.snapshot(), before)
+
+    def assert_old_layouts_refused(self, prepare=lambda files: None):
+        for layout, missing_workflow in itertools.product((1, None, 3), (False, True)):
+            with self.subTest(layout=layout, missing_workflow=missing_workflow):
+                files = self.configure()
+                prepare(files)
+                self.old_layout(layout, missing_workflow)
+                for command in ('propose', 'commit'):
+                    with self.subTest(command=command):
+                        self.refuse(command, files)
+                self.inspect()
+
+    def record_proposal(self, files):
+        (self.run / 'events.jsonl').unlink(missing_ok=True)
+        for path in files:
+            (self.repo / path).write_text('changed')
+        self.ok(files=files)
+        (self.run / 'commit.lock').unlink()
+
+    def test_legacy_boundary_refuses_without_any_run_or_git_writes(self):
+        self.assert_old_layouts_refused()
+
+    def test_legacy_commit_refuses_previously_recorded_proposal(self):
+        self.assert_old_layouts_refused(self.record_proposal)
 
 
 class ProposalCli(CliCase):
@@ -391,15 +552,6 @@ class CommitCli(CliCase):
                 self.dirty('d/file', content=workflow)
                 self.assertEqual(self.ok(files=['d/file']), first)
                 self.assertEqual(self.events(), before)
-
-    def commit(self, success=True):
-        result = subprocess.run([sys.executable, str(SCRIPT), 'commit', '--run-dir', str(self.run)],
-                                cwd=self.root, env=self.env, capture_output=True, text=True)
-        if success:
-            self.assertEqual(result.returncode, 0, result.stderr)
-            return json.loads(result.stdout)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        return result
 
     def dirty(self, path='f*', content='changed'):
         (self.repo / path).write_text(content)
@@ -781,9 +933,6 @@ class CommitCli(CliCase):
         self.assertEqual(self.last()['type'], 'commit.attempted')
         self.env['PATH'] = os.environ['PATH']
         return proposal, self.last()['data']
-
-    def git_state(self):
-        return self.git('rev-parse', 'HEAD'), (self.repo/'.git/index').read_bytes(), (self.repo/'f*').read_bytes()
 
     def recover_without_git_write(self):
         before = self.git_state()

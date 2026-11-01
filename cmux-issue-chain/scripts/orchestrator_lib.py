@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -222,7 +223,7 @@ def load_issues(tracker: Path) -> dict[str, Issue]:
     if unadopted:
         raise TrackerFormatError(
             f"{issue_dir}: issue files without usable frontmatter: {', '.join(unadopted)}. "
-            f"Run scripts/adopt_tracker.py --tracker {tracker} to adopt them."
+            f"Run {adoption_command(tracker)} to adopt them."
         )
     if not issues:
         raise TrackerFormatError(f"{issue_dir}: no issue files found; nothing to orchestrate")
@@ -289,6 +290,13 @@ def dated_tracker_slug(name: str) -> str | None:
     except ValueError:
         return None
     return match[2]
+
+
+def adoption_command(tracker: Path | str) -> str:
+    """Name the adoption route; the name of an undated tracker stays a placeholder for human approval."""
+    feature_arg = "" if dated_tracker_slug(Path(tracker).resolve().name) else " --feature YYYY-MM-DD-<slug>"
+    script = Path(__file__).resolve().with_name("adopt_tracker.py")
+    return f"python3 {shlex.quote(str(script))} --tracker {shlex.quote(str(tracker))}{feature_arg}"
 
 
 def read_run_state(run_dir: Path) -> dict[str, Any]:

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from test_launch_wave import file_contents
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -16,7 +18,9 @@ class RenderArtifact(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.run = self.root / 'run'
         (self.run / 'synthesis').mkdir(parents=True)
-        (self.run / 'state.json').write_text(json.dumps({'run_id': 'neutral-run', 'created_at': '2026-10-28T20:00:00Z'}))
+        self.state = {'run_id': 'neutral-run', 'created_at': '2026-10-28T20:00:00Z',
+                      'workflow': 'grilling', 'layout_version': 2, 'max_rounds': 4}
+        self.write_state()
         self.artifact = self.root / 'artifact.json'
         self.markdown = self.root / 'protocol.md'
         self.data = json.loads((HERE / 'fixtures/render-artifact.json').read_text())
@@ -29,6 +33,9 @@ class RenderArtifact(unittest.TestCase):
 
     def write_json(self):
         self.artifact.write_text(json.dumps(self.data))
+
+    def write_state(self, **changes):
+        (self.run / 'state.json').write_text(json.dumps(self.state | changes))
 
     def cli(self, command='render-artifact', *extra):
         args = [sys.executable, str(HERE / 'run_state.py'), command, '--artifact', str(self.artifact)]
@@ -70,6 +77,37 @@ class RenderArtifact(unittest.TestCase):
         self.assertEqual(self.artifact.read_bytes(), before)
         self.assertEqual(self.cli('render-artifact', '--overwrite').returncode, 0)
         self.assertEqual(self.cli('validate-artifact').returncode, 0)
+
+    def test_legacy_layout_refuses_rendering_but_remains_inspectable(self):
+        self.write_state(layout_version=1)
+        before = file_contents(self.root)
+        diagnostic = f'unsupported legacy layout in {self.run}; inspect read-only and restart the run'
+        result = self.cli()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stderr.strip(), diagnostic)
+        self.assertFalse(self.markdown.exists())
+        self.assertEqual(file_contents(self.root), before)
+        status = subprocess.run([sys.executable, str(HERE / 'run_state.py'), 'status',
+                                 '--run-dir', str(self.run)], text=True, capture_output=True)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn('neutral-run', status.stdout)
+        self.assertIn(diagnostic, status.stdout)
+        self.markdown.write_text('Recorded human edits.\n')
+        result = self.cli('render-artifact', '--overwrite')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.strip(), diagnostic)
+        self.assertEqual(self.markdown.read_text(), 'Recorded human edits.\n')
+
+    def test_unreadable_state_is_refused_without_traceback(self):
+        (self.run / 'state.json').write_text('{broken')
+        result = self.cli()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(result.stderr.startswith('rendering refused:'), result.stderr)
+        (self.run / 'state.json').unlink()
+        result = self.cli()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(result.stderr.startswith('rendering refused:'), result.stderr)
+        self.assertFalse(self.markdown.exists())
 
     def test_empty_lists_and_later_round_with_only_deferrals(self):
         self.data.update(roundsRun=2, maxRounds=2)
@@ -123,10 +161,11 @@ class RenderArtifact(unittest.TestCase):
         self.synthesis.unlink()
         self.assertNotEqual(self.cli().returncode, 0)
         self.assertFalse(self.markdown.exists())
-        (self.run / 'state.json').write_text(json.dumps({'run_id': 'other-run', 'created_at': '2026-10-28T20:00:00Z'}))
+        self.write_state(run_id='other-run')
         self.assertIn('different run_id', self.cli().stderr)
         self.assertFalse(self.markdown.exists())
-        (self.run / 'state.json').write_text(json.dumps({'run_id': 'neutral-run'}))
+        self.state.pop('created_at')
+        self.write_state()
         self.assertIn('created_at', self.cli().stderr)
         self.assertFalse(self.markdown.exists())
 

@@ -28,6 +28,7 @@ from agents_config import (
 )
 from orchestrator_lib import (
     MINIMUM_WAIT_MINUTES,
+    adoption_command,
     append_jsonl,
     blocker_status,
     dated_tracker_slug,
@@ -168,7 +169,10 @@ def chain_run_id(args: argparse.Namespace, now: str) -> str:
     """Validate the tracker before writes and share its identity with the board."""
     tracker_slug = dated_tracker_slug(Path(args.tracker).resolve().name)
     if tracker_slug is None:
-        raise SystemExit("--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix")
+        raise SystemExit(
+            "--tracker folder must have a valid YYYY-MM-DD-<tracker-slug> date prefix. "
+            f"Run {adoption_command(args.tracker)} to adopt it."
+        )
     return args.run_id or run_identifier("chain", f"{tracker_slug}-{slugify(args.issue)}", now)
 
 

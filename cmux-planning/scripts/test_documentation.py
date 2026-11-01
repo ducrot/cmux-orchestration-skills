@@ -60,6 +60,9 @@ class OnDemandDocumentation(unittest.TestCase):
     # Entry-point sizes measured before conditional procedures moved to references/.
     BASELINE_BYTES = {"cmux-issue-chain": 109325, "cmux-grilling": 75894, "cmux-planning": 51689}
     CAP_RATIO = .7
+    # Planning's entry-point size after its reduction at 3c8e333.
+    PLANNING_MAX_LINES = 497
+    PLANNING_MAX_BYTES = 30649
     NORMAL_HEADINGS = {
         "cmux-issue-chain": ("## gate rule", "## default chain"),
         "cmux-grilling": ("## gate rule", "## round loop"),
@@ -80,6 +83,16 @@ class OnDemandDocumentation(unittest.TestCase):
                 name = guide.parent.name
                 self.assertLessEqual(guide.stat().st_size,
                                      self.BASELINE_BYTES[name] * self.CAP_RATIO)
+
+    def test_planning_entrypoint_does_not_grow(self):
+        raw = PLANNING.read_bytes()
+        self.assertLessEqual(len(raw.splitlines()), self.PLANNING_MAX_LINES)
+        self.assertLessEqual(len(raw), self.PLANNING_MAX_BYTES)
+
+    def test_planning_freezes_feature_folder_for_every_run(self):
+        raw = " ".join(PLANNING.read_text(encoding="utf-8").split())
+        self.assertNotIn("for direct input", raw.lower())
+        self.assertIn("For every run, `feature_dir` freezes the dated folder", raw)
 
     def test_conditional_routes_resolve_to_nonempty_local_references(self):
         for guide in SIBLINGS:
